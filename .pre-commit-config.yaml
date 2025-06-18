@@ -1,0 +1,43 @@
+repos:
+  # Ruff (linter + formatter)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.13
+    hooks:
+      - id: ruff
+        args: [--fix]
+        require_serial: true
+      - id: ruff-format
+        require_serial: true
+
+  # Pre-commit default hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-json
+      - id: check-toml
+      - id: check-xml
+      - id: check-yaml
+      - id: debug-statements
+      - id: detect-aws-credentials
+        args: [--allow-missing-credentials]
+      - id: detect-private-key
+
+  # uv pip-compile
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.7.13
+    hooks:
+      - id: pip-compile
+        name: pip-compile requirements.in
+        args: [requirements.in, -o, requirements.txt]
+      - id: pip-compile
+        name: pip-compile requirements-dev.in
+        args: [requirements-dev.in, -o, requirements-dev.txt]
+        files: ^requirements-dev\\.(in|txt)$
+
+  # MyPy
+  # - repo: https://github.com/pre-commit/mirrors-mypy
+  #   rev: v1.10.0
+  #   hooks:
+  #     - id: mypy
+  #       args: [--config-file=pyproject.toml]

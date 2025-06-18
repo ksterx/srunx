@@ -1,0 +1,23 @@
+name: ml_pipeline
+tasks:
+  - name: preprocess
+    command: ["python", "preprocess.py"]
+    nodes: 1
+    venv: /path/to/venv
+
+  - name: train
+    command: ["python", "train.py"]
+    depends_on: [preprocess]
+    gpus_per_node: 1
+    conda: ml_env
+    memory_per_node: "32GB"
+    time_limit: "4:00:00"
+
+  - name: evaluate
+    command: ["python", "evaluate.py"]
+    depends_on: [train]
+    sqsh: /path/to/image.sqsh
+    async: true
+
+  - name: deploy
+    path: /path/to/script_file.slurm

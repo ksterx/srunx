@@ -1,0 +1,35 @@
+#!/bin/bash
+
+#SBATCH --job-name={{ job_name }}
+#SBATCH --nodes={{ nodes }}
+{% if gpus_per_node > 0 -%}
+#SBATCH --gpus-per-node={{ gpus_per_node }}
+{% endif -%}
+#SBATCH --ntasks-per-node={{ ntasks_per_node }}
+#SBATCH --cpus-per-task={{ cpus_per_task }}
+{% if memory_per_node -%}
+#SBATCH --mem={{ memory_per_node }}
+{% endif -%}
+{% if time_limit -%}
+#SBATCH --time={{ time_limit }}
+{% endif -%}
+#SBATCH --output={{ log_dir }}/%x_%j.out
+#SBATCH --error={{ log_dir }}/%x_%j.err
+{% if work_dir -%}
+#SBATCH --chdir={{ work_dir }}
+{% endif -%}
+#SBATCH --wait-all-nodes=1
+
+set -euxo pipefail
+
+# Environment setup
+{% if environment_setup -%}
+{{ environment_setup }}
+{% endif %}
+
+# Execute command
+{% if sqsh -%}
+srun "${CONTAINER_ARGS[@]}" {{ command }}
+{% else -%}
+srun {{ command }}
+{% endif -%}
