@@ -204,6 +204,7 @@ class TestCommandFunctions:
             template=None,
             wait=False,
             slack=False,
+            verbose=False,
         )
 
         # Execute
@@ -258,6 +259,7 @@ class TestCommandFunctions:
             wait=True,
             poll_interval=30,
             slack=False,
+            verbose=False,
         )
 
         # Execute

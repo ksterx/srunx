@@ -441,7 +441,9 @@ class TestConvenienceFunctions:
         result = submit_job(job)
 
         assert result == expected_job
-        mock_run.assert_called_once_with(job, None)
+        mock_run.assert_called_once_with(
+            job, template_path=None, callbacks=None, verbose=False
+        )
 
     @patch("srunx.client.Slurm.retrieve")
     def test_retrieve_job_convenience(self, mock_retrieve: Mock) -> None:

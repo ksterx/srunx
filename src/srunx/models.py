@@ -145,7 +145,7 @@ class WorkflowTask(BaseModel):
     job: BaseJob = Field(description="Job configuration")
     depends_on: list[str] = Field(default_factory=list, description="Task dependencies")
     async_execution: bool = Field(
-        default=False, description="Whether to run asynchronously"
+        default=True, description="Whether to run asynchronously"
     )
 
     def __repr__(self) -> str:

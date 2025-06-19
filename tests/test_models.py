@@ -198,7 +198,7 @@ class TestWorkflowTask:
         assert task.name == "task1"
         assert task.job == job
         assert task.depends_on == []
-        assert task.async_execution is False
+        assert task.async_execution is True
 
     def test_workflow_task_with_dependencies(self) -> None:
         """Test WorkflowTask with dependencies."""
