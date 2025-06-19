@@ -556,3 +556,168 @@ class TestWorkflowValidation:
         workflow = runner._parse_workflow_data(data)
 
         assert workflow.name == "unnamed_workflow"
+
+    def test_build_execution_levels_simple(self) -> None:
+        """Test building execution levels for simple linear workflow."""
+        runner = WorkflowRunner()
+        
+        # Create a simple linear workflow: task1 -> task2 -> task3
+        job1 = Job(name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env1"))
+        job2 = Job(name="job2", command=["echo", "2"], environment=JobEnvironment(conda="env2"))
+        job3 = Job(name="job3", command=["echo", "3"], environment=JobEnvironment(conda="env3"))
+        
+        task1 = WorkflowTask(name="task1", job=job1)
+        task2 = WorkflowTask(name="task2", job=job2, depends_on=["task1"])
+        task3 = WorkflowTask(name="task3", job=job3, depends_on=["task2"])
+        
+        workflow = Workflow(name="linear_workflow", tasks=[task1, task2, task3])
+        
+        # Test execution levels
+        levels = runner._build_execution_levels(workflow)
+        
+        assert len(levels) == 3
+        assert levels[0] == ["task1"]
+        assert levels[1] == ["task2"]
+        assert levels[2] == ["task3"]
+
+    def test_build_execution_levels_parallel_branches(self) -> None:
+        """Test building execution levels for workflow with parallel branches."""
+        runner = WorkflowRunner()
+        
+        # Create workflow with parallel branches:
+        # task1 -> task2, task3 (parallel)
+        # task4 depends on both task2 and task3
+        job1 = Job(name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env1"))
+        job2 = Job(name="job2", command=["echo", "2"], environment=JobEnvironment(conda="env2"))
+        job3 = Job(name="job3", command=["echo", "3"], environment=JobEnvironment(conda="env3"))
+        job4 = Job(name="job4", command=["echo", "4"], environment=JobEnvironment(conda="env4"))
+        
+        task1 = WorkflowTask(name="task1", job=job1)
+        task2 = WorkflowTask(name="task2", job=job2, depends_on=["task1"])
+        task3 = WorkflowTask(name="task3", job=job3, depends_on=["task1"])
+        task4 = WorkflowTask(name="task4", job=job4, depends_on=["task2", "task3"])
+        
+        workflow = Workflow(name="parallel_workflow", tasks=[task1, task2, task3, task4])
+        
+        # Test execution levels
+        levels = runner._build_execution_levels(workflow)
+        
+        assert len(levels) == 3
+        assert levels[0] == ["task1"]
+        assert set(levels[1]) == {"task2", "task3"}  # These can run in parallel
+        assert levels[2] == ["task4"]
+
+    def test_build_execution_levels_multiple_parallel_branches(self) -> None:
+        """Test building execution levels for workflow with multiple parallel branches."""
+        runner = WorkflowRunner()
+        
+        # Create workflow with multiple parallel branches:
+        # task1 -> task2, task3, task4 (all parallel)
+        # task5 depends on task2 and task3
+        # task6 depends on task4
+        # task7 depends on task5 and task6
+        job1 = Job(name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env1"))
+        job2 = Job(name="job2", command=["echo", "2"], environment=JobEnvironment(conda="env2"))
+        job3 = Job(name="job3", command=["echo", "3"], environment=JobEnvironment(conda="env3"))
+        job4 = Job(name="job4", command=["echo", "4"], environment=JobEnvironment(conda="env4"))
+        job5 = Job(name="job5", command=["echo", "5"], environment=JobEnvironment(conda="env5"))
+        job6 = Job(name="job6", command=["echo", "6"], environment=JobEnvironment(conda="env6"))
+        job7 = Job(name="job7", command=["echo", "7"], environment=JobEnvironment(conda="env7"))
+        
+        task1 = WorkflowTask(name="task1", job=job1)
+        task2 = WorkflowTask(name="task2", job=job2, depends_on=["task1"])
+        task3 = WorkflowTask(name="task3", job=job3, depends_on=["task1"])
+        task4 = WorkflowTask(name="task4", job=job4, depends_on=["task1"])
+        task5 = WorkflowTask(name="task5", job=job5, depends_on=["task2", "task3"])
+        task6 = WorkflowTask(name="task6", job=job6, depends_on=["task4"])
+        task7 = WorkflowTask(name="task7", job=job7, depends_on=["task5", "task6"])
+        
+        workflow = Workflow(name="complex_parallel_workflow", tasks=[task1, task2, task3, task4, task5, task6, task7])
+        
+        # Test execution levels
+        levels = runner._build_execution_levels(workflow)
+        
+        assert len(levels) == 4
+        assert levels[0] == ["task1"]
+        assert set(levels[1]) == {"task2", "task3", "task4"}  # These can run in parallel
+        assert set(levels[2]) == {"task5", "task6"}  # These can run in parallel
+        assert levels[3] == ["task7"]
+
+    def test_build_execution_levels_no_dependencies(self) -> None:
+        """Test building execution levels for workflow with no dependencies."""
+        runner = WorkflowRunner()
+        
+        # Create workflow where all tasks can run in parallel
+        job1 = Job(name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env1"))
+        job2 = Job(name="job2", command=["echo", "2"], environment=JobEnvironment(conda="env2"))
+        job3 = Job(name="job3", command=["echo", "3"], environment=JobEnvironment(conda="env3"))
+        
+        task1 = WorkflowTask(name="task1", job=job1)
+        task2 = WorkflowTask(name="task2", job=job2)
+        task3 = WorkflowTask(name="task3", job=job3)
+        
+        workflow = Workflow(name="all_parallel_workflow", tasks=[task1, task2, task3])
+        
+        # Test execution levels
+        levels = runner._build_execution_levels(workflow)
+        
+        assert len(levels) == 1
+        assert set(levels[0]) == {"task1", "task2", "task3"}
+
+    def test_build_execution_levels_circular_dependency(self) -> None:
+        """Test building execution levels with circular dependency detection."""
+        runner = WorkflowRunner()
+        
+        # Create workflow with circular dependency: task1 -> task2 -> task1
+        job1 = Job(name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env1"))
+        job2 = Job(name="job2", command=["echo", "2"], environment=JobEnvironment(conda="env2"))
+        
+        task1 = WorkflowTask(name="task1", job=job1, depends_on=["task2"])
+        task2 = WorkflowTask(name="task2", job=job2, depends_on=["task1"])
+        
+        workflow = Workflow(name="circular_workflow", tasks=[task1, task2])
+        
+        # Test that circular dependency is detected
+        with pytest.raises(ValueError, match="Circular dependency detected"):
+            runner._build_execution_levels(workflow)
+
+    @patch("srunx.workflows.runner.submit_and_monitor_job")
+    def test_execute_workflow_parallel_execution(self, mock_monitor: Mock) -> None:
+        """Test that tasks at the same level are executed in parallel."""
+        runner = WorkflowRunner()
+        
+        # Create workflow with parallel branches
+        job1 = Job(name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env1"))
+        job2 = Job(name="job2", command=["echo", "2"], environment=JobEnvironment(conda="env2"))
+        job3 = Job(name="job3", command=["echo", "3"], environment=JobEnvironment(conda="env3"))
+        job4 = Job(name="job4", command=["echo", "4"], environment=JobEnvironment(conda="env4"))
+        
+        task1 = WorkflowTask(name="task1", job=job1)
+        task2 = WorkflowTask(name="task2", job=job2, depends_on=["task1"])
+        task3 = WorkflowTask(name="task3", job=job3, depends_on=["task1"])
+        task4 = WorkflowTask(name="task4", job=job4, depends_on=["task2", "task3"])
+        
+        workflow = Workflow(name="parallel_execution_workflow", tasks=[task1, task2, task3, task4])
+        
+        # Mock returns
+        result_jobs = [
+            Job(name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env1"), job_id=111),
+            Job(name="job2", command=["echo", "2"], environment=JobEnvironment(conda="env2"), job_id=222),
+            Job(name="job3", command=["echo", "3"], environment=JobEnvironment(conda="env3"), job_id=333),
+            Job(name="job4", command=["echo", "4"], environment=JobEnvironment(conda="env4"), job_id=444),
+        ]
+        mock_monitor.side_effect = result_jobs
+        
+        # Execute
+        results = runner.execute_workflow(workflow)
+        
+        # Verify
+        assert len(results) == 4
+        assert mock_monitor.call_count == 4
+        
+        # Check that execution levels were built correctly
+        levels = runner._build_execution_levels(workflow)
+        assert len(levels) == 3
+        assert levels[0] == ["task1"]
+        assert set(levels[1]) == {"task2", "task3"}
+        assert levels[2] == ["task4"]

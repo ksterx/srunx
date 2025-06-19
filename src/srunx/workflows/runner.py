@@ -1,5 +1,6 @@
 """Workflow runner for executing YAML-defined workflows with SLURM and Prefect."""
 
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -119,7 +120,7 @@ class WorkflowRunner:
         )
 
     def execute_workflow(self, workflow: Workflow) -> dict[str, State[Job | ShellJob]]:
-        """Execute a workflow using Prefect.
+        """Execute a workflow using Prefect with parallel execution support.
 
         Args:
             workflow: Workflow to execute.
@@ -128,35 +129,37 @@ class WorkflowRunner:
             Dictionary mapping task names to Job instances.
         """
         task_map = {task.name: task for task in workflow.tasks}
+        execution_levels = self._build_execution_levels(workflow)
+        
+        logger.info(f"Built execution levels: {execution_levels}")
 
         @flow(name=workflow.name)
         def workflow_flow() -> dict[str, State[Job | ShellJob]]:
-            """Prefect flow for workflow execution."""
-
-            def execute_task(task_name: str) -> State[Job | ShellJob]:
-                """Execute a task and its dependencies recursively."""
-                if task_name in self.executed_tasks:
-                    return self.executed_tasks[task_name]
-
-                task = task_map[task_name]
-
-                # Execute dependencies first
-                for dependency in task.depends_on:
-                    execute_task(dependency)
-
-                # Execute the task
-                if task.async_execution:
-                    job_future = submit_job_async(task.job)
-                else:
-                    job_future = submit_and_monitor_job(task.job)
-
-                self.executed_tasks[task_name] = job_future
-                return job_future
-
-            # Execute all tasks
+            """Prefect flow for workflow execution with parallel support."""
             results: dict[str, State[Job | ShellJob]] = {}
-            for task in workflow.tasks:
-                results[task.name] = execute_task(task.name)
+            
+            # Execute tasks level by level
+            for level, task_names in execution_levels.items():
+                logger.info(f"Executing level {level} with tasks: {task_names}")
+                
+                # Execute all tasks in the current level in parallel
+                level_futures = []
+                for task_name in task_names:
+                    task = task_map[task_name]
+                    
+                    if task.async_execution:
+                        job_future = submit_job_async(task.job)
+                    else:
+                        job_future = submit_and_monitor_job(task.job)
+                    
+                    level_futures.append((task_name, job_future))
+                    self.executed_tasks[task_name] = job_future
+                
+                # Wait for all tasks in the current level to complete
+                for task_name, job_future in level_futures:
+                    results[task_name] = job_future
+                    
+                logger.info(f"Completed level {level}")
 
             return results
 
@@ -183,6 +186,56 @@ class WorkflowRunner:
 
         logger.info("Workflow execution completed")
         return results
+
+    def _build_execution_levels(self, workflow: Workflow) -> dict[int, list[str]]:
+        """Build execution levels for parallel task execution.
+        
+        Tasks in the same level can be executed in parallel.
+        
+        Args:
+            workflow: Workflow to analyze.
+            
+        Returns:
+            Dictionary mapping level numbers to lists of task names.
+        """
+        task_map = {task.name: task for task in workflow.tasks}
+        levels: dict[int, list[str]] = defaultdict(list)
+        task_levels: dict[str, int] = {}
+        
+        # Calculate the maximum depth for each task
+        def calculate_depth(task_name: str, visited: set[str]) -> int:
+            if task_name in visited:
+                raise ValueError(f"Circular dependency detected involving task '{task_name}'")
+            
+            if task_name in task_levels:
+                return task_levels[task_name]
+            
+            task = task_map[task_name]
+            if not task.depends_on:
+                # No dependencies, can execute at level 0
+                task_levels[task_name] = 0
+                return 0
+            
+            visited.add(task_name)
+            max_dep_level = -1
+            
+            for dep in task.depends_on:
+                dep_level = calculate_depth(dep, visited)
+                max_dep_level = max(max_dep_level, dep_level)
+            
+            visited.remove(task_name)
+            
+            # This task executes after all its dependencies
+            task_level = max_dep_level + 1
+            task_levels[task_name] = task_level
+            return task_level
+        
+        # Calculate levels for all tasks
+        for task in workflow.tasks:
+            level = calculate_depth(task.name, set())
+            levels[level].append(task.name)
+        
+        return dict(levels)
 
 
 def run_workflow_from_file(yaml_path: str | Path) -> dict[str, State[Job | ShellJob]]:
