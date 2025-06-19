@@ -42,12 +42,14 @@ class Slurm:
         job: Job | ShellJob,
         template_path: str | None = None,
         callbacks: Sequence[Callback] | None = None,
+        verbose: bool = False,
     ) -> Job | ShellJob:
         """Submit a job to SLURM.
 
         Args:
             job: Job configuration.
             template_path: Optional template path (uses default if not provided).
+            verbose: Whether to print the rendered content.
 
         Returns:
             Job instance with updated job_id and status.
@@ -60,7 +62,7 @@ class Slurm:
             template = template_path or self.default_template
 
             with tempfile.TemporaryDirectory() as temp_dir:
-                script_path = render_job_script(template, job, temp_dir)
+                script_path = render_job_script(template, job, temp_dir, verbose)
                 logger.debug(f"Generated SLURM script at: {script_path}")
 
                 # Handle container execution
@@ -276,10 +278,15 @@ class Slurm:
 
 
 # Convenience functions for backward compatibility
-def submit_job(job: Job | ShellJob, template_path: str | None = None) -> Job | ShellJob:
+def submit_job(
+    job: Job | ShellJob,
+    template_path: str | None = None,
+    callbacks: Sequence[Callback] | None = None,
+    verbose: bool = False,
+) -> Job | ShellJob:
     """Submit a job to SLURM (convenience function)."""
     client = Slurm()
-    return client.run(job, template_path)
+    return client.run(job, template_path=template_path, callbacks=callbacks, verbose=verbose)
 
 
 def retrieve_job(job_id: int) -> BaseJob:

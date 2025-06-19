@@ -159,6 +159,14 @@ def create_job_parser() -> argparse.ArgumentParser:
         help="Send notifications to Slack",
     )
 
+    # Misc options
+    misc_group = parser.add_argument_group("Misc Options")
+    misc_group.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print the rendered content",
+    )
+
     return parser
 
 
@@ -361,7 +369,7 @@ def cmd_submit(args: argparse.Namespace) -> None:
 
         # Submit job
         client = Slurm(callbacks=callbacks)
-        submitted_job = client.run(job, getattr(args, "template", None))
+        submitted_job = client.run(job, getattr(args, "template", None), verbose=args.verbose)
 
         logger.info(f"Submitted job {submitted_job.job_id}: {submitted_job.name}")
 

@@ -93,13 +93,13 @@ class BaseJob(BaseModel):
 
             lines = result.stdout.strip().split("\n")
             if not lines or not lines[0]:
-                error_msg = f"No job information found for job {self.job_id}"
                 if retry < retries - 1:
-                    error_msg += f" Retrying {retry + 1} of {retries}..."
-                    logger.error(error_msg)
+                    logger.info(
+                        f"Waiting for job {self.job_id}. Retrying {retry + 1} of {retries}..."
+                    )
                     time.sleep(1)
                     continue
-                raise ValueError(error_msg)
+                raise ValueError(f"No job information found for job {self.job_id}")
             else:
                 break
 
@@ -242,6 +242,7 @@ def render_job_script(
     template_path: Path | str,
     job: Job,
     output_dir: Path | str,
+    verbose: bool = False,
 ) -> str:
     """Render a SLURM job script from a template.
 
@@ -249,6 +250,7 @@ def render_job_script(
         template_path: Path to the Jinja template file.
         job: Job configuration.
         output_dir: Directory where the generated script will be saved.
+        verbose: Whether to print the rendered content.
 
     Returns:
         Path to the generated SLURM batch script.
@@ -277,6 +279,9 @@ def render_job_script(
     }
 
     rendered_content = template.render(template_vars)
+
+    if verbose:
+        print(rendered_content)
 
     # Generate output file
     output_path = Path(output_dir) / f"{job.name}.slurm"
