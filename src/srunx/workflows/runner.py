@@ -1,12 +1,10 @@
-"""Workflow runner for executing YAML-defined workflows with SLURM and Prefect."""
+"""Workflow runner for executing YAML-defined workflows with SLURM"""
 
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 import yaml
-from prefect import flow
-from prefect.states import State
 
 from srunx.logging import get_logger
 from srunx.models import (
@@ -27,7 +25,7 @@ class WorkflowRunner:
 
     def __init__(self) -> None:
         """Initialize workflow runner."""
-        self.executed_tasks: dict[str, State[Job | ShellJob]] = {}
+        self.executed_tasks: dict[str, Job | ShellJob] = {}
 
     def load_from_yaml(self, yaml_path: str | Path) -> Workflow:
         """Load and validate a workflow from a YAML file.
@@ -119,8 +117,8 @@ class WorkflowRunner:
             async_execution=async_execution,
         )
 
-    def execute_workflow(self, workflow: Workflow) -> dict[str, State[Job | ShellJob]]:
-        """Execute a workflow using Prefect with parallel execution support.
+    def execute_workflow(self, workflow: Workflow) -> dict[str, Job | ShellJob]:
+        """Execute a workflow parallel execution support.
 
         Args:
             workflow: Workflow to execute.
@@ -131,16 +129,13 @@ class WorkflowRunner:
         task_map = {task.name: task for task in workflow.tasks}
         execution_levels = self._build_execution_levels(workflow)
 
-        logger.info(f"Built execution levels: {execution_levels}")
-
-        @flow(name=workflow.name)
-        def workflow_flow() -> dict[str, State[Job | ShellJob]]:
-            """Prefect flow for workflow execution with parallel support."""
-            results: dict[str, State[Job | ShellJob]] = {}
+        def workflow_flow() -> dict[str, Job | ShellJob]:
+            """Workflow execution with parallel support."""
+            results: dict[str, Job | ShellJob] = {}
 
             # Execute tasks level by level
             for level, task_names in execution_levels.items():
-                logger.info(f"Executing level {level} with tasks: {task_names}")
+                logger.info(f"🌋 Phase {level + 1}:")
 
                 # Execute all tasks in the current level in parallel
                 level_futures = []
@@ -159,15 +154,13 @@ class WorkflowRunner:
                 for task_name, job_future in level_futures:
                     results[task_name] = job_future
 
-                logger.info(f"Completed level {level}")
+                logger.success(f"✅ Completed phase {level + 1}")
 
             return results
 
         return workflow_flow()
 
-    def execute_from_yaml(
-        self, yaml_path: str | Path
-    ) -> dict[str, State[Job | ShellJob]]:
+    def execute_from_yaml(self, yaml_path: str | Path) -> dict[str, Job | ShellJob]:
         """Load and execute a workflow from YAML file.
 
         Args:
@@ -184,7 +177,7 @@ class WorkflowRunner:
         )
         results = self.execute_workflow(workflow)
 
-        logger.info("Workflow execution completed")
+        logger.success("🎉 Workflow completed successfully")
         return results
 
     def _build_execution_levels(self, workflow: Workflow) -> dict[int, list[str]]:
@@ -240,7 +233,7 @@ class WorkflowRunner:
         return dict(levels)
 
 
-def run_workflow_from_file(yaml_path: str | Path) -> dict[str, State[Job | ShellJob]]:
+def run_workflow_from_file(yaml_path: str | Path) -> dict[str, Job | ShellJob]:
     """Convenience function to run workflow from YAML file.
 
     Args:

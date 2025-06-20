@@ -81,7 +81,6 @@ def configure_workflow_logging(level: str = "INFO") -> None:
     format_string = (
         "<green>{time:HH:mm:ss}</green> | "
         "<level>{level: <8}</level> | "
-        "<cyan>{name}</cyan> | "
         "<level>{message}</level>"
     )
 

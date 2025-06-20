@@ -3,6 +3,7 @@
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 
 from srunx.callbacks import SlackCallback
@@ -459,9 +460,6 @@ def cmd_flow_run(args: argparse.Namespace) -> None:
 
         # Load workflow for validation
         workflow = runner.load_from_yaml(yaml_file)
-        logger.info(
-            f"Loaded workflow '{workflow.name}' with {len(workflow.tasks)} tasks"
-        )
 
         # Validate dependencies
         workflow.validate()
@@ -471,14 +469,14 @@ def cmd_flow_run(args: argparse.Namespace) -> None:
             return
 
         # Execute workflow
-        logger.info("Starting workflow execution")
+        logger.info(f"🚀 Starting workflow: {workflow.name}")
         results = runner.execute_workflow(workflow)
 
-        logger.info("Workflow execution completed successfully")
-        logger.info("Job Results:")
+        logger.success("🎉 Workflow completed successfully")
+        logger.info("Workflow summary:")
         for task_name, job in results.items():
             if hasattr(job, "job_id") and job.job_id:
-                logger.info(f"  {task_name}: Job ID {job.job_id}")
+                logger.info(f"  {task_name}: (ID: {job.job_id})")
             else:
                 logger.info(f"  {task_name}: {job}")
 

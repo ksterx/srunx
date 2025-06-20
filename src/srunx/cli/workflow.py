@@ -13,7 +13,7 @@ logger = get_logger(__name__)
 def create_workflow_parser() -> argparse.ArgumentParser:
     """Create argument parser for workflow commands."""
     parser = argparse.ArgumentParser(
-        description="Execute YAML-defined workflows using SLURM and Prefect",
+        description="Execute YAML-defined workflows using SLURM",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Example YAML workflow:
@@ -107,10 +107,10 @@ def cmd_run_workflow(args: argparse.Namespace) -> None:
             return
 
         # Execute workflow
-        logger.info("Starting workflow execution")
+        logger.info(f"🚀 Starting workflow: {workflow.name}")
         results = runner.execute_workflow(workflow)
 
-        logger.info("Workflow execution completed successfully")
+        logger.success("🎉 Workflow completed successfully")
         logger.info("Job Results:")
         for task_name, job in results.items():
             if hasattr(job, "job_id") and job.job_id:

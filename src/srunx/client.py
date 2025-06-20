@@ -33,6 +33,7 @@ class Slurm:
 
         Args:
             default_template: Path to default job template.
+            callbacks: List of callbacks.
         """
         self.default_template = default_template or self._get_default_template()
         self.callbacks = list(callbacks) if callbacks else []
@@ -114,7 +115,7 @@ class Slurm:
         job.job_id = job_id
         job.status = JobStatus.PENDING
 
-        logger.info(f"Successfully submitted job '{job.name}' with ID {job_id}")
+        logger.debug(f"Successfully submitted job '{job.name}' with ID {job_id}")
 
         all_callbacks = self.callbacks[:]
         if callbacks:
@@ -205,6 +206,7 @@ class Slurm:
         Args:
             job_obj_or_id: Job object or job ID.
             poll_interval: Polling interval in seconds.
+            callbacks: List of callbacks.
 
         Returns:
             Completed job object.
@@ -221,7 +223,7 @@ class Slurm:
         if callbacks:
             all_callbacks.extend(callbacks)
 
-        msg = f"Waiting for job {job.job_id} to complete (polling every {poll_interval}s)."
+        msg = f"⏳ Waiting for job {job.job_id} to complete (polling every {poll_interval}s)."
         if isinstance(job, Job):
             msg += f" Logging to {job.log_dir}/{job.name}_{job.job_id}.out"
         logger.info(msg)
@@ -285,7 +287,14 @@ def submit_job(
     callbacks: Sequence[Callback] | None = None,
     verbose: bool = False,
 ) -> Job | ShellJob:
-    """Submit a job to SLURM (convenience function)."""
+    """Submit a job to SLURM (convenience function).
+
+    Args:
+        job: Job configuration.
+        template_path: Optional template path (uses default if not provided).
+        callbacks: List of callbacks.
+        verbose: Whether to print the rendered content.
+    """
     client = Slurm()
     return client.run(
         job, template_path=template_path, callbacks=callbacks, verbose=verbose
@@ -293,12 +302,20 @@ def submit_job(
 
 
 def retrieve_job(job_id: int) -> BaseJob:
-    """Get job status (convenience function)."""
+    """Get job status (convenience function).
+
+    Args:
+        job_id: SLURM job ID.
+    """
     client = Slurm()
     return client.retrieve(job_id)
 
 
 def cancel_job(job_id: int) -> None:
-    """Cancel a job (convenience function)."""
+    """Cancel a job (convenience function).
+
+    Args:
+        job_id: SLURM job ID.
+    """
     client = Slurm()
     client.cancel(job_id)

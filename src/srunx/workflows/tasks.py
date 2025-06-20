@@ -1,7 +1,3 @@
-"""Prefect tasks for SLURM workflow management."""
-
-from prefect import task
-
 from srunx.client import Slurm
 from srunx.logging import get_logger
 from srunx.models import BaseJob, Job, ShellJob
@@ -9,13 +5,12 @@ from srunx.models import BaseJob, Job, ShellJob
 logger = get_logger(__name__)
 
 
-@task
 def submit_and_monitor_job(
     job: Job | ShellJob, poll_interval: int = 30
 ) -> Job | ShellJob:
     """Submit a SLURM job and monitor until completion.
 
-    This Prefect task handles the complete lifecycle of a SLURM job:
+    This task handles the complete lifecycle of a SLURM job:
     submission, monitoring, and completion verification.
 
     Args:
@@ -45,7 +40,6 @@ def submit_and_monitor_job(
     return completed_job
 
 
-@task
 def submit_job_async(job: Job | ShellJob) -> Job | ShellJob:
     """Submit a SLURM job without waiting for completion.
 
@@ -55,17 +49,13 @@ def submit_job_async(job: Job | ShellJob) -> Job | ShellJob:
     Returns:
         Submitted Job instance with job_id.
     """
-    logger.info(f"Submitting async SLURM job '{job.name}'")
     client = Slurm()
     submitted_job = client.run(job)
-    logger.info(
-        f"Async job '{submitted_job.name}' submitted with ID {submitted_job.job_id}"
-    )
+    logger.info(f"  - '{submitted_job.name}' (ID: {submitted_job.job_id})")
     assert isinstance(submitted_job, Job | ShellJob)
     return submitted_job
 
 
-@task
 def wait_for_job(job_id: int, poll_interval: int = 30) -> BaseJob:
     """Wait for a job to complete.
 
