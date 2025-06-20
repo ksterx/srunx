@@ -8,13 +8,13 @@ tasks:
     depends_on:
       - a_task
     venv: /home/k_ishikawa/workspace/srunx/.venv
-    async_execution: true
+    async: true
   - name: c_task
     command: [python, c.py]
     depends_on:
       - a_task
     venv: /home/k_ishikawa/workspace/srunx/.venv
-    async_execution: true
+    async: true
   - name: d_task
     command: [python, d.py]
     depends_on:
