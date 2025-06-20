@@ -84,10 +84,7 @@ srunx submit python train.py \
   --time 8:00:00
 
 # With environment setup
-srunx submit python train.py \
-  --conda ml_env \
-  --module cuda/11.8 \
-  --module gcc/9.3.0
+srunx submit python train.py --conda ml_env
 ```
 
 #### Job Management
@@ -133,7 +130,6 @@ tasks:
   - name: notify
     command: ["python", "notify.py"]
     depends_on: [train, evaluate]
-    async: true
 ```
 
 Execute the workflow:
@@ -146,7 +142,7 @@ srunx flow run workflow.yaml
 srunx flow validate workflow.yaml
 
 # Show execution plan
-srunx flow show workflow.yaml
+srunx flow run workflow.yaml --dry-run
 ```
 
 ## Advanced Usage
