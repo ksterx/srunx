@@ -22,21 +22,29 @@ Example YAML workflow:
     - name: preprocess
       command: ["python", "preprocess.py"]
       nodes: 1
+      gpus_per_node: 2
 
     - name: train
-      command: ["python", "train.py"]
-      depends_on: [preprocess]
-      gpus_per_node: 1
-      conda: ml_env
+      path: /path/to/train.sh
+      depends_on:
+        - preprocess
 
     - name: evaluate
       command: ["python", "evaluate.py"]
-      depends_on: [train]
+      depends_on:
+        - train
+      conda: ml_env
+
+    - name: upload
+      command: ["python", "upload_model.py"]
+      depends_on:
+        - train
 
     - name: notify
       command: ["python", "notify.py"]
-      depends_on: [train, evaluate]
-      async: true
+      depends_on:
+        - evaluate
+        - upload
         """,
     )
 
