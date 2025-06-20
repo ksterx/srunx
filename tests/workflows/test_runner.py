@@ -199,7 +199,7 @@ class TestWorkflowRunner:
         assert task.job.command == ["echo", "hello"]
         assert task.job.environment.conda == "base"
         assert task.depends_on == []
-        assert task.async_execution is True
+        assert task.async_execution is False
         assert task.job.resources.nodes == 1
         assert task.job.log_dir == "logs"
 
@@ -304,7 +304,7 @@ class TestWorkflowRunner:
         runner = WorkflowRunner()
 
         # Execute
-        results = runner.run(workflow)
+        results = runner.execute_workflow(workflow)
 
         # Verify
         assert len(results) == 2
@@ -360,7 +360,7 @@ class TestWorkflowRunner:
         runner = WorkflowRunner()
 
         # Execute
-        results = runner.run(workflow)
+        results = runner.execute_workflow(workflow)
 
         # Verify
         assert len(results) == 2
@@ -420,7 +420,7 @@ class TestWorkflowRunner:
         runner = WorkflowRunner()
 
         # Execute
-        results = runner.run(workflow)
+        results = runner.execute_workflow(workflow)
 
         # Verify
         assert len(results) == 3
@@ -803,7 +803,7 @@ class TestWorkflowValidation:
         mock_monitor.side_effect = result_jobs
 
         # Execute
-        results = runner.run(workflow)
+        results = runner.execute_workflow(workflow)
 
         # Verify
         assert len(results) == 4

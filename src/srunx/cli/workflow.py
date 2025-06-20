@@ -108,7 +108,7 @@ def cmd_run_workflow(args: argparse.Namespace) -> None:
 
         # Execute workflow
         logger.info(f"🚀 Starting workflow: {workflow.name}")
-        results = runner.run(workflow)
+        results = runner.execute_workflow(workflow)
 
         logger.success("🎉 Workflow completed successfully")
         logger.info("Job Results:")

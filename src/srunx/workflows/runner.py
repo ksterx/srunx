@@ -76,6 +76,9 @@ class WorkflowRunner:
         # Basic task properties
         name = task_data["name"]
         path = task_data.get("path")
+        async_execution = task_data.get(
+            "async", False
+        )  # Default to synchronous for dependency safety
         depends_on = task_data.get("depends_on", [])
 
         job_data: dict[str, Any] = {"name": name}
@@ -122,9 +125,10 @@ class WorkflowRunner:
             name=name,
             job=job,
             depends_on=depends_on,
+            async_execution=async_execution,
         )
 
-    def run(self, workflow: Workflow) -> dict[str, Job | ShellJob]:
+    def execute_workflow(self, workflow: Workflow) -> dict[str, Job | ShellJob]:
         """Execute a workflow with dynamic task scheduling.
 
         Tasks are executed as soon as their dependencies are satisfied,
@@ -177,9 +181,14 @@ class WorkflowRunner:
             if not isinstance(job, Job | ShellJob):
                 raise TypeError(f"Unexpected job type: {type(job)}")
 
-            job_result = submit_job_async(job)
+            # Use appropriate execution method based on async_execution flag
+            if task.async_execution:
+                job_result = submit_job_async(job)
+                logger.success(f"✅ Submitted async task: {task_name}")
+            else:
+                job_result = submit_and_monitor_job(job)
+                logger.success(f"✅ Completed task: {task_name}")
 
-            logger.success(f"✅ Completed task: {task_name}")
             return job_result
 
         def on_task_complete(task_name: str, result: Job | ShellJob) -> list[str]:
@@ -276,7 +285,7 @@ class WorkflowRunner:
         logger.info(
             f"Executing workflow '{workflow.name}' with {len(workflow.tasks)} tasks"
         )
-        results = self.run(workflow)
+        results = self.execute_workflow(workflow)
 
         logger.success("🎉 Workflow completed successfully")
         return results
@@ -413,8 +422,8 @@ Execution: Dynamic scheduling (tasks run as dependencies are satisfied)
             msg += f"{'        Path:': <21} {task.job.path}\n"
         if task.depends_on:
             msg += f"{'        Dependencies:': <21} {', '.join(task.depends_on)}\n"
-        if task.async_execution:
-            msg += f"{'        Execution:': <21} asynchronous\n"
+        execution_type = "asynchronous" if task.async_execution else "synchronous"
+        msg += f"{'        Execution:': <21} {execution_type}\n"
 
     msg += f"{'=' * 80}\n"
     print(msg)
