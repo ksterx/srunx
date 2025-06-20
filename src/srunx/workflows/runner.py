@@ -19,7 +19,7 @@ from srunx.models import (
     Workflow,
     WorkflowTask,
 )
-from srunx.workflows.tasks import submit_and_monitor_job, submit_job_async
+from srunx.workflows.tasks import submit_and_monitor_job
 
 logger = get_logger(__name__)
 
@@ -76,9 +76,6 @@ class WorkflowRunner:
         # Basic task properties
         name = task_data["name"]
         path = task_data.get("path")
-        async_execution = task_data.get(
-            "async", False
-        )  # Default to synchronous for dependency safety
         depends_on = task_data.get("depends_on", [])
 
         job_data: dict[str, Any] = {"name": name}
@@ -125,7 +122,6 @@ class WorkflowRunner:
             name=name,
             job=job,
             depends_on=depends_on,
-            async_execution=async_execution,
         )
 
     def execute_workflow(self, workflow: Workflow) -> dict[str, Job | ShellJob]:
@@ -172,7 +168,7 @@ class WorkflowRunner:
             ]
 
         def execute_task(task_name: str) -> Job | ShellJob:
-            """Execute a single task."""
+            """Execute a single task and wait for completion."""
             logger.info(f"🚀 Starting task: {task_name}")
             task = task_map[task_name]
 
@@ -181,13 +177,9 @@ class WorkflowRunner:
             if not isinstance(job, Job | ShellJob):
                 raise TypeError(f"Unexpected job type: {type(job)}")
 
-            # Use appropriate execution method based on async_execution flag
-            if task.async_execution:
-                job_result = submit_job_async(job)
-                logger.success(f"✅ Submitted async task: {task_name}")
-            else:
-                job_result = submit_and_monitor_job(job)
-                logger.success(f"✅ Completed task: {task_name}")
+            # Always use submit_and_monitor_job to ensure completion before proceeding
+            job_result = submit_and_monitor_job(job)
+            logger.success(f"✅ Completed task: {task_name}")
 
             return job_result
 
@@ -404,7 +396,7 @@ def show_workflow_plan(workflow: Workflow) -> None:
 {" PLAN ":=^80}
 Workflow: {workflow.name}
 Tasks: {len(workflow.tasks)}
-Execution: Dynamic scheduling (tasks run as dependencies are satisfied)
+Execution: Sequential with dependency-based scheduling
 """
 
     for task in workflow.tasks:
@@ -422,8 +414,6 @@ Execution: Dynamic scheduling (tasks run as dependencies are satisfied)
             msg += f"{'        Path:': <21} {task.job.path}\n"
         if task.depends_on:
             msg += f"{'        Dependencies:': <21} {', '.join(task.depends_on)}\n"
-        execution_type = "asynchronous" if task.async_execution else "synchronous"
-        msg += f"{'        Execution:': <21} {execution_type}\n"
 
     msg += f"{'=' * 80}\n"
     print(msg)

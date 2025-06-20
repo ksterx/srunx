@@ -141,8 +141,8 @@ class TestSubmitAndMonitorJob:
         # Execute
         result = submit_and_monitor_job(job)
 
-        # Verify default poll interval (30 seconds)
-        mock_client.monitor.assert_called_once_with(submitted_job, poll_interval=30)
+        # Verify default poll interval (5 seconds)
+        mock_client.monitor.assert_called_once_with(submitted_job, poll_interval=5)
 
 
 class TestSubmitJobAsync:
@@ -266,7 +266,7 @@ class TestWaitForJob:
         result = wait_for_job(33333)
 
         # Verify default poll interval (30 seconds)
-        mock_client.monitor.assert_called_once_with(33333, 30)
+        mock_client.monitor.assert_called_once_with(33333, 5)
 
     @patch("srunx.workflows.tasks.Slurm")
     def test_wait_for_job_cancelled(self, mock_client_class: Mock) -> None:
@@ -339,7 +339,7 @@ class TestTaskIntegration:
 
         # Verify calls
         mock_client.run.assert_called_once_with(job)
-        mock_client.monitor.assert_called_once_with(77777, 30)
+        mock_client.monitor.assert_called_once_with(77777, 5)
 
     @patch("srunx.workflows.tasks.Slurm")
     def test_multiple_jobs_different_envs(self, mock_client_class: Mock) -> None:

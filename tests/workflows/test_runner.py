@@ -156,7 +156,7 @@ class TestWorkflowRunner:
             workflow = runner.load_from_yaml(yaml_path)
 
             task = workflow.tasks[0]
-            assert task.async_execution is True
+            # async_execution field has been removed
 
         finally:
             Path(yaml_path).unlink()
@@ -199,7 +199,7 @@ class TestWorkflowRunner:
         assert task.job.command == ["echo", "hello"]
         assert task.job.environment.conda == "base"
         assert task.depends_on == []
-        assert task.async_execution is False
+        # async_execution field has been removed
         assert task.job.resources.nodes == 1
         assert task.job.log_dir == "logs"
 
@@ -228,7 +228,7 @@ class TestWorkflowRunner:
 
         assert task.name == "full_task"
         assert task.depends_on == ["task1", "task2"]
-        assert task.async_execution is True
+        # async_execution field has been removed
         assert isinstance(task.job, Job)
         assert task.job.resources.nodes == 4
         assert task.job.resources.gpus_per_node == 2
@@ -260,10 +260,7 @@ class TestWorkflowRunner:
         assert task.job.environment.venv is None
 
     @patch("srunx.workflows.runner.submit_and_monitor_job")
-    @patch("srunx.workflows.runner.submit_job_async")
-    def test_execute_workflow_simple(
-        self, mock_async: Mock, mock_monitor: Mock
-    ) -> None:
+    def test_execute_workflow_simple(self, mock_monitor: Mock) -> None:
         """Test executing simple workflow."""
         # Setup
         job1 = Job(
@@ -277,10 +274,8 @@ class TestWorkflowRunner:
             environment=JobEnvironment(conda="env2"),
         )
 
-        task1 = WorkflowTask(name="task1", job=job1, async_execution=False)
-        task2 = WorkflowTask(
-            name="task2", job=job2, depends_on=["task1"], async_execution=False
-        )
+        task1 = WorkflowTask(name="task1", job=job1)
+        task2 = WorkflowTask(name="task2", job=job2, depends_on=["task1"])
 
         workflow = Workflow(name="test_workflow", tasks=[task1, task2])
 
@@ -311,16 +306,12 @@ class TestWorkflowRunner:
         assert "task1" in results
         assert "task2" in results
 
-        # Both tasks should use submit_and_monitor_job (not async)
+        # Both tasks should use submit_and_monitor_job
         assert mock_monitor.call_count == 2
-        assert mock_async.call_count == 0
 
     @patch("srunx.workflows.runner.submit_and_monitor_job")
-    @patch("srunx.workflows.runner.submit_job_async")
-    def test_execute_workflow_with_async(
-        self, mock_async: Mock, mock_monitor: Mock
-    ) -> None:
-        """Test executing workflow with async task."""
+    def test_execute_workflow_with_parallel_tasks(self, mock_monitor: Mock) -> None:
+        """Test executing workflow with parallel tasks."""
         # Setup
         job1 = Job(
             name="job1",
@@ -333,8 +324,8 @@ class TestWorkflowRunner:
             environment=JobEnvironment(conda="env2"),
         )
 
-        task1 = WorkflowTask(name="task1", job=job1, async_execution=False)
-        task2 = WorkflowTask(name="task2", job=job2, async_execution=True)
+        task1 = WorkflowTask(name="task1", job=job1)
+        task2 = WorkflowTask(name="task2", job=job2)
 
         workflow = Workflow(name="async_workflow", tasks=[task1, task2])
 
@@ -346,16 +337,15 @@ class TestWorkflowRunner:
             job_id=123,
             status=JobStatus.COMPLETED,
         )
-        submitted_job2 = Job(
+        completed_job2 = Job(
             name="job2",
             command=["echo", "task2"],
             environment=JobEnvironment(conda="env2"),
             job_id=456,
-            status=JobStatus.PENDING,
+            status=JobStatus.COMPLETED,
         )
 
-        mock_monitor.return_value = completed_job1
-        mock_async.return_value = submitted_job2
+        mock_monitor.side_effect = [completed_job1, completed_job2]
 
         runner = WorkflowRunner()
 
@@ -365,15 +355,11 @@ class TestWorkflowRunner:
         # Verify
         assert len(results) == 2
 
-        # task1 should use submit_and_monitor_job, task2 should use submit_job_async
-        mock_monitor.assert_called_once()
-        mock_async.assert_called_once()
+        # Both tasks should use submit_and_monitor_job
+        assert mock_monitor.call_count == 2
 
     @patch("srunx.workflows.runner.submit_and_monitor_job")
-    @patch("srunx.workflows.runner.submit_job_async")
-    def test_execute_workflow_with_dependencies(
-        self, mock_async: Mock, mock_monitor: Mock
-    ) -> None:
+    def test_execute_workflow_with_dependencies(self, mock_monitor: Mock) -> None:
         """Test executing workflow with complex dependencies."""
         # Setup: task3 depends on both task1 and task2
         job1 = Job(
@@ -386,11 +372,9 @@ class TestWorkflowRunner:
             name="job3", command=["echo", "3"], environment=JobEnvironment(conda="env3")
         )
 
-        task1 = WorkflowTask(name="task1", job=job1, async_execution=False)
-        task2 = WorkflowTask(name="task2", job=job2, async_execution=False)
-        task3 = WorkflowTask(
-            name="task3", job=job3, depends_on=["task1", "task2"], async_execution=False
-        )
+        task1 = WorkflowTask(name="task1", job=job1)
+        task2 = WorkflowTask(name="task2", job=job2)
+        task3 = WorkflowTask(name="task3", job=job3, depends_on=["task1", "task2"])
 
         workflow = Workflow(name="dependency_workflow", tasks=[task1, task2, task3])
 
@@ -425,7 +409,6 @@ class TestWorkflowRunner:
         # Verify
         assert len(results) == 3
         assert mock_monitor.call_count == 3
-        assert mock_async.call_count == 0
 
     def test_execute_from_yaml(self) -> None:
         """Test executing workflow from YAML file."""
@@ -737,10 +720,7 @@ class TestWorkflowValidation:
             runner._build_execution_levels(workflow)
 
     @patch("srunx.workflows.runner.submit_and_monitor_job")
-    @patch("srunx.workflows.runner.submit_job_async")
-    def test_execute_workflow_parallel_execution(
-        self, mock_async: Mock, mock_monitor: Mock
-    ) -> None:
+    def test_execute_workflow_parallel_execution(self, mock_monitor: Mock) -> None:
         """Test that tasks at the same level are executed in parallel."""
         runner = WorkflowRunner()
 
@@ -758,16 +738,10 @@ class TestWorkflowValidation:
             name="job4", command=["echo", "4"], environment=JobEnvironment(conda="env4")
         )
 
-        task1 = WorkflowTask(name="task1", job=job1, async_execution=False)
-        task2 = WorkflowTask(
-            name="task2", job=job2, depends_on=["task1"], async_execution=False
-        )
-        task3 = WorkflowTask(
-            name="task3", job=job3, depends_on=["task1"], async_execution=False
-        )
-        task4 = WorkflowTask(
-            name="task4", job=job4, depends_on=["task2", "task3"], async_execution=False
-        )
+        task1 = WorkflowTask(name="task1", job=job1)
+        task2 = WorkflowTask(name="task2", job=job2, depends_on=["task1"])
+        task3 = WorkflowTask(name="task3", job=job3, depends_on=["task1"])
+        task4 = WorkflowTask(name="task4", job=job4, depends_on=["task2", "task3"])
 
         workflow = Workflow(
             name="parallel_execution_workflow", tasks=[task1, task2, task3, task4]
@@ -808,7 +782,6 @@ class TestWorkflowValidation:
         # Verify
         assert len(results) == 4
         assert mock_monitor.call_count == 4
-        assert mock_async.call_count == 0
 
         # Check that execution levels were built correctly
         levels = runner._build_execution_levels(workflow)

@@ -207,7 +207,6 @@ class TestShowWorkflowPlan:
             name="container_task",
             job=job2,
             depends_on=["gpu_task"],
-            async_execution=True,
         )
 
         workflow = Workflow(name="complex_workflow", tasks=[task1, task2])
@@ -222,7 +221,7 @@ class TestShowWorkflowPlan:
         assert "gpu_env" in printed_output
         assert "/path/to/image.sqsh" in printed_output
         assert "gpu_task" in printed_output
-        assert "asynchronous" in printed_output
+        # async_execution field has been removed, no longer checking for asynchronous
 
 
 class TestCommandFunction:

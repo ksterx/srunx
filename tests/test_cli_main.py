@@ -257,7 +257,7 @@ class TestCommandFunctions:
             work_dir=None,
             template=None,
             wait=True,
-            poll_interval=30,
+            poll_interval=5,
             slack=False,
             verbose=False,
         )
@@ -267,7 +267,7 @@ class TestCommandFunctions:
 
         # Verify
         mock_client.run.assert_called_once()
-        mock_client.monitor.assert_called_once_with(submitted_job, poll_interval=30)
+        mock_client.monitor.assert_called_once_with(submitted_job, poll_interval=5)
 
     @patch("srunx.cli.main.Slurm")
     @patch("srunx.cli.main.sys.exit")
