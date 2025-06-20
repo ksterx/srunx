@@ -49,6 +49,7 @@ class Slurm:
         Args:
             job: Job configuration.
             template_path: Optional template path (uses default if not provided).
+            callbacks: List of callbacks.
             verbose: Whether to print the rendered content.
 
         Returns:
