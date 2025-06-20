@@ -369,7 +369,9 @@ def cmd_submit(args: argparse.Namespace) -> None:
 
         # Submit job
         client = Slurm(callbacks=callbacks)
-        submitted_job = client.run(job, getattr(args, "template", None), verbose=args.verbose)
+        submitted_job = client.run(
+            job, getattr(args, "template", None), verbose=args.verbose
+        )
 
         logger.info(f"Submitted job {submitted_job.job_id}: {submitted_job.name}")
 

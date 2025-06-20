@@ -287,7 +287,9 @@ def submit_job(
 ) -> Job | ShellJob:
     """Submit a job to SLURM (convenience function)."""
     client = Slurm()
-    return client.run(job, template_path=template_path, callbacks=callbacks, verbose=verbose)
+    return client.run(
+        job, template_path=template_path, callbacks=callbacks, verbose=verbose
+    )
 
 
 def retrieve_job(job_id: int) -> BaseJob:
