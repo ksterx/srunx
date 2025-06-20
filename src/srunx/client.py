@@ -38,7 +38,7 @@ class Slurm:
         self.default_template = default_template or self._get_default_template()
         self.callbacks = list(callbacks) if callbacks else []
 
-    def run(
+    def submit(
         self,
         job: Job | ShellJob,
         template_path: str | None = None,
@@ -275,6 +275,21 @@ class Slurm:
                     raise RuntimeError(err_msg)
             time.sleep(poll_interval)
 
+    def run(
+        self,
+        job: Job | ShellJob,
+        template_path: str | None = None,
+        callbacks: Sequence[Callback] | None = None,
+        poll_interval: int = 5,
+        verbose: bool = False,
+    ) -> Job | ShellJob:
+        """Submit a job and wait for completion."""
+        job = self.submit(
+            job, template_path=template_path, callbacks=callbacks, verbose=verbose
+        )
+        job = self.monitor(job, poll_interval=poll_interval, callbacks=callbacks)
+        return job
+
     def _get_default_template(self) -> str:
         """Get the default job template path."""
         return str(files("srunx.templates").joinpath("base.slurm.jinja"))
@@ -296,7 +311,7 @@ def submit_job(
         verbose: Whether to print the rendered content.
     """
     client = Slurm()
-    return client.run(
+    return client.submit(
         job, template_path=template_path, callbacks=callbacks, verbose=verbose
     )
 

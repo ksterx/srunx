@@ -28,7 +28,7 @@ def submit_and_monitor_job(
     client = Slurm()
 
     # Submit the job
-    submitted_job = client.run(job)
+    submitted_job = client.submit(job)
     logger.info(f"Job '{submitted_job.name}' submitted with ID {submitted_job.job_id}")
 
     # Wait for completion
@@ -50,7 +50,7 @@ def submit_job_async(job: Job | ShellJob) -> Job | ShellJob:
         Submitted Job instance with job_id.
     """
     client = Slurm()
-    submitted_job = client.run(job)
+    submitted_job = client.submit(job)
     logger.info(f"  - '{submitted_job.name}' (ID: {submitted_job.job_id})")
     assert isinstance(submitted_job, Job | ShellJob)
     return submitted_job

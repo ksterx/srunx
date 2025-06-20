@@ -16,6 +16,7 @@ from srunx.models import (
     JobEnvironment,
     JobResource,
     ShellJob,
+    TaskStatus,
     Workflow,
     WorkflowTask,
 )
@@ -72,7 +73,7 @@ class WorkflowRunner:
         return Workflow(name=workflow_name, tasks=tasks)
 
     def _parse_task_data(self, task_data: dict) -> WorkflowTask:
-        """Parse a single task from dictionary."""
+        """Parse a single task from dictionary using Pydantic model_validate."""
         # Basic task properties
         name = task_data["name"]
         path = task_data.get("path")
@@ -82,50 +83,64 @@ class WorkflowRunner:
 
         job: Job | ShellJob
         if path:
-            job_data |= {"path": path}
+            job_data["path"] = path
             job = ShellJob.model_validate(job_data)
         else:
             command = task_data.get("command")
+            if command is None:
+                raise ValueError(f"Task '{name}' must have either 'command' or 'path'")
+
+            job_data["command"] = command
+
+            # Optional fields with defaults handled by Pydantic
             if task_data.get("log_dir") is not None:
-                job_data["log_dir"] = task_data.get("log_dir")
+                job_data["log_dir"] = task_data["log_dir"]
             if task_data.get("work_dir") is not None:
-                job_data["work_dir"] = task_data.get("work_dir")
+                job_data["work_dir"] = task_data["work_dir"]
 
-            # Resource configuration
-            resources = JobResource(
-                nodes=task_data.get("nodes", 1),
-                gpus_per_node=task_data.get("gpus_per_node", 0),
-                ntasks_per_node=task_data.get("ntasks_per_node", 1),
-                cpus_per_task=task_data.get("cpus_per_task", 1),
-                memory_per_node=task_data.get("memory_per_node"),
-                time_limit=task_data.get("time_limit"),
-            )
-
-            # Environment configuration
-            environment = JobEnvironment(
-                conda=task_data.get("conda"),
-                venv=task_data.get("venv"),
-                sqsh=task_data.get("sqsh") or task_data.get("container"),
-                env_vars=task_data.get("env_vars", {}),
-            )
-
-            job_data |= {
-                "command": command,
-                "resources": resources,
-                "environment": environment,
+            # Resource configuration - use model_validate for type safety
+            resource_data = {
+                "nodes": task_data.get("nodes", 1),
+                "gpus_per_node": task_data.get("gpus_per_node", 0),
+                "ntasks_per_node": task_data.get("ntasks_per_node", 1),
+                "cpus_per_task": task_data.get("cpus_per_task", 1),
             }
+            if task_data.get("memory_per_node") is not None:
+                resource_data["memory_per_node"] = task_data["memory_per_node"]
+            if task_data.get("time_limit") is not None:
+                resource_data["time_limit"] = task_data["time_limit"]
 
-            # Create job
+            job_data["resources"] = JobResource.model_validate(resource_data)
+
+            # Environment configuration - use model_validate for type safety
+            env_data = {
+                "env_vars": task_data.get("env_vars", {}),
+            }
+            if task_data.get("conda") is not None:
+                env_data["conda"] = task_data["conda"]
+            if task_data.get("venv") is not None:
+                env_data["venv"] = task_data["venv"]
+            # Handle 'container' as alias for 'sqsh'
+            sqsh_value = task_data.get("sqsh") or task_data.get("container")
+            if sqsh_value is not None:
+                env_data["sqsh"] = sqsh_value
+
+            job_data["environment"] = JobEnvironment.model_validate(env_data)
+
+            # Create job using model_validate
             job = Job.model_validate(job_data)
 
-        return WorkflowTask(
-            name=name,
-            job=job,
-            depends_on=depends_on,
-        )
+        # Create WorkflowTask using model_validate
+        task_model_data = {
+            "name": name,
+            "job": job,
+            "depends_on": depends_on,
+        }
 
-    def execute_workflow(self, workflow: Workflow) -> dict[str, Job | ShellJob]:
-        """Execute a workflow with dynamic task scheduling.
+        return WorkflowTask.model_validate(task_model_data)
+
+    def run(self, workflow: Workflow) -> dict[str, Job | ShellJob]:
+        """Run a workflow with dynamic task scheduling.
 
         Tasks are executed as soon as their dependencies are satisfied,
         rather than waiting for entire levels to complete.
@@ -138,8 +153,8 @@ class WorkflowRunner:
         """
         task_map = {task.name: task for task in workflow.tasks}
 
-        # Track task states: 'pending', 'running', 'completed'
-        task_states = {task.name: "pending" for task in workflow.tasks}
+        # Track task states using type-safe TaskStatus enum
+        task_states = {task.name: TaskStatus.PENDING for task in workflow.tasks}
 
         # Build reverse dependency map: task -> tasks that depend on it
         reverse_deps = defaultdict(set)
@@ -154,34 +169,45 @@ class WorkflowRunner:
         # Thread-safe lock for state updates
         state_lock = threading.Lock()
 
-        def is_ready_to_run(task_name: str) -> bool:
-            """Check if all dependencies for a task are completed."""
-            task = task_map[task_name]
-            return all(task_states[dep] == "completed" for dep in task.depends_on)
-
         def get_ready_tasks() -> list[str]:
-            """Get all tasks that are ready to run."""
-            return [
-                task_name
-                for task_name in task_states
-                if task_states[task_name] == "pending" and is_ready_to_run(task_name)
-            ]
+            """Get all tasks that are ready to run using type-safe status checking."""
+            ready_tasks = []
+            for task_name, task in task_map.items():
+                if task.can_start(task_states):
+                    ready_tasks.append(task_name)
+            return ready_tasks
 
         def execute_task(task_name: str) -> Job | ShellJob:
             """Execute a single task and wait for completion."""
             logger.info(f"🚀 Starting task: {task_name}")
             task = task_map[task_name]
 
+            # Update task status to running
+            with state_lock:
+                task_states[task_name] = TaskStatus.RUNNING
+                task.update_status(TaskStatus.RUNNING)
+
             # Type narrow the job to the expected union type
             job = task.job
             if not isinstance(job, Job | ShellJob):
                 raise TypeError(f"Unexpected job type: {type(job)}")
 
-            # Always use submit_and_monitor_job to ensure completion before proceeding
-            job_result = submit_and_monitor_job(job)
-            logger.success(f"✅ Completed task: {task_name}")
+            try:
+                job_result = submit_and_monitor_job(job)
+                logger.success(f"✅ Completed task: {task_name}")
 
-            return job_result
+                # Update task status to completed
+                with state_lock:
+                    task_states[task_name] = TaskStatus.COMPLETED
+                    task.update_status(TaskStatus.COMPLETED)
+
+                return job_result
+            except Exception as e:
+                logger.error(f"❌ Task {task_name} failed: {e}")
+                with state_lock:
+                    task_states[task_name] = TaskStatus.FAILED
+                    task.update_status(TaskStatus.FAILED)
+                raise
 
         def on_task_complete(task_name: str, result: Job | ShellJob) -> list[str]:
             """Handle task completion and schedule dependent tasks.
@@ -190,17 +216,16 @@ class WorkflowRunner:
                 List of newly ready task names.
             """
             with state_lock:
-                task_states[task_name] = "completed"
+                # Status is already updated in execute_task
                 results[task_name] = result
                 self.executed_tasks[task_name] = result
 
-                # Check if any dependent tasks are now ready
+                # Check if any dependent tasks are now ready using type-safe status checking
                 newly_ready = []
-                for dependent_task in reverse_deps[task_name]:
-                    if task_states[dependent_task] == "pending" and is_ready_to_run(
-                        dependent_task
-                    ):
-                        newly_ready.append(dependent_task)
+                for dependent_task_name in reverse_deps[task_name]:
+                    dependent_task = task_map[dependent_task_name]
+                    if dependent_task.can_start(task_states):
+                        newly_ready.append(dependent_task_name)
 
                 logger.info(
                     f"📋 Task {task_name} completed. Ready to start: {newly_ready}"
@@ -214,7 +239,6 @@ class WorkflowRunner:
             logger.info(f"🌋 Starting initial tasks: {initial_tasks}")
 
             for task_name in initial_tasks:
-                task_states[task_name] = "running"
                 future = executor.submit(execute_task, task_name)
                 running_futures[task_name] = future
 
@@ -241,24 +265,33 @@ class WorkflowRunner:
                         # Schedule newly ready tasks
                         for ready_task in newly_ready:
                             if ready_task not in running_futures:
-                                task_states[ready_task] = "running"
                                 new_future = executor.submit(execute_task, ready_task)
                                 running_futures[ready_task] = new_future
 
                     except Exception as e:
                         logger.error(f"❌ Task {task_name} failed: {e}")
-                        # Mark as completed to avoid infinite loop
+                        # Mark as failed to avoid infinite loop
                         with state_lock:
-                            task_states[task_name] = "completed"
+                            task_states[task_name] = TaskStatus.FAILED
+                            task_map[task_name].update_status(TaskStatus.FAILED)
                         raise
 
         # Verify all tasks completed
         incomplete_tasks = [
-            name for name, state in task_states.items() if state != "completed"
+            name for name, state in task_states.items() if state != TaskStatus.COMPLETED
         ]
         if incomplete_tasks:
-            logger.error(f"❌ Some tasks did not complete: {incomplete_tasks}")
-            raise RuntimeError(f"Workflow execution incomplete: {incomplete_tasks}")
+            failed_tasks = [
+                name
+                for name, state in task_states.items()
+                if state == TaskStatus.FAILED
+            ]
+            if failed_tasks:
+                logger.error(f"❌ Tasks failed: {failed_tasks}")
+                raise RuntimeError(f"Workflow execution failed: {failed_tasks}")
+            else:
+                logger.error(f"❌ Some tasks did not complete: {incomplete_tasks}")
+                raise RuntimeError(f"Workflow execution incomplete: {incomplete_tasks}")
 
         return results
 
@@ -277,7 +310,7 @@ class WorkflowRunner:
         logger.info(
             f"Executing workflow '{workflow.name}' with {len(workflow.tasks)} tasks"
         )
-        results = self.execute_workflow(workflow)
+        results = self.run(workflow)
 
         logger.success("🎉 Workflow completed successfully")
         return results

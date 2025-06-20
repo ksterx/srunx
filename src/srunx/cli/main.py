@@ -369,7 +369,7 @@ def cmd_submit(args: argparse.Namespace) -> None:
 
         # Submit job
         client = Slurm(callbacks=callbacks)
-        submitted_job = client.run(
+        submitted_job = client.submit(
             job, getattr(args, "template", None), verbose=args.verbose
         )
 
@@ -469,7 +469,7 @@ def cmd_flow_run(args: argparse.Namespace) -> None:
 
         # Execute workflow
         logger.info(f"🚀 Starting workflow: {workflow.name}")
-        results = runner.execute_workflow(workflow)
+        results = runner.run(workflow)
 
         logger.success("🎉 Workflow completed successfully")
         logger.info("Workflow summary:")

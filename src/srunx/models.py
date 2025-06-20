@@ -26,6 +26,16 @@ class JobStatus(Enum):
     TIMEOUT = "TIMEOUT"
 
 
+class TaskStatus(Enum):
+    """Workflow task status enumeration."""
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+
+
 class JobResource(BaseModel):
     """SLURM resource allocation requirements."""
 
@@ -144,9 +154,37 @@ class WorkflowTask(BaseModel):
     name: str = Field(description="Task name")
     job: BaseJob = Field(description="Job configuration")
     depends_on: list[str] = Field(default_factory=list, description="Task dependencies")
+    task_status: TaskStatus = Field(
+        default=TaskStatus.PENDING, description="Task execution status"
+    )
 
     def __repr__(self) -> str:
-        return f"WorkflowTask(name={self.name}, job={self.job}, depends_on={self.depends_on})"
+        return f"WorkflowTask(name={self.name}, job={self.job}, depends_on={self.depends_on}, status={self.task_status})"
+
+    @property
+    def job_status(self) -> JobStatus | None:
+        """Get the underlying job status."""
+        return self.job.status
+
+    @property
+    def job_id(self) -> int | None:
+        return self.job.job_id
+
+    def update_status(self, status: TaskStatus) -> None:
+        """Update task status in a type-safe manner."""
+        self.task_status = status
+
+    def is_ready_to_run(self, completed_tasks: set[str]) -> bool:
+        """Check if this task is ready to run based on dependencies."""
+        return self.task_status == TaskStatus.PENDING and all(
+            dep in completed_tasks for dep in self.depends_on
+        )
+
+    def can_start(self, task_states: dict[str, TaskStatus]) -> bool:
+        """Check if task can start based on current task states."""
+        return self.task_status == TaskStatus.PENDING and all(
+            task_states.get(dep) == TaskStatus.COMPLETED for dep in self.depends_on
+        )
 
 
 class Workflow(BaseModel):

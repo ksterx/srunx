@@ -299,7 +299,7 @@ class TestWorkflowRunner:
         runner = WorkflowRunner()
 
         # Execute
-        results = runner.execute_workflow(workflow)
+        results = runner.run(workflow)
 
         # Verify
         assert len(results) == 2
@@ -350,7 +350,7 @@ class TestWorkflowRunner:
         runner = WorkflowRunner()
 
         # Execute
-        results = runner.execute_workflow(workflow)
+        results = runner.run(workflow)
 
         # Verify
         assert len(results) == 2
@@ -404,7 +404,7 @@ class TestWorkflowRunner:
         runner = WorkflowRunner()
 
         # Execute
-        results = runner.execute_workflow(workflow)
+        results = runner.run(workflow)
 
         # Verify
         assert len(results) == 3
@@ -430,7 +430,7 @@ class TestWorkflowRunner:
         try:
             runner = WorkflowRunner()
 
-            with patch.object(runner, "execute_workflow") as mock_execute:
+            with patch.object(runner, "run") as mock_execute:
                 mock_execute.return_value = {"yaml_task": Mock()}
 
                 results = runner.execute_from_yaml(yaml_path)
@@ -777,7 +777,7 @@ class TestWorkflowValidation:
         mock_monitor.side_effect = result_jobs
 
         # Execute
-        results = runner.execute_workflow(workflow)
+        results = runner.run(workflow)
 
         # Verify
         assert len(results) == 4

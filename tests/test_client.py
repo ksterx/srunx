@@ -44,7 +44,7 @@ class TestSlurm:
         client = Slurm()
 
         # Execute
-        result = client.run(job)
+        result = client.submit(job)
 
         # Verify
         assert isinstance(result, Job)
@@ -74,7 +74,7 @@ class TestSlurm:
         client = Slurm()
 
         # Execute
-        result = client.run(job)
+        result = client.submit(job)
 
         # Verify
         assert isinstance(result, ShellJob)
@@ -105,7 +105,7 @@ class TestSlurm:
         client = Slurm()
 
         # Execute
-        result = client.run(job)
+        result = client.submit(job)
 
         # Verify
         assert result.job_id == 67890
@@ -138,7 +138,7 @@ class TestSlurm:
 
         # Execute and verify
         with pytest.raises(subprocess.CalledProcessError):
-            client.run(job)
+            client.submit(job)
 
     @patch("srunx.client.get_job_status")
     def test_retrieve_job_success(self, mock_get_status: Mock) -> None:
