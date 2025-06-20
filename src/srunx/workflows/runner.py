@@ -1,11 +1,15 @@
 """Workflow runner for executing YAML-defined workflows with SLURM"""
 
+import threading
+import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from srunx.client import Slurm
 from srunx.logging import get_logger
 from srunx.models import (
     Job,
@@ -21,11 +25,16 @@ logger = get_logger(__name__)
 
 
 class WorkflowRunner:
-    """Runner for executing workflows defined in YAML."""
+    """Runner for executing workflows defined in YAML with dynamic task scheduling.
+
+    Tasks are executed as soon as their dependencies are satisfied,
+    rather than waiting for entire dependency levels to complete.
+    """
 
     def __init__(self) -> None:
         """Initialize workflow runner."""
         self.executed_tasks: dict[str, Job | ShellJob] = {}
+        self.slurm = Slurm()
 
     def load_from_yaml(self, yaml_path: str | Path) -> Workflow:
         """Load and validate a workflow from a YAML file.
@@ -67,7 +76,6 @@ class WorkflowRunner:
         # Basic task properties
         name = task_data["name"]
         path = task_data.get("path")
-        async_execution = task_data.get("async", True)
         depends_on = task_data.get("depends_on", [])
 
         job_data: dict[str, Any] = {"name": name}
@@ -114,11 +122,13 @@ class WorkflowRunner:
             name=name,
             job=job,
             depends_on=depends_on,
-            async_execution=async_execution,
         )
 
-    def execute_workflow(self, workflow: Workflow) -> dict[str, Job | ShellJob]:
-        """Execute a workflow parallel execution support.
+    def run(self, workflow: Workflow) -> dict[str, Job | ShellJob]:
+        """Execute a workflow with dynamic task scheduling.
+
+        Tasks are executed as soon as their dependencies are satisfied,
+        rather than waiting for entire levels to complete.
 
         Args:
             workflow: Workflow to execute.
@@ -127,38 +137,129 @@ class WorkflowRunner:
             Dictionary mapping task names to Job instances.
         """
         task_map = {task.name: task for task in workflow.tasks}
-        execution_levels = self._build_execution_levels(workflow)
 
-        def workflow_flow() -> dict[str, Job | ShellJob]:
-            """Workflow execution with parallel support."""
-            results: dict[str, Job | ShellJob] = {}
+        # Track task states: 'pending', 'running', 'completed'
+        task_states = {task.name: "pending" for task in workflow.tasks}
 
-            # Execute tasks level by level
-            for level, task_names in execution_levels.items():
-                logger.info(f"🌋 Phase {level + 1}:")
+        # Build reverse dependency map: task -> tasks that depend on it
+        reverse_deps = defaultdict(set)
+        for task in workflow.tasks:
+            for dep in task.depends_on:
+                reverse_deps[dep].add(task.name)
 
-                # Execute all tasks in the current level in parallel
-                level_futures = []
-                for task_name in task_names:
-                    task = task_map[task_name]
+        # Results and futures tracking
+        results: dict[str, Job | ShellJob] = {}
+        running_futures: dict[str, Any] = {}
 
-                    if task.async_execution:
-                        job_future = submit_job_async(task.job)
-                    else:
-                        job_future = submit_and_monitor_job(task.job)
+        # Thread-safe lock for state updates
+        state_lock = threading.Lock()
 
-                    level_futures.append((task_name, job_future))
-                    self.executed_tasks[task_name] = job_future
+        def is_ready_to_run(task_name: str) -> bool:
+            """Check if all dependencies for a task are completed."""
+            task = task_map[task_name]
+            return all(task_states[dep] == "completed" for dep in task.depends_on)
 
-                # Wait for all tasks in the current level to complete
-                for task_name, job_future in level_futures:
-                    results[task_name] = job_future
+        def get_ready_tasks() -> list[str]:
+            """Get all tasks that are ready to run."""
+            return [
+                task_name
+                for task_name in task_states
+                if task_states[task_name] == "pending" and is_ready_to_run(task_name)
+            ]
 
-                logger.success(f"✅ Completed phase {level + 1}")
+        def execute_task(task_name: str) -> Job | ShellJob:
+            """Execute a single task."""
+            logger.info(f"🚀 Starting task: {task_name}")
+            task = task_map[task_name]
 
-            return results
+            # Type narrow the job to the expected union type
+            job = task.job
+            if not isinstance(job, Job | ShellJob):
+                raise TypeError(f"Unexpected job type: {type(job)}")
 
-        return workflow_flow()
+            job_result = submit_job_async(job)
+
+            logger.success(f"✅ Completed task: {task_name}")
+            return job_result
+
+        def on_task_complete(task_name: str, result: Job | ShellJob) -> list[str]:
+            """Handle task completion and schedule dependent tasks.
+
+            Returns:
+                List of newly ready task names.
+            """
+            with state_lock:
+                task_states[task_name] = "completed"
+                results[task_name] = result
+                self.executed_tasks[task_name] = result
+
+                # Check if any dependent tasks are now ready
+                newly_ready = []
+                for dependent_task in reverse_deps[task_name]:
+                    if task_states[dependent_task] == "pending" and is_ready_to_run(
+                        dependent_task
+                    ):
+                        newly_ready.append(dependent_task)
+
+                logger.info(
+                    f"📋 Task {task_name} completed. Ready to start: {newly_ready}"
+                )
+                return newly_ready
+
+        # Use ThreadPoolExecutor for parallel execution
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            # Submit initial tasks (those with no dependencies)
+            initial_tasks = get_ready_tasks()
+            logger.info(f"🌋 Starting initial tasks: {initial_tasks}")
+
+            for task_name in initial_tasks:
+                task_states[task_name] = "running"
+                future = executor.submit(execute_task, task_name)
+                running_futures[task_name] = future
+
+            # Process completed tasks and schedule new ones
+            while running_futures:
+                # Wait for at least one task to complete
+                completed_futures = []
+                for task_name, future in list(running_futures.items()):
+                    if future.done():
+                        completed_futures.append((task_name, future))
+                        del running_futures[task_name]
+
+                if not completed_futures:
+                    # Sleep briefly to avoid busy waiting
+                    time.sleep(0.1)
+                    continue
+
+                # Handle completed tasks
+                for task_name, future in completed_futures:
+                    try:
+                        result = future.result()
+                        newly_ready = on_task_complete(task_name, result)
+
+                        # Schedule newly ready tasks
+                        for ready_task in newly_ready:
+                            if ready_task not in running_futures:
+                                task_states[ready_task] = "running"
+                                new_future = executor.submit(execute_task, ready_task)
+                                running_futures[ready_task] = new_future
+
+                    except Exception as e:
+                        logger.error(f"❌ Task {task_name} failed: {e}")
+                        # Mark as completed to avoid infinite loop
+                        with state_lock:
+                            task_states[task_name] = "completed"
+                        raise
+
+        # Verify all tasks completed
+        incomplete_tasks = [
+            name for name, state in task_states.items() if state != "completed"
+        ]
+        if incomplete_tasks:
+            logger.error(f"❌ Some tasks did not complete: {incomplete_tasks}")
+            raise RuntimeError(f"Workflow execution incomplete: {incomplete_tasks}")
+
+        return results
 
     def execute_from_yaml(self, yaml_path: str | Path) -> dict[str, Job | ShellJob]:
         """Load and execute a workflow from YAML file.
@@ -175,7 +276,7 @@ class WorkflowRunner:
         logger.info(
             f"Executing workflow '{workflow.name}' with {len(workflow.tasks)} tasks"
         )
-        results = self.execute_workflow(workflow)
+        results = self.run(workflow)
 
         logger.success("🎉 Workflow completed successfully")
         return results
@@ -184,6 +285,8 @@ class WorkflowRunner:
         """Build execution levels for parallel task execution.
 
         Tasks in the same level can be executed in parallel.
+        This method is kept for backward compatibility but is no longer used
+        in the new dynamic scheduling approach.
 
         Args:
             workflow: Workflow to analyze.
@@ -292,6 +395,7 @@ def show_workflow_plan(workflow: Workflow) -> None:
 {" PLAN ":=^80}
 Workflow: {workflow.name}
 Tasks: {len(workflow.tasks)}
+Execution: Dynamic scheduling (tasks run as dependencies are satisfied)
 """
 
     for task in workflow.tasks:

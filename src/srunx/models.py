@@ -144,12 +144,9 @@ class WorkflowTask(BaseModel):
     name: str = Field(description="Task name")
     job: BaseJob = Field(description="Job configuration")
     depends_on: list[str] = Field(default_factory=list, description="Task dependencies")
-    async_execution: bool = Field(
-        default=True, description="Whether to run asynchronously"
-    )
 
     def __repr__(self) -> str:
-        return f"WorkflowTask(name={self.name}, job={self.job}, depends_on={self.depends_on}, async_execution={self.async_execution})"
+        return f"WorkflowTask(name={self.name}, job={self.job}, depends_on={self.depends_on})"
 
 
 class Workflow(BaseModel):
@@ -192,8 +189,6 @@ Tasks: {len(self.tasks)}
                 msg += f"{'        Path:': <21} {task.job.path}\n"
             if task.depends_on:
                 msg += f"{'        Dependencies:': <21} {', '.join(task.depends_on)}\n"
-            if task.async_execution:
-                msg += f"{'        Execution:': <21} asynchronous\n"
 
         msg += f"{'=' * 80}\n"
         print(msg)

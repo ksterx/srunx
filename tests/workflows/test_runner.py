@@ -304,7 +304,7 @@ class TestWorkflowRunner:
         runner = WorkflowRunner()
 
         # Execute
-        results = runner.execute_workflow(workflow)
+        results = runner.run(workflow)
 
         # Verify
         assert len(results) == 2
@@ -360,7 +360,7 @@ class TestWorkflowRunner:
         runner = WorkflowRunner()
 
         # Execute
-        results = runner.execute_workflow(workflow)
+        results = runner.run(workflow)
 
         # Verify
         assert len(results) == 2
@@ -420,7 +420,7 @@ class TestWorkflowRunner:
         runner = WorkflowRunner()
 
         # Execute
-        results = runner.execute_workflow(workflow)
+        results = runner.run(workflow)
 
         # Verify
         assert len(results) == 3
@@ -803,7 +803,7 @@ class TestWorkflowValidation:
         mock_monitor.side_effect = result_jobs
 
         # Execute
-        results = runner.execute_workflow(workflow)
+        results = runner.run(workflow)
 
         # Verify
         assert len(results) == 4

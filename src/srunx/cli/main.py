@@ -3,7 +3,6 @@
 import argparse
 import os
 import sys
-import time
 from pathlib import Path
 
 from srunx.callbacks import SlackCallback
@@ -470,7 +469,7 @@ def cmd_flow_run(args: argparse.Namespace) -> None:
 
         # Execute workflow
         logger.info(f"🚀 Starting workflow: {workflow.name}")
-        results = runner.execute_workflow(workflow)
+        results = runner.run(workflow)
 
         logger.success("🎉 Workflow completed successfully")
         logger.info("Workflow summary:")
