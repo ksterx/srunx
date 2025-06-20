@@ -132,7 +132,7 @@ def create_job_parser() -> argparse.ArgumentParser:
     exec_group.add_argument(
         "--poll-interval",
         type=int,
-        default=30,
+        default=5,
         help="Polling interval in seconds when waiting (default: %(default)s)",
     )
 
@@ -469,7 +469,7 @@ def cmd_flow_run(args: argparse.Namespace) -> None:
 
         # Execute workflow
         logger.info(f"🚀 Starting workflow: {workflow.name}")
-        results = runner.run(workflow)
+        results = runner.execute_workflow(workflow)
 
         logger.success("🎉 Workflow completed successfully")
         logger.info("Workflow summary:")

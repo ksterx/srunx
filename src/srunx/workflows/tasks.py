@@ -6,7 +6,7 @@ logger = get_logger(__name__)
 
 
 def submit_and_monitor_job(
-    job: Job | ShellJob, poll_interval: int = 30
+    job: Job | ShellJob, poll_interval: int = 5
 ) -> Job | ShellJob:
     """Submit a SLURM job and monitor until completion.
 
@@ -56,7 +56,7 @@ def submit_job_async(job: Job | ShellJob) -> Job | ShellJob:
     return submitted_job
 
 
-def wait_for_job(job_id: int, poll_interval: int = 30) -> BaseJob:
+def wait_for_job(job_id: int, poll_interval: int = 5) -> BaseJob:
     """Wait for a job to complete.
 
     Args:

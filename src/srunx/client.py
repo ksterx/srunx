@@ -198,7 +198,7 @@ class Slurm:
     def monitor(
         self,
         job_obj_or_id: BaseJob | Job | ShellJob | int,
-        poll_interval: int = 30,
+        poll_interval: int = 5,
         callbacks: list[Callback] | None = None,
     ) -> BaseJob | Job | ShellJob:
         """Wait for a job to complete.
