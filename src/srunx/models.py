@@ -8,32 +8,24 @@ from pathlib import Path
 from typing import Self
 
 import jinja2
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
+from srunx.exceptions import WorkflowValidationError
 from srunx.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 class JobStatus(Enum):
-    """SLURM job status enumeration."""
+    """Job status enumeration for both SLURM jobs and workflow tasks."""
 
+    UNKNOWN = "UNKNOWN"
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
     TIMEOUT = "TIMEOUT"
-
-
-class TaskStatus(Enum):
-    """Workflow task status enumeration."""
-
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    SKIPPED = "SKIPPED"
 
 
 class JobResource(BaseModel):
@@ -75,12 +67,33 @@ class JobEnvironment(BaseModel):
 class BaseJob(BaseModel):
     name: str = Field(default="job", description="Job name")
     job_id: int | None = Field(default=None, description="SLURM job ID")
-    status: JobStatus | None = Field(default=None, description="Current job status")
-    dependencies: list[str] = Field(
-        default_factory=list, description="Job dependencies"
+    depends_on: list[str] = Field(
+        default_factory=list, description="Task dependencies for workflow execution"
     )
 
-    def refresh(self, retries: int = 3) -> None:
+    _status: JobStatus = PrivateAttr(default=JobStatus.PENDING)
+
+    @property
+    def status(self) -> JobStatus:
+        """
+        Accessing ``job.status`` always triggers a lightweight refresh
+        (only if we have a ``job_id`` and the status isn't terminal).
+        """
+        if self.job_id is not None and self._status not in {
+            JobStatus.COMPLETED,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+            JobStatus.TIMEOUT,
+        }:
+            self.refresh()
+        return self._status
+
+    @status.setter
+    def status(self, value: JobStatus) -> None:
+        self._status = value
+
+    def refresh(self, retries: int = 3) -> Self:
+        """Query sacct and update ``_status`` in-place."""
         for retry in range(retries):
             try:
                 result = subprocess.run(
@@ -89,7 +102,7 @@ class BaseJob(BaseModel):
                         "-j",
                         str(self.job_id),
                         "--format",
-                        "JobID,JobName,State",
+                        "JobID,State",
                         "--noheader",
                         "--parsable2",
                     ],
@@ -98,30 +111,27 @@ class BaseJob(BaseModel):
                     check=True,
                 )
             except subprocess.CalledProcessError as e:
-                logger.error(f"Failed to query job {self.job_id} status: {e}")
+                logger.error(f"Failed to query job {self.job_id}: {e}")
                 raise
 
-            lines = result.stdout.strip().split("\n")
-            if not lines or not lines[0]:
+            line = result.stdout.strip().split("\n")[0] if result.stdout.strip() else ""
+            if not line:
                 if retry < retries - 1:
-                    logger.info(
-                        f"Waiting for job {self.job_id}. Retrying {retry + 1} of {retries}..."
-                    )
                     time.sleep(1)
                     continue
-                raise ValueError(f"No job information found for job {self.job_id}")
-            else:
-                break
+                self._status = JobStatus.UNKNOWN
+                return self
+            break
 
-        # Parse the first line (main job entry)
-        job_data = lines[0].split("|")
-        if len(job_data) < 3:
-            error_msg = f"Cannot parse job data for job {self.job_id}"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
+        _, state = line.split("|", 1)
+        self._status = JobStatus(state)
+        return self
 
-        status = job_data[2]
-        self.status = JobStatus(status)
+    def dependencies_satisfied(self, completed_job_names: list[str]) -> bool:
+        """All dependencies are completed & this job is still pending."""
+        return self.status == JobStatus.PENDING and all(
+            dep in completed_job_names for dep in self.depends_on
+        )
 
 
 class Job(BaseJob):
@@ -146,129 +156,93 @@ class ShellJob(BaseJob):
 
 
 type JobType = BaseJob | Job | ShellJob
-
-
-class WorkflowTask(BaseModel):
-    """Represents a single task in a workflow."""
-
-    name: str = Field(description="Task name")
-    job: BaseJob = Field(description="Job configuration")
-    depends_on: list[str] = Field(default_factory=list, description="Task dependencies")
-    task_status: TaskStatus = Field(
-        default=TaskStatus.PENDING, description="Task execution status"
-    )
-
-    def __repr__(self) -> str:
-        return f"WorkflowTask(name={self.name}, job={self.job}, depends_on={self.depends_on}, status={self.task_status})"
-
-    @property
-    def job_status(self) -> JobStatus | None:
-        """Get the underlying job status."""
-        return self.job.status
-
-    @property
-    def job_id(self) -> int | None:
-        return self.job.job_id
-
-    def update_status(self, status: TaskStatus) -> None:
-        """Update task status in a type-safe manner."""
-        self.task_status = status
-
-    def is_ready_to_run(self, completed_tasks: set[str]) -> bool:
-        """Check if this task is ready to run based on dependencies."""
-        return self.task_status == TaskStatus.PENDING and all(
-            dep in completed_tasks for dep in self.depends_on
-        )
-
-    def can_start(self, task_states: dict[str, TaskStatus]) -> bool:
-        """Check if task can start based on current task states."""
-        return self.task_status == TaskStatus.PENDING and all(
-            task_states.get(dep) == TaskStatus.COMPLETED for dep in self.depends_on
-        )
+type RunableJobType = Job | ShellJob
 
 
 class Workflow(BaseModel):
-    """Represents a workflow containing multiple tasks with dependencies."""
+    """Represents a workflow containing multiple jobs with dependencies."""
 
     name: str = Field(description="Workflow name")
-    tasks: list[WorkflowTask] = Field(description="List of tasks in the workflow")
+    jobs: list[RunableJobType] = Field(description="List of jobs in the workflow")
 
-    def get_task(self, name: str) -> WorkflowTask | None:
-        """Get a task by name."""
-        for task in self.tasks:
-            if task.name == name:
-                return task
+    def get(self, name: str) -> RunableJobType | None:
+        """Get a job by name."""
+        for job in self.jobs:
+            if job.name == name:
+                return job.refresh()
         return None
 
-    def get_task_dependencies(self, task_name: str) -> list[str]:
-        """Get dependencies for a specific task."""
-        task = self.get_task(task_name)
-        return task.depends_on if task else []
+    def get_dependencies(self, job_name: str) -> list[str | Self]:
+        """Get dependencies for a specific job."""
+        job = self.get(job_name)
+        return job.depends_on if job else []
 
     def show(self):
         msg = f"""\
 {" PLAN ":=^80}
 Workflow: {self.name}
-Tasks: {len(self.tasks)}
-Execution: Sequential with dependency-based scheduling
+Jobs: {len(self.jobs)}
 """
 
-        for task in self.tasks:
-            msg += f"    Task: {task.name}\n"
-            if isinstance(task.job, Job):
-                msg += f"{'        Command:': <21} {' '.join(task.job.command or [])}\n"
-                msg += f"{'        Resources:': <21} {task.job.resources.nodes} nodes, {task.job.resources.gpus_per_node} GPUs/node\n"
-                if task.job.environment.conda:
-                    msg += f"{'        Conda env:': <21} {task.job.environment.conda}\n"
-                if task.job.environment.sqsh:
-                    msg += f"{'        Sqsh:': <21} {task.job.environment.sqsh}\n"
-                if task.job.environment.venv:
-                    msg += f"{'        Venv:': <21} {task.job.environment.venv}\n"
-            elif isinstance(task.job, ShellJob):
-                msg += f"{'        Path:': <21} {task.job.path}\n"
-            if task.depends_on:
-                msg += f"{'        Dependencies:': <21} {', '.join(task.depends_on)}\n"
+        for job in self.jobs:
+            msg += f"    Job: {job.name}\n"
+            if isinstance(job, Job):
+                msg += f"{'        Command:': <21} {' '.join(job.command or [])}\n"
+                msg += f"{'        Resources:': <21} {job.resources.nodes} nodes, {job.resources.gpus_per_node} GPUs/node\n"
+                if job.environment.conda:
+                    msg += f"{'        Conda env:': <21} {job.environment.conda}\n"
+                if job.environment.sqsh:
+                    msg += f"{'        Sqsh:': <21} {job.environment.sqsh}\n"
+                if job.environment.venv:
+                    msg += f"{'        Venv:': <21} {job.environment.venv}\n"
+            elif isinstance(job, ShellJob):
+                msg += f"{'        Path:': <21} {job.path}\n"
+            if job.depends_on:
+                msg += f"{'        Dependencies:': <21} {', '.join(job.depends_on)}\n"
 
         msg += f"{'=' * 80}\n"
         print(msg)
 
     def validate(self):
         """Validate workflow task dependencies."""
-        task_names = {task.name for task in self.tasks}
+        job_names = {job.name for job in self.jobs}
 
-        for task in self.tasks:
-            for dependency in task.depends_on:
-                if dependency not in task_names:
-                    raise ValueError(
-                        f"Task '{task.name}' depends on unknown task '{dependency}'"
+        if len(job_names) != len(self.jobs):
+            raise WorkflowValidationError("Duplicate task names found in workflow")
+
+        for job in self.jobs:
+            for dependency in job.depends_on:
+                if dependency not in job_names:
+                    raise WorkflowValidationError(
+                        f"Job '{job.name}' depends on unknown job '{dependency}'"
                     )
 
         # Check for circular dependencies (simple check)
         visited = set()
         rec_stack = set()
 
-        def has_cycle(task_name: str) -> bool:
-            if task_name in rec_stack:
+        def has_cycle(job_name: str) -> bool:
+            if job_name in rec_stack:
                 return True
-            if task_name in visited:
+            if job_name in visited:
                 return False
 
-            visited.add(task_name)
-            rec_stack.add(task_name)
+            visited.add(job_name)
+            rec_stack.add(job_name)
 
-            task = self.get_task(task_name)
+            task = self.get(job_name)
             if task:
                 for dependency in task.depends_on:
                     if has_cycle(dependency):
                         return True
 
-            rec_stack.remove(task_name)
+            rec_stack.remove(job_name)
             return False
 
-        for task in self.tasks:
-            if has_cycle(task.name):
-                raise ValueError(
-                    f"Circular dependency detected involving task '{task.name}'"
+        for job in self.jobs:
+            if has_cycle(job.name):
+                raise WorkflowValidationError(
+                    f"Circular dependency detected involving job '{job.name}'"
                 )
 
 

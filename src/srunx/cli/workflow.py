@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from srunx.logging import configure_workflow_logging, get_logger
-from srunx.workflows.runner import WorkflowRunner
+from srunx.runner import WorkflowRunner
 
 logger = get_logger(__name__)
 
@@ -21,8 +21,9 @@ Example YAML workflow:
   tasks:
     - name: preprocess
       command: ["python", "preprocess.py"]
-      nodes: 1
-      gpus_per_node: 2
+      resources:
+        nodes: 1
+        gpus_per_node: 2
 
     - name: train
       path: /path/to/train.sh
@@ -33,18 +34,23 @@ Example YAML workflow:
       command: ["python", "evaluate.py"]
       depends_on:
         - train
-      conda: ml_env
+      environment:
+        conda: ml_env
 
     - name: upload
       command: ["python", "upload_model.py"]
       depends_on:
         - train
+      environment:
+        venv: /path/to/venv
 
     - name: notify
       command: ["python", "notify.py"]
       depends_on:
         - evaluate
         - upload
+      environment:
+        venv: /path/to/venv
         """,
     )
 
@@ -87,28 +93,22 @@ def cmd_run_workflow(args: argparse.Namespace) -> None:
             logger.error(f"Workflow file not found: {args.yaml_file}")
             sys.exit(1)
 
-        runner = WorkflowRunner()
-
-        # Load workflow for validation
-        workflow = runner.load_from_yaml(yaml_file)
-        logger.info(
-            f"Loaded workflow '{workflow.name}' with {len(workflow.tasks)} tasks"
-        )
+        runner = WorkflowRunner.from_yaml(yaml_file)
 
         # Validate dependencies
-        workflow.validate()
+        runner.workflow.validate()
 
         if args.validate_only:
             logger.info("Workflow validation successful")
             return
 
         if args.dry_run:
-            workflow.show()
+            runner.workflow.show()
             return
 
         # Execute workflow
-        logger.info(f"🚀 Starting workflow: {workflow.name}")
-        results = runner.run(workflow)
+        logger.info(f"🚀 Starting workflow: {runner.workflow.name}")
+        results = runner.run()
 
         logger.success("🎉 Workflow completed successfully")
         logger.info("Job Results:")

@@ -20,10 +20,9 @@ from .models import (
     JobStatus,
     ShellJob,
     Workflow,
-    WorkflowTask,
     render_job_script,
 )
-from .workflows import WorkflowRunner, submit_and_monitor_job
+from .runner import WorkflowRunner
 
 __all__ = [
     # Client
@@ -40,11 +39,9 @@ __all__ = [
     "JobEnvironment",
     "JobStatus",
     "Workflow",
-    "WorkflowTask",
     "render_job_script",
     # Workflows
     "WorkflowRunner",
-    "submit_and_monitor_job",
     # Logging
     "configure_logging",
     "configure_cli_logging",

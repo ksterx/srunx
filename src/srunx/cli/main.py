@@ -13,7 +13,7 @@ from srunx.logging import (
     get_logger,
 )
 from srunx.models import Job, JobEnvironment, JobResource
-from srunx.workflows.runner import WorkflowRunner
+from srunx.runner import WorkflowRunner
 
 logger = get_logger(__name__)
 
@@ -455,21 +455,18 @@ def cmd_flow_run(args: argparse.Namespace) -> None:
             logger.error(f"Workflow file not found: {args.yaml_file}")
             sys.exit(1)
 
-        runner = WorkflowRunner()
-
-        # Load workflow for validation
-        workflow = runner.load_from_yaml(yaml_file)
+        runner = WorkflowRunner.from_yaml(yaml_file)
 
         # Validate dependencies
-        workflow.validate()
+        runner.workflow.validate()
 
         if args.dry_run:
-            workflow.show()
+            runner.workflow.show()
             return
 
         # Execute workflow
-        logger.info(f"🚀 Starting workflow: {workflow.name}")
-        results = runner.run(workflow)
+        logger.info(f"🚀 Starting workflow: {runner.workflow.name}")
+        results = runner.run()
 
         logger.success("🎉 Workflow completed successfully")
         logger.info("Workflow summary:")
@@ -495,16 +492,10 @@ def cmd_flow_validate(args: argparse.Namespace) -> None:
             logger.error(f"Workflow file not found: {args.yaml_file}")
             sys.exit(1)
 
-        runner = WorkflowRunner()
-
-        # Load workflow for validation
-        workflow = runner.load_from_yaml(yaml_file)
-        logger.info(
-            f"Loaded workflow '{workflow.name}' with {len(workflow.tasks)} tasks"
-        )
+        runner = WorkflowRunner.from_yaml(yaml_file)
 
         # Validate dependencies
-        workflow.validate()
+        runner.workflow.validate()
 
         logger.info("Workflow validation successful")
 

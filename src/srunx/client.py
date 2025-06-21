@@ -13,6 +13,8 @@ from srunx.models import (
     BaseJob,
     Job,
     JobStatus,
+    JobType,
+    RunableJobType,
     ShellJob,
     render_job_script,
 )
@@ -40,11 +42,11 @@ class Slurm:
 
     def submit(
         self,
-        job: Job | ShellJob,
+        job: RunableJobType,
         template_path: str | None = None,
         callbacks: Sequence[Callback] | None = None,
         verbose: bool = False,
-    ) -> Job | ShellJob:
+    ) -> RunableJobType:
         """Submit a job to SLURM.
 
         Args:
@@ -197,10 +199,10 @@ class Slurm:
 
     def monitor(
         self,
-        job_obj_or_id: BaseJob | Job | ShellJob | int,
+        job_obj_or_id: JobType | int,
         poll_interval: int = 5,
-        callbacks: list[Callback] | None = None,
-    ) -> BaseJob | Job | ShellJob:
+        callbacks: Sequence[Callback] | None = None,
+    ) -> JobType:
         """Wait for a job to complete.
 
         Args:
@@ -277,12 +279,12 @@ class Slurm:
 
     def run(
         self,
-        job: Job | ShellJob,
+        job: RunableJobType,
         template_path: str | None = None,
         callbacks: Sequence[Callback] | None = None,
         poll_interval: int = 5,
         verbose: bool = False,
-    ) -> Job | ShellJob:
+    ) -> RunableJobType:
         """Submit a job and wait for completion."""
         job = self.submit(
             job, template_path=template_path, callbacks=callbacks, verbose=verbose
@@ -297,11 +299,11 @@ class Slurm:
 
 # Convenience functions for backward compatibility
 def submit_job(
-    job: Job | ShellJob,
+    job: RunableJobType,
     template_path: str | None = None,
     callbacks: Sequence[Callback] | None = None,
     verbose: bool = False,
-) -> Job | ShellJob:
+) -> RunableJobType:
     """Submit a job to SLURM (convenience function).
 
     Args:

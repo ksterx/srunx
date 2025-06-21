@@ -1,23 +1,25 @@
 name: test
-tasks:
+jobs:
   - name: a_task
     command: [python, a.py]
-    venv: /home/k_ishikawa/workspace/srunx/.venv
+    environment:
+      venv: /home/k_ishikawa/workspace/srunx/.venv
   - name: b_task
     command: [python, b.py]
     depends_on:
       - a_task
-    venv: /home/k_ishikawa/workspace/srunx/.venv
-    async: true
+    environment:
+      venv: /home/k_ishikawa/workspace/srunx/.venv
   - name: c_task
     command: [python, c.py]
     depends_on:
       - a_task
-    venv: /home/k_ishikawa/workspace/srunx/.venv
-    async: true
+    environment:
+      venv: /home/k_ishikawa/workspace/srunx/.venv
   - name: d_task
     command: [python, d.py]
     depends_on:
       - b_task
       - c_task
-    venv: /home/k_ishikawa/workspace/srunx/.venv
+    environment:
+      venv: /home/k_ishikawa/workspace/srunx/.venv
