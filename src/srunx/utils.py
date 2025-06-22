@@ -1,3 +1,5 @@
+"""Utility functions for SLURM job management."""
+
 import subprocess
 
 from srunx.logging import get_logger
@@ -60,13 +62,21 @@ def get_job_status(job_id: int) -> BaseJob:
     job = BaseJob(
         name=job_name,
         job_id=int(job_id_str),
-        status=JobStatus(status_str),
     )
+    job.status = JobStatus(status_str)
 
     return job
 
 
 def job_status_msg(job: BaseJob) -> str:
+    """Generate a formatted status message for a job.
+
+    Args:
+        job: Job object to generate message for.
+
+    Returns:
+        Formatted status message with icons and job information.
+    """
     icons = {
         JobStatus.COMPLETED: "✅",
         JobStatus.RUNNING: "🚀",

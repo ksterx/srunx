@@ -129,6 +129,14 @@ class Slurm:
 
     @staticmethod
     def retrieve(job_id: int) -> BaseJob:
+        """Retrieve job information from SLURM.
+
+        Args:
+            job_id: SLURM job ID.
+
+        Returns:
+            Job object with current status.
+        """
         return get_job_status(job_id)
 
     def cancel(self, job_id: int) -> None:
@@ -191,8 +199,8 @@ class Slurm:
                 job = BaseJob(
                     name=job_name,
                     job_id=job_id,
-                    status=status,
                 )
+                job.status = status
                 jobs.append(job)
 
         return jobs
@@ -282,11 +290,19 @@ class Slurm:
         verbose: bool = False,
     ) -> RunableJobType:
         """Submit a job and wait for completion."""
-        job = self.submit(
+        submitted_job = self.submit(
             job, template_path=template_path, callbacks=callbacks, verbose=verbose
         )
-        job = self.monitor(job, poll_interval=poll_interval, callbacks=callbacks)
-        return job
+        monitored_job = self.monitor(
+            submitted_job, poll_interval=poll_interval, callbacks=callbacks
+        )
+
+        # Ensure the return type matches the expected type
+        if isinstance(monitored_job, Job | ShellJob):
+            return monitored_job
+        else:
+            # This should not happen in practice, but needed for type safety
+            return submitted_job
 
     def _get_default_template(self) -> str:
         """Get the default job template path."""

@@ -30,14 +30,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture Overview
 
-### New Modular Structure
+### Current Modular Structure
 ```
 src/srunx/
 ├── models.py          # Data models and validation
 ├── client.py          # SLURM client for job operations
-├── workflows/         # Workflow management
-│   ├── runner.py      # Workflow execution engine
-│   └── tasks.py       # Prefect task definitions
+├── runner.py          # Workflow execution engine
+├── callbacks.py       # Callback system for job notifications
+├── exceptions.py      # Custom exceptions
+├── logging.py         # Centralized logging configuration
+├── utils.py           # Utility functions
 ├── cli/               # Command-line interfaces
 │   ├── main.py        # Main CLI commands
 │   └── workflow.py    # Workflow CLI
@@ -58,18 +60,38 @@ src/srunx/
 
 #### Client (`client.py`)
 - **Slurm**: Main interface for SLURM operations
-  - `submit_job()`: Submit jobs with full configuration
-  - `retrieve_job()`: Query job status
-  - `cancel_job()`: Cancel running jobs
-  - `queue_jobs()`: Queue user jobs
-  - `wait_for_completion()`: Block until job completes
+  - `submit()`: Submit jobs with full configuration
+  - `retrieve()`: Query job status
+  - `cancel()`: Cancel running jobs
+  - `queue()`: List user jobs
+  - `monitor()`: Wait for job completion
+  - `run()`: Submit and monitor job
 
-#### Workflows (`workflows/`)
-- **WorkflowRunner**: YAML workflow execution with Prefect
-- **Prefect Tasks**:
-  - `submit_and_monitor_job()`: Complete job lifecycle
-  - `submit_job_async()`: Async job submission
-  - `wait_for_job()`: Wait for completion
+#### Workflow Runner (`runner.py`)
+- **WorkflowRunner**: YAML workflow execution engine
+  - `from_yaml()`: Load workflow from YAML file
+  - `run()`: Execute workflow with dynamic job scheduling
+  - `get_independent_jobs()`: Find jobs without dependencies
+  - `parse_job()`: Parse job configuration from YAML
+
+#### Callbacks (`callbacks.py`)
+- **Callback**: Base class for job state notifications
+- **SlackCallback**: Send notifications to Slack via webhook
+
+#### Logging (`logging.py`)
+- **configure_logging()**: General logging configuration
+- **configure_cli_logging()**: CLI-specific logging
+- **configure_workflow_logging()**: Workflow-specific logging
+- **get_logger()**: Get logger instance for module
+
+#### Utilities (`utils.py`)
+- **get_job_status()**: Query job status from SLURM
+- **job_status_msg()**: Format status messages with icons
+
+#### Exceptions (`exceptions.py`)
+- **WorkflowError**: Base workflow exception
+- **WorkflowValidationError**: Workflow validation errors
+- **WorkflowExecutionError**: Workflow execution errors
 
 #### CLI (`cli/`)
 - **Main CLI**: Job management commands (submit, status, list, cancel)
@@ -115,9 +137,10 @@ tasks:
 ## Dependencies
 - **Jinja2**: Template rendering
 - **Pydantic**: Data validation and serialization
-- **Prefect**: Workflow orchestration
 - **Loguru**: Structured logging
 - **PyYAML**: YAML parsing
+- **Rich**: Terminal UI and tables
+- **slack-sdk**: Slack notifications
 
 ## Code Quality and Linting
 

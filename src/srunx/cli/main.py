@@ -17,7 +17,6 @@ from srunx.logging import (
 )
 from srunx.models import Job, JobEnvironment, JobResource
 from srunx.runner import WorkflowRunner
-from srunx.utils import job_status_msg
 
 logger = get_logger(__name__)
 

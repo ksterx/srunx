@@ -175,7 +175,7 @@ class Workflow(BaseModel):
                 return job.refresh()
         return None
 
-    def get_dependencies(self, job_name: str) -> list[str | Self]:
+    def get_dependencies(self, job_name: str) -> list[str]:
         """Get dependencies for a specific job."""
         job = self.get(job_name)
         return job.depends_on if job else []
