@@ -44,7 +44,7 @@ class WorkflowRunner:
         """
         self.workflow = workflow
         self.slurm = Slurm(callbacks=callbacks)
-        self.callbacks = callbacks
+        self.callbacks = callbacks or []
 
     @classmethod
     def from_yaml(
