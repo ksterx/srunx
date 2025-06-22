@@ -3,29 +3,29 @@ jobs:
   - name: a
     command: [python, sample_job.py, --sleep, "10", --msg, "A"]
     environment:
-      venv: /home/k_ishikawa/workspace/srunx/.venv
+      venv: /path/to/.venv
   - name: b1
     command: [python, sample_job.py, --sleep, "3", --msg, "B1"]
     depends_on:
       - a
     environment:
-      venv: /home/k_ishikawa/workspace/srunx/.venv
+      venv: /path/to/.venv
   - name: c
     command: [python, sample_job.py, --sleep, "10", --msg, "C"]
     depends_on:
       - a
     environment:
-      venv: /home/k_ishikawa/workspace/srunx/.venv
+      venv: /path/to/.venv
   - name: b2
     command: [python, sample_job.py, --sleep, "10", --msg, "B2"]
     depends_on:
       - b1
     environment:
-      venv: /home/k_ishikawa/workspace/srunx/.venv
+      venv: /path/to/.venv
   - name: d
     command: [python, sample_job.py, --sleep, "10", --msg, "D"]
     depends_on:
       - b2
       - c
     environment:
-      venv: /home/k_ishikawa/workspace/srunx/.venv
+      venv: /path/to/.venv
