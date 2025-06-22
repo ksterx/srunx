@@ -1,25 +1,31 @@
 name: test
 jobs:
-  - name: a_task
-    command: [python, a.py]
+  - name: a
+    command: [python, sample_job.py, --sleep, "10", --msg, "A"]
     environment:
       venv: /home/k_ishikawa/workspace/srunx/.venv
-  - name: b_task
-    command: [python, b.py]
+  - name: b1
+    command: [python, sample_job.py, --sleep, "3", --msg, "B1"]
     depends_on:
-      - a_task
+      - a
     environment:
       venv: /home/k_ishikawa/workspace/srunx/.venv
-  - name: c_task
-    command: [python, c.py]
+  - name: c
+    command: [python, sample_job.py, --sleep, "10", --msg, "C"]
     depends_on:
-      - a_task
+      - a
     environment:
       venv: /home/k_ishikawa/workspace/srunx/.venv
-  - name: d_task
-    command: [python, d.py]
+  - name: b2
+    command: [python, sample_job.py, --sleep, "10", --msg, "B2"]
     depends_on:
-      - b_task
-      - c_task
+      - b1
+    environment:
+      venv: /home/k_ishikawa/workspace/srunx/.venv
+  - name: d
+    command: [python, sample_job.py, --sleep, "10", --msg, "D"]
+    depends_on:
+      - b2
+      - c
     environment:
       venv: /home/k_ishikawa/workspace/srunx/.venv

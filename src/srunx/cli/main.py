@@ -5,6 +5,9 @@ import os
 import sys
 from pathlib import Path
 
+from rich.console import Console
+from rich.table import Table
+
 from srunx.callbacks import SlackCallback
 from srunx.client import Slurm
 from srunx.logging import (
@@ -14,6 +17,7 @@ from srunx.logging import (
 )
 from srunx.models import Job, JobEnvironment, JobResource
 from srunx.runner import WorkflowRunner
+from srunx.utils import job_status_msg
 
 logger = get_logger(__name__)
 
@@ -465,16 +469,18 @@ def cmd_flow_run(args: argparse.Namespace) -> None:
             return
 
         # Execute workflow
-        logger.info(f"🚀 Starting workflow: {runner.workflow.name}")
         results = runner.run()
 
-        logger.success("🎉 Workflow completed successfully")
-        logger.info("Workflow summary:")
-        for task_name, job in results.items():
-            if hasattr(job, "job_id") and job.job_id:
-                logger.info(f"  {task_name}: (ID: {job.job_id})")
-            else:
-                logger.info(f"  {task_name}: {job}")
+        logger.success(f"🎉 Workflow {runner.workflow.name} completed!!")
+        table = Table(title=f"Workflow {runner.workflow.name} Summary")
+        table.add_column("Job", justify="left", style="cyan", no_wrap=True)
+        table.add_column("Status", justify="left", style="cyan", no_wrap=True)
+        table.add_column("ID", justify="left", style="cyan", no_wrap=True)
+        for job in results.values():
+            table.add_row(job.name, job.status.value, str(job.job_id))
+
+        console = Console()
+        console.print(table)
 
     except Exception as e:
         logger.error(f"Workflow execution failed: {e}")

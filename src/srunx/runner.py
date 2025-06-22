@@ -84,7 +84,7 @@ class WorkflowRunner:
             Dictionary mapping job names to completed Job instances.
         """
         logger.info(
-            f"Starting workflow '{self.workflow.name}' with {len(self.workflow.jobs)} jobs"
+            f"🚀 Starting Workflow {self.workflow.name} with {len(self.workflow.jobs)} jobs"
         )
 
         # Track all jobs and results
@@ -100,14 +100,12 @@ class WorkflowRunner:
 
         def execute_job(job: RunableJobType) -> RunableJobType:
             """Execute a single job."""
-            logger.info(f"🚀 Starting job: {job.name}")
+            logger.info(f"🌋 {'SUBMITTED':<10} Job {job.name:<12}")
 
             try:
                 result = self.slurm.run(job)
-                logger.success(f"✅ Completed job: {job.name}")
                 return result
             except Exception as e:
-                logger.error(f"❌ Job {job.name} failed: {e}")
                 raise
 
         def on_job_complete(job_name: str, result: RunableJobType) -> list[str]:
@@ -125,18 +123,12 @@ class WorkflowRunner:
                 ):
                     newly_ready.append(dependent_name)
 
-            if newly_ready:
-                logger.info(
-                    f"📋 Job {job_name} completed. Ready to start: {newly_ready}"
-                )
-
             return newly_ready
 
         # Execute workflow with ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=8) as executor:
             # Submit initial ready jobs
             initial_jobs = self.get_independent_jobs()
-            logger.info(f"🌋 Starting initial jobs: {[j.name for j in initial_jobs]}")
 
             for job in initial_jobs:
                 future = executor.submit(execute_job, job)
@@ -190,7 +182,7 @@ class WorkflowRunner:
             logger.error(f"❌ Jobs did not complete: {incomplete_jobs}")
             raise RuntimeError(f"Workflow execution incomplete: {incomplete_jobs}")
 
-        logger.success("🎉 Workflow completed successfully")
+        logger.success(f"🎉 Workflow {self.workflow.name} completed!!")
         return results
 
     def execute_from_yaml(self, yaml_path: str | Path) -> dict[str, RunableJobType]:

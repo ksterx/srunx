@@ -107,10 +107,9 @@ def cmd_run_workflow(args: argparse.Namespace) -> None:
             return
 
         # Execute workflow
-        logger.info(f"🚀 Starting workflow: {runner.workflow.name}")
         results = runner.run()
 
-        logger.success("🎉 Workflow completed successfully")
+        logger.success(f"🎉 Workflow {runner.workflow.name} completed!!")
         logger.info("Job Results:")
         for task_name, job in results.items():
             if hasattr(job, "job_id") and job.job_id:

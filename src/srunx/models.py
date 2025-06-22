@@ -94,6 +94,9 @@ class BaseJob(BaseModel):
 
     def refresh(self, retries: int = 3) -> Self:
         """Query sacct and update ``_status`` in-place."""
+        if self.job_id is None:
+            return self
+
         for retry in range(retries):
             try:
                 result = subprocess.run(
@@ -184,31 +187,43 @@ Workflow: {self.name}
 Jobs: {len(self.jobs)}
 """
 
+        def add_indent(indent: int, msg: str) -> str:
+            return "    " * indent + msg
+
         for job in self.jobs:
-            msg += f"    Job: {job.name}\n"
+            msg += add_indent(1, f"Job: {job.name}\n")
             if isinstance(job, Job):
-                msg += f"{'        Command:': <21} {' '.join(job.command or [])}\n"
-                msg += f"{'        Resources:': <21} {job.resources.nodes} nodes, {job.resources.gpus_per_node} GPUs/node\n"
+                msg += add_indent(
+                    2, f"{'Command:': <13} {' '.join(job.command or [])}\n"
+                )
+                msg += add_indent(
+                    2,
+                    f"{'Resources:': <13} {job.resources.nodes} nodes, {job.resources.gpus_per_node} GPUs/node\n",
+                )
                 if job.environment.conda:
-                    msg += f"{'        Conda env:': <21} {job.environment.conda}\n"
+                    msg += add_indent(
+                        2, f"{'Conda env:': <13} {job.environment.conda}\n"
+                    )
                 if job.environment.sqsh:
-                    msg += f"{'        Sqsh:': <21} {job.environment.sqsh}\n"
+                    msg += add_indent(2, f"{'Sqsh:': <13} {job.environment.sqsh}\n")
                 if job.environment.venv:
-                    msg += f"{'        Venv:': <21} {job.environment.venv}\n"
+                    msg += add_indent(2, f"{'Venv:': <13} {job.environment.venv}\n")
             elif isinstance(job, ShellJob):
-                msg += f"{'        Path:': <21} {job.path}\n"
+                msg += add_indent(2, f"{'Path:': <13} {job.path}\n")
             if job.depends_on:
-                msg += f"{'        Dependencies:': <21} {', '.join(job.depends_on)}\n"
+                msg += add_indent(
+                    2, f"{'Dependencies:': <13} {', '.join(job.depends_on)}\n"
+                )
 
         msg += f"{'=' * 80}\n"
         print(msg)
 
     def validate(self):
-        """Validate workflow task dependencies."""
+        """Validate workflow job dependencies."""
         job_names = {job.name for job in self.jobs}
 
         if len(job_names) != len(self.jobs):
-            raise WorkflowValidationError("Duplicate task names found in workflow")
+            raise WorkflowValidationError("Duplicate job names found in workflow")
 
         for job in self.jobs:
             for dependency in job.depends_on:
@@ -230,9 +245,9 @@ Jobs: {len(self.jobs)}
             visited.add(job_name)
             rec_stack.add(job_name)
 
-            task = self.get(job_name)
-            if task:
-                for dependency in task.depends_on:
+            job = self.get(job_name)
+            if job:
+                for dependency in job.depends_on:
                     if has_cycle(dependency):
                         return True
 

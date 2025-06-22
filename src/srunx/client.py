@@ -18,7 +18,7 @@ from srunx.models import (
     ShellJob,
     render_job_script,
 )
-from srunx.utils import get_job_status
+from srunx.utils import get_job_status, job_status_msg
 
 logger = get_logger(__name__)
 
@@ -225,9 +225,7 @@ class Slurm:
         if callbacks:
             all_callbacks.extend(callbacks)
 
-        msg = f"⏳ Waiting for job {job.job_id} to complete (polling every {poll_interval}s)."
-        if isinstance(job, Job):
-            msg += f" Logging to {job.log_dir}/{job.name}_{job.job_id}.out"
+        msg = f"👀 {'MONITORING':<10} Job {job.name:<12} (ID: {job.job_id})"
         logger.info(msg)
 
         previous_status = None
@@ -238,17 +236,17 @@ class Slurm:
             # Log status changes
             if job.status != previous_status:
                 status_str = job.status.value if job.status else "Unknown"
-                logger.info(f"Job {job.job_id} status: {status_str}")
+                logger.debug(f"Job(name={job.name}, id={job.job_id}) is {status_str}")
                 previous_status = job.status
 
             match job.status:
                 case JobStatus.COMPLETED:
-                    logger.info(f"Job {job.job_id} completed successfully")
+                    logger.info(job_status_msg(job))
                     for callback in all_callbacks:
                         callback.on_job_completed(job)
                     return job
                 case JobStatus.FAILED:
-                    err_msg = f"SLURM job {job.job_id} failed.\n"
+                    err_msg = job_status_msg(job) + "\n"
                     if isinstance(job, Job):
                         log_file = Path(job.log_dir) / f"{job.name}_{job.job_id}.out"
                         if log_file.exists():
@@ -261,9 +259,7 @@ class Slurm:
                         callback.on_job_failed(job)
                     raise RuntimeError(err_msg)
                 case JobStatus.CANCELLED | JobStatus.TIMEOUT:
-                    err_msg = (
-                        f"SLURM job {job.job_id} was {job.status.value.lower()}.\n"
-                    )
+                    err_msg = job_status_msg(job) + "\n"
                     if isinstance(job, Job):
                         log_file = Path(job.log_dir) / f"{job.name}_{job.job_id}.out"
                         if log_file.exists():

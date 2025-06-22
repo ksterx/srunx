@@ -64,3 +64,20 @@ def get_job_status(job_id: int) -> BaseJob:
     )
 
     return job
+
+
+def job_status_msg(job: BaseJob) -> str:
+    icons = {
+        JobStatus.COMPLETED: "✅",
+        JobStatus.RUNNING: "🚀",
+        JobStatus.PENDING: "⌛",
+        JobStatus.FAILED: "❌",
+        JobStatus.CANCELLED: "🛑",
+        JobStatus.TIMEOUT: "⏰",
+        JobStatus.UNKNOWN: "❓",
+    }
+    status_icon = icons.get(job.status, "❓")
+    job_id_display = job.job_id if job.job_id is not None else "—"
+    return (
+        f"{status_icon} {job.status.name:<10} Job {job.name:<12} (ID: {job_id_display})"
+    )
