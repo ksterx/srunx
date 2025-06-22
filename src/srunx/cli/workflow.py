@@ -125,7 +125,6 @@ def cmd_run_workflow(args: argparse.Namespace) -> None:
         # Execute workflow
         results = runner.run()
 
-        logger.success(f"🎉 Workflow {runner.workflow.name} completed!!")
         logger.info("Job Results:")
         for task_name, job in results.items():
             if hasattr(job, "job_id") and job.job_id:
