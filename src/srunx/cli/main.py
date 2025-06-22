@@ -288,6 +288,11 @@ def create_main_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show what would be executed without running jobs",
     )
+    flow_run_parser.add_argument(
+        "--slack",
+        action="store_true",
+        help="Send notifications to Slack",
+    )
 
     # Flow validate command
     flow_validate_parser = flow_subparsers.add_parser(
@@ -458,7 +463,15 @@ def cmd_flow_run(args: argparse.Namespace) -> None:
             logger.error(f"Workflow file not found: {args.yaml_file}")
             sys.exit(1)
 
-        runner = WorkflowRunner.from_yaml(yaml_file)
+        # Setup callbacks if requested
+        callbacks = []
+        if getattr(args, "slack", False):
+            webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+            if not webhook_url:
+                raise ValueError("SLACK_WEBHOOK_URL environment variable is not set")
+            callbacks.append(SlackCallback(webhook_url=webhook_url))
+
+        runner = WorkflowRunner.from_yaml(yaml_file, callbacks=callbacks)
 
         # Validate dependencies
         runner.workflow.validate()

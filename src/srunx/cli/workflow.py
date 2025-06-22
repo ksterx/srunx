@@ -1,9 +1,11 @@
 """CLI interface for workflow management."""
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
+from srunx.callbacks import SlackCallback
 from srunx.logging import configure_workflow_logging, get_logger
 from srunx.runner import WorkflowRunner
 
@@ -79,6 +81,12 @@ Example YAML workflow:
         help="Set logging level (default: %(default)s)",
     )
 
+    parser.add_argument(
+        "--slack",
+        action="store_true",
+        help="Send notifications to Slack",
+    )
+
     return parser
 
 
@@ -93,7 +101,15 @@ def cmd_run_workflow(args: argparse.Namespace) -> None:
             logger.error(f"Workflow file not found: {args.yaml_file}")
             sys.exit(1)
 
-        runner = WorkflowRunner.from_yaml(yaml_file)
+        # Setup callbacks if requested
+        callbacks = []
+        if getattr(args, "slack", False):
+            webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+            if not webhook_url:
+                raise ValueError("SLACK_WEBHOOK_URL environment variable is not set")
+            callbacks.append(SlackCallback(webhook_url=webhook_url))
+
+        runner = WorkflowRunner.from_yaml(yaml_file, callbacks=callbacks)
 
         # Validate dependencies
         runner.workflow.validate()

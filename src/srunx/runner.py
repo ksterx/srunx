@@ -2,12 +2,14 @@
 
 import time
 from collections import defaultdict
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Self
 
 import yaml
 
+from srunx.callbacks import Callback
 from srunx.client import Slurm
 from srunx.exceptions import WorkflowValidationError
 from srunx.logging import get_logger
@@ -31,17 +33,27 @@ class WorkflowRunner:
     rather than waiting for entire dependency levels to complete.
     """
 
-    def __init__(self, workflow: Workflow) -> None:
-        """Initialize workflow runner."""
+    def __init__(
+        self, workflow: Workflow, callbacks: Sequence[Callback] | None = None
+    ) -> None:
+        """Initialize workflow runner.
+
+        Args:
+            workflow: Workflow to execute.
+            callbacks: List of callbacks for job notifications.
+        """
         self.workflow = workflow
-        self.slurm = Slurm()
+        self.slurm = Slurm(callbacks=callbacks)
 
     @classmethod
-    def from_yaml(cls, yaml_path: str | Path) -> Self:
+    def from_yaml(
+        cls, yaml_path: str | Path, callbacks: Sequence[Callback] | None = None
+    ) -> Self:
         """Load and validate a workflow from a YAML file.
 
         Args:
             yaml_path: Path to the YAML workflow definition file.
+            callbacks: List of callbacks for job notifications.
 
         Returns:
             WorkflowRunner instance with loaded workflow.
@@ -65,7 +77,7 @@ class WorkflowRunner:
         for job_data in jobs_data:
             job = cls.parse_job(job_data)
             jobs.append(job)
-        return cls(workflow=Workflow(name=name, jobs=jobs))
+        return cls(workflow=Workflow(name=name, jobs=jobs), callbacks=callbacks)
 
     def get_independent_jobs(self) -> list[RunableJobType]:
         """Get all jobs that are independent of any other job."""
