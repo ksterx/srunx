@@ -44,6 +44,7 @@ class WorkflowRunner:
         """
         self.workflow = workflow
         self.slurm = Slurm(callbacks=callbacks)
+        self.callbacks = callbacks
 
     @classmethod
     def from_yaml(
@@ -98,6 +99,8 @@ class WorkflowRunner:
         logger.info(
             f"🚀 Starting Workflow {self.workflow.name} with {len(self.workflow.jobs)} jobs"
         )
+        for callback in self.callbacks:
+            callback.on_workflow_started(self.workflow)
 
         # Track all jobs and results
         all_jobs = self.workflow.jobs.copy()
@@ -112,7 +115,7 @@ class WorkflowRunner:
 
         def execute_job(job: RunableJobType) -> RunableJobType:
             """Execute a single job."""
-            logger.info(f"🌋 {'SUBMITTED':<10} Job {job.name:<12}")
+            logger.info(f"🌋 {'SUBMITTED':<12} Job {job.name:<12}")
 
             try:
                 result = self.slurm.run(job)
@@ -195,6 +198,10 @@ class WorkflowRunner:
             raise RuntimeError(f"Workflow execution incomplete: {incomplete_jobs}")
 
         logger.success(f"🎉 Workflow {self.workflow.name} completed!!")
+
+        for callback in self.callbacks:
+            callback.on_workflow_completed(self.workflow)
+
         return results
 
     def execute_from_yaml(self, yaml_path: str | Path) -> dict[str, RunableJobType]:

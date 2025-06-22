@@ -2,7 +2,8 @@
 
 from slack_sdk import WebhookClient
 
-from srunx.models import JobType
+from srunx.models import JobType, Workflow
+from srunx.utils import job_status_msg
 
 
 class Callback:
@@ -48,6 +49,22 @@ class Callback:
         """
         pass
 
+    def on_workflow_started(self, workflow: Workflow) -> None:
+        """Called when a workflow starts.
+
+        Args:
+            workflow: Workflow that started.
+        """
+        pass
+
+    def on_workflow_completed(self, workflow: Workflow) -> None:
+        """Called when a workflow completes.
+
+        Args:
+            workflow: Workflow that completed.
+        """
+        pass
+
 
 class SlackCallback(Callback):
     """Callback that sends notifications to Slack via webhook."""
@@ -60,6 +77,26 @@ class SlackCallback(Callback):
         """
         self.client = WebhookClient(webhook_url)
 
+    def on_job_submitted(self, job: JobType) -> None:
+        """Send a message to Slack.
+
+        Args:
+            job: Job that completed.
+            message: Message to send.
+        """
+        self.client.send(
+            text="Job submitted",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"`🌋 {'SUBMITTED':<12} Job {job.name:<12} (ID: {job.job_id})`",
+                    },
+                }
+            ],
+        )
+
     def on_job_completed(self, job: JobType) -> None:
         """Send completion notification to Slack.
 
@@ -67,11 +104,11 @@ class SlackCallback(Callback):
             job: Job that completed.
         """
         self.client.send(
-            text="🎉Job completed🎉",
+            text="Job completed",
             blocks=[
                 {
                     "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"Job {job.name} completed"},
+                    "text": {"type": "mrkdwn", "text": f"`{job_status_msg(job)}`"},
                 }
             ],
         )
@@ -83,11 +120,30 @@ class SlackCallback(Callback):
             job: Job that failed.
         """
         self.client.send(
-            text="☠️Job failed☠️",
+            text="Job failed",
             blocks=[
                 {
                     "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"Job {job.name} failed"},
+                    "text": {"type": "mrkdwn", "text": f"`{job_status_msg(job)}`"},
+                }
+            ],
+        )
+
+    def on_workflow_completed(self, workflow: Workflow) -> None:
+        """Send completion notification to Slack.
+
+        Args:
+            workflow: Workflow that completed.
+        """
+        self.client.send(
+            text="Workflow completed",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"🎉 Workflow {workflow.name} completed🎉",
+                    },
                 }
             ],
         )

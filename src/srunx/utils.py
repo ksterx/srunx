@@ -89,5 +89,5 @@ def job_status_msg(job: BaseJob) -> str:
     status_icon = icons.get(job.status, "❓")
     job_id_display = job.job_id if job.job_id is not None else "—"
     return (
-        f"{status_icon} {job.status.name:<10} Job {job.name:<12} (ID: {job_id_display})"
+        f"{status_icon} {job.status.name:<12} Job {job.name:<12} (ID: {job_id_display})"
     )

@@ -233,7 +233,7 @@ class Slurm:
         if callbacks:
             all_callbacks.extend(callbacks)
 
-        msg = f"👀 {'MONITORING':<10} Job {job.name:<12} (ID: {job.job_id})"
+        msg = f"👀 {'MONITORING':<12} Job {job.name:<12} (ID: {job.job_id})"
         logger.info(msg)
 
         previous_status = None

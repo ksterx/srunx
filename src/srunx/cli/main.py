@@ -429,11 +429,11 @@ def cmd_queue(args: argparse.Namespace) -> None:
             logger.info("No jobs found")
             return
 
-        logger.info(f"{'Job ID':<10} {'Name':<20} {'Status':<12}")
+        logger.info(f"{'Job ID':<12} {'Name':<20} {'Status':<12}")
         logger.info("-" * 45)
         for job in jobs:
             status_str = job.status.value if job.status else "Unknown"
-            logger.info(f"{job.job_id:<10} {job.name:<20} {status_str:<12}")
+            logger.info(f"{job.job_id:<12} {job.name:<20} {status_str:<12}")
 
     except Exception as e:
         logger.error(f"Error queueing jobs: {e}")

@@ -8,13 +8,16 @@ A modern Python library for SLURM workload manager integration with workflow orc
 
 ## Features
 
-- 🚀 **Simple Job Submission**: Easy-to-use API for submitting SLURM jobs
-- ⚙️ **Flexible Configuration**: Support for various environments (conda, venv, sqsh)
-- 📋 **Job Management**: Submit, monitor, cancel, and list jobs
+
 - 🧩 **Workflow Orchestration**: YAML-based workflow definitions with Prefect integration
+- ⚡ **Fine-Grained Parallel Execution**: Jobs execute immediately when their specific dependencies complete, not entire workflow phases
+- 🔗 **Branched Dependency Control**: Independent branches in dependency graphs run simultaneously without false dependencies
 - 📝 **Template System**: Customizable Jinja2 templates for SLURM scripts
 - 🛡️ **Type Safe**: Full type hints and mypy compatibility
 - 🖥️ **CLI Tools**: Command-line interfaces for both job management and workflows
+- 🚀 **Simple Job Submission**: Easy-to-use API for submitting SLURM jobs
+- ⚙️ **Flexible Configuration**: Support for various environments (conda, venv, sqsh)
+- 📋 **Job Management**: Submit, monitor, cancel, and list jobs
 
 ## Installation
 
@@ -40,65 +43,29 @@ uv sync --dev
 
 ## Quick Start
 
-### Basic Job Submission
-
-```python
-from srunx import Job, JobResource, JobEnvironment, Slurm
-
-# Create a job configuration
-job = Job(
-    name="my_training_job",
-    command=["python", "train.py", "--epochs", "100"],
-    resources=JobResource(
-        nodes=1,
-        gpus_per_node=1,
-        memory_per_node="32GB",
-        time_limit="4:00:00"
-    ),
-    environment=JobEnvironment(conda="ml_env")
-)
-
-# Submit the job
-client = Slurm()
-job = client.run(job)
-print(f"Submitted job {job.job_id}")
-
-# Monitor job status
-job = client.retrieve(job.job_id)
-print(f"Job status: {job.status}")
-```
-
-### Command Line Usage
-
-#### Submit a Job
+You can try the workflow example:
 
 ```bash
-# Basic job submission
-srunx submit python train.py --name ml_job
-
-# With resource specifications
-srunx submit python train.py \
-  --name gpu_job \
-  --gpus-per-node 2 \
-  --memory 64GB \
-  --time 8:00:00
-
-# With environment setup
-srunx submit python train.py --conda ml_env
+cd examples
+srunx flow run sample_workflow.yaml
 ```
 
-#### Job Management
+```mermaid
+graph TD
+    A["Job A"]
+    B1["Job B1"]
+    B2["Job B2"]
+    C["Job C"]
+    D["Job D"]
 
-```bash
-# Check job status
-srunx status 12345
-
-# List all jobs
-srunx list
-
-# Cancel a job
-srunx cancel 12345
+    A --> B1
+    A --> C
+    B1 --> B2
+    B2 --> D
+    C --> D
 ```
+
+The workflow engine provides fine-grained dependency control: when Job A completes, B1 and C start immediately in parallel. As soon as B1 finishes, B2 starts regardless of C's status. Job D waits only for both B2 and C to complete, enabling maximum parallelization.
 
 ### Workflow Orchestration
 
@@ -183,37 +150,31 @@ environment = JobEnvironment(
 )
 ```
 
-#### SquashFS Images
-
-```python
-environment = JobEnvironment(
-    sqsh="/path/to/container.sqsh",
-    env_vars={"OMP_NUM_THREADS": "8"}
-)
-```
-
 ### Programmatic Workflow Execution
 
 ```python
 from srunx.workflows import WorkflowRunner
 
-runner = WorkflowRunner()
-workflow = runner.load_from_yaml("workflow.yaml")
-results = runner.execute_workflow(workflow)
+runner = WorkflowRunner.from_yaml("workflow.yaml")
+results = runner.run()
 
 print("Job IDs:")
 for task_name, job_id in results.items():
     print(f"  {task_name}: {job_id}")
 ```
 
-### Async Job Submission
+###  Job Submission
 
 ```python
 # Submit job without waiting
-job = client.run(job)
+job = client.submit(job)
 
 # Later, wait for completion
 completed_job = client.monitor(job, poll_interval=30)
+print(f"Job completed with status: {completed_job.status}")
+
+# Subit and wait for completion
+completed_job = client.run(job)
 print(f"Job completed with status: {completed_job.status}")
 ```
 
@@ -241,10 +202,10 @@ Workflow execution engine with YAML support.
 #### Main CLI (`srunx`)
 - `submit` - Submit SLURM jobs
 - `status` - Check job status
-- `list` - List jobs
+- `queue` - List jobs
 - `cancel` - Cancel jobs
 
-#### Workflow CLI (`srunx workflow`)
+#### Workflow CLI (`srunx flow`)
 - Execute YAML-defined workflows
 - Validate workflow files
 - Show execution plans
@@ -374,6 +335,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Acknowledgments
 
 - Built with [Pydantic](https://pydantic.dev/) for data validation
-- Workflow orchestration powered by [Prefect](https://www.prefect.io/)
 - Template rendering with [Jinja2](https://jinja.palletsprojects.com/)
 - Package management with [uv](https://github.com/astral-sh/uv)
