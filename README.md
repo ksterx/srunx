@@ -1,13 +1,13 @@
 # srunx
 
+[![PyPI](https://img.shields.io/pypi/v/srunx)](https://pypi.org/project/srunx/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![Type Checked](https://img.shields.io/badge/type--checked-mypy-blue.svg)](https://mypy.readthedocs.io/)
-[![Code Style](https://img.shields.io/badge/code%20style-ruff-black.svg)](https://github.com/astral-sh/ruff)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Actions Status](https://github.com/ksterx/srunx/workflows/CI/badge.svg)](https://github.com/ksterx/srunx/actions)
 
 A modern Python library for SLURM workload manager integration with workflow orchestration capabilities.
 
 ## Features
-
 
 - 🧩 **Workflow Orchestration**: YAML-based workflow definitions with Prefect integration
 - ⚡ **Fine-Grained Parallel Execution**: Jobs execute immediately when their specific dependencies complete, not entire workflow phases
@@ -163,7 +163,7 @@ for task_name, job_id in results.items():
     print(f"  {task_name}: {job_id}")
 ```
 
-###  Job Submission
+### Job Submission
 
 ```python
 # Submit job without waiting
@@ -183,29 +183,36 @@ print(f"Job completed with status: {completed_job.status}")
 ### Core Classes
 
 #### `Job`
+
 Main job configuration class with resources and environment settings.
 
 #### `JobResource`
+
 Resource allocation specification (nodes, GPUs, memory, time).
 
 #### `JobEnvironment`
+
 Environment setup (conda, venv, sqsh, environment variables).
 
 #### `Slurm`
+
 Main interface for SLURM operations (submit, status, cancel, list).
 
 #### `WorkflowRunner`
+
 Workflow execution engine with YAML support.
 
 ### CLI Commands
 
 #### Main CLI (`srunx`)
+
 - `submit` - Submit SLURM jobs
 - `status` - Check job status
 - `queue` - List jobs
 - `cancel` - Cancel jobs
 
 #### Workflow CLI (`srunx flow`)
+
 - Execute YAML-defined workflows
 - Validate workflow files
 - Show execution plans
@@ -219,6 +226,7 @@ Workflow execution engine with YAML support.
 ### Template Locations
 
 srunx includes built-in templates:
+
 - `base.slurm.jinja`: Basic job template
 - `advanced.slurm.jinja`: Full-featured template with all options
 
