@@ -65,7 +65,7 @@ graph TD
     C --> D
 ```
 
-The workflow engine provides fine-grained dependency control: when Job A completes, B1 and C start immediately in parallel. As soon as B1 finishes, B2 starts regardless of C's status. Job D waits only for both B2 and C to complete, enabling maximum parallelization.
+Jobs run precisely when they're ready, minimizing wasted compute hours. The workflow engine provides fine-grained dependency control: when Job A completes, B1 and C start immediately in parallel. As soon as B1 finishes, B2 starts regardless of C's status. Job D waits only for both B2 and C to complete, enabling maximum parallelization.
 
 ### Workflow Orchestration
 
@@ -176,6 +176,21 @@ print(f"Job completed with status: {completed_job.status}")
 # Subit and wait for completion
 completed_job = client.run(job)
 print(f"Job completed with status: {completed_job.status}")
+```
+
+### Slack Integration
+
+```python
+from srunx.callbacks import SlackCallback
+
+slack_callback = SlackCallback(webhook_url="your_webhook_url")
+runner = WorkflowRunner.from_yaml("workflow.yaml", callbacks=[slack_callback])
+```
+
+or you can use the CLI:
+
+```bash
+srunx flow run workflow.yaml --slack
 ```
 
 ## API Reference
@@ -333,7 +348,7 @@ job = client.run(distributed_job)
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache-2.0 License.
 
 ## Support
 
