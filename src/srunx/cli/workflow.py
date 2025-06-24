@@ -20,7 +20,7 @@ def create_workflow_parser() -> argparse.ArgumentParser:
         epilog="""
 Example YAML workflow:
   name: ml_pipeline
-  tasks:
+  jobs:
     - name: preprocess
       command: ["python", "preprocess.py"]
       resources:

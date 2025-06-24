@@ -53,23 +53,24 @@ Create a workflow YAML file (``workflow.yaml``):
 .. code-block:: yaml
 
    name: ml_pipeline
-   tasks:
+   jobs:
      - name: preprocess
        command: ["python", "preprocess.py"]
-       nodes: 1
+       resources:
+         nodes: 1
 
      - name: train
        command: ["python", "train.py"]
        depends_on: [preprocess]
-       gpus_per_node: 1
-       conda: ml_env
-       memory_per_node: "32GB"
-       time_limit: "4:00:00"
+       resources:
+         gpus_per_node: 1
+         conda: ml_env
+         memory_per_node: "32GB"
+         time_limit: "4:00:00"
 
      - name: evaluate
        command: ["python", "evaluate.py"]
        depends_on: [train]
-       async: true
 
 Run the workflow:
 

@@ -107,7 +107,7 @@ src/srunx/
 Enhanced YAML workflow format:
 ```yaml
 name: ml_pipeline
-tasks:
+jobs:
   - name: preprocess
     command: ["python", "preprocess.py"]
     nodes: 1

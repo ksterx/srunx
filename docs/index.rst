@@ -27,15 +27,20 @@ Define a workflow:
 .. code-block:: yaml
 
    name: ml_pipeline
-   tasks:
+   jobs:
      - name: preprocess
        command: ["python", "preprocess.py"]
-       nodes: 1
-       
+       resources:
+         nodes: 1
+
      - name: train
-       command: ["python", "train.py"] 
+       command: ["python", "train.py"]
        depends_on: [preprocess]
-       gpus_per_node: 1
+       resources:
+         gpus_per_node: 1
+         conda: ml_env
+         memory_per_node: "32GB"
+         time_limit: "8:00:00"
 
 .. toctree::
    :maxdepth: 2
@@ -58,4 +63,3 @@ Indices and tables
 * :ref:`genindex`
 * :ref:`modindex`
 * :ref:`search`
-

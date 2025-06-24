@@ -74,7 +74,7 @@ Create a workflow YAML file:
 ```yaml
 # workflow.yaml
 name: ml_pipeline
-tasks:
+jobs:
   - name: preprocess
     command: ["python", "preprocess.py"]
     nodes: 1
@@ -179,6 +179,8 @@ print(f"Job completed with status: {completed_job.status}")
 ```
 
 ### Slack Integration
+
+![image](public/slack_screenshot.png)
 
 ```python
 from srunx.callbacks import SlackCallback

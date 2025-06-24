@@ -110,19 +110,19 @@ Workflows are defined in YAML format with tasks and dependencies:
 
    name: data_pipeline
    description: "Complete data processing pipeline"
-   
-   tasks:
+
+   jobs:
      - name: download_data
        command: ["python", "download.py"]
        nodes: 1
        memory_per_node: "8GB"
-       
+
      - name: preprocess
        command: ["python", "preprocess.py", "--input", "data/raw"]
        depends_on: [download_data]
        nodes: 1
        cpus_per_task: 4
-       
+
      - name: train_model
        command: ["python", "train.py"]
        depends_on: [preprocess]
@@ -130,7 +130,7 @@ Workflows are defined in YAML format with tasks and dependencies:
        gpus_per_node: 1
        conda: pytorch_env
        time_limit: "12:00:00"
-       
+
      - name: evaluate
        command: ["python", "evaluate.py"]
        depends_on: [train_model]
@@ -170,10 +170,10 @@ srunx supports job completion callbacks, including Slack notifications:
 
    from srunx.callbacks import SlackCallback
    from srunx.client import Slurm
-   
+
    callback = SlackCallback(webhook_url="https://hooks.slack.com/...")
    client = Slurm()
-   
+
    job = client.submit(
        command=["python", "train.py"],
        name="training_job",
@@ -198,10 +198,10 @@ Use srunx from Python code:
 
    from srunx.client import Slurm
    from srunx.models import Job, JobResource, JobEnvironment
-   
+
    # Create client
    client = Slurm()
-   
+
    # Define job
    job = Job(
        name="my_job",
@@ -214,10 +214,10 @@ Use srunx from Python code:
        ),
        environment=JobEnvironment(conda="ml_env")
    )
-   
+
    # Submit job
    job_id = client.submit(job)
-   
+
    # Monitor job
    status = client.retrieve(job_id)
    print(f"Job {job_id} status: {status.state}")

@@ -23,12 +23,12 @@ Basic Structure
 
    name: workflow_name
    description: "Optional workflow description"
-   
-   tasks:
+
+   jobs:
      - name: task1
        command: ["python", "script1.py"]
        # ... task configuration
-       
+
      - name: task2
        command: ["python", "script2.py"]
        depends_on: [task1]
@@ -93,14 +93,14 @@ Simple sequential execution:
 .. code-block:: yaml
 
    name: linear_pipeline
-   tasks:
+   jobs:
      - name: step1
        command: ["python", "step1.py"]
-       
+
      - name: step2
        command: ["python", "step2.py"]
        depends_on: [step1]
-       
+
      - name: step3
        command: ["python", "step3.py"]
        depends_on: [step2]
@@ -113,18 +113,18 @@ Multiple tasks depending on the same prerequisite:
 .. code-block:: yaml
 
    name: parallel_pipeline
-   tasks:
+   jobs:
      - name: preprocess
        command: ["python", "preprocess.py"]
-       
+
      - name: train_model_a
        command: ["python", "train_a.py"]
        depends_on: [preprocess]
-       
+
      - name: train_model_b
        command: ["python", "train_b.py"]
        depends_on: [preprocess]
-       
+
      - name: ensemble
        command: ["python", "ensemble.py"]
        depends_on: [train_model_a, train_model_b]
@@ -137,26 +137,26 @@ Advanced dependency patterns:
 .. code-block:: yaml
 
    name: complex_pipeline
-   tasks:
+   jobs:
      - name: data_download
        command: ["python", "download.py"]
-       
+
      - name: data_validation
        command: ["python", "validate.py"]
        depends_on: [data_download]
-       
+
      - name: feature_engineering
        command: ["python", "features.py"]
        depends_on: [data_validation]
-       
+
      - name: model_training
        command: ["python", "train.py"]
        depends_on: [feature_engineering]
-       
+
      - name: model_evaluation
        command: ["python", "evaluate.py"]
        depends_on: [model_training]
-       
+
      - name: report_generation
        command: ["python", "report.py"]
        depends_on: [model_evaluation, data_validation]
@@ -171,22 +171,22 @@ Machine Learning Pipeline
 
    name: ml_pipeline
    description: "Complete machine learning training pipeline"
-   
-   tasks:
+
+   jobs:
      - name: data_preprocessing
        command: ["python", "preprocess.py", "--input", "raw_data/"]
        nodes: 1
        cpus_per_task: 4
        memory_per_node: "16GB"
        time_limit: "2:00:00"
-       
+
      - name: feature_selection
        command: ["python", "feature_selection.py"]
        depends_on: [data_preprocessing]
        nodes: 1
        cpus_per_task: 8
        memory_per_node: "32GB"
-       
+
      - name: hyperparameter_tuning
        command: ["python", "hyperopt.py", "--trials", "100"]
        depends_on: [feature_selection]
@@ -194,7 +194,7 @@ Machine Learning Pipeline
        gpus_per_node: 1
        conda: pytorch_env
        time_limit: "8:00:00"
-       
+
      - name: final_training
        command: ["python", "train_final.py"]
        depends_on: [hyperparameter_tuning]
@@ -202,14 +202,14 @@ Machine Learning Pipeline
        gpus_per_node: 2
        conda: pytorch_env
        time_limit: "12:00:00"
-       
+
      - name: model_validation
        command: ["python", "validate.py"]
        depends_on: [final_training]
        nodes: 1
        gpus_per_node: 1
        conda: pytorch_env
-       
+
      - name: deployment_prep
        command: ["python", "prepare_deployment.py"]
        depends_on: [model_validation]
@@ -223,19 +223,19 @@ Bioinformatics Pipeline
 
    name: genomics_pipeline
    description: "RNA-seq analysis pipeline"
-   
-   tasks:
+
+   jobs:
      - name: quality_control
        command: ["fastqc", "*.fastq.gz"]
        nodes: 1
        cpus_per_task: 16
-       
+
      - name: trimming
        command: ["trim_galore", "--paired", "sample_R1.fastq.gz", "sample_R2.fastq.gz"]
        depends_on: [quality_control]
        nodes: 1
        cpus_per_task: 8
-       
+
      - name: alignment
        command: ["STAR", "--runThreadN", "32", "--genomeDir", "genome_index"]
        depends_on: [trimming]
@@ -243,13 +243,13 @@ Bioinformatics Pipeline
        cpus_per_task: 32
        memory_per_node: "64GB"
        time_limit: "4:00:00"
-       
+
      - name: quantification
        command: ["featureCounts", "-T", "16", "-a", "annotation.gtf"]
        depends_on: [alignment]
        nodes: 1
        cpus_per_task: 16
-       
+
      - name: differential_expression
        command: ["Rscript", "deseq2_analysis.R"]
        depends_on: [quantification]
@@ -313,7 +313,7 @@ srunx supports workflow restart capabilities:
 
    # Resume from a specific task
    srunx flow run pipeline.yaml --start-from task_name
-   
+
    # Skip completed tasks
    srunx flow run pipeline.yaml --resume
 
@@ -366,8 +366,8 @@ Parameter Substitution
    parameters:
      dataset: "experiment_1"
      epochs: 100
-     
-   tasks:
+
+   jobs:
      - name: training
        command: ["python", "train.py", "--dataset", "{{dataset}}", "--epochs", "{{epochs}}"]
 
@@ -380,11 +380,11 @@ Create reusable workflow templates:
 
    name: ml_template
    template: true
-   
-   tasks:
+
+   jobs:
      - name: preprocess
        command: ["python", "preprocess.py", "--input", "{{input_path}}"]
-       
+
      - name: train
        command: ["python", "train.py", "--model", "{{model_type}}"]
        depends_on: [preprocess]
