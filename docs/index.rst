@@ -1,7 +1,7 @@
 srunx documentation
 ===================
 
-srunx is a powerful Python library for managing SLURM jobs and workflows. It provides a simple command-line interface and Python API for submitting, monitoring, and orchestrating computational tasks on HPC clusters.
+srunx is a powerful Python library for managing SLURM jobs and workflows. It provides a simple command-line interface and Python API for submitting, monitoring, and orchestrating computational jobs on HPC clusters.
 
 Features
 --------

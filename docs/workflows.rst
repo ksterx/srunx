@@ -8,7 +8,7 @@ Overview
 
 Workflows in srunx are defined using YAML files that specify:
 
-- **Tasks**: Individual computational steps
+- **Jobs**: Individual computational steps
 - **Dependencies**: Execution order and prerequisites
 - **Resources**: Computational requirements for each task
 - **Environments**: Software environments for execution
@@ -108,7 +108,7 @@ Simple sequential execution:
 Parallel Dependencies
 ~~~~~~~~~~~~~~~~~~~~~
 
-Multiple tasks depending on the same prerequisite:
+Multiple jobsdepending on the same prerequisite:
 
 .. code-block:: yaml
 
@@ -286,9 +286,9 @@ Monitoring Workflows
 
 srunx provides built-in workflow monitoring:
 
-- **Progress tracking**: See which tasks are running/completed
-- **Dependency resolution**: Automatic task scheduling based on dependencies
-- **Error handling**: Failed tasks don't block independent tasks
+- **Progress tracking**: See which jobs are running/completed
+- **Dependency resolution**: Automatic job scheduling based on dependencies
+- **Error handling**: Failed jobs don't block independent jobs
 - **Logging**: Comprehensive logging of workflow execution
 
 Workflow Management
@@ -297,12 +297,12 @@ Workflow Management
 Error Handling
 ~~~~~~~~~~~~~~
 
-When a task fails:
+When a job fails:
 
-1. **Dependent tasks are blocked**: Tasks depending on failed task won't run
-2. **Independent tasks continue**: Other tasks in the workflow continue
+1. **Dependent jobs are blocked**: Jobs depending on failed job won't run
+2. **Independent jobs continue**: Other jobs in the workflow continue
 3. **Detailed logging**: Error information is captured and logged
-4. **Manual intervention**: You can fix issues and restart failed tasks
+4. **Manual intervention**: You can fix issues and restart failed jobs
 
 Restart and Recovery
 ~~~~~~~~~~~~~~~~~~~~
@@ -311,10 +311,10 @@ srunx supports workflow restart capabilities:
 
 .. code-block:: bash
 
-   # Resume from a specific task
-   srunx flow run pipeline.yaml --start-from task_name
+   # Resume from a specific job
+   srunx flow run pipeline.yaml --start-from job_name
 
-   # Skip completed tasks
+   # Skip completed jobs
    srunx flow run pipeline.yaml --resume
 
 Best Practices
@@ -323,26 +323,26 @@ Best Practices
 Workflow Design
 ~~~~~~~~~~~~~~~
 
-1. **Modular tasks**: Keep tasks focused and independent when possible
-2. **Resource optimization**: Right-size resources for each task
+1. **Modular jobs**: Keep jobs focused and independent when possible
+2. **Resource optimization**: Right-size resources for each job
 3. **Checkpointing**: Save intermediate results for recovery
-4. **Testing**: Test individual tasks before full workflow execution
+4. **Testing**: Test individual jobs before full workflow execution
 
 Dependency Management
 ~~~~~~~~~~~~~~~~~~~~~
 
 1. **Minimize dependencies**: Reduce blocking relationships
 2. **Parallel execution**: Design for maximum parallelism
-3. **Data dependencies**: Ensure data flow matches task dependencies
+3. **Data dependencies**: Ensure data flow matches job dependencies
 4. **Avoid cycles**: srunx will detect and reject circular dependencies
 
 Resource Planning
 ~~~~~~~~~~~~~~~~~
 
-1. **Task profiling**: Understand resource needs for each task
+1. **Job profiling**: Understand resource needs for each job
 2. **Queue management**: Consider cluster queue policies
-3. **Time limits**: Set appropriate time limits for each task
-4. **Resource sharing**: Balance resource allocation across tasks
+3. **Time limits**: Set appropriate time limits for each job
+4. **Resource sharing**: Balance resource allocation across jobs
 
 Advanced Features
 -----------------
@@ -352,7 +352,7 @@ Conditional Execution
 
 .. code-block:: yaml
 
-   - name: conditional_task
+   - name: conditional_job
      command: ["python", "conditional.py"]
      depends_on: [prerequisite]
      condition: "file_exists('trigger.txt')"

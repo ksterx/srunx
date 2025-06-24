@@ -104,7 +104,7 @@ Workflows
 Workflow Definition
 ~~~~~~~~~~~~~~~~~~~
 
-Workflows are defined in YAML format with tasks and dependencies:
+Workflows are defined in YAML format with jobs and dependencies:
 
 .. code-block:: yaml
 
@@ -242,7 +242,7 @@ Environment Management
 Workflow Design
 ~~~~~~~~~~~~~~~
 
-1. **Break down tasks**: Smaller, focused tasks are easier to debug
+1. **Break down jobs**: Smaller, focused jobs are easier to debug
 2. **Use dependencies wisely**: Minimize blocking dependencies
 3. **Handle failures**: Design for partial workflow recovery
 
