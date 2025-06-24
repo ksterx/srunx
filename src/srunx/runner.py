@@ -18,7 +18,7 @@ from srunx.models import (
     JobEnvironment,
     JobResource,
     JobStatus,
-    RunableJobType,
+    RunnableJobType,
     ShellJob,
     Workflow,
 )
@@ -80,7 +80,7 @@ class WorkflowRunner:
             jobs.append(job)
         return cls(workflow=Workflow(name=name, jobs=jobs), callbacks=callbacks)
 
-    def get_independent_jobs(self) -> list[RunableJobType]:
+    def get_independent_jobs(self) -> list[RunnableJobType]:
         """Get all jobs that are independent of any other job."""
         independent_jobs = []
         for job in self.workflow.jobs:
@@ -88,7 +88,7 @@ class WorkflowRunner:
                 independent_jobs.append(job)
         return independent_jobs
 
-    def run(self) -> dict[str, RunableJobType]:
+    def run(self) -> dict[str, RunnableJobType]:
         """Run a workflow with dynamic job scheduling.
 
         Jobs are executed as soon as their dependencies are satisfied.
@@ -104,7 +104,7 @@ class WorkflowRunner:
 
         # Track all jobs and results
         all_jobs = self.workflow.jobs.copy()
-        results: dict[str, RunableJobType] = {}
+        results: dict[str, RunnableJobType] = {}
         running_futures: dict[str, Any] = {}
 
         # Build reverse dependency map for efficient lookups
@@ -113,7 +113,7 @@ class WorkflowRunner:
             for dep in job.depends_on:
                 dependents[dep].add(job.name)
 
-        def execute_job(job: RunableJobType) -> RunableJobType:
+        def execute_job(job: RunnableJobType) -> RunnableJobType:
             """Execute a single job."""
             logger.info(f"🌋 {'SUBMITTED':<12} Job {job.name:<12}")
 
@@ -123,7 +123,7 @@ class WorkflowRunner:
             except Exception as e:
                 raise
 
-        def on_job_complete(job_name: str, result: RunableJobType) -> list[str]:
+        def on_job_complete(job_name: str, result: RunnableJobType) -> list[str]:
             """Handle job completion and return newly ready job names."""
             results[job_name] = result
             completed_job_names = list(set(results.keys()))
@@ -204,7 +204,7 @@ class WorkflowRunner:
 
         return results
 
-    def execute_from_yaml(self, yaml_path: str | Path) -> dict[str, RunableJobType]:
+    def execute_from_yaml(self, yaml_path: str | Path) -> dict[str, RunnableJobType]:
         """Load and execute a workflow from YAML file.
 
         Args:
@@ -218,7 +218,7 @@ class WorkflowRunner:
         return runner.run()
 
     @staticmethod
-    def parse_job(data: dict[str, Any]) -> RunableJobType:
+    def parse_job(data: dict[str, Any]) -> RunnableJobType:
         if data.get("path") and data.get("command"):
             raise WorkflowValidationError("Job cannot have both 'path' and 'command'")
 
@@ -244,7 +244,7 @@ class WorkflowRunner:
         return Job.model_validate(job_data)
 
 
-def run_workflow_from_file(yaml_path: str | Path) -> dict[str, RunableJobType]:
+def run_workflow_from_file(yaml_path: str | Path) -> dict[str, RunnableJobType]:
     """Convenience function to run workflow from YAML file.
 
     Args:

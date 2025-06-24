@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 
 
 class JobStatus(Enum):
-    """Job status enumeration for both SLURM jobs and workflow tasks."""
+    """Job status enumeration for both SLURM jobs and workflow jobs."""
 
     UNKNOWN = "UNKNOWN"
     PENDING = "PENDING"
@@ -33,9 +33,7 @@ class JobResource(BaseModel):
 
     nodes: int = Field(default=1, ge=1, description="Number of compute nodes")
     gpus_per_node: int = Field(default=0, ge=0, description="Number of GPUs per node")
-    ntasks_per_node: int = Field(
-        default=1, ge=1, description="Number of tasks per node"
-    )
+    ntasks_per_node: int = Field(default=1, ge=1, description="Number of jobs per node")
     cpus_per_task: int = Field(default=1, ge=1, description="Number of CPUs per task")
     memory_per_node: str | None = Field(
         default=None, description="Memory per node (e.g., '32GB')"
@@ -159,16 +157,33 @@ class ShellJob(BaseJob):
 
 
 type JobType = BaseJob | Job | ShellJob
-type RunableJobType = Job | ShellJob
+type RunnableJobType = Job | ShellJob
 
 
-class Workflow(BaseModel):
+class Workflow:
     """Represents a workflow containing multiple jobs with dependencies."""
 
-    name: str = Field(description="Workflow name")
-    jobs: list[RunableJobType] = Field(description="List of jobs in the workflow")
+    def __init__(self, name: str, jobs: list[RunnableJobType] | None = None) -> None:
+        if jobs is None:
+            jobs = []
 
-    def get(self, name: str) -> RunableJobType | None:
+        self.name = name
+        self.jobs = jobs
+
+    def add(self, job: RunnableJobType) -> None:
+        # Check if job already exists
+        if job.depends_on:
+            for dep in job.depends_on:
+                if dep not in self.jobs:
+                    raise WorkflowValidationError(
+                        f"Job '{job.name}' depends on unknown job '{dep}'"
+                    )
+        self.jobs.append(job)
+
+    def remove(self, job: RunnableJobType) -> None:
+        self.jobs.remove(job)
+
+    def get(self, name: str) -> RunnableJobType | None:
         """Get a job by name."""
         for job in self.jobs:
             if job.name == name:

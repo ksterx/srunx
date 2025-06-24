@@ -6,7 +6,7 @@ High-Performance Computing (HPC) powers modern scientific research, machine lear
 
 Many researchers and engineers recognize these common struggles:
 
-- **Sequential Bottlenecks**: Entire workflow stages must finish before subsequent tasks begin, causing unnecessary delays.
+- **Sequential Bottlenecks**: Entire workflow stages must finish before subsequent jobs begin, causing unnecessary delays.
 - **Resource Waste**: Jobs frequently idle, waiting for unrelated dependencies.
 - **Complex Scripting**: Managing intricate job dependencies often demands cumbersome bash scripts.
 - **Poor Visibility**: It's challenging to monitor workflow progress clearly and efficiently.
@@ -52,7 +52,7 @@ jobs:
       venv: /home/user/repo/.venv
 ```
 
-With srunx, jobs execute exactly when they should - no earlier, no later. Once preprocess completes, train starts immediately, freeing subsequent tasks like evaluate and publish_results to run as soon as they're individually ready, dramatically improving efficiency.
+With srunx, jobs execute exactly when they should - no earlier, no later. Once preprocess completes, train starts immediately, freeing subsequent jobs like evaluate and publish_results to run as soon as they're individually ready, dramatically improving efficiency.
 
 ## Scalable and Reliable Architecture
 
@@ -129,7 +129,7 @@ for job_name, job in results.items():
 
 srunx doesn't just simplify workflows - it substantially enhances cluster efficiency and performance:
 
-- **Reduced Wall-clock Time**: Parallelizing independent tasks reduces total execution time.
+- **Reduced Wall-clock Time**: Parallelizing independent jobs reduces total execution time.
 - **Optimized Resource Utilization**: Jobs run precisely when they're ready, minimizing wasted compute hours.
 - **Accelerated Iteration**: Faster pipelines mean quicker development cycles and scientific discovery.
 - **Enhanced Cluster Throughput**: Better-managed resources increase overall HPC facility productivity.

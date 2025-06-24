@@ -90,7 +90,7 @@ srunxの最大の強みは、依存関係を自動解析して並列実行可能
 
 ```yaml
 name: parallel_ml_pipeline
-tasks:
+jobs:
   # 初期データ準備
   - name: job_a
     command: ["python", "download_data.py", "--dataset", "imagenet"]

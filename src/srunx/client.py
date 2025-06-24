@@ -14,7 +14,7 @@ from srunx.models import (
     Job,
     JobStatus,
     JobType,
-    RunableJobType,
+    RunnableJobType,
     ShellJob,
     render_job_script,
 )
@@ -42,11 +42,11 @@ class Slurm:
 
     def submit(
         self,
-        job: RunableJobType,
+        job: RunnableJobType,
         template_path: str | None = None,
         callbacks: Sequence[Callback] | None = None,
         verbose: bool = False,
-    ) -> RunableJobType:
+    ) -> RunnableJobType:
         """Submit a job to SLURM.
 
         Args:
@@ -283,12 +283,12 @@ class Slurm:
 
     def run(
         self,
-        job: RunableJobType,
+        job: RunnableJobType,
         template_path: str | None = None,
         callbacks: Sequence[Callback] | None = None,
         poll_interval: int = 5,
         verbose: bool = False,
-    ) -> RunableJobType:
+    ) -> RunnableJobType:
         """Submit a job and wait for completion."""
         submitted_job = self.submit(
             job, template_path=template_path, callbacks=callbacks, verbose=verbose
@@ -311,11 +311,11 @@ class Slurm:
 
 # Convenience functions for backward compatibility
 def submit_job(
-    job: RunableJobType,
+    job: RunnableJobType,
     template_path: str | None = None,
     callbacks: Sequence[Callback] | None = None,
     verbose: bool = False,
-) -> RunableJobType:
+) -> RunnableJobType:
     """Submit a job to SLURM (convenience function).
 
     Args:
