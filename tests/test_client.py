@@ -173,16 +173,17 @@ class TestSlurm:
         client = Slurm()
         result = client.submit(sample_job)
 
-        # Check that sbatch was called with --sqsh option
+        # Check that sbatch was called (sqsh is handled in template, not command line)
         sbatch_calls = [
             call for call in mock_run.call_args_list if "sbatch" in call[0][0]
         ]
         assert len(sbatch_calls) >= 1
         cmd = sbatch_calls[0][0][0]
         assert cmd[0] == "sbatch"
-        assert "--sqsh" in cmd
-        sqsh_index = cmd.index("--sqsh")
-        assert cmd[sqsh_index + 1] == "/path/to/image.sqsh"
+        # Verify that render_job_script was called with the job containing sqsh
+        mock_render.assert_called_once()
+        rendered_job = mock_render.call_args[0][1]  # Second argument is the job
+        assert rendered_job.environment.sqsh == "/path/to/image.sqsh"
 
     @patch("time.sleep")
     @patch("subprocess.run")
