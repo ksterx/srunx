@@ -339,7 +339,14 @@ def _build_environment_setup(environment: JobEnvironment) -> str:
 
     # Activate environments
     if environment.conda:
-        setup_lines.extend(["conda deactivate", f"conda activate {environment.conda}"])
+        home_dir = Path.home()
+        setup_lines.extend(
+            [
+                f"source {str(home_dir)}/miniconda3/bin/activate",
+                "conda deactivate",
+                f"conda activate {environment.conda}",
+            ]
+        )
     elif environment.venv:
         setup_lines.append(f"source {environment.venv}/bin/activate")
     elif environment.sqsh:

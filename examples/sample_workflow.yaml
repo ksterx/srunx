@@ -3,29 +3,31 @@ jobs:
   - name: a
     command: [python, sample_job.py, --sleep, "10", --msg, "A"]
     environment:
-      venv: /path/to/.venv
+      sqsh: /nas/share/sqshes/sptrain+0.6.1.sqsh
+      # conda: ai
+      # venv: /home/k_ishikawa/workspace/srunx/.venv
   - name: b1
     command: [python, sample_job.py, --sleep, "3", --msg, "B1"]
     depends_on:
       - a
     environment:
-      venv: /path/to/.venv
+      venv: /home/k_ishikawa/workspace/srunx/.venv
   - name: c
     command: [python, sample_job.py, --sleep, "10", --msg, "C"]
     depends_on:
       - a
     environment:
-      venv: /path/to/.venv
+      venv: /home/k_ishikawa/workspace/srunx/.venv
   - name: b2
     command: [python, sample_job.py, --sleep, "10", --msg, "B2"]
     depends_on:
       - b1
     environment:
-      venv: /path/to/.venv
+      venv: /home/k_ishikawa/workspace/srunx/.venv
   - name: d
     command: [python, sample_job.py, --sleep, "10", --msg, "D"]
     depends_on:
       - b2
       - c
     environment:
-      venv: /path/to/.venv
+      venv: /home/k_ishikawa/workspace/srunx/.venv

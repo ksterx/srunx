@@ -69,13 +69,11 @@ class Slurm:
                 script_path = render_job_script(template, job, temp_dir, verbose)
                 logger.debug(f"Generated SLURM script at: {script_path}")
 
-                # Handle container execution
-                sbatch_cmd = ["sbatch"]
+                # Submit job with sbatch
+                sbatch_cmd = ["sbatch", script_path]
                 if job.environment.sqsh:
-                    sbatch_cmd.extend(["--sqsh", job.environment.sqsh])
-                    logger.debug(f"Using sqsh: {job.environment.sqsh}")
+                    logger.debug(f"Using sqsh container: {job.environment.sqsh}")
 
-                sbatch_cmd.append(script_path)
                 logger.debug(f"Executing command: {' '.join(sbatch_cmd)}")
 
                 try:
