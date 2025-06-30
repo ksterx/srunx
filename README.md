@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/srunx)](https://pypi.org/project/srunx/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Actions Status](https://github.com/ksterx/srunx/workflows/CI/badge.svg)](https://github.com/ksterx/srunx/actions)
 
 A modern Python library for SLURM workload manager integration with workflow orchestration capabilities.
