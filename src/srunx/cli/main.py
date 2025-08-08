@@ -10,6 +10,11 @@ from rich.table import Table
 
 from srunx.callbacks import SlackCallback
 from srunx.client import Slurm
+from srunx.config import (
+    create_example_config,
+    get_config,
+    get_config_paths,
+)
 from srunx.logging import (
     configure_cli_logging,
     configure_workflow_logging,
@@ -23,6 +28,9 @@ logger = get_logger(__name__)
 
 def create_job_parser() -> argparse.ArgumentParser:
     """Create argument parser for job submission."""
+    # Get configuration defaults
+    config = get_config()
+    
     parser = argparse.ArgumentParser(
         description="Submit SLURM jobs with various configurations",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -46,13 +54,14 @@ def create_job_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--log-dir",
         type=str,
-        default=os.getenv("SLURM_LOG_DIR", "logs"),
+        default=config.log_dir,
         help="Log directory (default: %(default)s)",
     )
     parser.add_argument(
         "--work-dir",
         "--chdir",
         type=str,
+        default=config.work_dir,
         help="Working directory for the job",
     )
 
@@ -62,38 +71,52 @@ def create_job_parser() -> argparse.ArgumentParser:
         "-N",
         "--nodes",
         type=int,
-        default=1,
+        default=config.resources.nodes,
         help="Number of nodes (default: %(default)s)",
     )
     resource_group.add_argument(
         "--gpus-per-node",
         type=int,
-        default=0,
+        default=config.resources.gpus_per_node,
         help="Number of GPUs per node (default: %(default)s)",
     )
     resource_group.add_argument(
         "--ntasks-per-node",
         type=int,
-        default=1,
+        default=config.resources.ntasks_per_node,
         help="Number of tasks per node (default: %(default)s)",
     )
     resource_group.add_argument(
         "--cpus-per-task",
         type=int,
-        default=1,
+        default=config.resources.cpus_per_task,
         help="Number of CPUs per task (default: %(default)s)",
     )
     resource_group.add_argument(
         "--memory",
         "--mem",
         type=str,
-        help="Memory per node (e.g., '32GB', '1TB')",
+        default=config.resources.memory_per_node,
+        help="Memory per node (e.g., '32GB', '1TB') (default: %(default)s)",
     )
     resource_group.add_argument(
         "--time",
         "--time-limit",
         type=str,
-        help="Time limit (e.g., '1:00:00', '30:00', '1-12:00:00')",
+        default=config.resources.time_limit,
+        help="Time limit (e.g., '1:00:00', '30:00', '1-12:00:00') (default: %(default)s)",
+    )
+    resource_group.add_argument(
+        "--nodelist",
+        type=str,
+        default=config.resources.nodelist,
+        help="Specific nodes to use (e.g., 'node001,node002') (default: %(default)s)",
+    )
+    resource_group.add_argument(
+        "--partition",
+        type=str,
+        default=config.resources.partition,
+        help="SLURM partition to use (e.g., 'gpu', 'cpu') (default: %(default)s)",
     )
 
     # Environment configuration
@@ -101,17 +124,20 @@ def create_job_parser() -> argparse.ArgumentParser:
     env_group.add_argument(
         "--conda",
         type=str,
-        help="Conda environment name",
+        default=config.environment.conda,
+        help="Conda environment name (default: %(default)s)",
     )
     env_group.add_argument(
         "--venv",
         type=str,
-        help="Virtual environment path",
+        default=config.environment.venv,
+        help="Virtual environment path (default: %(default)s)",
     )
     env_group.add_argument(
         "--sqsh",
         type=str,
-        help="SquashFS image path",
+        default=config.environment.sqsh,
+        help="SquashFS image path (default: %(default)s)",
     )
     env_group.add_argument(
         "--env",
@@ -305,6 +331,33 @@ def create_main_parser() -> argparse.ArgumentParser:
         help="Path to YAML workflow definition file",
     )
 
+    # Config command
+    config_parser = subparsers.add_parser("config", help="Configuration management")
+    config_parser.set_defaults(func=None)  # Will be overridden by subcommands
+
+    # Config subcommands
+    config_subparsers = config_parser.add_subparsers(
+        dest="config_command", help="Configuration commands"
+    )
+
+    # Config show command
+    config_show_parser = config_subparsers.add_parser("show", help="Show current configuration")
+    config_show_parser.set_defaults(func=cmd_config_show)
+
+    # Config paths command
+    config_paths_parser = config_subparsers.add_parser("paths", help="Show configuration file paths")
+    config_paths_parser.set_defaults(func=cmd_config_paths)
+
+    # Config init command
+    config_init_parser = config_subparsers.add_parser("init", help="Initialize configuration file")
+    config_init_parser.set_defaults(func=cmd_config_init)
+    config_init_parser.add_argument(
+        "--global",
+        action="store_true",
+        dest="global_config",
+        help="Create global user config instead of project config",
+    )
+
     return parser
 
 
@@ -334,8 +387,11 @@ def _parse_env_vars(env_var_list: list[str] | None) -> dict[str, str]:
 def cmd_submit(args: argparse.Namespace) -> None:
     """Handle job submission command."""
     try:
-        # Parse environment variables
-        env_vars = _parse_env_vars(getattr(args, "env_vars", None))
+        # Parse environment variables and merge with config defaults
+        config = get_config()
+        env_vars = config.environment.env_vars.copy()
+        cli_env_vars = _parse_env_vars(getattr(args, "env_vars", None))
+        env_vars.update(cli_env_vars)
 
         # Create job configuration
         resources = JobResource(
@@ -345,14 +401,26 @@ def cmd_submit(args: argparse.Namespace) -> None:
             cpus_per_task=args.cpus_per_task,
             memory_per_node=getattr(args, "memory", None),
             time_limit=getattr(args, "time", None),
+            nodelist=getattr(args, "nodelist", None),
+            partition=getattr(args, "partition", None),
         )
 
-        environment = JobEnvironment(
-            conda=getattr(args, "conda", None),
-            venv=getattr(args, "venv", None),
-            sqsh=getattr(args, "sqsh", None),
-            env_vars=env_vars,
-        )
+        # Create environment with explicit handling of defaults
+        # Only pass non-None values to avoid conflicts with validation
+        env_config = {}
+        if args.conda is not None:
+            env_config['conda'] = args.conda
+        if args.venv is not None:
+            env_config['venv'] = args.venv
+        if args.sqsh is not None:
+            env_config['sqsh'] = args.sqsh
+        env_config['env_vars'] = env_vars
+        
+        # If no environment was explicitly set, let JobEnvironment use its defaults
+        if not any([args.conda, args.venv, args.sqsh]):
+            environment = JobEnvironment(env_vars=env_vars)
+        else:
+            environment = JobEnvironment.model_validate(env_config)
 
         job_data = {
             "name": args.name,
@@ -522,6 +590,99 @@ def cmd_flow_validate(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_config_show(args: argparse.Namespace) -> None:
+    """Handle config show command."""
+    try:
+        config = get_config()
+        
+        console = Console()
+        console.print("[bold cyan]Current Configuration:[/bold cyan]")
+        
+        # Display config in a nice format using Rich
+        table = Table(title="srunx Configuration", show_header=True, header_style="bold magenta")
+        table.add_column("Section", style="cyan")
+        table.add_column("Setting", style="green")
+        table.add_column("Value", style="yellow")
+        
+        # Resources
+        table.add_row("resources", "nodes", str(config.resources.nodes))
+        table.add_row("", "gpus_per_node", str(config.resources.gpus_per_node))
+        table.add_row("", "ntasks_per_node", str(config.resources.ntasks_per_node))
+        table.add_row("", "cpus_per_task", str(config.resources.cpus_per_task))
+        table.add_row("", "memory_per_node", str(config.resources.memory_per_node))
+        table.add_row("", "time_limit", str(config.resources.time_limit))
+        table.add_row("", "nodelist", str(config.resources.nodelist))
+        table.add_row("", "partition", str(config.resources.partition))
+        
+        # Environment
+        table.add_row("environment", "conda", str(config.environment.conda))
+        table.add_row("", "venv", str(config.environment.venv))
+        table.add_row("", "sqsh", str(config.environment.sqsh))
+        if config.environment.env_vars:
+            for key, value in config.environment.env_vars.items():
+                table.add_row("", f"env_vars.{key}", value)
+        else:
+            table.add_row("", "env_vars", "(empty)")
+        
+        # General
+        table.add_row("general", "log_dir", config.log_dir)
+        table.add_row("", "work_dir", str(config.work_dir))
+        
+        console.print(table)
+        
+    except Exception as e:
+        logger.error(f"Error showing configuration: {e}")
+        sys.exit(1)
+
+
+def cmd_config_paths(args: argparse.Namespace) -> None:
+    """Handle config paths command."""
+    try:
+        console = Console()
+        console.print("[bold cyan]Configuration File Paths:[/bold cyan]")
+        console.print("(Listed in order of precedence - last one wins)")
+        
+        paths = get_config_paths()
+        for i, path in enumerate(paths, 1):
+            exists = "✓" if path.exists() else "✗"
+            console.print(f"{i}. [{exists}] {path}")
+        
+    except Exception as e:
+        logger.error(f"Error showing configuration paths: {e}")
+        sys.exit(1)
+
+
+def cmd_config_init(args: argparse.Namespace) -> None:
+    """Handle config init command."""
+    try:
+        if getattr(args, "global_config", False):
+            # Create global user config
+            config_paths = get_config_paths()
+            config_path = config_paths[1]  # User config path
+        else:
+            # Create project config
+            config_path = Path.cwd() / "srunx.json"
+        
+        if config_path.exists():
+            logger.error(f"Configuration file already exists: {config_path}")
+            sys.exit(1)
+        
+        # Create directory if it doesn't exist
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Write example config
+        example_config = create_example_config()
+        with open(config_path, 'w', encoding='utf-8') as f:
+            f.write(example_config)
+        
+        logger.info(f"Configuration file created: {config_path}")
+        logger.info("Edit this file to customize your defaults")
+        
+    except Exception as e:
+        logger.error(f"Error creating configuration file: {e}")
+        sys.exit(1)
+
+
 def main() -> None:
     """Main entry point for the CLI."""
     parser = create_main_parser()
@@ -538,6 +699,12 @@ def main() -> None:
         if hasattr(args, "command") and args.command == "flow":
             if not hasattr(args, "flow_command") or args.flow_command is None:
                 logger.error("Flow command requires a subcommand (run or validate)")
+                parser.print_help()
+                sys.exit(1)
+        # Check if this is a config command without subcommand
+        elif hasattr(args, "command") and args.command == "config":
+            if not hasattr(args, "config_command") or args.config_command is None:
+                logger.error("Config command requires a subcommand (show, paths, or init)")
                 parser.print_help()
                 sys.exit(1)
         else:

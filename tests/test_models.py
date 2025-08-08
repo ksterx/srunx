@@ -46,6 +46,8 @@ class TestJobResource:
         assert resource.cpus_per_task == 1
         assert resource.memory_per_node is None
         assert resource.time_limit is None
+        assert resource.nodelist is None
+        assert resource.partition is None
 
     def test_job_resource_custom_values(self, sample_job_resource):
         """Test JobResource with custom values."""
@@ -70,6 +72,15 @@ class TestJobResource:
 
         with pytest.raises(ValidationError):
             JobResource(cpus_per_task=0)
+
+    def test_job_resource_nodelist_and_partition(self):
+        """Test JobResource with nodelist and partition."""
+        resource = JobResource(
+            nodelist="node001,node002",
+            partition="gpu"
+        )
+        assert resource.nodelist == "node001,node002"
+        assert resource.partition == "gpu"
 
 
 class TestJobEnvironment:
