@@ -12,3 +12,6 @@ wheels/
 .claude/
 
 .vscode/
+
+.coverage
+coverage.xml

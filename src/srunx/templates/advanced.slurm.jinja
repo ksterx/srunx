@@ -13,6 +13,12 @@
 {% if time_limit -%}
 #SBATCH --time={{ time_limit }}
 {% endif -%}
+{% if nodelist -%}
+#SBATCH --nodelist={{ nodelist }}
+{% endif -%}
+{% if partition -%}
+#SBATCH --partition={{ partition }}
+{% endif -%}
 #SBATCH --output={{ log_dir }}/%x_%j.out
 #SBATCH --error={{ log_dir }}/%x_%j.err
 {% if work_dir -%}

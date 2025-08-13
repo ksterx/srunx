@@ -16,6 +16,101 @@ from srunx.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _get_config_defaults():
+    """Get configuration defaults, with lazy import to avoid circular dependencies."""
+    try:
+        from srunx.config import get_config
+
+        return get_config()
+    except ImportError:
+        # Fallback if config module is not available
+        return None
+
+
+def _default_nodes():
+    """Get default nodes from config."""
+    config = _get_config_defaults()
+    return config.resources.nodes if config else 1
+
+
+def _default_gpus_per_node():
+    """Get default GPUs per node from config."""
+    config = _get_config_defaults()
+    return config.resources.gpus_per_node if config else 0
+
+
+def _default_ntasks_per_node():
+    """Get default ntasks per node from config."""
+    config = _get_config_defaults()
+    return config.resources.ntasks_per_node if config else 1
+
+
+def _default_cpus_per_task():
+    """Get default CPUs per task from config."""
+    config = _get_config_defaults()
+    return config.resources.cpus_per_task if config else 1
+
+
+def _default_memory_per_node():
+    """Get default memory per node from config."""
+    config = _get_config_defaults()
+    return config.resources.memory_per_node if config else None
+
+
+def _default_time_limit():
+    """Get default time limit from config."""
+    config = _get_config_defaults()
+    return config.resources.time_limit if config else None
+
+
+def _default_nodelist():
+    """Get default nodelist from config."""
+    config = _get_config_defaults()
+    return config.resources.nodelist if config else None
+
+
+def _default_partition():
+    """Get default partition from config."""
+    config = _get_config_defaults()
+    return config.resources.partition if config else None
+
+
+def _default_conda():
+    """Get default conda environment from config."""
+    config = _get_config_defaults()
+    return config.environment.conda if config else None
+
+
+def _default_venv():
+    """Get default venv path from config."""
+    config = _get_config_defaults()
+    return config.environment.venv if config else None
+
+
+def _default_sqsh():
+    """Get default sqsh path from config."""
+    config = _get_config_defaults()
+    return config.environment.sqsh if config else None
+
+
+def _default_env_vars():
+    """Get default environment variables from config."""
+    config = _get_config_defaults()
+    return config.environment.env_vars if config else {}
+
+
+def _default_log_dir():
+    """Get default log directory from config."""
+    config = _get_config_defaults()
+    return config.log_dir if config else os.getenv("SLURM_LOG_DIR", "logs")
+
+
+def _default_work_dir():
+    """Get default work directory from config."""
+    config = _get_config_defaults()
+    return config.work_dir if config else None
+
+
 class JobStatus(Enum):
     """Job status enumeration for both SLURM jobs and workflow jobs."""
 
@@ -31,26 +126,55 @@ class JobStatus(Enum):
 class JobResource(BaseModel):
     """SLURM resource allocation requirements."""
 
-    nodes: int = Field(default=1, ge=1, description="Number of compute nodes")
-    gpus_per_node: int = Field(default=0, ge=0, description="Number of GPUs per node")
-    ntasks_per_node: int = Field(default=1, ge=1, description="Number of jobs per node")
-    cpus_per_task: int = Field(default=1, ge=1, description="Number of CPUs per task")
+    nodes: int = Field(
+        default_factory=_default_nodes, ge=1, description="Number of compute nodes"
+    )
+    gpus_per_node: int = Field(
+        default_factory=_default_gpus_per_node,
+        ge=0,
+        description="Number of GPUs per node",
+    )
+    ntasks_per_node: int = Field(
+        default_factory=_default_ntasks_per_node,
+        ge=1,
+        description="Number of jobs per node",
+    )
+    cpus_per_task: int = Field(
+        default_factory=_default_cpus_per_task,
+        ge=1,
+        description="Number of CPUs per task",
+    )
     memory_per_node: str | None = Field(
-        default=None, description="Memory per node (e.g., '32GB')"
+        default_factory=_default_memory_per_node,
+        description="Memory per node (e.g., '32GB')",
     )
     time_limit: str | None = Field(
-        default=None, description="Time limit (e.g., '1:00:00')"
+        default_factory=_default_time_limit, description="Time limit (e.g., '1:00:00')"
+    )
+    nodelist: str | None = Field(
+        default_factory=_default_nodelist,
+        description="Specific nodes to use (e.g., 'node001,node002')",
+    )
+    partition: str | None = Field(
+        default_factory=_default_partition,
+        description="SLURM partition to use (e.g., 'gpu', 'cpu')",
     )
 
 
 class JobEnvironment(BaseModel):
     """Job environment configuration."""
 
-    conda: str | None = Field(default=None, description="Conda environment name")
-    venv: str | None = Field(default=None, description="Virtual environment path")
-    sqsh: str | None = Field(default=None, description="SquashFS image path")
+    conda: str | None = Field(
+        default_factory=_default_conda, description="Conda environment name"
+    )
+    venv: str | None = Field(
+        default_factory=_default_venv, description="Virtual environment path"
+    )
+    sqsh: str | None = Field(
+        default_factory=_default_sqsh, description="SquashFS image path"
+    )
     env_vars: dict[str, str] = Field(
-        default_factory=dict, description="Environment variables"
+        default_factory=_default_env_vars, description="Environment variables"
     )
 
     @model_validator(mode="after")
@@ -146,10 +270,13 @@ class Job(BaseJob):
         default_factory=JobEnvironment, description="Environment setup"
     )
     log_dir: str = Field(
-        default=os.getenv("SLURM_LOG_DIR", "logs"),
+        default_factory=_default_log_dir,
         description="Directory for log files",
     )
-    work_dir: str = Field(default_factory=os.getcwd, description="Working directory")
+    work_dir: str = Field(
+        default_factory=lambda: _default_work_dir() or os.getcwd(),
+        description="Working directory",
+    )
 
 
 class ShellJob(BaseJob):
