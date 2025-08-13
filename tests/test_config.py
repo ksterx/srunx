@@ -42,7 +42,7 @@ class TestResourceDefaults:
             gpus_per_node=1,
             memory_per_node="32GB",
             time_limit="2:00:00",
-            partition="gpu"
+            partition="gpu",
         )
         assert resource.nodes == 2
         assert resource.gpus_per_node == 1
@@ -65,8 +65,7 @@ class TestEnvironmentDefaults:
     def test_environment_defaults_custom_values(self):
         """Test EnvironmentDefaults with custom values."""
         env = EnvironmentDefaults(
-            conda="ml_env",
-            env_vars={"CUDA_VISIBLE_DEVICES": "0"}
+            conda="ml_env", env_vars={"CUDA_VISIBLE_DEVICES": "0"}
         )
         assert env.conda == "ml_env"
         assert env.env_vars == {"CUDA_VISIBLE_DEVICES": "0"}
@@ -89,7 +88,7 @@ class TestSrunxConfig:
             resources=ResourceDefaults(nodes=2, partition="gpu"),
             environment=EnvironmentDefaults(conda="ml_env"),
             log_dir="custom_logs",
-            work_dir="/scratch/user"
+            work_dir="/scratch/user",
         )
         assert config.resources.nodes == 2
         assert config.resources.partition == "gpu"
@@ -114,11 +113,11 @@ class TestConfigLoading:
             config_path = Path(tmp_dir) / "config.json"
             test_config = {
                 "resources": {"nodes": 2, "partition": "gpu"},
-                "log_dir": "custom_logs"
+                "log_dir": "custom_logs",
             }
-            with open(config_path, 'w') as f:
+            with open(config_path, "w") as f:
                 json.dump(test_config, f)
-            
+
             result = load_config_from_file(config_path)
             assert result == test_config
 
@@ -126,28 +125,25 @@ class TestConfigLoading:
         """Test loading config from invalid JSON file."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "invalid.json"
-            with open(config_path, 'w') as f:
+            with open(config_path, "w") as f:
                 f.write("invalid json content")
-            
+
             result = load_config_from_file(config_path)
             assert result == {}
 
     def test_merge_config(self):
         """Test configuration merging."""
-        base = {
-            "resources": {"nodes": 1, "gpus_per_node": 0},
-            "log_dir": "logs"
-        }
+        base = {"resources": {"nodes": 1, "gpus_per_node": 0}, "log_dir": "logs"}
         override = {
             "resources": {"nodes": 2, "partition": "gpu"},
-            "work_dir": "/scratch"
+            "work_dir": "/scratch",
         }
-        
+
         result = merge_config(base, override)
         expected = {
             "resources": {"nodes": 2, "gpus_per_node": 0, "partition": "gpu"},
             "log_dir": "logs",
-            "work_dir": "/scratch"
+            "work_dir": "/scratch",
         }
         assert result == expected
 
@@ -165,23 +161,21 @@ class TestConfigLoading:
             "SRUNX_DEFAULT_MEMORY_PER_NODE": "32GB",
             "SRUNX_DEFAULT_PARTITION": "gpu",
             "SRUNX_DEFAULT_CONDA": "ml_env",
-            "SRUNX_DEFAULT_LOG_DIR": "custom_logs"
+            "SRUNX_DEFAULT_LOG_DIR": "custom_logs",
         }
-        
+
         with patch.dict(os.environ, env_vars):
             result = load_config_from_env()
-            
+
             expected = {
                 "resources": {
                     "nodes": 2,
                     "gpus_per_node": 1,
                     "memory_per_node": "32GB",
-                    "partition": "gpu"
+                    "partition": "gpu",
                 },
-                "environment": {
-                    "conda": "ml_env"
-                },
-                "log_dir": "custom_logs"
+                "environment": {"conda": "ml_env"},
+                "log_dir": "custom_logs",
             }
             assert result == expected
 
@@ -189,9 +183,9 @@ class TestConfigLoading:
         """Test loading config from environment with invalid values."""
         env_vars = {
             "SRUNX_DEFAULT_NODES": "invalid",
-            "SRUNX_DEFAULT_GPUS_PER_NODE": "not_a_number"
+            "SRUNX_DEFAULT_GPUS_PER_NODE": "not_a_number",
         }
-        
+
         with patch.dict(os.environ, env_vars):
             result = load_config_from_env()
             assert result == {}
@@ -203,15 +197,17 @@ class TestConfigPaths:
     def test_get_config_paths(self):
         """Test getting configuration paths."""
         paths = get_config_paths()
-        assert len(paths) == 4  # system, user, project (.srunx.json), project (srunx.json)
+        assert (
+            len(paths) == 4
+        )  # system, user, project (.srunx.json), project (srunx.json)
         assert all(isinstance(path, Path) for path in paths)
 
-    @patch('os.name', 'posix')
+    @patch("os.name", "posix")
     def test_get_config_paths_posix(self):
         """Test getting configuration paths on POSIX systems."""
         paths = get_config_paths()
-        assert str(paths[0]).startswith('/etc/srunx/')
-        assert '.config/srunx/' in str(paths[1])
+        assert str(paths[0]).startswith("/etc/srunx/")
+        assert ".config/srunx/" in str(paths[1])
 
     # Skipping Windows test as it's complex to mock across platforms
 
@@ -222,27 +218,26 @@ class TestConfigSaving:
     def test_save_user_config(self):
         """Test saving user configuration."""
         config = SrunxConfig(
-            resources=ResourceDefaults(nodes=2, partition="gpu"),
-            log_dir="custom_logs"
+            resources=ResourceDefaults(nodes=2, partition="gpu"), log_dir="custom_logs"
         )
-        
+
         with tempfile.TemporaryDirectory() as tmp_dir:
             user_config_path = Path(tmp_dir) / "config.json"
-            
-            with patch('srunx.config.get_config_paths') as mock_paths:
+
+            with patch("srunx.config.get_config_paths") as mock_paths:
                 mock_paths.return_value = [
                     Path("/etc/srunx/config.json"),  # system
                     user_config_path,  # user
                     Path(".srunx.json"),  # project
-                    Path("srunx.json")   # project
+                    Path("srunx.json"),  # project
                 ]
-                
+
                 save_user_config(config)
-                
+
                 assert user_config_path.exists()
                 with open(user_config_path) as f:
                     saved_config = json.load(f)
-                
+
                 assert saved_config["resources"]["nodes"] == 2
                 assert saved_config["resources"]["partition"] == "gpu"
                 assert saved_config["log_dir"] == "custom_logs"
@@ -255,7 +250,7 @@ class TestExampleConfig:
         """Test creating example configuration."""
         example = create_example_config()
         assert isinstance(example, str)
-        
+
         # Parse as JSON to ensure it's valid
         config_data = json.loads(example)
         assert "resources" in config_data
@@ -273,24 +268,24 @@ class TestFullConfigLoading:
             config_path = Path(tmp_dir) / "config.json"
             test_config = {
                 "resources": {"nodes": 2, "partition": "gpu"},
-                "log_dir": "file_logs"
+                "log_dir": "file_logs",
             }
-            with open(config_path, 'w') as f:
+            with open(config_path, "w") as f:
                 json.dump(test_config, f)
-            
+
             # Mock the config paths to use our test file
-            with patch('srunx.config.get_config_paths') as mock_paths:
+            with patch("srunx.config.get_config_paths") as mock_paths:
                 mock_paths.return_value = [config_path]
-                
+
                 # Mock environment variables
                 env_vars = {
                     "SRUNX_DEFAULT_NODES": "4",  # Should override file
-                    "SRUNX_DEFAULT_CONDA": "env_ml"  # Should be additional
+                    "SRUNX_DEFAULT_CONDA": "env_ml",  # Should be additional
                 }
-                
+
                 with patch.dict(os.environ, env_vars):
                     config = load_config()
-                    
+
                     # Environment should override file values
                     assert config.resources.nodes == 4
                     # File values should be preserved when not overridden

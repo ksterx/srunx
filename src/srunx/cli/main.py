@@ -30,7 +30,7 @@ def create_job_parser() -> argparse.ArgumentParser:
     """Create argument parser for job submission."""
     # Get configuration defaults
     config = get_config()
-    
+
     parser = argparse.ArgumentParser(
         description="Submit SLURM jobs with various configurations",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -341,15 +341,21 @@ def create_main_parser() -> argparse.ArgumentParser:
     )
 
     # Config show command
-    config_show_parser = config_subparsers.add_parser("show", help="Show current configuration")
+    config_show_parser = config_subparsers.add_parser(
+        "show", help="Show current configuration"
+    )
     config_show_parser.set_defaults(func=cmd_config_show)
 
     # Config paths command
-    config_paths_parser = config_subparsers.add_parser("paths", help="Show configuration file paths")
+    config_paths_parser = config_subparsers.add_parser(
+        "paths", help="Show configuration file paths"
+    )
     config_paths_parser.set_defaults(func=cmd_config_paths)
 
     # Config init command
-    config_init_parser = config_subparsers.add_parser("init", help="Initialize configuration file")
+    config_init_parser = config_subparsers.add_parser(
+        "init", help="Initialize configuration file"
+    )
     config_init_parser.set_defaults(func=cmd_config_init)
     config_init_parser.add_argument(
         "--global",
@@ -409,13 +415,13 @@ def cmd_submit(args: argparse.Namespace) -> None:
         # Only pass non-None values to avoid conflicts with validation
         env_config = {}
         if args.conda is not None:
-            env_config['conda'] = args.conda
+            env_config["conda"] = args.conda
         if args.venv is not None:
-            env_config['venv'] = args.venv
+            env_config["venv"] = args.venv
         if args.sqsh is not None:
-            env_config['sqsh'] = args.sqsh
-        env_config['env_vars'] = env_vars
-        
+            env_config["sqsh"] = args.sqsh
+        env_config["env_vars"] = env_vars
+
         # If no environment was explicitly set, let JobEnvironment use its defaults
         if not any([args.conda, args.venv, args.sqsh]):
             environment = JobEnvironment(env_vars=env_vars)
@@ -594,16 +600,18 @@ def cmd_config_show(args: argparse.Namespace) -> None:
     """Handle config show command."""
     try:
         config = get_config()
-        
+
         console = Console()
         console.print("[bold cyan]Current Configuration:[/bold cyan]")
-        
+
         # Display config in a nice format using Rich
-        table = Table(title="srunx Configuration", show_header=True, header_style="bold magenta")
+        table = Table(
+            title="srunx Configuration", show_header=True, header_style="bold magenta"
+        )
         table.add_column("Section", style="cyan")
         table.add_column("Setting", style="green")
         table.add_column("Value", style="yellow")
-        
+
         # Resources
         table.add_row("resources", "nodes", str(config.resources.nodes))
         table.add_row("", "gpus_per_node", str(config.resources.gpus_per_node))
@@ -613,7 +621,7 @@ def cmd_config_show(args: argparse.Namespace) -> None:
         table.add_row("", "time_limit", str(config.resources.time_limit))
         table.add_row("", "nodelist", str(config.resources.nodelist))
         table.add_row("", "partition", str(config.resources.partition))
-        
+
         # Environment
         table.add_row("environment", "conda", str(config.environment.conda))
         table.add_row("", "venv", str(config.environment.venv))
@@ -623,13 +631,13 @@ def cmd_config_show(args: argparse.Namespace) -> None:
                 table.add_row("", f"env_vars.{key}", value)
         else:
             table.add_row("", "env_vars", "(empty)")
-        
+
         # General
         table.add_row("general", "log_dir", config.log_dir)
         table.add_row("", "work_dir", str(config.work_dir))
-        
+
         console.print(table)
-        
+
     except Exception as e:
         logger.error(f"Error showing configuration: {e}")
         sys.exit(1)
@@ -641,12 +649,12 @@ def cmd_config_paths(args: argparse.Namespace) -> None:
         console = Console()
         console.print("[bold cyan]Configuration File Paths:[/bold cyan]")
         console.print("(Listed in order of precedence - last one wins)")
-        
+
         paths = get_config_paths()
         for i, path in enumerate(paths, 1):
             exists = "✓" if path.exists() else "✗"
             console.print(f"{i}. [{exists}] {path}")
-        
+
     except Exception as e:
         logger.error(f"Error showing configuration paths: {e}")
         sys.exit(1)
@@ -662,22 +670,22 @@ def cmd_config_init(args: argparse.Namespace) -> None:
         else:
             # Create project config
             config_path = Path.cwd() / "srunx.json"
-        
+
         if config_path.exists():
             logger.error(f"Configuration file already exists: {config_path}")
             sys.exit(1)
-        
+
         # Create directory if it doesn't exist
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Write example config
         example_config = create_example_config()
-        with open(config_path, 'w', encoding='utf-8') as f:
+        with open(config_path, "w", encoding="utf-8") as f:
             f.write(example_config)
-        
+
         logger.info(f"Configuration file created: {config_path}")
         logger.info("Edit this file to customize your defaults")
-        
+
     except Exception as e:
         logger.error(f"Error creating configuration file: {e}")
         sys.exit(1)
@@ -704,7 +712,9 @@ def main() -> None:
         # Check if this is a config command without subcommand
         elif hasattr(args, "command") and args.command == "config":
             if not hasattr(args, "config_command") or args.config_command is None:
-                logger.error("Config command requires a subcommand (show, paths, or init)")
+                logger.error(
+                    "Config command requires a subcommand (show, paths, or init)"
+                )
                 parser.print_help()
                 sys.exit(1)
         else:

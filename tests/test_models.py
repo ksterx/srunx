@@ -75,10 +75,7 @@ class TestJobResource:
 
     def test_job_resource_nodelist_and_partition(self):
         """Test JobResource with nodelist and partition."""
-        resource = JobResource(
-            nodelist="node001,node002",
-            partition="gpu"
-        )
+        resource = JobResource(nodelist="node001,node002", partition="gpu")
         assert resource.nodelist == "node001,node002"
         assert resource.partition == "gpu"
 

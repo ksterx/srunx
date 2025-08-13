@@ -20,6 +20,7 @@ def _get_config_defaults():
     """Get configuration defaults, with lazy import to avoid circular dependencies."""
     try:
         from srunx.config import get_config
+
         return get_config()
     except ImportError:
         # Fallback if config module is not available
@@ -125,30 +126,53 @@ class JobStatus(Enum):
 class JobResource(BaseModel):
     """SLURM resource allocation requirements."""
 
-    nodes: int = Field(default_factory=_default_nodes, ge=1, description="Number of compute nodes")
-    gpus_per_node: int = Field(default_factory=_default_gpus_per_node, ge=0, description="Number of GPUs per node")
-    ntasks_per_node: int = Field(default_factory=_default_ntasks_per_node, ge=1, description="Number of jobs per node")
-    cpus_per_task: int = Field(default_factory=_default_cpus_per_task, ge=1, description="Number of CPUs per task")
+    nodes: int = Field(
+        default_factory=_default_nodes, ge=1, description="Number of compute nodes"
+    )
+    gpus_per_node: int = Field(
+        default_factory=_default_gpus_per_node,
+        ge=0,
+        description="Number of GPUs per node",
+    )
+    ntasks_per_node: int = Field(
+        default_factory=_default_ntasks_per_node,
+        ge=1,
+        description="Number of jobs per node",
+    )
+    cpus_per_task: int = Field(
+        default_factory=_default_cpus_per_task,
+        ge=1,
+        description="Number of CPUs per task",
+    )
     memory_per_node: str | None = Field(
-        default_factory=_default_memory_per_node, description="Memory per node (e.g., '32GB')"
+        default_factory=_default_memory_per_node,
+        description="Memory per node (e.g., '32GB')",
     )
     time_limit: str | None = Field(
         default_factory=_default_time_limit, description="Time limit (e.g., '1:00:00')"
     )
     nodelist: str | None = Field(
-        default_factory=_default_nodelist, description="Specific nodes to use (e.g., 'node001,node002')"
+        default_factory=_default_nodelist,
+        description="Specific nodes to use (e.g., 'node001,node002')",
     )
     partition: str | None = Field(
-        default_factory=_default_partition, description="SLURM partition to use (e.g., 'gpu', 'cpu')"
+        default_factory=_default_partition,
+        description="SLURM partition to use (e.g., 'gpu', 'cpu')",
     )
 
 
 class JobEnvironment(BaseModel):
     """Job environment configuration."""
 
-    conda: str | None = Field(default_factory=_default_conda, description="Conda environment name")
-    venv: str | None = Field(default_factory=_default_venv, description="Virtual environment path")
-    sqsh: str | None = Field(default_factory=_default_sqsh, description="SquashFS image path")
+    conda: str | None = Field(
+        default_factory=_default_conda, description="Conda environment name"
+    )
+    venv: str | None = Field(
+        default_factory=_default_venv, description="Virtual environment path"
+    )
+    sqsh: str | None = Field(
+        default_factory=_default_sqsh, description="SquashFS image path"
+    )
     env_vars: dict[str, str] = Field(
         default_factory=_default_env_vars, description="Environment variables"
     )
@@ -249,7 +273,10 @@ class Job(BaseJob):
         default_factory=_default_log_dir,
         description="Directory for log files",
     )
-    work_dir: str = Field(default_factory=lambda: _default_work_dir() or os.getcwd(), description="Working directory")
+    work_dir: str = Field(
+        default_factory=lambda: _default_work_dir() or os.getcwd(),
+        description="Working directory",
+    )
 
 
 class ShellJob(BaseJob):
