@@ -181,8 +181,12 @@ class JobEnvironment(BaseModel):
     def validate_environment(self) -> Self:
         envs = [self.conda, self.venv, self.sqsh]
         non_none_count = sum(x is not None for x in envs)
-        if non_none_count != 1:
+        if non_none_count == 0:
             logger.info("No virtual environment is set.")
+        elif non_none_count > 1:
+            raise ValueError(
+                "Only one virtual environment (conda, venv, or sqsh) can be specified"
+            )
         return self
 
 
