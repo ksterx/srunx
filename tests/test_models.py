@@ -85,9 +85,11 @@ class TestJobEnvironment:
 
     def test_job_environment_defaults(self):
         """Test JobEnvironment default values."""
-        with pytest.raises(ValidationError):
-            # Should fail because exactly one environment must be set
-            JobEnvironment()
+        # Should succeed because no environment is now allowed
+        env = JobEnvironment()
+        assert env.conda is None
+        assert env.venv is None
+        assert env.sqsh is None
 
     def test_job_environment_conda(self):
         """Test JobEnvironment with conda."""
@@ -122,8 +124,12 @@ class TestJobEnvironment:
 
     def test_job_environment_validation_no_env(self):
         """Test JobEnvironment validation without any environment."""
-        with pytest.raises(ValidationError):
-            JobEnvironment(env_vars={"TEST": "value"})
+        # Should succeed because no virtual environment is now allowed
+        env = JobEnvironment(env_vars={"TEST": "value"})
+        assert env.conda is None
+        assert env.venv is None
+        assert env.sqsh is None
+        assert env.env_vars["TEST"] == "value"
 
 
 class TestBaseJob:

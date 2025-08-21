@@ -112,6 +112,78 @@ srunx flow validate workflow.yaml
 srunx flow run workflow.yaml --dry-run
 ```
 
+### Template Variables with Args
+
+You can define reusable variables in the `args` section and use them throughout your workflow with Jinja2 templates:
+
+```yaml
+# workflow.yaml
+name: ml_experiment
+args:
+  experiment_name: "bert-fine-tuning-v2"
+  dataset_path: "/data/nlp/imdb"
+  model_checkpoint: "bert-base-uncased"
+  output_dir: "/outputs/{{ experiment_name }}"
+  batch_size: 32
+
+jobs:
+  - name: preprocess
+    command: 
+      - "python"
+      - "preprocess.py"
+      - "--dataset"
+      - "{{ dataset_path }}"
+      - "--output"
+      - "{{ output_dir }}/preprocessed"
+    resources:
+      nodes: 1
+      memory_per_node: "16GB"
+    work_dir: "{{ output_dir }}"
+
+  - name: train
+    command:
+      - "python"
+      - "train.py"
+      - "--model"
+      - "{{ model_checkpoint }}"
+      - "--data"
+      - "{{ output_dir }}/preprocessed"
+      - "--batch-size"
+      - "{{ batch_size }}"
+      - "--output"
+      - "{{ output_dir }}/model"
+    depends_on: [preprocess]
+    resources:
+      nodes: 2
+      gpus_per_node: 1
+    work_dir: "{{ output_dir }}"
+    environment:
+      conda: ml_env
+
+  - name: evaluate
+    command:
+      - "python"
+      - "evaluate.py"
+      - "--model"
+      - "{{ output_dir }}/model"
+      - "--dataset"
+      - "{{ dataset_path }}"
+      - "--output"
+      - "{{ output_dir }}/results"
+    depends_on: [train]
+    work_dir: "{{ output_dir }}"
+```
+
+Template variables can be used in:
+- `command` arguments
+- `work_dir` paths
+- Any string field in the job configuration
+
+This approach provides:
+- **Reusability**: Define once, use everywhere
+- **Maintainability**: Easy to update experiment parameters
+- **Consistency**: Avoid typos and ensure consistent naming
+
 ## Advanced Usage
 
 ### Custom Templates
@@ -277,6 +349,127 @@ uv run ruff format .
 ```
 
 ## Examples
+
+### Parameterized Workflow with Args
+
+Here's a complete example showing how to use `args` for a parameterized machine learning workflow:
+
+```yaml
+# ml_experiment.yaml
+name: bert_fine_tuning
+args:
+  experiment_id: "exp_20240816_001"
+  model_name: "bert-base-uncased"
+  dataset_path: "/data/glue/cola"
+  learning_rate: 2e-5
+  num_epochs: 3
+  batch_size: 16
+  max_seq_length: 128
+  output_base: "/outputs/{{ experiment_id }}"
+
+jobs:
+  - name: setup_experiment
+    command:
+      - "mkdir"
+      - "-p"
+      - "{{ output_base }}"
+      - "{{ output_base }}/logs"
+      - "{{ output_base }}/checkpoints"
+    resources:
+      nodes: 1
+
+  - name: preprocess_data
+    command:
+      - "python"
+      - "preprocess.py"
+      - "--dataset_path"
+      - "{{ dataset_path }}"
+      - "--model_name"
+      - "{{ model_name }}"
+      - "--max_seq_length"
+      - "{{ max_seq_length }}"
+      - "--output_dir"
+      - "{{ output_base }}/preprocessed"
+    depends_on: [setup_experiment]
+    resources:
+      nodes: 1
+      memory_per_node: "32GB"
+    work_dir: "{{ output_base }}"
+    environment:
+      conda: nlp_env
+
+  - name: train_model
+    command:
+      - "python"
+      - "train.py"
+      - "--model_name"
+      - "{{ model_name }}"
+      - "--train_data"
+      - "{{ output_base }}/preprocessed/train.json"
+      - "--eval_data"
+      - "{{ output_base }}/preprocessed/eval.json"
+      - "--learning_rate"
+      - "{{ learning_rate }}"
+      - "--num_epochs"
+      - "{{ num_epochs }}"
+      - "--batch_size"
+      - "{{ batch_size }}"
+      - "--output_dir"
+      - "{{ output_base }}/checkpoints"
+    depends_on: [preprocess_data]
+    resources:
+      nodes: 1
+      gpus_per_node: 1
+      memory_per_node: "64GB"
+      time_limit: "4:00:00"
+    work_dir: "{{ output_base }}"
+    environment:
+      conda: nlp_env
+
+  - name: evaluate_model
+    command:
+      - "python"
+      - "evaluate.py"
+      - "--model_path"
+      - "{{ output_base }}/checkpoints"
+      - "--test_data"
+      - "{{ dataset_path }}/test.json"
+      - "--output_file"
+      - "{{ output_base }}/evaluation_results.json"
+    depends_on: [train_model]
+    resources:
+      nodes: 1
+      gpus_per_node: 1
+    work_dir: "{{ output_base }}"
+    environment:
+      conda: nlp_env
+
+  - name: generate_report
+    command:
+      - "python"
+      - "generate_report.py"
+      - "--experiment_id"
+      - "{{ experiment_id }}"
+      - "--results_file"
+      - "{{ output_base }}/evaluation_results.json"
+      - "--output_dir"
+      - "{{ output_base }}/reports"
+    depends_on: [evaluate_model]
+    work_dir: "{{ output_base }}"
+```
+
+Run the workflow:
+
+```bash
+srunx flow run ml_experiment.yaml
+```
+
+This approach provides several benefits:
+
+- **Easy experimentation**: Change parameters in one place
+- **Reproducible results**: All parameters are documented in the YAML
+- **Consistent paths**: Template variables ensure path consistency
+- **Environment isolation**: Each experiment gets its own directory
 
 ### Machine Learning Pipeline
 
