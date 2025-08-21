@@ -200,6 +200,203 @@ class TestWorkflowRunner:
 
         assert runner.workflow.name == "unnamed"
 
+    def test_from_yaml_with_args(self, temp_dir):
+        """Test loading workflow with args and template rendering."""
+        yaml_content = {
+            "name": "args_workflow",
+            "args": {
+                "dataset_name": "test-dataset",
+                "model_path": "/models/bert",
+                "batch_size": 16,
+                "output_dir": "/outputs/experiment",
+            },
+            "jobs": [
+                {
+                    "name": "preprocess",
+                    "command": [
+                        "python",
+                        "preprocess.py",
+                        "--dataset",
+                        "{{ dataset_name }}",
+                        "--output",
+                        "{{ output_dir }}/preprocessed",
+                    ],
+                    "work_dir": "{{ output_dir }}",
+                    "environment": {"conda": "ml_env"},
+                },
+                {
+                    "name": "train",
+                    "command": [
+                        "python",
+                        "train.py",
+                        "--model",
+                        "{{ model_path }}",
+                        "--data",
+                        "{{ output_dir }}/preprocessed",
+                        "--batch-size",
+                        "{{ batch_size }}",
+                    ],
+                    "depends_on": ["preprocess"],
+                    "work_dir": "{{ output_dir }}",
+                    "environment": {"conda": "ml_env"},
+                },
+            ],
+        }
+
+        yaml_path = temp_dir / "args_workflow.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+
+        runner = WorkflowRunner.from_yaml(yaml_path)
+
+        assert runner.workflow.name == "args_workflow"
+        assert runner.args == {
+            "dataset_name": "test-dataset",
+            "model_path": "/models/bert",
+            "batch_size": 16,
+            "output_dir": "/outputs/experiment",
+        }
+        assert len(runner.workflow.jobs) == 2
+
+        # Check that Jinja templates were rendered correctly
+        preprocess_job = next(j for j in runner.workflow.jobs if j.name == "preprocess")
+        train_job = next(j for j in runner.workflow.jobs if j.name == "train")
+
+        # Check preprocess job
+        assert preprocess_job.command == [
+            "python",
+            "preprocess.py",
+            "--dataset",
+            "test-dataset",
+            "--output",
+            "/outputs/experiment/preprocessed",
+        ]
+        assert preprocess_job.work_dir == "/outputs/experiment"
+
+        # Check train job
+        assert train_job.command == [
+            "python",
+            "train.py",
+            "--model",
+            "/models/bert",
+            "--data",
+            "/outputs/experiment/preprocessed",
+            "--batch-size",
+            "16",
+        ]
+        assert train_job.work_dir == "/outputs/experiment"
+        assert train_job.depends_on == ["preprocess"]
+
+    def test_from_yaml_no_args(self, temp_dir):
+        """Test loading workflow without args section."""
+        yaml_content = {
+            "name": "no_args_workflow",
+            "jobs": [
+                {
+                    "name": "simple_job",
+                    "command": ["echo", "hello"],
+                    "environment": {"conda": "test_env"},
+                }
+            ],
+        }
+
+        yaml_path = temp_dir / "no_args.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+
+        runner = WorkflowRunner.from_yaml(yaml_path)
+
+        assert runner.workflow.name == "no_args_workflow"
+        assert runner.args == {}
+        assert len(runner.workflow.jobs) == 1
+
+        job = runner.workflow.jobs[0]
+        assert job.command == ["echo", "hello"]
+
+    def test_from_yaml_invalid_template(self, temp_dir):
+        """Test loading workflow with invalid Jinja template."""
+        yaml_content = {
+            "name": "invalid_template_workflow",
+            "args": {"valid_var": "value"},
+            "jobs": [
+                {
+                    "name": "invalid_job",
+                    "command": ["echo", "{{ undefined_var }}"],
+                    "environment": {"conda": "test_env"},
+                }
+            ],
+        }
+
+        yaml_path = temp_dir / "invalid_template.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+
+        with pytest.raises(WorkflowValidationError, match="Template rendering failed"):
+            WorkflowRunner.from_yaml(yaml_path)
+
+    def test_render_jobs_with_args_static_method(self):
+        """Test _render_jobs_with_args static method."""
+        args = {
+            "dataset": "mnist",
+            "epochs": 10,
+            "output": "/results",
+        }
+
+        jobs_data = [
+            {
+                "name": "train",
+                "command": [
+                    "python",
+                    "train.py",
+                    "--dataset",
+                    "{{ dataset }}",
+                    "--epochs",
+                    "{{ epochs }}",
+                ],
+                "work_dir": "{{ output }}",
+            }
+        ]
+
+        rendered_jobs = WorkflowRunner._render_jobs_with_args(jobs_data, args)
+
+        assert len(rendered_jobs) == 1
+        job = rendered_jobs[0]
+        assert job["command"] == [
+            "python",
+            "train.py",
+            "--dataset",
+            "mnist",
+            "--epochs",
+            "10",
+        ]
+        assert job["work_dir"] == "/results"
+
+    def test_render_jobs_with_args_no_args(self):
+        """Test _render_jobs_with_args with no args."""
+        jobs_data = [
+            {
+                "name": "simple_job",
+                "command": ["echo", "hello"],
+            }
+        ]
+
+        rendered_jobs = WorkflowRunner._render_jobs_with_args(jobs_data, {})
+
+        assert rendered_jobs == jobs_data
+
+    def test_render_jobs_with_args_empty_args(self):
+        """Test _render_jobs_with_args with empty args dict."""
+        jobs_data = [
+            {
+                "name": "simple_job",
+                "command": ["echo", "hello"],
+            }
+        ]
+
+        rendered_jobs = WorkflowRunner._render_jobs_with_args(jobs_data, {})
+
+        assert rendered_jobs == jobs_data
+
     @patch("srunx.runner.Slurm")
     def test_run_simple_workflow(self, mock_slurm_class):
         """Test running simple workflow."""

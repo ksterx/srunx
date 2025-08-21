@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Self
 
+import jinja2
 import yaml
 
 from srunx.callbacks import Callback
@@ -34,17 +35,22 @@ class WorkflowRunner:
     """
 
     def __init__(
-        self, workflow: Workflow, callbacks: Sequence[Callback] | None = None
+        self,
+        workflow: Workflow,
+        callbacks: Sequence[Callback] | None = None,
+        args: dict[str, Any] | None = None,
     ) -> None:
         """Initialize workflow runner.
 
         Args:
             workflow: Workflow to execute.
             callbacks: List of callbacks for job notifications.
+            args: Template variables from the YAML args section.
         """
         self.workflow = workflow
         self.slurm = Slurm(callbacks=callbacks)
         self.callbacks = callbacks or []
+        self.args = args or {}
 
     @classmethod
     def from_yaml(
@@ -72,13 +78,46 @@ class WorkflowRunner:
             data = yaml.safe_load(f)
 
         name = data.get("name", "unnamed")
+        args = data.get("args", {})
         jobs_data = data.get("jobs", [])
 
+        # Render Jinja templates in jobs_data using args
+        rendered_jobs_data = cls._render_jobs_with_args(jobs_data, args)
+
         jobs = []
-        for job_data in jobs_data:
+        for job_data in rendered_jobs_data:
             job = cls.parse_job(job_data)
             jobs.append(job)
-        return cls(workflow=Workflow(name=name, jobs=jobs), callbacks=callbacks)
+        return cls(
+            workflow=Workflow(name=name, jobs=jobs), callbacks=callbacks, args=args
+        )
+
+    @staticmethod
+    def _render_jobs_with_args(
+        jobs_data: list[dict[str, Any]], args: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Render Jinja templates in job data using args.
+
+        Args:
+            jobs_data: List of job configurations from YAML.
+            args: Template variables from the YAML args section.
+
+        Returns:
+            List of job configurations with rendered templates.
+        """
+        if not args:
+            return jobs_data
+
+        # Convert jobs_data to YAML string, render as template, then parse back
+        jobs_yaml = yaml.dump(jobs_data, default_flow_style=False)
+        template = jinja2.Template(jobs_yaml, undefined=jinja2.StrictUndefined)
+
+        try:
+            rendered_yaml = template.render(args)
+            return yaml.safe_load(rendered_yaml)
+        except jinja2.TemplateError as e:
+            logger.error(f"Jinja template rendering failed: {e}")
+            raise WorkflowValidationError(f"Template rendering failed: {e}") from e
 
     def get_independent_jobs(self) -> list[RunnableJobType]:
         """Get all jobs that are independent of any other job."""

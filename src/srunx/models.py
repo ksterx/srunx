@@ -182,7 +182,7 @@ class JobEnvironment(BaseModel):
         envs = [self.conda, self.venv, self.sqsh]
         non_none_count = sum(x is not None for x in envs)
         if non_none_count != 1:
-            raise ValueError("Exactly one of 'conda', 'venv', or 'sqsh' must be set")
+            logger.info("No virtual environment is set.")
         return self
 
 
@@ -442,6 +442,9 @@ def render_job_script(
         "environment_setup": _build_environment_setup(job.environment),
         **job.resources.model_dump(),
     }
+
+    # Debug: log template variables
+    logger.debug(f"Template variables: {template_vars}")
 
     rendered_content = template.render(template_vars)
 
