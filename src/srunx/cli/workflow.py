@@ -1,9 +1,12 @@
 """CLI interface for workflow management."""
 
-import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Annotated
+
+import typer
+from rich.console import Console
 
 from srunx.callbacks import SlackCallback
 from srunx.logging import configure_workflow_logging, get_logger
@@ -11,14 +14,12 @@ from srunx.runner import WorkflowRunner
 
 logger = get_logger(__name__)
 
-
-def create_workflow_parser() -> argparse.ArgumentParser:
-    """Create argument parser for workflow commands."""
-    parser = argparse.ArgumentParser(
-        description="Execute YAML-defined workflows using SLURM",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+# Create Typer app for workflow management
+app = typer.Typer(
+    help="Execute YAML-defined workflows using SLURM",
+    epilog="""
 Example YAML workflow:
+
   name: ml_pipeline
   jobs:
     - name: preprocess
@@ -53,57 +54,46 @@ Example YAML workflow:
         - upload
       environment:
         venv: /path/to/venv
-        """,
-    )
-
-    parser.add_argument(
-        "yaml_file",
-        type=str,
-        help="Path to YAML workflow definition file",
-    )
-
-    parser.add_argument(
-        "--validate-only",
-        action="store_true",
-        help="Only validate the workflow file without executing",
-    )
-
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be executed without running jobs",
-    )
-
-    parser.add_argument(
-        "--log-level",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        default="INFO",
-        help="Set logging level (default: %(default)s)",
-    )
-
-    parser.add_argument(
-        "--slack",
-        action="store_true",
-        help="Send notifications to Slack",
-    )
-
-    return parser
+""",
+)
 
 
-def cmd_run_workflow(args: argparse.Namespace) -> None:
-    """Handle workflow execution command."""
+@app.command()
+def run(
+    yaml_file: Annotated[
+        Path, typer.Argument(help="Path to YAML workflow definition file")
+    ],
+    validate_only: Annotated[
+        bool,
+        typer.Option(
+            "--validate-only", help="Only validate the workflow file without executing"
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run", help="Show what would be executed without running jobs"
+        ),
+    ] = False,
+    log_level: Annotated[
+        str, typer.Option("--log-level", help="Set logging level")
+    ] = "INFO",
+    slack: Annotated[
+        bool, typer.Option("--slack", help="Send notifications to Slack")
+    ] = False,
+) -> None:
+    """Execute workflow from YAML file."""
     # Configure logging for workflow execution
-    configure_workflow_logging(level=args.log_level)
+    configure_workflow_logging(level=log_level)
 
     try:
-        yaml_file = Path(args.yaml_file)
         if not yaml_file.exists():
-            logger.error(f"Workflow file not found: {args.yaml_file}")
+            logger.error(f"Workflow file not found: {yaml_file}")
             sys.exit(1)
 
         # Setup callbacks if requested
         callbacks = []
-        if getattr(args, "slack", False):
+        if slack:
             webhook_url = os.getenv("SLACK_WEBHOOK_URL")
             if not webhook_url:
                 raise ValueError("SLACK_WEBHOOK_URL environment variable is not set")
@@ -114,12 +104,18 @@ def cmd_run_workflow(args: argparse.Namespace) -> None:
         # Validate dependencies
         runner.workflow.validate()
 
-        if args.validate_only:
+        if validate_only:
             logger.info("Workflow validation successful")
             return
 
-        if args.dry_run:
-            runner.workflow.show()
+        if dry_run:
+            console = Console()
+            console.print("🔍 Dry run mode - showing workflow structure:")
+            console.print(f"Workflow: {runner.workflow.name}")
+            for job in runner.workflow.jobs:
+                console.print(
+                    f"  - {job.name}: {' '.join(job.command or []) if hasattr(job, 'command') else 'N/A'}"
+                )
             return
 
         # Execute workflow
@@ -139,10 +135,7 @@ def cmd_run_workflow(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """Main entry point for workflow CLI."""
-    parser = create_workflow_parser()
-    args = parser.parse_args()
-
-    cmd_run_workflow(args)
+    app()
 
 
 if __name__ == "__main__":

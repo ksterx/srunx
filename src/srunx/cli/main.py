@@ -1,10 +1,11 @@
 """Main CLI interface for srunx."""
 
-import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Annotated, Any
 
+import typer
 from rich.console import Console
 from rich.table import Table
 
@@ -20,662 +21,463 @@ from srunx.logging import (
     configure_workflow_logging,
     get_logger,
 )
-from srunx.models import Job, JobEnvironment, JobResource
+from srunx.models import ContainerResource, Job, JobEnvironment, JobResource
 from srunx.runner import WorkflowRunner
 
 logger = get_logger(__name__)
 
+# Create the main Typer app
+app = typer.Typer(
+    name="srunx",
+    help="Python library for SLURM job management",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 
-def create_job_parser() -> argparse.ArgumentParser:
-    """Create argument parser for job submission."""
-    # Get configuration defaults
-    config = get_config()
+# Create subapps
+flow_app = typer.Typer(help="Workflow management")
+config_app = typer.Typer(help="Configuration management")
 
-    parser = argparse.ArgumentParser(
-        description="Submit SLURM jobs with various configurations",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-
-    # Required arguments
-    parser.add_argument(
-        "command",
-        nargs="+",
-        help="Command to execute in the SLURM job",
-    )
-
-    # Job configuration
-    parser.add_argument(
-        "--name",
-        "--job-name",
-        type=str,
-        default="job",
-        help="Job name (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--log-dir",
-        type=str,
-        default=config.log_dir,
-        help="Log directory (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--work-dir",
-        "--chdir",
-        type=str,
-        default=config.work_dir,
-        help="Working directory for the job",
-    )
-
-    # Resource configuration
-    resource_group = parser.add_argument_group("Resource Options")
-    resource_group.add_argument(
-        "-N",
-        "--nodes",
-        type=int,
-        default=config.resources.nodes,
-        help="Number of nodes (default: %(default)s)",
-    )
-    resource_group.add_argument(
-        "--gpus-per-node",
-        type=int,
-        default=config.resources.gpus_per_node,
-        help="Number of GPUs per node (default: %(default)s)",
-    )
-    resource_group.add_argument(
-        "--ntasks-per-node",
-        type=int,
-        default=config.resources.ntasks_per_node,
-        help="Number of tasks per node (default: %(default)s)",
-    )
-    resource_group.add_argument(
-        "--cpus-per-task",
-        type=int,
-        default=config.resources.cpus_per_task,
-        help="Number of CPUs per task (default: %(default)s)",
-    )
-    resource_group.add_argument(
-        "--memory",
-        "--mem",
-        type=str,
-        default=config.resources.memory_per_node,
-        help="Memory per node (e.g., '32GB', '1TB') (default: %(default)s)",
-    )
-    resource_group.add_argument(
-        "--time",
-        "--time-limit",
-        type=str,
-        default=config.resources.time_limit,
-        help="Time limit (e.g., '1:00:00', '30:00', '1-12:00:00') (default: %(default)s)",
-    )
-    resource_group.add_argument(
-        "--nodelist",
-        type=str,
-        default=config.resources.nodelist,
-        help="Specific nodes to use (e.g., 'node001,node002') (default: %(default)s)",
-    )
-    resource_group.add_argument(
-        "--partition",
-        type=str,
-        default=config.resources.partition,
-        help="SLURM partition to use (e.g., 'gpu', 'cpu') (default: %(default)s)",
-    )
-
-    # Environment configuration
-    env_group = parser.add_argument_group("Environment Options")
-    env_group.add_argument(
-        "--conda",
-        type=str,
-        default=config.environment.conda,
-        help="Conda environment name (default: %(default)s)",
-    )
-    env_group.add_argument(
-        "--venv",
-        type=str,
-        default=config.environment.venv,
-        help="Virtual environment path (default: %(default)s)",
-    )
-    env_group.add_argument(
-        "--container",
-        type=str,
-        default=config.environment.container,
-        help="SquashFS image path (default: %(default)s)",
-    )
-    env_group.add_argument(
-        "--env",
-        action="append",
-        dest="env_vars",
-        help="Environment variable KEY=VALUE (can be used multiple times)",
-    )
-
-    # Execution options
-    exec_group = parser.add_argument_group("Execution Options")
-    exec_group.add_argument(
-        "--template",
-        type=str,
-        help="Path to custom SLURM template file",
-    )
-    exec_group.add_argument(
-        "--wait",
-        action="store_true",
-        help="Wait for job completion",
-    )
-    exec_group.add_argument(
-        "--poll-interval",
-        type=int,
-        default=5,
-        help="Polling interval in seconds when waiting (default: %(default)s)",
-    )
-
-    # Logging options
-    log_group = parser.add_argument_group("Logging Options")
-    log_group.add_argument(
-        "--log-level",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        default="INFO",
-        help="Set logging level (default: %(default)s)",
-    )
-    log_group.add_argument(
-        "--quiet",
-        "-q",
-        action="store_true",
-        help="Only show warnings and errors",
-    )
-
-    # Callback options
-    callback_group = parser.add_argument_group("Notification Options")
-    callback_group.add_argument(
-        "--slack",
-        action="store_true",
-        help="Send notifications to Slack",
-    )
-
-    # Misc options
-    misc_group = parser.add_argument_group("Misc Options")
-    misc_group.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Print the rendered content",
-    )
-
-    return parser
-
-
-def create_status_parser() -> argparse.ArgumentParser:
-    """Create argument parser for job status."""
-    parser = argparse.ArgumentParser(
-        description="Check SLURM job status",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-
-    parser.add_argument(
-        "job_id",
-        type=int,
-        help="SLURM job ID to check",
-    )
-
-    return parser
-
-
-def create_queue_parser() -> argparse.ArgumentParser:
-    """Create argument parser for queueing jobs."""
-    parser = argparse.ArgumentParser(
-        description="Queue SLURM jobs",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-
-    parser.add_argument(
-        "--user",
-        "-u",
-        type=str,
-        help="Queue jobs for specific user (default: current user)",
-    )
-
-    return parser
-
-
-def create_cancel_parser() -> argparse.ArgumentParser:
-    """Create argument parser for job cancellation."""
-    parser = argparse.ArgumentParser(
-        description="Cancel SLURM job",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-
-    parser.add_argument(
-        "job_id",
-        type=int,
-        help="SLURM job ID to cancel",
-    )
-
-    return parser
-
-
-def create_main_parser() -> argparse.ArgumentParser:
-    """Create main argument parser with subcommands."""
-    parser = argparse.ArgumentParser(
-        description="srunx - Python library for SLURM job management",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-
-    # Global options
-    parser.add_argument(
-        "--log-level",
-        "-l",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        default="INFO",
-        help="Set logging level (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--quiet",
-        "-q",
-        action="store_true",
-        help="Only show warnings and errors",
-    )
-
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
-
-    # Submit command (default)
-    submit_parser = subparsers.add_parser("submit", help="Submit a SLURM job")
-    submit_parser.set_defaults(func=cmd_submit)
-    _copy_parser_args(create_job_parser(), submit_parser)
-
-    # Status command
-    status_parser = subparsers.add_parser("status", help="Check job status")
-    status_parser.set_defaults(func=cmd_status)
-    _copy_parser_args(create_status_parser(), status_parser)
-
-    # Queue command
-    queue_parser = subparsers.add_parser("queue", help="Queue jobs")
-    queue_parser.set_defaults(func=cmd_queue)
-    _copy_parser_args(create_queue_parser(), queue_parser)
-
-    # Cancel command
-    cancel_parser = subparsers.add_parser("cancel", help="Cancel job")
-    cancel_parser.set_defaults(func=cmd_cancel)
-    _copy_parser_args(create_cancel_parser(), cancel_parser)
-
-    # Flow command
-    flow_parser = subparsers.add_parser("flow", help="Workflow management")
-    flow_parser.set_defaults(func=None)  # Will be overridden by subcommands
-
-    # Flow subcommands
-    flow_subparsers = flow_parser.add_subparsers(
-        dest="flow_command", help="Flow commands"
-    )
-
-    # Flow run command
-    flow_run_parser = flow_subparsers.add_parser("run", help="Execute workflow")
-    flow_run_parser.set_defaults(func=cmd_flow_run)
-    flow_run_parser.add_argument(
-        "yaml_file",
-        type=str,
-        help="Path to YAML workflow definition file",
-    )
-    flow_run_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be executed without running jobs",
-    )
-    flow_run_parser.add_argument(
-        "--slack",
-        action="store_true",
-        help="Send notifications to Slack",
-    )
-
-    # Flow validate command
-    flow_validate_parser = flow_subparsers.add_parser(
-        "validate", help="Validate workflow"
-    )
-    flow_validate_parser.set_defaults(func=cmd_flow_validate)
-    flow_validate_parser.add_argument(
-        "yaml_file",
-        type=str,
-        help="Path to YAML workflow definition file",
-    )
-
-    # Config command
-    config_parser = subparsers.add_parser("config", help="Configuration management")
-    config_parser.set_defaults(func=None)  # Will be overridden by subcommands
-
-    # Config subcommands
-    config_subparsers = config_parser.add_subparsers(
-        dest="config_command", help="Configuration commands"
-    )
-
-    # Config show command
-    config_show_parser = config_subparsers.add_parser(
-        "show", help="Show current configuration"
-    )
-    config_show_parser.set_defaults(func=cmd_config_show)
-
-    # Config paths command
-    config_paths_parser = config_subparsers.add_parser(
-        "paths", help="Show configuration file paths"
-    )
-    config_paths_parser.set_defaults(func=cmd_config_paths)
-
-    # Config init command
-    config_init_parser = config_subparsers.add_parser(
-        "init", help="Initialize configuration file"
-    )
-    config_init_parser.set_defaults(func=cmd_config_init)
-    config_init_parser.add_argument(
-        "--global",
-        action="store_true",
-        dest="global_config",
-        help="Create global user config instead of project config",
-    )
-
-    return parser
-
-
-def _copy_parser_args(
-    source_parser: argparse.ArgumentParser, target_parser: argparse.ArgumentParser
-) -> None:
-    """Copy arguments from source parser to target parser."""
-    for action in source_parser._actions:
-        if action.dest == "help":
-            continue
-        target_parser._add_action(action)
+app.add_typer(flow_app, name="flow")
+app.add_typer(config_app, name="config")
 
 
 def _parse_env_vars(env_var_list: list[str] | None) -> dict[str, str]:
     """Parse environment variables from list of KEY=VALUE strings."""
+    if not env_var_list:
+        return {}
+
     env_vars = {}
-    if env_var_list:
-        for env_var in env_var_list:
-            if "=" in env_var:
-                key, value = env_var.split("=", 1)
-                env_vars[key] = value
-            else:
-                logger.warning(f"Invalid environment variable format: {env_var}")
+    for env_str in env_var_list:
+        if "=" not in env_str:
+            raise ValueError(f"Invalid environment variable format: {env_str}")
+        key, value = env_str.split("=", 1)
+        env_vars[key] = value
     return env_vars
 
 
-def cmd_submit(args: argparse.Namespace) -> None:
-    """Handle job submission command."""
+def _parse_container_args(container_arg: str | None) -> ContainerResource | None:
+    """Parse container argument into ContainerResource."""
+    if not container_arg:
+        return None
+
+    # Simple case: just image path
+    if not container_arg.startswith("{") and "," not in container_arg:
+        return ContainerResource(image=container_arg)
+
+    # Complex case: parse key=value pairs
+    container_data: dict[str, str | list[str]] = {}
+    if container_arg.startswith("{") and container_arg.endswith("}"):
+        container_arg = container_arg[1:-1]
+
+    for pair in container_arg.split(","):
+        if "=" in pair:
+            key, value = pair.strip().split("=", 1)
+            if key == "image":
+                container_data["image"] = value
+            elif key == "mounts":
+                container_data["mounts"] = value.split(";")
+            elif key == "workdir":
+                container_data["workdir"] = value
+
+    if container_data:
+        image = container_data.get("image")
+        mounts = container_data.get("mounts", [])
+        workdir = container_data.get("workdir")
+        return ContainerResource(
+            image=image if isinstance(image, str) else None,
+            mounts=mounts if isinstance(mounts, list) else [],
+            workdir=workdir if isinstance(workdir, str) else None,
+        )
+    else:
+        return ContainerResource(image=container_arg)
+
+
+@app.command("submit")
+def submit(
+    command: Annotated[
+        list[str], typer.Argument(help="Command to execute in the SLURM job")
+    ],
+    name: Annotated[str, typer.Option("--name", "--job-name", help="Job name")] = "job",
+    log_dir: Annotated[
+        str | None, typer.Option("--log-dir", help="Log directory")
+    ] = None,
+    work_dir: Annotated[
+        str | None,
+        typer.Option("--work-dir", "--chdir", help="Working directory for the job"),
+    ] = None,
+    # Resource options
+    nodes: Annotated[int, typer.Option("-N", "--nodes", help="Number of nodes")] = 1,
+    gpus_per_node: Annotated[
+        int, typer.Option("--gpus-per-node", help="Number of GPUs per node")
+    ] = 0,
+    ntasks_per_node: Annotated[
+        int, typer.Option("--ntasks-per-node", help="Number of tasks per node")
+    ] = 1,
+    cpus_per_task: Annotated[
+        int, typer.Option("--cpus-per-task", help="Number of CPUs per task")
+    ] = 1,
+    memory: Annotated[
+        str | None,
+        typer.Option("--memory", "--mem", help="Memory per node (e.g., '32GB', '1TB')"),
+    ] = None,
+    time: Annotated[
+        str | None,
+        typer.Option(
+            "--time",
+            "--time-limit",
+            help="Time limit (e.g., '1:00:00', '30:00', '1-12:00:00')",
+        ),
+    ] = None,
+    nodelist: Annotated[
+        str | None,
+        typer.Option(
+            "--nodelist", help="Specific nodes to use (e.g., 'node001,node002')"
+        ),
+    ] = None,
+    partition: Annotated[
+        str | None,
+        typer.Option("--partition", help="SLURM partition to use (e.g., 'gpu', 'cpu')"),
+    ] = None,
+    # Environment options
+    conda: Annotated[
+        str | None, typer.Option("--conda", help="Conda environment name")
+    ] = None,
+    venv: Annotated[
+        str | None, typer.Option("--venv", help="Virtual environment path")
+    ] = None,
+    container: Annotated[
+        str | None, typer.Option("--container", help="Container image or config")
+    ] = None,
+    env: Annotated[
+        list[str] | None,
+        typer.Option("--env", help="Environment variables (KEY=VALUE)"),
+    ] = None,
+    # Job options
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show what would be submitted without running"),
+    ] = False,
+    wait: Annotated[
+        bool, typer.Option("--wait", help="Wait for job completion")
+    ] = False,
+    slack: Annotated[
+        bool, typer.Option("--slack", help="Send notifications to Slack")
+    ] = False,
+    template: Annotated[
+        str | None, typer.Option("--template", help="Custom SLURM script template")
+    ] = None,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="Show verbose output")
+    ] = False,
+) -> None:
+    """Submit a SLURM job."""
+    config = get_config()
+
+    # Use defaults from config if not specified
+    if log_dir is None:
+        log_dir = config.log_dir
+    if work_dir is None:
+        work_dir = config.work_dir
+
+    # Parse environment variables
+    env_vars = _parse_env_vars(env)
+
+    # Create resources
+    resources = JobResource(
+        nodes=nodes,
+        gpus_per_node=gpus_per_node,
+        ntasks_per_node=ntasks_per_node,
+        cpus_per_task=cpus_per_task,
+        memory_per_node=memory,
+        time_limit=time,
+        nodelist=nodelist,
+        partition=partition,
+    )
+
+    # Create environment with explicit handling of defaults
+    env_config: dict[str, Any] = {"env_vars": env_vars}
+    if conda is not None:
+        env_config["conda"] = conda
+    if venv is not None:
+        env_config["venv"] = venv
+    if container is not None:
+        env_config["container"] = _parse_container_args(container)
+
+    environment = JobEnvironment.model_validate(env_config)
+
+    job_data = {
+        "name": name,
+        "command": command,
+        "resources": resources,
+        "environment": environment,
+        "log_dir": log_dir,
+    }
+
+    if work_dir is not None:
+        job_data["work_dir"] = work_dir
+
+    job = Job.model_validate(job_data)
+
+    if slack:
+        webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+        if not webhook_url:
+            raise ValueError("SLACK_WEBHOOK_URL is not set")
+        callbacks = [SlackCallback(webhook_url=webhook_url)]
+    else:
+        callbacks = []
+
+    if dry_run:
+        console = Console()
+        console.print("🔍 Dry run mode - would submit job:")
+        console.print(f"  Name: {job.name}")
+        console.print(f"  Command: {' '.join(job.command or [])}")
+        console.print(f"  Nodes: {job.resources.nodes}")
+        console.print(f"  GPUs: {job.resources.gpus_per_node}")
+        return
+
+    # Submit job
+    client = Slurm(callbacks=callbacks)
+    submitted_job = client.submit(job, template_path=template, verbose=verbose)
+
+    console = Console()
+    console.print(
+        f"✅ Job submitted successfully: [bold green]{submitted_job.job_id}[/bold green]"
+    )
+    console.print(f"   Job name: {submitted_job.name}")
+    if hasattr(submitted_job, "command") and submitted_job.command:
+        console.print(f"   Command: {' '.join(submitted_job.command)}")
+
+    if wait:
+        try:
+            final_job = client.monitor(submitted_job)
+            if final_job.status.name == "COMPLETED":
+                console.print("✅ Job completed successfully")
+            else:
+                console.print(f"❌ Job failed with status: {final_job.status.name}")
+                sys.exit(1)
+        except KeyboardInterrupt:
+            console.print("\n⚠️  Monitoring interrupted by user")
+            console.print(
+                f"Job {submitted_job.job_id} is still running in the background"
+            )
+
+
+@app.command("status")
+def status(
+    job_id: Annotated[int, typer.Argument(help="Job ID to check")],
+) -> None:
+    """Check job status."""
     try:
-        # Parse environment variables and merge with config defaults
-        config = get_config()
-        env_vars = config.environment.env_vars.copy()
-        cli_env_vars = _parse_env_vars(getattr(args, "env_vars", None))
-        env_vars.update(cli_env_vars)
+        client = Slurm()
+        job = client.retrieve(job_id)
 
-        # Create job configuration
-        resources = JobResource(
-            nodes=args.nodes,
-            gpus_per_node=args.gpus_per_node,
-            ntasks_per_node=args.ntasks_per_node,
-            cpus_per_task=args.cpus_per_task,
-            memory_per_node=getattr(args, "memory", None),
-            time_limit=getattr(args, "time", None),
-            nodelist=getattr(args, "nodelist", None),
-            partition=getattr(args, "partition", None),
-        )
-
-        # Create environment with explicit handling of defaults
-        # Only pass non-None values to avoid conflicts with validation
-        env_config = {}
-        if args.conda is not None:
-            env_config["conda"] = args.conda
-        if args.venv is not None:
-            env_config["venv"] = args.venv
-        if args.container is not None:
-            env_config["container"] = args.container
-        env_config["env_vars"] = env_vars
-
-        # If no environment was explicitly set, let JobEnvironment use its defaults
-        if not any([args.conda, args.venv, args.container]):
-            environment = JobEnvironment(env_vars=env_vars)
-        else:
-            environment = JobEnvironment.model_validate(env_config)
-
-        job_data = {
-            "name": args.name,
-            "command": args.command,
-            "resources": resources,
-            "environment": environment,
-            "log_dir": args.log_dir,
-        }
-
-        if args.work_dir is not None:
-            job_data["work_dir"] = args.work_dir
-
-        job = Job.model_validate(job_data)
-
-        if args.slack:
-            webhook_url = os.getenv("SLACK_WEBHOOK_URL")
-            if not webhook_url:
-                raise ValueError("SLACK_WEBHOOK_URL is not set")
-            callbacks = [SlackCallback(webhook_url=webhook_url)]
-        else:
-            callbacks = []
-
-        # Submit job
-        client = Slurm(callbacks=callbacks)
-        submitted_job = client.submit(
-            job, getattr(args, "template", None), verbose=args.verbose
-        )
-
-        logger.info(f"Submitted job {submitted_job.job_id}: {submitted_job.name}")
-
-        # Wait for completion if requested
-        if getattr(args, "wait", False):
-            logger.info(f"Waiting for job {submitted_job.job_id} to complete...")
-            completed_job = client.monitor(
-                submitted_job, poll_interval=args.poll_interval
-            )
-            status_str = (
-                completed_job.status.value if completed_job.status else "Unknown"
-            )
-            logger.info(
-                f"Job {submitted_job.job_id} completed with status: {status_str}"
-            )
+        console = Console()
+        console.print(f"Job ID: [bold]{job.job_id}[/bold]")
+        console.print(f"Status: {job.status.name}")
+        console.print(f"Name: {job.name}")
+        if hasattr(job, "command") and job.command:
+            console.print(f"Command: {' '.join(job.command)}")
 
     except Exception as e:
-        logger.error(f"Error submitting job: {e}")
+        logger.error(f"Error retrieving job {job_id}: {e}")
         sys.exit(1)
 
 
-def cmd_status(args: argparse.Namespace) -> None:
-    """Handle job status command."""
+@app.command("list")
+def list_jobs() -> None:
+    """List user's jobs in the queue."""
     try:
         client = Slurm()
-        job = client.retrieve(args.job_id)
-
-        logger.info(f"Job ID: {job.job_id}")
-        logger.info(f"Name: {job.name}")
-        if job.status:
-            logger.info(f"Status: {job.status.value}")
-        else:
-            logger.info("Status: Unknown")
-
-    except Exception as e:
-        logger.error(f"Error getting job status: {e}")
-        sys.exit(1)
-
-
-def cmd_queue(args: argparse.Namespace) -> None:
-    """Handle job queueing command."""
-    try:
-        client = Slurm()
-        jobs = client.queue(getattr(args, "user", None))
+        jobs = client.queue()
 
         if not jobs:
-            logger.info("No jobs found")
+            console = Console()
+            console.print("No jobs in queue")
             return
 
-        logger.info(f"{'Job ID':<12} {'Name':<20} {'Status':<12}")
-        logger.info("-" * 45)
+        table = Table(title="Job Queue")
+        table.add_column("Job ID", style="cyan")
+        table.add_column("Name", style="magenta")
+        table.add_column("Status", style="green")
+        table.add_column("Nodes", justify="right")
+        table.add_column("Time", justify="right")
+
         for job in jobs:
-            status_str = job.status.value if job.status else "Unknown"
-            logger.info(f"{job.job_id:<12} {job.name:<20} {status_str:<12}")
-
-    except Exception as e:
-        logger.error(f"Error queueing jobs: {e}")
-        sys.exit(1)
-
-
-def cmd_cancel(args: argparse.Namespace) -> None:
-    """Handle job cancellation command."""
-    try:
-        client = Slurm()
-        client.cancel(args.job_id)
-        logger.info(f"Cancelled job {args.job_id}")
-
-    except Exception as e:
-        logger.error(f"Error cancelling job: {e}")
-        sys.exit(1)
-
-
-def cmd_flow_run(args: argparse.Namespace) -> None:
-    """Handle flow run command."""
-    # Configure logging for workflow execution
-    configure_workflow_logging(level=getattr(args, "log_level", "INFO"))
-
-    try:
-        yaml_file = Path(args.yaml_file)
-        if not yaml_file.exists():
-            logger.error(f"Workflow file not found: {args.yaml_file}")
-            sys.exit(1)
-
-        # Setup callbacks if requested
-        callbacks = []
-        if getattr(args, "slack", False):
-            webhook_url = os.getenv("SLACK_WEBHOOK_URL")
-            if not webhook_url:
-                raise ValueError("SLACK_WEBHOOK_URL environment variable is not set")
-            callbacks.append(SlackCallback(webhook_url=webhook_url))
-
-        runner = WorkflowRunner.from_yaml(yaml_file, callbacks=callbacks)
-
-        # Validate dependencies
-        runner.workflow.validate()
-
-        if args.dry_run:
-            runner.workflow.show()
-            return
-
-        # Execute workflow
-        results = runner.run()
-
-        logger.success(f"🎉 Workflow {runner.workflow.name} completed!!")
-        table = Table(title=f"Workflow {runner.workflow.name} Summary")
-        table.add_column("Job", justify="left", style="cyan", no_wrap=True)
-        table.add_column("Status", justify="left", style="cyan", no_wrap=True)
-        table.add_column("ID", justify="left", style="cyan", no_wrap=True)
-        for job in results.values():
-            table.add_row(job.name, job.status.value, str(job.job_id))
+            table.add_row(
+                str(job.job_id) if job.job_id else "N/A",
+                job.name,
+                job.status.name if hasattr(job, "status") else "UNKNOWN",
+                str(getattr(getattr(job, "resources", None), "nodes", "N/A") or "N/A"),
+                getattr(getattr(job, "resources", None), "time_limit", None) or "N/A",
+            )
 
         console = Console()
         console.print(table)
+
+    except Exception as e:
+        logger.error(f"Error retrieving job queue: {e}")
+        sys.exit(1)
+
+
+@app.command("cancel")
+def cancel(
+    job_id: Annotated[int, typer.Argument(help="Job ID to cancel")],
+) -> None:
+    """Cancel a running job."""
+    try:
+        client = Slurm()
+        client.cancel(job_id)
+
+        console = Console()
+        console.print(f"✅ Job {job_id} cancelled successfully")
+
+    except Exception as e:
+        logger.error(f"Error cancelling job {job_id}: {e}")
+        sys.exit(1)
+
+
+@flow_app.command("run")
+def flow_run(
+    yaml_file: Annotated[
+        Path, typer.Argument(help="Path to YAML workflow definition file")
+    ],
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run", help="Show what would be executed without running jobs"
+        ),
+    ] = False,
+    slack: Annotated[
+        bool, typer.Option("--slack", help="Send notifications to Slack")
+    ] = False,
+) -> None:
+    """Execute workflow from YAML file."""
+    configure_workflow_logging()
+
+    if not yaml_file.exists():
+        logger.error(f"Workflow file not found: {yaml_file}")
+        sys.exit(1)
+
+    try:
+        # Setup callbacks
+        callbacks = []
+        if slack:
+            webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+            if webhook_url:
+                callbacks.append(SlackCallback(webhook_url=webhook_url))
+            else:
+                logger.warning(
+                    "SLACK_WEBHOOK_URL not set, skipping Slack notifications"
+                )
+
+        # Load and run workflow
+        runner = WorkflowRunner.from_yaml(yaml_file, callbacks=callbacks)
+
+        if dry_run:
+            console = Console()
+            console.print("🔍 Dry run mode - showing workflow structure:")
+            console.print(f"Workflow: {runner.workflow.name}")
+            for job in runner.workflow.jobs:
+                if hasattr(job, "command") and job.command:
+                    command_str = " ".join(job.command)
+                else:
+                    command_str = "N/A"
+                console.print(f"  - {job.name}: {command_str}")
+        else:
+            runner.run()
 
     except Exception as e:
         logger.error(f"Workflow execution failed: {e}")
         sys.exit(1)
 
 
-def cmd_flow_validate(args: argparse.Namespace) -> None:
-    """Handle flow validate command."""
-    # Configure logging for workflow validation
-    configure_workflow_logging(level=getattr(args, "log_level", "INFO"))
+@flow_app.command("validate")
+def flow_validate(
+    yaml_file: Annotated[
+        Path, typer.Argument(help="Path to YAML workflow definition file")
+    ],
+) -> None:
+    """Validate workflow YAML file."""
+    if not yaml_file.exists():
+        logger.error(f"Workflow file not found: {yaml_file}")
+        sys.exit(1)
 
     try:
-        yaml_file = Path(args.yaml_file)
-        if not yaml_file.exists():
-            logger.error(f"Workflow file not found: {args.yaml_file}")
-            sys.exit(1)
-
         runner = WorkflowRunner.from_yaml(yaml_file)
-
-        # Validate dependencies
         runner.workflow.validate()
 
-        logger.info("Workflow validation successful")
+        console = Console()
+        console.print("✅ Workflow validation successful")
+        console.print(f"   Workflow: {runner.workflow.name}")
+        console.print(f"   Jobs: {len(runner.workflow.jobs)}")
 
     except Exception as e:
         logger.error(f"Workflow validation failed: {e}")
         sys.exit(1)
 
 
-def cmd_config_show(args: argparse.Namespace) -> None:
-    """Handle config show command."""
-    try:
-        config = get_config()
+@config_app.command("show")
+def config_show() -> None:
+    """Show current configuration."""
+    config = get_config()
 
+    console = Console()
+    table = Table(title="srunx Configuration")
+    table.add_column("Section", style="cyan")
+    table.add_column("Key", style="magenta")
+    table.add_column("Value", style="green")
+
+    # Log directory
+    table.add_row("General", "log_dir", str(config.log_dir))
+    table.add_row("", "work_dir", str(config.work_dir))
+
+    # Resources
+    table.add_row("Resources", "nodes", str(config.resources.nodes))
+    table.add_row("", "gpus_per_node", str(config.resources.gpus_per_node))
+    table.add_row("", "ntasks_per_node", str(config.resources.ntasks_per_node))
+    table.add_row("", "cpus_per_task", str(config.resources.cpus_per_task))
+    table.add_row("", "memory_per_node", str(config.resources.memory_per_node))
+    table.add_row("", "time_limit", str(config.resources.time_limit))
+    table.add_row("", "partition", str(config.resources.partition))
+
+    # Environment
+    table.add_row("Environment", "conda", str(config.environment.conda))
+    table.add_row("", "venv", str(config.environment.venv))
+    table.add_row("", "container", str(config.environment.container))
+
+    console.print(table)
+
+
+@config_app.command("paths")
+def config_paths() -> None:
+    """Show configuration file paths."""
+    paths = get_config_paths()
+
+    console = Console()
+    console.print("Configuration file paths (in order of precedence):")
+    for i, path in enumerate(paths, 1):
+        status = "✅ exists" if path.exists() else "❌ not found"
+        console.print(f"{i}. {path} - {status}")
+
+
+@config_app.command("init")
+def config_init(
+    force: Annotated[
+        bool, typer.Option("--force", help="Overwrite existing config file")
+    ] = False,
+) -> None:
+    """Initialize configuration file."""
+    paths = get_config_paths()
+    config_path = paths[0]  # Use the first (highest precedence) path
+
+    if config_path.exists() and not force:
         console = Console()
-        console.print("[bold cyan]Current Configuration:[/bold cyan]")
+        console.print(f"Configuration file already exists: {config_path}")
+        console.print("Use --force to overwrite")
+        return
 
-        # Display config in a nice format using Rich
-        table = Table(
-            title="srunx Configuration", show_header=True, header_style="bold magenta"
-        )
-        table.add_column("Section", style="cyan")
-        table.add_column("Setting", style="green")
-        table.add_column("Value", style="yellow")
-
-        # Resources
-        table.add_row("resources", "nodes", str(config.resources.nodes))
-        table.add_row("", "gpus_per_node", str(config.resources.gpus_per_node))
-        table.add_row("", "ntasks_per_node", str(config.resources.ntasks_per_node))
-        table.add_row("", "cpus_per_task", str(config.resources.cpus_per_task))
-        table.add_row("", "memory_per_node", str(config.resources.memory_per_node))
-        table.add_row("", "time_limit", str(config.resources.time_limit))
-        table.add_row("", "nodelist", str(config.resources.nodelist))
-        table.add_row("", "partition", str(config.resources.partition))
-
-        # Environment
-        table.add_row("environment", "conda", str(config.environment.conda))
-        table.add_row("", "venv", str(config.environment.venv))
-        table.add_row("", "container", str(config.environment.container))
-        if config.environment.env_vars:
-            for key, value in config.environment.env_vars.items():
-                table.add_row("", f"env_vars.{key}", value)
-        else:
-            table.add_row("", "env_vars", "(empty)")
-
-        # General
-        table.add_row("general", "log_dir", config.log_dir)
-        table.add_row("", "work_dir", str(config.work_dir))
-
-        console.print(table)
-
-    except Exception as e:
-        logger.error(f"Error showing configuration: {e}")
-        sys.exit(1)
-
-
-def cmd_config_paths(args: argparse.Namespace) -> None:
-    """Handle config paths command."""
     try:
-        console = Console()
-        console.print("[bold cyan]Configuration File Paths:[/bold cyan]")
-        console.print("(Listed in order of precedence - last one wins)")
-
-        paths = get_config_paths()
-        for i, path in enumerate(paths, 1):
-            exists = "✓" if path.exists() else "✗"
-            console.print(f"{i}. [{exists}] {path}")
-
-    except Exception as e:
-        logger.error(f"Error showing configuration paths: {e}")
-        sys.exit(1)
-
-
-def cmd_config_init(args: argparse.Namespace) -> None:
-    """Handle config init command."""
-    try:
-        if getattr(args, "global_config", False):
-            # Create global user config
-            config_paths = get_config_paths()
-            config_path = config_paths[1]  # User config path
-        else:
-            # Create project config
-            config_path = Path.cwd() / "srunx.json"
-
-        if config_path.exists():
-            logger.error(f"Configuration file already exists: {config_path}")
-            sys.exit(1)
-
-        # Create directory if it doesn't exist
+        # Create parent directories if they don't exist
         config_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Write example config
@@ -683,8 +485,9 @@ def cmd_config_init(args: argparse.Namespace) -> None:
         with open(config_path, "w", encoding="utf-8") as f:
             f.write(example_config)
 
-        logger.info(f"Configuration file created: {config_path}")
-        logger.info("Edit this file to customize your defaults")
+        console = Console()
+        console.print(f"✅ Configuration file created: {config_path}")
+        console.print("Edit this file to customize your defaults")
 
     except Exception as e:
         logger.error(f"Error creating configuration file: {e}")
@@ -693,41 +496,11 @@ def cmd_config_init(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """Main entry point for the CLI."""
-    parser = create_main_parser()
-    args = parser.parse_args()
+    # Configure logging with defaults
+    configure_cli_logging(level="INFO", quiet=False)
 
-    # Configure logging
-    log_level = getattr(args, "log_level", "INFO")
-    quiet = getattr(args, "quiet", False)
-    configure_cli_logging(level=log_level, quiet=quiet)
-
-    # If no command specified, default to submit behavior for backward compatibility
-    if not hasattr(args, "func") or args.func is None:
-        # Check if this is a flow command without subcommand
-        if hasattr(args, "command") and args.command == "flow":
-            if not hasattr(args, "flow_command") or args.flow_command is None:
-                logger.error("Flow command requires a subcommand (run or validate)")
-                parser.print_help()
-                sys.exit(1)
-        # Check if this is a config command without subcommand
-        elif hasattr(args, "command") and args.command == "config":
-            if not hasattr(args, "config_command") or args.config_command is None:
-                logger.error(
-                    "Config command requires a subcommand (show, paths, or init)"
-                )
-                parser.print_help()
-                sys.exit(1)
-        else:
-            # Try to parse as submit command
-            submit_parser = create_job_parser()
-            try:
-                submit_args = submit_parser.parse_args()
-                cmd_submit(submit_args)
-            except SystemExit:
-                parser.print_help()
-                sys.exit(1)
-    else:
-        args.func(args)
+    # Run the app
+    app()
 
 
 if __name__ == "__main__":
