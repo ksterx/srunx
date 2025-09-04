@@ -2,14 +2,17 @@
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.table import Table
 
-from srunx.callbacks import SlackCallback
+from srunx.callbacks import Callback, SlackCallback
 from srunx.client import Slurm
 from srunx.config import (
     create_example_config,
@@ -21,10 +24,70 @@ from srunx.logging import (
     configure_workflow_logging,
     get_logger,
 )
-from srunx.models import ContainerResource, Job, JobEnvironment, JobResource
+from srunx.models import (
+    ContainerResource,
+    Job,
+    JobEnvironment,
+    JobResource,
+    JobType,
+    render_job_script,
+)
 from srunx.runner import WorkflowRunner
 
 logger = get_logger(__name__)
+
+
+class DebugCallback(Callback):
+    """Callback to display rendered SLURM scripts in debug mode."""
+
+    def __init__(self):
+        self.console = Console()
+
+    def on_job_submitted(self, job: JobType) -> None:
+        """Display the rendered SLURM script when a job is submitted."""
+        if isinstance(job, Job):
+            try:
+                # Get the default template path
+                client = Slurm()
+                template_path = client.default_template
+
+                # Render the script to get the content
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    script_path = render_job_script(
+                        template_path, job, temp_dir, verbose=False
+                    )
+
+                    # Read the rendered script content
+                    with open(script_path, encoding="utf-8") as f:
+                        script_content = f.read()
+
+                    # Display the script with rich formatting
+                    self.console.print(
+                        f"\n[bold blue]🔍 Rendered SLURM Script for Job: {job.name}[/bold blue]"
+                    )
+
+                    # Create syntax highlighted panel
+                    syntax = Syntax(
+                        script_content,
+                        "bash",
+                        theme="monokai",
+                        line_numbers=True,
+                        background_color="default",
+                    )
+
+                    panel = Panel(
+                        syntax,
+                        title=f"[bold cyan]{job.name}.slurm[/bold cyan]",
+                        border_style="blue",
+                        padding=(1, 2),
+                    )
+
+                    self.console.print(panel)
+                    self.console.print()
+
+            except Exception as e:
+                logger.error(f"Failed to render debug script for job {job.name}: {e}")
+
 
 # Create the main Typer app
 app = typer.Typer(
@@ -350,6 +413,9 @@ def flow_run(
     slack: Annotated[
         bool, typer.Option("--slack", help="Send notifications to Slack")
     ] = False,
+    debug: Annotated[
+        bool, typer.Option("--debug", help="Show rendered SLURM scripts for each job")
+    ] = False,
 ) -> None:
     """Execute workflow from YAML file."""
     configure_workflow_logging()
@@ -360,7 +426,9 @@ def flow_run(
 
     try:
         # Setup callbacks
-        callbacks = []
+        callbacks: list[Callback] = []
+        if debug:
+            callbacks.append(DebugCallback())
         if slack:
             webhook_url = os.getenv("SLACK_WEBHOOK_URL")
             if webhook_url:

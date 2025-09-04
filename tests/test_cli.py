@@ -90,6 +90,14 @@ class TestTyperCLI:
         assert "run" in result.stdout
         assert "validate" in result.stdout
 
+    def test_flow_run_help(self):
+        """Test flow run command help includes debug option."""
+        result = self.runner.invoke(app, ["flow", "run", "--help"])
+        assert result.exit_code == 0
+        assert "Execute workflow from YAML file" in result.stdout
+        assert "--debug" in result.stdout
+        assert "Show rendered SLURM scripts for each job" in result.stdout
+
     def test_config_help(self):
         """Test config command help."""
         result = self.runner.invoke(app, ["config", "--help"])
