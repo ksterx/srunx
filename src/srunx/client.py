@@ -304,7 +304,7 @@ class Slurm:
 
     def _get_default_template(self) -> str:
         """Get the default job template path."""
-        return str(files("srunx.templates").joinpath("base.slurm.jinja"))
+        return str(files("srunx.templates").joinpath("advanced.slurm.jinja"))
 
 
 # Convenience functions for backward compatibility

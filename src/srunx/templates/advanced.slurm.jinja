@@ -31,7 +31,7 @@ set -euxo pipefail
 # Environment setup
 {% if environment_setup -%}
 {{ environment_setup }}
-{% endif %}
+{% endif -%}
 
 # Execute command
 {% if sqsh -%}
