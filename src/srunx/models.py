@@ -457,7 +457,7 @@ def render_job_script(
         "log_dir": job.log_dir,
         "work_dir": job.work_dir,
         "environment_setup": _build_environment_setup(job.environment),
-        "sqsh": job.environment.sqsh,
+        "container": job.environment.container,
         **job.resources.model_dump(),
     }
 

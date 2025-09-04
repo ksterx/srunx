@@ -134,9 +134,9 @@ def create_job_parser() -> argparse.ArgumentParser:
         help="Virtual environment path (default: %(default)s)",
     )
     env_group.add_argument(
-        "--sqsh",
+        "--container",
         type=str,
-        default=config.environment.sqsh,
+        default=config.environment.container,
         help="SquashFS image path (default: %(default)s)",
     )
     env_group.add_argument(
@@ -418,12 +418,12 @@ def cmd_submit(args: argparse.Namespace) -> None:
             env_config["conda"] = args.conda
         if args.venv is not None:
             env_config["venv"] = args.venv
-        if args.sqsh is not None:
-            env_config["sqsh"] = args.sqsh
+        if args.container is not None:
+            env_config["container"] = args.container
         env_config["env_vars"] = env_vars
 
         # If no environment was explicitly set, let JobEnvironment use its defaults
-        if not any([args.conda, args.venv, args.sqsh]):
+        if not any([args.conda, args.venv, args.container]):
             environment = JobEnvironment(env_vars=env_vars)
         else:
             environment = JobEnvironment.model_validate(env_config)
@@ -625,7 +625,7 @@ def cmd_config_show(args: argparse.Namespace) -> None:
         # Environment
         table.add_row("environment", "conda", str(config.environment.conda))
         table.add_row("", "venv", str(config.environment.venv))
-        table.add_row("", "sqsh", str(config.environment.sqsh))
+        table.add_row("", "container", str(config.environment.container))
         if config.environment.env_vars:
             for key, value in config.environment.env_vars.items():
                 table.add_row("", f"env_vars.{key}", value)
