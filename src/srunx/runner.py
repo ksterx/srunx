@@ -112,6 +112,15 @@ class WorkflowRunner:
         jobs_yaml = yaml.dump(jobs_data, default_flow_style=False)
         template = jinja2.Template(jobs_yaml, undefined=jinja2.StrictUndefined)
 
+        for key, value in args.items():
+            if isinstance(value, str):
+                if value.startswith("python:"):
+                    cmd = value.split(":")[1]
+                    if "datetime" in cmd:
+                        import datetime  # noqa: F401
+
+                        args[key] = eval(cmd)
+
         try:
             rendered_yaml = template.render(args)
             return yaml.safe_load(rendered_yaml)
