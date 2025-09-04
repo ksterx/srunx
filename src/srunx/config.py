@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from srunx.logging import get_logger
+from srunx.models import ContainerResource
 
 logger = get_logger(__name__)
 
@@ -40,7 +41,9 @@ class EnvironmentDefaults(BaseModel):
     venv: str | None = Field(
         default=None, description="Default virtual environment path"
     )
-    sqsh: str | None = Field(default=None, description="Default SquashFS image path")
+    container: ContainerResource | None = Field(
+        default=None, description="Default container resource"
+    )
     env_vars: dict[str, str] = Field(
         default_factory=dict, description="Default environment variables"
     )
@@ -161,8 +164,8 @@ def load_config_from_env() -> dict[str, Any]:
     if venv := os.getenv("SRUNX_DEFAULT_VENV"):
         environment["venv"] = venv
 
-    if sqsh := os.getenv("SRUNX_DEFAULT_SQSH"):
-        environment["sqsh"] = sqsh
+    if container := os.getenv("SRUNX_DEFAULT_CONTAINER"):
+        environment["container"]["image"] = container
 
     if environment:
         config["environment"] = environment

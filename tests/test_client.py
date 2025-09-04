@@ -183,7 +183,7 @@ class TestSlurm:
         # Verify that render_job_script was called with the job containing sqsh
         mock_render.assert_called_once()
         rendered_job = mock_render.call_args[0][1]  # Second argument is the job
-        assert rendered_job.environment.sqsh == "/path/to/image.sqsh"
+        assert rendered_job.environment.container.image == "/path/to/image.sqsh"
 
     @patch("time.sleep")
     @patch("subprocess.run")

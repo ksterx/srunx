@@ -3,7 +3,11 @@ jobs:
   - name: a
     command: [python, sample_job.py, --sleep, "10", --msg, "A"]
     environment:
-      sqsh: /nas/share/sqshes/sptrain+0.6.1.sqsh
+      container:
+        image: /nas/share/sqshes/sptrain+0.6.1.sqsh
+        mounts:
+          - /nas/share/data:/data
+        workdir: /data
       # conda: ai
       # venv: /home/k_ishikawa/workspace/srunx/.venv
   - name: b1

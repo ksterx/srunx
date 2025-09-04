@@ -87,10 +87,10 @@ def _default_venv():
     return config.environment.venv if config else None
 
 
-def _default_sqsh():
-    """Get default sqsh path from config."""
+def _default_container():
+    """Get default container resource from config."""
     config = _get_config_defaults()
-    return config.environment.sqsh if config else None
+    return config.environment.container if config else None
 
 
 def _default_env_vars():
@@ -161,6 +161,17 @@ class JobResource(BaseModel):
     )
 
 
+class ContainerResource(BaseModel):
+    """Container resource allocation requirements.
+
+    Ref: https://github.com/NVIDIA/pyxis/blob/526f46bce2d1a51b2caab65096f6a1ab4272aaa6/README.md?plain=1#L53
+    """
+
+    image: str | None = Field(default=None, description="Container image")
+    mounts: list[str] = Field(default_factory=list, description="Container mounts")
+    workdir: str | None = Field(default=None, description="Container work directory")
+
+
 class JobEnvironment(BaseModel):
     """Job environment configuration."""
 
@@ -170,8 +181,8 @@ class JobEnvironment(BaseModel):
     venv: str | None = Field(
         default_factory=_default_venv, description="Virtual environment path"
     )
-    sqsh: str | None = Field(
-        default_factory=_default_sqsh, description="SquashFS image path"
+    container: ContainerResource | None = Field(
+        default_factory=_default_container, description="Container resource"
     )
     env_vars: dict[str, str] = Field(
         default_factory=_default_env_vars, description="Environment variables"
@@ -179,13 +190,13 @@ class JobEnvironment(BaseModel):
 
     @model_validator(mode="after")
     def validate_environment(self) -> Self:
-        envs = [self.conda, self.venv, self.sqsh]
+        envs = [self.conda, self.venv, self.container]
         non_none_count = sum(x is not None for x in envs)
         if non_none_count == 0:
             logger.info("No virtual environment is set.")
         elif non_none_count > 1:
             raise ValueError(
-                "Only one virtual environment (conda, venv, or sqsh) can be specified"
+                "Only one virtual environment (conda, venv, or container) can be specified"
             )
         return self
 
@@ -350,8 +361,10 @@ Jobs: {len(self.jobs)}
                     msg += add_indent(
                         2, f"{'Conda env:': <13} {job.environment.conda}\n"
                     )
-                if job.environment.sqsh:
-                    msg += add_indent(2, f"{'Sqsh:': <13} {job.environment.sqsh}\n")
+                if job.environment.container:
+                    msg += add_indent(
+                        2, f"{'Container:': <13} {job.environment.container}\n"
+                    )
                 if job.environment.venv:
                     msg += add_indent(2, f"{'Venv:': <13} {job.environment.venv}\n")
             elif isinstance(job, ShellJob):
@@ -484,12 +497,22 @@ def _build_environment_setup(environment: JobEnvironment) -> str:
         )
     elif environment.venv:
         setup_lines.append(f"source {environment.venv}/bin/activate")
-    elif environment.sqsh:
+    elif environment.container:
+        container_args = []
+        if environment.container.image:
+            container_args.append(f"--container-image {environment.container.image}")
+        if environment.container.mounts:
+            container_args.append(
+                f"--container-mounts {','.join(environment.container.mounts)}"
+            )
+        if environment.container.workdir:
+            container_args.append(
+                f"--container-workdir {environment.container.workdir}"
+            )
         setup_lines.extend(
             [
-                f': "${{IMAGE:={environment.sqsh}}}"',
                 "declare -a CONTAINER_ARGS=(",
-                '    --container-image "$IMAGE"',
+                *container_args,
                 ")",
             ]
         )

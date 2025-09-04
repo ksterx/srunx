@@ -71,8 +71,8 @@ class Slurm:
 
                 # Submit job with sbatch
                 sbatch_cmd = ["sbatch", script_path]
-                if job.environment.sqsh:
-                    logger.debug(f"Using sqsh container: {job.environment.sqsh}")
+                if job.environment.container:
+                    logger.debug(f"Using container: {job.environment.container}")
 
                 logger.debug(f"Executing command: {' '.join(sbatch_cmd)}")
 

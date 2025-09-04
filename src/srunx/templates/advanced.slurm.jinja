@@ -34,7 +34,7 @@ set -euxo pipefail
 {% endif -%}
 
 # Execute command
-{% if sqsh -%}
+{% if container -%}
 srun "${CONTAINER_ARGS[@]}" {{ command }}
 {% else -%}
 srun {{ command }}
