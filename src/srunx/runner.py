@@ -116,16 +116,19 @@ class WorkflowRunner:
 
                     try:
                         evaluated = eval(code, globals(), {"args": evaluated_args})
+                        logger.debug(f"Evaluated[eval] {key}: {evaluated}")
                     except SyntaxError:
                         ns: dict[str, Any] = {"args": evaluated_args}
                         exec(code, globals(), ns)
                         evaluated = ns.get("result")
+                        logger.debug(f"Evaluated[exec] {key}: {evaluated}")
                     evaluated_args[key] = evaluated
             args = evaluated_args
 
         # 2) Render the entire jobs section with Jinja
         jobs_yaml = yaml.dump(jobs_data, default_flow_style=False)
         template = jinja2.Template(jobs_yaml, undefined=jinja2.StrictUndefined)
+        logger.debug(f"Rendering jobs with args: {args}")
         try:
             rendered_yaml = template.render(**(args or {}))
             return yaml.safe_load(rendered_yaml)
