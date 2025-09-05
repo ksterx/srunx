@@ -451,8 +451,6 @@ def render_job_script(
     template = jinja2.Template(
         template_content,
         undefined=jinja2.StrictUndefined,
-        variable_start_string="${",
-        variable_end_string="}",
     )
 
     # Prepare template variables

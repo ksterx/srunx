@@ -103,7 +103,6 @@ class WorkflowRunner:
         - Then render the whole jobs section with Jinja.
         """
         # 1) Evaluate "python:" entries in args
-        logger.info(f"Rendering jobs with args: {args}")
         if args:
             evaluated_args: dict[str, Any] = dict(args)
             for key, value in list(evaluated_args.items()):
