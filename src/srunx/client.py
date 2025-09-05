@@ -118,6 +118,7 @@ class Slurm:
             )
 
         time.sleep(3)
+        logger.info(f"Job {job.name} result: {result}")
         job_id = int(result.stdout.split()[-1])
         job.job_id = job_id
         job.status = JobStatus.PENDING
@@ -184,6 +185,7 @@ class Slurm:
             cmd.extend(["--user", user])
 
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        logger.info(f"Job queue result: {result}")
 
         jobs = []
         for line in result.stdout.strip().split("\n"):
