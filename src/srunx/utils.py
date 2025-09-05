@@ -42,7 +42,6 @@ def get_job_status(job_id: int) -> BaseJob:
         logger.error(f"Failed to query job {job_id} status: {e}")
         raise
 
-    logger.error(f"Job {job_id} status: {result}")
     lines = result.stdout.strip().split("\n")
     if not lines or not lines[0]:
         error_msg = f"No job information found for job {job_id}"

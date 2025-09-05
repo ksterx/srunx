@@ -253,7 +253,6 @@ class BaseJob(BaseModel):
                     text=True,
                     check=True,
                 )
-                logger.error(f"Job {self.job_id} status: {result}")
             except subprocess.CalledProcessError as e:
                 logger.error(f"Failed to query job {self.job_id}: {e}")
                 raise
