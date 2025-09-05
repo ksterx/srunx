@@ -119,7 +119,12 @@ class WorkflowRunner:
                     if "datetime" in cmd:
                         import datetime  # noqa: F401
 
-                        args[key] = eval(cmd)
+                    cmd_template = jinja2.Template(
+                        cmd, undefined=jinja2.StrictUndefined
+                    )
+                    cmd = cmd_template.render(args)
+
+                    args[key] = eval(cmd)
 
         try:
             rendered_yaml = template.render(args)
