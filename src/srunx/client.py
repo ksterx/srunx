@@ -61,6 +61,7 @@ class Slurm:
         Raises:
             subprocess.CalledProcessError: If job submission fails.
         """
+        result = None
 
         if isinstance(job, Job):
             template = template_path or self.default_template
@@ -109,6 +110,12 @@ class Slurm:
 
         else:
             raise ValueError("Either 'command' or 'file' must be set")
+
+        if result is None:
+            render_job_script(template, job, output_dir=None, verbose=verbose)
+            raise RuntimeError(
+                f"Failed to submit job '{job.name}': No result from subprocess"
+            )
 
         time.sleep(3)
         job_id = int(result.stdout.split()[-1])

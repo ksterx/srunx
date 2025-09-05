@@ -9,11 +9,14 @@ from typing import Self
 
 import jinja2
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from rich.console import Console
+from rich.syntax import Syntax
 
 from srunx.exceptions import WorkflowValidationError
 from srunx.logging import get_logger
 
 logger = get_logger(__name__)
+console = Console()
 
 
 def _get_config_defaults():
@@ -423,7 +426,7 @@ Jobs: {len(self.jobs)}
 def render_job_script(
     template_path: Path | str,
     job: Job,
-    output_dir: Path | str,
+    output_dir: Path | str | None = None,
     verbose: bool = False,
 ) -> str:
     """Render a SLURM job script from a template.
@@ -470,14 +473,21 @@ def render_job_script(
     rendered_content = template.render(template_vars)
 
     if verbose:
-        print(rendered_content)
+        console.print(
+            Syntax(rendered_content, "bash", theme="monokai", line_numbers=True)
+        )
 
     # Generate output file
-    output_path = Path(output_dir) / f"{job.name}.slurm"
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(rendered_content)
+    if output_dir is not None:
+        output_path = Path(output_dir) / f"{job.name}.slurm"
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(rendered_content)
 
-    return str(output_path)
+        return str(output_path)
+
+    else:
+        logger.info("`output_dir` is not specified, rendered content is not saved")
+        return ""
 
 
 def _build_environment_setup(environment: JobEnvironment) -> str:
