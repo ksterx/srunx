@@ -5,6 +5,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from textwrap import dedent
 from typing import Any, Self
 
 import jinja2
@@ -111,6 +112,7 @@ class WorkflowRunner:
                     code = jinja2.Template(
                         code, undefined=jinja2.StrictUndefined
                     ).render(**evaluated_args)
+                    code = dedent(code).lstrip()
 
                     try:
                         evaluated = eval(code, globals(), {"args": evaluated_args})

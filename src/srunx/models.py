@@ -448,7 +448,12 @@ def render_job_script(
     with open(template_file, encoding="utf-8") as f:
         template_content = f.read()
 
-    template = jinja2.Template(template_content, undefined=jinja2.StrictUndefined)
+    template = jinja2.Template(
+        template_content,
+        undefined=jinja2.StrictUndefined,
+        variable_start_string="${",
+        variable_end_string="}",
+    )
 
     # Prepare template variables
     template_vars = {
