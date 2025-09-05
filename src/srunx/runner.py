@@ -68,7 +68,7 @@ class WorkflowRunner:
         Raises:
             FileNotFoundError: If the YAML file doesn't exist.
             yaml.YAMLError: If the YAML is malformed.
-            ValidationError: If the workflow structure is invalid.
+            WorkflowValidationError: If the workflow structure is invalid.
         """
         yaml_file = Path(yaml_path)
         if not yaml_file.exists():
@@ -98,36 +98,34 @@ class WorkflowRunner:
     ) -> list[dict[str, Any]]:
         """Render Jinja templates in job data using args.
 
-        Args:
-            jobs_data: List of job configurations from YAML.
-            args: Template variables from the YAML args section.
-
-        Returns:
-            List of job configurations with rendered templates.
+        - Evaluate any "python:" values in args (Jinja → eval/exec).
+        - Then render the whole jobs section with Jinja.
         """
-        if not args:
-            return jobs_data
+        # 1) Evaluate "python:" entries in args
+        if args:
+            evaluated_args: dict[str, Any] = dict(args)
+            for key, value in list(evaluated_args.items()):
+                if isinstance(value, str) and value.startswith("python:"):
+                    code = value[len("python:") :].lstrip()
+                    # Allow {{ ... }} inside "python:" by rendering with Jinja first
+                    code = jinja2.Template(
+                        code, undefined=jinja2.StrictUndefined
+                    ).render(**evaluated_args)
 
-        # Convert jobs_data to YAML string, render as template, then parse back
+                    try:
+                        evaluated = eval(code, globals(), {"args": evaluated_args})
+                    except SyntaxError:
+                        ns: dict[str, Any] = {"args": evaluated_args}
+                        exec(code, globals(), ns)
+                        evaluated = ns.get("result")
+                    evaluated_args[key] = evaluated
+            args = evaluated_args
+
+        # 2) Render the entire jobs section with Jinja
         jobs_yaml = yaml.dump(jobs_data, default_flow_style=False)
         template = jinja2.Template(jobs_yaml, undefined=jinja2.StrictUndefined)
-
-        for key, value in args.items():
-            if isinstance(value, str):
-                if value.startswith("python:"):
-                    cmd = value.split(":")[1]
-                    if "datetime" in cmd:
-                        import datetime  # noqa: F401
-
-                    cmd_template = jinja2.Template(
-                        cmd, undefined=jinja2.StrictUndefined
-                    )
-                    cmd = cmd_template.render(args)
-
-                    args[key] = eval(cmd)
-
         try:
-            rendered_yaml = template.render(args)
+            rendered_yaml = template.render(**(args or {}))
             return yaml.safe_load(rendered_yaml)
         except jinja2.TemplateError as e:
             logger.error(f"Jinja template rendering failed: {e}")
