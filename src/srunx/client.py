@@ -100,6 +100,7 @@ class Slurm:
                     text=True,
                     check=True,
                 )
+                logger.error(f"Jobaaa {job.name} result: {result}")
             except subprocess.CalledProcessError as e:
                 logger.error(f"Failed to submit job '{job.name}': {e}")
                 logger.error(f"Command: {' '.join(e.cmd)}")
@@ -185,7 +186,7 @@ class Slurm:
             cmd.extend(["--user", user])
 
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        logger.info(f"Job queue result: {result}")
+        logger.error(f"Job queue result: {result}")
 
         jobs = []
         for line in result.stdout.strip().split("\n"):
