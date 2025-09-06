@@ -10,6 +10,7 @@ from rich.console import Console
 
 from srunx.callbacks import SlackCallback
 from srunx.logging import configure_workflow_logging, get_logger
+from srunx.models import Job, ShellJob
 from srunx.runner import WorkflowRunner
 
 logger = get_logger(__name__)
@@ -113,12 +114,14 @@ def run(
             console.print("🔍 Dry run mode - showing workflow structure:")
             console.print(f"Workflow: {runner.workflow.name}")
             for job in runner.workflow.jobs:
-                if hasattr(job, "command") and job.command:
+                if isinstance(job, Job) and job.command:
                     command_str = (
                         job.command
                         if isinstance(job.command, str)
                         else " ".join(job.command or [])
                     )
+                elif isinstance(job, ShellJob):
+                    command_str = f"Shell script: {job.script_path}"
                 else:
                     command_str = "N/A"
                 console.print(f"  - {job.name}: {command_str}")

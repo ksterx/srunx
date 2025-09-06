@@ -301,10 +301,15 @@ def submit(
         console = Console()
         console.print("🔍 Dry run mode - would submit job:")
         console.print(f"  Name: {job.name}")
-        command_str = (
-            job.command if isinstance(job.command, str) else " ".join(job.command or [])
-        )
-        console.print(f"  Command: {command_str}")
+        if isinstance(job, Job):
+            command_str = (
+                job.command
+                if isinstance(job.command, str)
+                else " ".join(job.command or [])
+            )
+            console.print(f"  Command: {command_str}")
+        elif isinstance(job, ShellJob):
+            console.print(f"  Script: {job.script_path}")
         console.print(f"  Nodes: {job.resources.nodes}")
         console.print(f"  GPUs: {job.resources.gpus_per_node}")
         return
@@ -318,13 +323,15 @@ def submit(
         f"✅ Job submitted successfully: [bold green]{submitted_job.job_id}[/bold green]"
     )
     console.print(f"   Job name: {submitted_job.name}")
-    if hasattr(submitted_job, "command") and submitted_job.command:
+    if isinstance(submitted_job, Job) and submitted_job.command:
         command_str = (
             submitted_job.command
             if isinstance(submitted_job.command, str)
             else " ".join(submitted_job.command)
         )
         console.print(f"   Command: {command_str}")
+    elif isinstance(submitted_job, ShellJob):
+        console.print(f"   Script: {submitted_job.script_path}")
 
     if wait:
         try:
@@ -354,11 +361,13 @@ def status(
         console.print(f"Job ID: [bold]{job.job_id}[/bold]")
         console.print(f"Status: {job.status.name}")
         console.print(f"Name: {job.name}")
-        if hasattr(job, "command") and job.command:
+        if isinstance(job, Job) and job.command:
             command_str = (
                 job.command if isinstance(job.command, str) else " ".join(job.command)
             )
             console.print(f"Command: {command_str}")
+        elif isinstance(job, ShellJob):
+            console.print(f"Script: {job.script_path}")
 
     except Exception as e:
         logger.error(f"Error retrieving job {job_id}: {e}")
@@ -465,12 +474,14 @@ def flow_run(
             console.print("🔍 Dry run mode - showing workflow structure:")
             console.print(f"Workflow: {runner.workflow.name}")
             for job in runner.workflow.jobs:
-                if hasattr(job, "command") and job.command:
+                if isinstance(job, Job) and job.command:
                     command_str = (
                         job.command
                         if isinstance(job.command, str)
                         else " ".join(job.command)
                     )
+                elif isinstance(job, ShellJob):
+                    command_str = f"Shell script: {job.script_path}"
                 else:
                     command_str = "N/A"
                 console.print(f"  - {job.name}: {command_str}")
