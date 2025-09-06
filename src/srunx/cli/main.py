@@ -488,8 +488,34 @@ def flow_run(
         else:
             runner.run()
 
+    except FileNotFoundError as e:
+        logger.error(f"❌ Workflow file not found: {e}")
+        sys.exit(1)
+    except PermissionError as e:
+        logger.error(f"❌ Permission denied: {e}")
+        logger.error("💡 Check if you have write permissions to the target directories")
+        sys.exit(1)
+    except OSError as e:
+        if e.errno == 30:  # Read-only file system
+            logger.error(f"❌ Cannot write to read-only file system: {e}")
+            logger.error(
+                "💡 The target directory appears to be read-only. Check mount permissions."
+            )
+        else:
+            logger.error(f"❌ System error: {e}")
+        sys.exit(1)
+    except ImportError as e:
+        logger.error(f"❌ Missing dependency: {e}")
+        logger.error(
+            "💡 Make sure all required packages are installed in your environment"
+        )
+        sys.exit(1)
     except Exception as e:
-        logger.error(f"Workflow execution failed: {e}")
+        logger.error(f"❌ Workflow execution failed: {e}")
+        logger.error(f"💡 Error type: {type(e).__name__}")
+        import traceback
+
+        logger.debug(f"Full traceback: {traceback.format_exc()}")
         sys.exit(1)
 
 
