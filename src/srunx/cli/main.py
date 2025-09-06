@@ -30,7 +30,9 @@ from srunx.models import (
     JobEnvironment,
     JobResource,
     JobType,
+    ShellJob,
     render_job_script,
+    render_shell_job_script,
 )
 from srunx.runner import WorkflowRunner
 
@@ -45,48 +47,54 @@ class DebugCallback(Callback):
 
     def on_job_submitted(self, job: JobType) -> None:
         """Display the rendered SLURM script when a job is submitted."""
-        if isinstance(job, Job):
-            try:
-                # Get the default template path
-                client = Slurm()
-                template_path = client.default_template
-
-                # Render the script to get the content
-                with tempfile.TemporaryDirectory() as temp_dir:
+        try:
+            # Render the script to get the content
+            with tempfile.TemporaryDirectory() as temp_dir:
+                if isinstance(job, Job):
+                    # Get the default template path
+                    client = Slurm()
+                    template_path = client.default_template
                     script_path = render_job_script(
                         template_path, job, temp_dir, verbose=False
                     )
-
-                    # Read the rendered script content
-                    with open(script_path, encoding="utf-8") as f:
-                        script_content = f.read()
-
-                    # Display the script with rich formatting
-                    self.console.print(
-                        f"\n[bold blue]🔍 Rendered SLURM Script for Job: {job.name}[/bold blue]"
+                elif isinstance(job, ShellJob):
+                    script_path = render_shell_job_script(
+                        job.script_path, job, temp_dir, verbose=False
                     )
+                else:
+                    logger.warning(f"Unknown job type for debug display: {type(job)}")
+                    return
 
-                    # Create syntax highlighted panel
-                    syntax = Syntax(
-                        script_content,
-                        "bash",
-                        theme="monokai",
-                        line_numbers=True,
-                        background_color="default",
-                    )
+                # Read the rendered script content
+                with open(script_path, encoding="utf-8") as f:
+                    script_content = f.read()
 
-                    panel = Panel(
-                        syntax,
-                        title=f"[bold cyan]{job.name}.slurm[/bold cyan]",
-                        border_style="blue",
-                        padding=(1, 2),
-                    )
+                # Display the script with rich formatting
+                self.console.print(
+                    f"\n[bold blue]🔍 Rendered SLURM Script for Job: {job.name}[/bold blue]"
+                )
 
-                    self.console.print(panel)
-                    self.console.print()
+                # Create syntax highlighted panel
+                syntax = Syntax(
+                    script_content,
+                    "bash",
+                    theme="monokai",
+                    line_numbers=True,
+                    background_color="default",
+                )
 
-            except Exception as e:
-                logger.error(f"Failed to render debug script for job {job.name}: {e}")
+                panel = Panel(
+                    syntax,
+                    title=f"[bold cyan]{job.name}.slurm[/bold cyan]",
+                    border_style="blue",
+                    padding=(1, 2),
+                )
+
+                self.console.print(panel)
+                self.console.print()
+
+        except Exception as e:
+            logger.error(f"Failed to render debug script for job {job.name}: {e}")
 
 
 # Create the main Typer app
