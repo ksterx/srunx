@@ -28,6 +28,8 @@
 
 set -euxo pipefail
 
+export WORLD_SIZE=${SLURM_NTASKS:-1}
+
 # Environment setup
 {% if environment_setup -%}
 {{ environment_setup }}
