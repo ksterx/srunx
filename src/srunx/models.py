@@ -299,7 +299,7 @@ class Job(BaseJob):
 
 class ShellJob(BaseJob):
     script_path: str = Field(description="Shell script path to execute")
-    script_vars: dict[str, str] = Field(
+    script_vars: dict[str, str | int | float | bool] = Field(
         default_factory=dict, description="Shell script variables"
     )
 
