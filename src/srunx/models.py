@@ -298,7 +298,10 @@ class Job(BaseJob):
 
 
 class ShellJob(BaseJob):
-    path: str = Field(description="Shell script path to execute")
+    script_path: str = Field(description="Shell script path to execute")
+    script_vars: dict[str, str] = Field(
+        default_factory=dict, description="Shell script variables"
+    )
 
 
 type JobType = BaseJob | Job | ShellJob
@@ -374,7 +377,9 @@ Jobs: {len(self.jobs)}
                 if job.environment.venv:
                     msg += add_indent(2, f"{'Venv:': <13} {job.environment.venv}\n")
             elif isinstance(job, ShellJob):
-                msg += add_indent(2, f"{'Path:': <13} {job.path}\n")
+                msg += add_indent(2, f"{'Script path:': <13} {job.script_path}\n")
+                if job.script_vars:
+                    msg += add_indent(2, f"{'Script vars:': <13} {job.script_vars}\n")
             if job.depends_on:
                 msg += add_indent(
                     2, f"{'Dependencies:': <13} {', '.join(job.depends_on)}\n"
@@ -426,17 +431,19 @@ Jobs: {len(self.jobs)}
                 )
 
 
-def render_job_script(
+def _render_base_script(
     template_path: Path | str,
-    job: Job,
+    template_vars: dict,
+    output_filename: str,
     output_dir: Path | str | None = None,
     verbose: bool = False,
 ) -> str:
-    """Render a SLURM job script from a template.
+    """Base function for rendering SLURM scripts from templates.
 
     Args:
         template_path: Path to the Jinja template file.
-        job: Job configuration.
+        template_vars: Variables to pass to the template.
+        output_filename: Name of the output file.
         output_dir: Directory where the generated script will be saved.
         verbose: Whether to print the rendered content.
 
@@ -459,6 +466,50 @@ def render_job_script(
         undefined=jinja2.StrictUndefined,
     )
 
+    # Debug: log template variables
+    logger.debug(f"Template variables: {template_vars}")
+
+    rendered_content = template.render(template_vars)
+
+    if verbose:
+        console.print(
+            Syntax(rendered_content, "bash", theme="monokai", line_numbers=True)
+        )
+
+    # Generate output file
+    if output_dir is not None:
+        output_path = Path(output_dir) / output_filename
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(rendered_content)
+
+        return str(output_path)
+
+    else:
+        logger.info("`output_dir` is not specified, rendered content is not saved")
+        return ""
+
+
+def render_job_script(
+    template_path: Path | str,
+    job: Job,
+    output_dir: Path | str | None = None,
+    verbose: bool = False,
+) -> str:
+    """Render a SLURM job script from a template.
+
+    Args:
+        template_path: Path to the Jinja template file.
+        job: Job configuration.
+        output_dir: Directory where the generated script will be saved.
+        verbose: Whether to print the rendered content.
+
+    Returns:
+        Path to the generated SLURM batch script.
+
+    Raises:
+        FileNotFoundError: If the template file does not exist.
+        jinja2.TemplateError: If template rendering fails.
+    """
     # Prepare template variables
     command_str = (
         job.command if isinstance(job.command, str) else " ".join(job.command or [])
@@ -473,27 +524,13 @@ def render_job_script(
         **job.resources.model_dump(),
     }
 
-    # Debug: log template variables
-    logger.debug(f"Template variables: {template_vars}")
-
-    rendered_content = template.render(template_vars)
-
-    if verbose:
-        console.print(
-            Syntax(rendered_content, "bash", theme="monokai", line_numbers=True)
-        )
-
-    # Generate output file
-    if output_dir is not None:
-        output_path = Path(output_dir) / f"{job.name}.slurm"
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(rendered_content)
-
-        return str(output_path)
-
-    else:
-        logger.info("`output_dir` is not specified, rendered content is not saved")
-        return ""
+    return _render_base_script(
+        template_path=template_path,
+        template_vars=template_vars,
+        output_filename=f"{job.name}.slurm",
+        output_dir=output_dir,
+        verbose=verbose,
+    )
 
 
 def _build_environment_setup(environment: JobEnvironment) -> str:
@@ -537,3 +574,36 @@ def _build_environment_setup(environment: JobEnvironment) -> str:
         )
 
     return "\n".join(setup_lines)
+
+
+def render_shell_job_script(
+    template_path: Path | str,
+    job: ShellJob,
+    output_dir: Path | str | None = None,
+    verbose: bool = False,
+) -> str:
+    """Render a SLURM shell job script from a template.
+
+    Args:
+        template_path: Path to the Jinja template file.
+        job: ShellJob configuration.
+        output_dir: Directory where the generated script will be saved.
+        verbose: Whether to print the rendered content.
+
+    Returns:
+        Path to the generated SLURM batch script.
+
+    Raises:
+        FileNotFoundError: If the template file does not exist.
+        jinja2.TemplateError: If template rendering fails.
+    """
+    template_file = Path(template_path)
+    output_filename = f"{template_file.stem}.slurm"
+
+    return _render_base_script(
+        template_path=template_path,
+        template_vars=job.script_vars,
+        output_filename=output_filename,
+        output_dir=output_dir,
+        verbose=verbose,
+    )
