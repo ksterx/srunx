@@ -280,7 +280,7 @@ class BaseJob(BaseModel):
 class Job(BaseJob):
     """Represents a SLURM job with complete configuration."""
 
-    command: list[str] = Field(description="Command to execute")
+    command: str | list[str] = Field(description="Command to execute")
     resources: JobResource = Field(
         default_factory=JobResource, description="Resource requirements"
     )
@@ -353,9 +353,12 @@ Jobs: {len(self.jobs)}
         for job in self.jobs:
             msg += add_indent(1, f"Job: {job.name}\n")
             if isinstance(job, Job):
-                msg += add_indent(
-                    2, f"{'Command:': <13} {' '.join(job.command or [])}\n"
+                command_str = (
+                    job.command
+                    if isinstance(job.command, str)
+                    else " ".join(job.command or [])
                 )
+                msg += add_indent(2, f"{'Command:': <13} {command_str}\n")
                 msg += add_indent(
                     2,
                     f"{'Resources:': <13} {job.resources.nodes} nodes, {job.resources.gpus_per_node} GPUs/node\n",
@@ -457,9 +460,12 @@ def render_job_script(
     )
 
     # Prepare template variables
+    command_str = (
+        job.command if isinstance(job.command, str) else " ".join(job.command or [])
+    )
     template_vars = {
         "job_name": job.name,
-        "command": " ".join(job.command or []),
+        "command": command_str,
         "log_dir": job.log_dir,
         "work_dir": job.work_dir,
         "environment_setup": _build_environment_setup(job.environment),

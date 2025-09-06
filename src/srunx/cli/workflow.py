@@ -113,9 +113,15 @@ def run(
             console.print("🔍 Dry run mode - showing workflow structure:")
             console.print(f"Workflow: {runner.workflow.name}")
             for job in runner.workflow.jobs:
-                console.print(
-                    f"  - {job.name}: {' '.join(job.command or []) if hasattr(job, 'command') else 'N/A'}"
-                )
+                if hasattr(job, "command") and job.command:
+                    command_str = (
+                        job.command
+                        if isinstance(job.command, str)
+                        else " ".join(job.command or [])
+                    )
+                else:
+                    command_str = "N/A"
+                console.print(f"  - {job.name}: {command_str}")
             return
 
         # Execute workflow
