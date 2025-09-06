@@ -272,13 +272,34 @@ class WorkflowRunner:
 
     @staticmethod
     def parse_job(data: dict[str, Any]) -> RunnableJobType:
-        if data.get("path") and data.get("command"):
-            raise WorkflowValidationError("Job cannot have both 'path' and 'command'")
+        # Check for conflicting job types
+        has_shell_fields = data.get("script_path") or data.get("path")
+        has_command = data.get("command")
+
+        if has_shell_fields and has_command:
+            raise WorkflowValidationError(
+                "Job cannot have both shell script fields (script_path/path) and 'command'"
+            )
 
         base = {"name": data["name"], "depends_on": data.get("depends_on", [])}
 
+        # Handle ShellJob (script_path or path)
+        if data.get("script_path"):
+            shell_job_data = {
+                **base,
+                "script_path": data["script_path"],
+                "script_vars": data.get("script_vars", {}),
+            }
+            return ShellJob.model_validate(shell_job_data)
+
         if data.get("path"):
-            return ShellJob.model_validate({**base, "path": data["path"]})
+            return ShellJob.model_validate({**base, "script_path": data["path"]})
+
+        # Handle regular Job (command)
+        if not has_command:
+            raise WorkflowValidationError(
+                "Job must have either 'command' or 'script_path'"
+            )
 
         resource = JobResource.model_validate(data.get("resources", {}))
         environment = JobEnvironment.model_validate(data.get("environment", {}))

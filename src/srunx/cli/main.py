@@ -515,7 +515,8 @@ def flow_run(
         logger.error(f"💡 Error type: {type(e).__name__}")
         import traceback
 
-        logger.debug(f"Full traceback: {traceback.format_exc()}")
+        logger.error("📍 Error location:")
+        logger.error(traceback.format_exc())
         sys.exit(1)
 
 
