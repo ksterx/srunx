@@ -164,7 +164,7 @@ class TestWorkflowRunner:
         assert len(runner.workflow.jobs) == 1
         job = runner.workflow.jobs[0]
         assert isinstance(job, ShellJob)
-        assert job.path == "/path/to/script.sh"
+        assert job.script_path == "/path/to/script.sh"
 
     def test_from_yaml_nonexistent_file(self):
         """Test loading workflow from nonexistent file."""
@@ -440,6 +440,10 @@ class TestWorkflowRunner:
             depends_on=["job1"],
         )
 
+        # Ensure jobs start in PENDING status for dependency tests
+        job1._status = JobStatus.PENDING
+        job2._status = JobStatus.PENDING
+
         # Set up mock to return completed jobs
         def mock_run(job):
             job.status = JobStatus.COMPLETED
@@ -529,7 +533,7 @@ class TestWorkflowRunner:
 
         assert isinstance(job, ShellJob)
         assert job.name == "shell_job"
-        assert job.path == "/path/to/script.sh"
+        assert job.script_path == "/path/to/script.sh"
 
     def test_parse_job_both_path_and_command(self):
         """Test parsing job with both path and command (should fail)."""

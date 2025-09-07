@@ -17,6 +17,7 @@ from srunx.models import (
     RunnableJobType,
     ShellJob,
     render_job_script,
+    render_shell_job_script,
 )
 from srunx.utils import get_job_status, job_status_msg
 
@@ -61,6 +62,7 @@ class Slurm:
         Raises:
             subprocess.CalledProcessError: If job submission fails.
         """
+        result = None
 
         if isinstance(job, Job):
             template = template_path or self.default_template
@@ -92,25 +94,34 @@ class Slurm:
                     raise
 
         elif isinstance(job, ShellJob):
-            try:
-                result = subprocess.run(
-                    ["sbatch", job.path],
-                    capture_output=True,
-                    text=True,
-                    check=True,
+            with tempfile.TemporaryDirectory() as temp_dir:
+                script_path = render_shell_job_script(
+                    job.script_path, job, temp_dir, verbose
                 )
-            except subprocess.CalledProcessError as e:
-                logger.error(f"Failed to submit job '{job.name}': {e}")
-                logger.error(f"Command: {' '.join(e.cmd)}")
-                logger.error(f"Return code: {e.returncode}")
-                logger.error(f"Stdout: {e.stdout}")
-                logger.error(f"Stderr: {e.stderr}")
-                raise
+                try:
+                    result = subprocess.run(
+                        ["sbatch", script_path],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"Failed to submit job '{job.script_path}': {e}")
+                    logger.error(f"Command: {' '.join(e.cmd)}")
+                    logger.error(f"Return code: {e.returncode}")
+                    logger.error(f"Stdout: {e.stdout}")
+                    logger.error(f"Stderr: {e.stderr}")
+                    raise
 
         else:
-            raise ValueError("Either 'command' or 'file' must be set")
+            raise ValueError("Either 'command' or 'path' must be set")
 
-        time.sleep(3)
+        if result is None:
+            render_job_script(template, job, output_dir=None, verbose=verbose)
+            raise RuntimeError(
+                f"Failed to submit job '{job.name}': No result from subprocess"
+            )
+
         job_id = int(result.stdout.split()[-1])
         job.job_id = job_id
         job.status = JobStatus.PENDING

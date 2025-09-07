@@ -16,6 +16,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run srunx cancel <job_id>` - Cancel job
 - `uv run srunx flow run <yaml_file>` - Execute workflow from YAML
 - `uv run srunx flow validate <yaml_file>` - Validate workflow YAML
+- `uv run srunx config show` - Show current configuration
+- `uv run srunx config paths` - Show configuration file paths
 
 ### Testing
 - `uv run pytest` - Run all tests
@@ -37,6 +39,7 @@ src/srunx/
 ├── client.py          # SLURM client for job operations
 ├── runner.py          # Workflow execution engine
 ├── callbacks.py       # Callback system for job notifications
+├── config.py          # Configuration management and defaults
 ├── exceptions.py      # Custom exceptions
 ├── logging.py         # Centralized logging configuration
 ├── utils.py           # Utility functions
@@ -51,12 +54,16 @@ src/srunx/
 ### Core Components
 
 #### Models (`models.py`)
-- **Job**: Complete job configuration with resources and environment
-- **JobResource**: Resource allocation (nodes, GPUs, memory, time)
-- **JobEnvironment**: Environment setup (conda, venv, sqsh)
-- **JobStatus**: Job status enumeration
-- **Workflow/WorkflowTask**: Workflow definitions with dependencies
-- **render_job_script()**: Template rendering function
+- **BaseJob**: Base class for all job types with common fields (name, job_id, depends_on, status)
+- **Job**: Complete SLURM job configuration with command, resources, and environment
+- **ShellJob**: Job that executes a shell script with variables (script_path, script_vars)
+- **JobResource**: Resource allocation (nodes, GPUs, memory, time, partition, nodelist)
+- **JobEnvironment**: Environment setup (conda, venv, container, env_vars)
+- **ContainerResource**: Container configuration (image, mounts, workdir)
+- **JobStatus**: Job status enumeration (PENDING, RUNNING, COMPLETED, FAILED, etc.)
+- **Workflow**: Workflow definitions with job dependencies and validation
+- **render_job_script()**: Template rendering function for Job instances
+- **render_shell_job_script()**: Template rendering function for ShellJob instances
 
 #### Client (`client.py`)
 - **Slurm**: Main interface for SLURM operations
@@ -77,6 +84,14 @@ src/srunx/
 #### Callbacks (`callbacks.py`)
 - **Callback**: Base class for job state notifications
 - **SlackCallback**: Send notifications to Slack via webhook
+
+#### Configuration (`config.py`)
+- **SrunxConfig**: Main configuration class with resource and environment defaults
+- **ResourceDefaults**: Default resource allocation settings
+- **EnvironmentDefaults**: Default environment setup
+- **get_config()**: Get global configuration instance
+- **load_config()**: Load configuration from files and environment variables
+- **save_user_config()**: Save configuration to user config file
 
 #### Logging (`logging.py`)
 - **configure_logging()**: General logging configuration

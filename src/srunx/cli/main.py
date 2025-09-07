@@ -3,6 +3,7 @@
 import os
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -30,7 +31,9 @@ from srunx.models import (
     JobEnvironment,
     JobResource,
     JobType,
+    ShellJob,
     render_job_script,
+    render_shell_job_script,
 )
 from srunx.runner import WorkflowRunner
 
@@ -45,48 +48,54 @@ class DebugCallback(Callback):
 
     def on_job_submitted(self, job: JobType) -> None:
         """Display the rendered SLURM script when a job is submitted."""
-        if isinstance(job, Job):
-            try:
-                # Get the default template path
-                client = Slurm()
-                template_path = client.default_template
-
-                # Render the script to get the content
-                with tempfile.TemporaryDirectory() as temp_dir:
+        try:
+            # Render the script to get the content
+            with tempfile.TemporaryDirectory() as temp_dir:
+                if isinstance(job, Job):
+                    # Get the default template path
+                    client = Slurm()
+                    template_path = client.default_template
                     script_path = render_job_script(
                         template_path, job, temp_dir, verbose=False
                     )
-
-                    # Read the rendered script content
-                    with open(script_path, encoding="utf-8") as f:
-                        script_content = f.read()
-
-                    # Display the script with rich formatting
-                    self.console.print(
-                        f"\n[bold blue]🔍 Rendered SLURM Script for Job: {job.name}[/bold blue]"
+                elif isinstance(job, ShellJob):
+                    script_path = render_shell_job_script(
+                        job.script_path, job, temp_dir, verbose=False
                     )
+                else:
+                    logger.warning(f"Unknown job type for debug display: {type(job)}")
+                    return
 
-                    # Create syntax highlighted panel
-                    syntax = Syntax(
-                        script_content,
-                        "bash",
-                        theme="monokai",
-                        line_numbers=True,
-                        background_color="default",
-                    )
+                # Read the rendered script content
+                with open(script_path, encoding="utf-8") as f:
+                    script_content = f.read()
 
-                    panel = Panel(
-                        syntax,
-                        title=f"[bold cyan]{job.name}.slurm[/bold cyan]",
-                        border_style="blue",
-                        padding=(1, 2),
-                    )
+                # Display the script with rich formatting
+                self.console.print(
+                    f"\n[bold blue]🔍 Rendered SLURM Script for Job: {job.name}[/bold blue]"
+                )
 
-                    self.console.print(panel)
-                    self.console.print()
+                # Create syntax highlighted panel
+                syntax = Syntax(
+                    script_content,
+                    "bash",
+                    theme="monokai",
+                    line_numbers=True,
+                    background_color="default",
+                )
 
-            except Exception as e:
-                logger.error(f"Failed to render debug script for job {job.name}: {e}")
+                panel = Panel(
+                    syntax,
+                    title=f"[bold cyan]{job.name}.slurm[/bold cyan]",
+                    border_style="blue",
+                    padding=(1, 2),
+                )
+
+                self.console.print(panel)
+                self.console.print()
+
+        except Exception as e:
+            logger.error(f"Failed to render debug script for job {job.name}: {e}")
 
 
 # Create the main Typer app
@@ -293,7 +302,15 @@ def submit(
         console = Console()
         console.print("🔍 Dry run mode - would submit job:")
         console.print(f"  Name: {job.name}")
-        console.print(f"  Command: {' '.join(job.command or [])}")
+        if isinstance(job, Job):
+            command_str = (
+                job.command
+                if isinstance(job.command, str)
+                else " ".join(job.command or [])
+            )
+            console.print(f"  Command: {command_str}")
+        elif isinstance(job, ShellJob):
+            console.print(f"  Script: {job.script_path}")
         console.print(f"  Nodes: {job.resources.nodes}")
         console.print(f"  GPUs: {job.resources.gpus_per_node}")
         return
@@ -307,8 +324,15 @@ def submit(
         f"✅ Job submitted successfully: [bold green]{submitted_job.job_id}[/bold green]"
     )
     console.print(f"   Job name: {submitted_job.name}")
-    if hasattr(submitted_job, "command") and submitted_job.command:
-        console.print(f"   Command: {' '.join(submitted_job.command)}")
+    if isinstance(submitted_job, Job) and submitted_job.command:
+        command_str = (
+            submitted_job.command
+            if isinstance(submitted_job.command, str)
+            else " ".join(submitted_job.command)
+        )
+        console.print(f"   Command: {command_str}")
+    elif isinstance(submitted_job, ShellJob):
+        console.print(f"   Script: {submitted_job.script_path}")
 
     if wait:
         try:
@@ -338,8 +362,13 @@ def status(
         console.print(f"Job ID: [bold]{job.job_id}[/bold]")
         console.print(f"Status: {job.status.name}")
         console.print(f"Name: {job.name}")
-        if hasattr(job, "command") and job.command:
-            console.print(f"Command: {' '.join(job.command)}")
+        if isinstance(job, Job) and job.command:
+            command_str = (
+                job.command if isinstance(job.command, str) else " ".join(job.command)
+            )
+            console.print(f"Command: {command_str}")
+        elif isinstance(job, ShellJob):
+            console.print(f"Script: {job.script_path}")
 
     except Exception as e:
         logger.error(f"Error retrieving job {job_id}: {e}")
@@ -446,16 +475,46 @@ def flow_run(
             console.print("🔍 Dry run mode - showing workflow structure:")
             console.print(f"Workflow: {runner.workflow.name}")
             for job in runner.workflow.jobs:
-                if hasattr(job, "command") and job.command:
-                    command_str = " ".join(job.command)
+                if isinstance(job, Job) and job.command:
+                    command_str = (
+                        job.command
+                        if isinstance(job.command, str)
+                        else " ".join(job.command)
+                    )
+                elif isinstance(job, ShellJob):
+                    command_str = f"Shell script: {job.script_path}"
                 else:
                     command_str = "N/A"
                 console.print(f"  - {job.name}: {command_str}")
         else:
             runner.run()
 
+    except PermissionError as e:
+        logger.error(f"❌ Permission denied: {e}")
+        logger.error("💡 Check if you have write permissions to the target directories")
+        logger.error(traceback.format_exc())
+        sys.exit(1)
+    except OSError as e:
+        if e.errno == 30:  # Read-only file system
+            logger.error(f"❌ Cannot write to read-only file system: {e}")
+            logger.error(
+                "💡 The target directory appears to be read-only. Check mount permissions."
+            )
+        else:
+            logger.error(f"❌ System error: {e}")
+        logger.error(traceback.format_exc())
+        sys.exit(1)
+    except ImportError as e:
+        logger.error(f"❌ Missing dependency: {e}")
+        logger.error(
+            "💡 Make sure all required packages are installed in your environment"
+        )
+        logger.error(traceback.format_exc())
+        sys.exit(1)
     except Exception as e:
-        logger.error(f"Workflow execution failed: {e}")
+        logger.error(f"❌ Workflow execution failed: {e}")
+        logger.error(f"💡 Error type: {type(e).__name__}")
+        logger.error(traceback.format_exc())
         sys.exit(1)
 
 

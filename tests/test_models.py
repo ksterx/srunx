@@ -89,26 +89,29 @@ class TestJobEnvironment:
         env = JobEnvironment()
         assert env.conda is None
         assert env.venv is None
-        assert env.sqsh is None
+        assert env.container is None
 
     def test_job_environment_conda(self):
         """Test JobEnvironment with conda."""
         env = JobEnvironment(conda="test_env")
         assert env.conda == "test_env"
         assert env.venv is None
-        assert env.sqsh is None
+        assert env.container is None
 
     def test_job_environment_venv(self):
         """Test JobEnvironment with venv."""
         env = JobEnvironment(venv="/path/to/venv")
         assert env.venv == "/path/to/venv"
         assert env.conda is None
-        assert env.sqsh is None
+        assert env.container is None
 
-    def test_job_environment_sqsh(self):
-        """Test JobEnvironment with sqsh."""
-        env = JobEnvironment(sqsh="/path/to/image.sqsh")
-        assert env.sqsh == "/path/to/image.sqsh"
+    def test_job_environment_container(self):
+        """Test JobEnvironment with container."""
+        from srunx.models import ContainerResource
+
+        container = ContainerResource(image="/path/to/image.sqsh")
+        env = JobEnvironment(container=container)
+        assert env.container.image == "/path/to/image.sqsh"
         assert env.conda is None
         assert env.venv is None
 
@@ -128,7 +131,7 @@ class TestJobEnvironment:
         env = JobEnvironment(env_vars={"TEST": "value"})
         assert env.conda is None
         assert env.venv is None
-        assert env.sqsh is None
+        assert env.container is None
         assert env.env_vars["TEST"] == "value"
 
 
@@ -159,21 +162,25 @@ class TestBaseJob:
         assert job.status == JobStatus.RUNNING
 
     @patch("subprocess.run")
-    def test_base_job_refresh(self, mock_run):
+    @patch.object(BaseJob, "refresh", wraps=BaseJob.refresh)
+    def test_base_job_refresh(self, mock_refresh, mock_run):
         """Test BaseJob refresh method."""
         mock_run.return_value.stdout = "12345|RUNNING\n"
 
         job = BaseJob(job_id=12345)
-        job.refresh()
+        # Call the actual refresh method, bypassing the global mock
+        BaseJob.refresh(job)
 
         mock_run.assert_called_once()
-        assert job.status == JobStatus.RUNNING
+        assert job._status == JobStatus.RUNNING
 
     @patch("subprocess.run")
-    def test_base_job_refresh_no_job_id(self, mock_run):
+    @patch.object(BaseJob, "refresh", wraps=BaseJob.refresh)
+    def test_base_job_refresh_no_job_id(self, mock_refresh, mock_run):
         """Test BaseJob refresh with no job_id."""
         job = BaseJob()
-        result = job.refresh()
+        # Call the actual refresh method, bypassing the global mock
+        result = BaseJob.refresh(job)
 
         mock_run.assert_not_called()
         assert result is job
@@ -181,12 +188,19 @@ class TestBaseJob:
     def test_dependencies_satisfied(self):
         """Test dependencies_satisfied method."""
         job = BaseJob(depends_on=["job1", "job2"])
+        # Ensure job starts in PENDING status for dependencies check
+        job._status = JobStatus.PENDING
 
         # Not satisfied - missing dependencies
         assert not job.dependencies_satisfied(["job1"])
 
         # Satisfied - all dependencies present
         assert job.dependencies_satisfied(["job1", "job2", "job3"])
+
+        # Job with no dependencies should be satisfied
+        job_no_deps = BaseJob()
+        job_no_deps._status = JobStatus.PENDING
+        assert job_no_deps.dependencies_satisfied([])
 
 
 class TestJob:
@@ -201,15 +215,22 @@ class TestJob:
         assert sample_job.log_dir == "logs"
         assert sample_job.work_dir == "/tmp"
 
+    @patch.dict(os.environ, {}, clear=True)
     def test_job_defaults(self):
         """Test Job default values."""
+        # Clear environment and force config reload
+        import importlib
+
+        importlib.reload(importlib.import_module("srunx.models"))
+
         job = Job(
             command=["python", "script.py"],
             environment=JobEnvironment(conda="test_env"),
         )
         assert job.name == "job"
         assert job.resources.nodes == 1
-        assert job.log_dir == os.getenv("SLURM_LOG_DIR", "logs")
+        # Without SLURM_LOG_DIR set, should default to 'logs'
+        assert job.log_dir == "logs"
         assert job.work_dir == os.getcwd()
 
     def test_job_validation(self):
@@ -224,8 +245,8 @@ class TestShellJob:
 
     def test_shell_job_creation(self):
         """Test ShellJob creation."""
-        job = ShellJob(path="/path/to/script.sh")
-        assert job.path == "/path/to/script.sh"
+        job = ShellJob(script_path="/path/to/script.sh")
+        assert job.script_path == "/path/to/script.sh"
         assert job.name == "job"
 
     def test_shell_job_validation(self):

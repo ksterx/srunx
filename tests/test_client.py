@@ -115,8 +115,10 @@ class TestSlurm:
 
     @patch("time.sleep")
     @patch("subprocess.run")
-    def test_submit_shell_job(self, mock_run, mock_sleep):
+    @patch("srunx.client.render_shell_job_script")
+    def test_submit_shell_job(self, mock_render_shell, mock_run, mock_sleep):
         """Test shell job submission."""
+        mock_render_shell.return_value = "/tmp/shell_job.slurm"
 
         def mock_run_side_effect(*args, **kwargs):
             if "sbatch" in args[0]:
@@ -131,7 +133,7 @@ class TestSlurm:
 
         mock_run.side_effect = mock_run_side_effect
 
-        shell_job = ShellJob(name="shell_test", path="/path/to/script.sh")
+        shell_job = ShellJob(name="shell_test", script_path="/path/to/script.sh")
         client = Slurm()
 
         result = client.submit(shell_job)
@@ -145,13 +147,15 @@ class TestSlurm:
             call for call in mock_run.call_args_list if "sbatch" in call[0][0]
         ]
         assert len(sbatch_calls) >= 1
-        assert sbatch_calls[0][0][0] == ["sbatch", "/path/to/script.sh"]
+        assert sbatch_calls[0][0][0] == ["sbatch", "/tmp/shell_job.slurm"]
 
     @patch("time.sleep")
     @patch("subprocess.run")
     @patch("srunx.client.render_job_script")
-    def test_submit_job_with_sqsh(self, mock_render, mock_run, mock_sleep, sample_job):
-        """Test job submission with sqsh container."""
+    def test_submit_job_with_container(
+        self, mock_render, mock_run, mock_sleep, sample_job
+    ):
+        """Test job submission with container."""
         mock_render.return_value = "/tmp/test_job.slurm"
 
         def mock_run_side_effect(*args, **kwargs):
@@ -167,8 +171,12 @@ class TestSlurm:
 
         mock_run.side_effect = mock_run_side_effect
 
-        # Modify job to use sqsh
-        sample_job.environment = JobEnvironment(sqsh="/path/to/image.sqsh")
+        # Modify job to use container
+        from srunx.models import ContainerResource
+
+        sample_job.environment = JobEnvironment(
+            container=ContainerResource(image="/path/to/image.sqsh")
+        )
 
         client = Slurm()
         result = client.submit(sample_job)
