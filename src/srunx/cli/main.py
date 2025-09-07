@@ -3,6 +3,7 @@
 import os
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -491,7 +492,6 @@ def flow_run(
     except PermissionError as e:
         logger.error(f"❌ Permission denied: {e}")
         logger.error("💡 Check if you have write permissions to the target directories")
-        sys.exit(1)
     except OSError as e:
         if e.errno == 30:  # Read-only file system
             logger.error(f"❌ Cannot write to read-only file system: {e}")
@@ -500,19 +500,15 @@ def flow_run(
             )
         else:
             logger.error(f"❌ System error: {e}")
-        sys.exit(1)
     except ImportError as e:
         logger.error(f"❌ Missing dependency: {e}")
         logger.error(
             "💡 Make sure all required packages are installed in your environment"
         )
-        sys.exit(1)
     except Exception as e:
         logger.error(f"❌ Workflow execution failed: {e}")
         logger.error(f"💡 Error type: {type(e).__name__}")
-        import traceback
-
-        logger.error("📍 Error location:")
+    finally:
         logger.error(traceback.format_exc())
         sys.exit(1)
 
