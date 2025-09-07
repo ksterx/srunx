@@ -488,9 +488,6 @@ def flow_run(
         else:
             runner.run()
 
-    except FileNotFoundError as e:
-        logger.error(f"❌ Workflow file not found: {e}")
-        sys.exit(1)
     except PermissionError as e:
         logger.error(f"❌ Permission denied: {e}")
         logger.error("💡 Check if you have write permissions to the target directories")
