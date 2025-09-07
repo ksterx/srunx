@@ -1,11 +1,18 @@
 """Tests for srunx.cli module."""
 
+import re
 from unittest.mock import Mock, patch
 
 import pytest
 from typer.testing import CliRunner
 
 from srunx.cli.main import _parse_env_vars, app
+
+
+def strip_ansi_codes(text: str) -> str:
+    """Strip ANSI escape sequences from text."""
+    ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+    return ansi_escape.sub("", text)
 
 
 class TestHelperFunctions:
@@ -57,10 +64,11 @@ class TestTyperCLI:
         """Test submit command help."""
         result = self.runner.invoke(app, ["submit", "--help"])
         assert result.exit_code == 0
-        assert "Submit a SLURM job" in result.stdout
-        assert "--name" in result.stdout
-        assert "--nodes" in result.stdout
-        assert "--gpus-per-node" in result.stdout
+        clean_output = strip_ansi_codes(result.stdout)
+        assert "Submit a SLURM job" in clean_output
+        assert "--name" in clean_output
+        assert "--nodes" in clean_output
+        assert "--gpus-per-node" in clean_output
 
     def test_status_help(self):
         """Test status command help."""
@@ -94,9 +102,10 @@ class TestTyperCLI:
         """Test flow run command help includes debug option."""
         result = self.runner.invoke(app, ["flow", "run", "--help"])
         assert result.exit_code == 0
-        assert "Execute workflow from YAML file" in result.stdout
-        assert "--debug" in result.stdout
-        assert "Show rendered SLURM scripts for each job" in result.stdout
+        clean_output = strip_ansi_codes(result.stdout)
+        assert "Execute workflow from YAML file" in clean_output
+        assert "--debug" in clean_output
+        assert "Show rendered SLURM scripts for each job" in clean_output
 
     def test_config_help(self):
         """Test config command help."""
