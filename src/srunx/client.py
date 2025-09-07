@@ -122,8 +122,6 @@ class Slurm:
                 f"Failed to submit job '{job.name}': No result from subprocess"
             )
 
-        time.sleep(3)
-        logger.info(f"Job {job.name} result: {result}")
         job_id = int(result.stdout.split()[-1])
         job.job_id = job_id
         job.status = JobStatus.PENDING
