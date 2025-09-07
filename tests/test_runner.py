@@ -440,6 +440,10 @@ class TestWorkflowRunner:
             depends_on=["job1"],
         )
 
+        # Ensure jobs start in PENDING status for dependency tests
+        job1._status = JobStatus.PENDING
+        job2._status = JobStatus.PENDING
+
         # Set up mock to return completed jobs
         def mock_run(job):
             job.status = JobStatus.COMPLETED

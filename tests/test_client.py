@@ -152,8 +152,10 @@ class TestSlurm:
     @patch("time.sleep")
     @patch("subprocess.run")
     @patch("srunx.client.render_job_script")
-    def test_submit_job_with_sqsh(self, mock_render, mock_run, mock_sleep, sample_job):
-        """Test job submission with sqsh container."""
+    def test_submit_job_with_container(
+        self, mock_render, mock_run, mock_sleep, sample_job
+    ):
+        """Test job submission with container."""
         mock_render.return_value = "/tmp/test_job.slurm"
 
         def mock_run_side_effect(*args, **kwargs):

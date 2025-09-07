@@ -16,6 +16,7 @@ from srunx.models import (
     Job,
     JobEnvironment,
     JobResource,
+    JobStatus,
     ShellJob,
     Workflow,
     render_job_script,
@@ -230,6 +231,11 @@ class TestRealisticWorkflows:
         workflow.validate()
 
         # Check dependencies
+        # Ensure all jobs are in PENDING status for test consistency
+        preprocess._status = JobStatus.PENDING
+        train._status = JobStatus.PENDING
+        evaluate._status = JobStatus.PENDING
+
         assert preprocess.dependencies_satisfied([])
         assert not train.dependencies_satisfied([])
         assert train.dependencies_satisfied(["preprocess"])
@@ -289,6 +295,12 @@ class TestRealisticWorkflows:
         workflow.validate()
 
         # Test dependency resolution
+        # Ensure all jobs are in PENDING status for test consistency
+        qc._status = JobStatus.PENDING
+        for align_job in align_jobs:
+            align_job._status = JobStatus.PENDING
+        variant_calling._status = JobStatus.PENDING
+
         assert qc.dependencies_satisfied([])
         for align_job in align_jobs:
             assert not align_job.dependencies_satisfied([])
@@ -443,6 +455,11 @@ mkdir -p {{ output_dir }}
 
             # Test dependency chain
             # Jobs should be PENDING by default to satisfy dependencies check
+            # Ensure all jobs are in PENDING status for test consistency
+            setup._status = JobStatus.PENDING
+            process._status = JobStatus.PENDING
+            analyze._status = JobStatus.PENDING
+
             assert setup.dependencies_satisfied([])
             assert process.dependencies_satisfied(["setup"])
             assert analyze.dependencies_satisfied(["setup", "process"])

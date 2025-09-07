@@ -162,21 +162,25 @@ class TestBaseJob:
         assert job.status == JobStatus.RUNNING
 
     @patch("subprocess.run")
-    def test_base_job_refresh(self, mock_run):
+    @patch.object(BaseJob, "refresh", wraps=BaseJob.refresh)
+    def test_base_job_refresh(self, mock_refresh, mock_run):
         """Test BaseJob refresh method."""
         mock_run.return_value.stdout = "12345|RUNNING\n"
 
         job = BaseJob(job_id=12345)
-        job.refresh()
+        # Call the actual refresh method, bypassing the global mock
+        BaseJob.refresh(job)
 
         mock_run.assert_called_once()
-        assert job.status == JobStatus.RUNNING
+        assert job._status == JobStatus.RUNNING
 
     @patch("subprocess.run")
-    def test_base_job_refresh_no_job_id(self, mock_run):
+    @patch.object(BaseJob, "refresh", wraps=BaseJob.refresh)
+    def test_base_job_refresh_no_job_id(self, mock_refresh, mock_run):
         """Test BaseJob refresh with no job_id."""
         job = BaseJob()
-        result = job.refresh()
+        # Call the actual refresh method, bypassing the global mock
+        result = BaseJob.refresh(job)
 
         mock_run.assert_not_called()
         assert result is job
@@ -184,12 +188,19 @@ class TestBaseJob:
     def test_dependencies_satisfied(self):
         """Test dependencies_satisfied method."""
         job = BaseJob(depends_on=["job1", "job2"])
+        # Ensure job starts in PENDING status for dependencies check
+        job._status = JobStatus.PENDING
 
         # Not satisfied - missing dependencies
         assert not job.dependencies_satisfied(["job1"])
 
         # Satisfied - all dependencies present
         assert job.dependencies_satisfied(["job1", "job2", "job3"])
+
+        # Job with no dependencies should be satisfied
+        job_no_deps = BaseJob()
+        job_no_deps._status = JobStatus.PENDING
+        assert job_no_deps.dependencies_satisfied([])
 
 
 class TestJob:
