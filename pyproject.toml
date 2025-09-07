@@ -18,12 +18,15 @@ dependencies = [
 [project.scripts]
 srunx = "srunx.cli.main:main"
 
-[tool.setuptools.package-data]
-"srunx.templates" = ["*.jinja"]
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/srunx"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src/srunx" = "srunx"
 
 [dependency-groups]
 dev = [
