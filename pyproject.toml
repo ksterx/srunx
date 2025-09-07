@@ -1,6 +1,6 @@
 [project]
 name = "srunx"
-version = "0.2.8"
+version = "0.3.0"
 description = "Slurm job workflow management"
 readme = "README.md"
 authors = [{ name = "ksterx", email = "kostonerx@gmail.com" }]
