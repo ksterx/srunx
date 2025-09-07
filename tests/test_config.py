@@ -59,7 +59,7 @@ class TestEnvironmentDefaults:
         env = EnvironmentDefaults()
         assert env.conda is None
         assert env.venv is None
-        assert env.sqsh is None
+        assert env.container is None
         assert env.env_vars == {}
 
     def test_environment_defaults_custom_values(self):

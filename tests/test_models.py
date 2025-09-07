@@ -89,26 +89,29 @@ class TestJobEnvironment:
         env = JobEnvironment()
         assert env.conda is None
         assert env.venv is None
-        assert env.sqsh is None
+        assert env.container is None
 
     def test_job_environment_conda(self):
         """Test JobEnvironment with conda."""
         env = JobEnvironment(conda="test_env")
         assert env.conda == "test_env"
         assert env.venv is None
-        assert env.sqsh is None
+        assert env.container is None
 
     def test_job_environment_venv(self):
         """Test JobEnvironment with venv."""
         env = JobEnvironment(venv="/path/to/venv")
         assert env.venv == "/path/to/venv"
         assert env.conda is None
-        assert env.sqsh is None
+        assert env.container is None
 
-    def test_job_environment_sqsh(self):
-        """Test JobEnvironment with sqsh."""
-        env = JobEnvironment(sqsh="/path/to/image.sqsh")
-        assert env.sqsh == "/path/to/image.sqsh"
+    def test_job_environment_container(self):
+        """Test JobEnvironment with container."""
+        from srunx.models import ContainerResource
+
+        container = ContainerResource(image="/path/to/image.sqsh")
+        env = JobEnvironment(container=container)
+        assert env.container.image == "/path/to/image.sqsh"
         assert env.conda is None
         assert env.venv is None
 
@@ -128,7 +131,7 @@ class TestJobEnvironment:
         env = JobEnvironment(env_vars={"TEST": "value"})
         assert env.conda is None
         assert env.venv is None
-        assert env.sqsh is None
+        assert env.container is None
         assert env.env_vars["TEST"] == "value"
 
 
@@ -201,15 +204,22 @@ class TestJob:
         assert sample_job.log_dir == "logs"
         assert sample_job.work_dir == "/tmp"
 
+    @patch.dict(os.environ, {}, clear=True)
     def test_job_defaults(self):
         """Test Job default values."""
+        # Clear environment and force config reload
+        import importlib
+
+        importlib.reload(importlib.import_module("srunx.models"))
+
         job = Job(
             command=["python", "script.py"],
             environment=JobEnvironment(conda="test_env"),
         )
         assert job.name == "job"
         assert job.resources.nodes == 1
-        assert job.log_dir == os.getenv("SLURM_LOG_DIR", "logs")
+        # Without SLURM_LOG_DIR set, should default to 'logs'
+        assert job.log_dir == "logs"
         assert job.work_dir == os.getcwd()
 
     def test_job_validation(self):
@@ -224,8 +234,8 @@ class TestShellJob:
 
     def test_shell_job_creation(self):
         """Test ShellJob creation."""
-        job = ShellJob(path="/path/to/script.sh")
-        assert job.path == "/path/to/script.sh"
+        job = ShellJob(script_path="/path/to/script.sh")
+        assert job.script_path == "/path/to/script.sh"
         assert job.name == "job"
 
     def test_shell_job_validation(self):
