@@ -82,10 +82,32 @@ def run(
     slack: Annotated[
         bool, typer.Option("--slack", help="Send notifications to Slack")
     ] = False,
+    from_job: Annotated[
+        str | None,
+        typer.Option(
+            "--from",
+            help="Start execution from this job (ignoring dependencies before this job)",
+        ),
+    ] = None,
+    to_job: Annotated[
+        str | None, typer.Option("--to", help="Stop execution at this job (inclusive)")
+    ] = None,
+    job: Annotated[
+        str | None,
+        typer.Option(
+            "--job", help="Execute only this specific job (ignoring all dependencies)"
+        ),
+    ] = None,
 ) -> None:
     """Execute workflow from YAML file."""
     # Configure logging for workflow execution
     configure_workflow_logging(level=log_level)
+
+    # Validate mutually exclusive options
+    execution_options = [from_job, to_job, job]
+    if job and (from_job or to_job):
+        logger.error("❌ Cannot use --job with --from or --to options")
+        sys.exit(1)
 
     try:
         if not yaml_file.exists():
@@ -113,22 +135,40 @@ def run(
             console = Console()
             console.print("🔍 Dry run mode - showing workflow structure:")
             console.print(f"Workflow: {runner.workflow.name}")
-            for job in runner.workflow.jobs:
-                if isinstance(job, Job) and job.command:
+
+            # Get jobs that would be executed
+            jobs_to_execute = runner._get_jobs_to_execute(from_job, to_job, job)
+
+            if job:
+                console.print(f"Executing single job: {job}")
+            elif from_job or to_job:
+                range_info = []
+                if from_job:
+                    range_info.append(f"from {from_job}")
+                if to_job:
+                    range_info.append(f"to {to_job}")
+                console.print(
+                    f"Executing jobs {' '.join(range_info)}: {len(jobs_to_execute)} jobs"
+                )
+            else:
+                console.print(f"Executing all jobs: {len(jobs_to_execute)} jobs")
+
+            for job_obj in jobs_to_execute:
+                if isinstance(job_obj, Job) and job_obj.command:
                     command_str = (
-                        job.command
-                        if isinstance(job.command, str)
-                        else " ".join(job.command or [])
+                        job_obj.command
+                        if isinstance(job_obj.command, str)
+                        else " ".join(job_obj.command or [])
                     )
-                elif isinstance(job, ShellJob):
-                    command_str = f"Shell script: {job.script_path}"
+                elif isinstance(job_obj, ShellJob):
+                    command_str = f"Shell script: {job_obj.script_path}"
                 else:
                     command_str = "N/A"
-                console.print(f"  - {job.name}: {command_str}")
+                console.print(f"  - {job_obj.name}: {command_str}")
             return
 
         # Execute workflow
-        results = runner.run()
+        results = runner.run(from_job=from_job, to_job=to_job, single_job=job)
 
         logger.info("Job Results:")
         for task_name, job in results.items():
