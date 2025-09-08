@@ -171,11 +171,11 @@ def run(
         results = runner.run(from_job=from_job, to_job=to_job, single_job=job)
 
         logger.info("Job Results:")
-        for task_name, job in results.items():
-            if hasattr(job, "job_id") and job.job_id:
-                logger.info(f"  {task_name}: Job ID {job.job_id}")
+        for task_name, job_result in results.items():
+            if hasattr(job_result, "job_id") and job_result.job_id:
+                logger.info(f"  {task_name}: Job ID {job_result.job_id}")
             else:
-                logger.info(f"  {task_name}: {job}")
+                logger.info(f"  {task_name}: {job_result}")
 
     except FileNotFoundError as e:
         logger.error(f"❌ Workflow file not found: {e}")
