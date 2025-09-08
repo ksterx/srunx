@@ -594,3 +594,289 @@ class TestRunWorkflowFromFile:
         mock_runner_class.from_yaml.assert_called_once_with("test.yaml")
         mock_runner.run.assert_called_once()
         assert results == mock_results
+
+
+class TestWorkflowExecutionControl:
+    """Test workflow execution control features (--from, --to, --job)."""
+
+    def test_get_jobs_to_execute_full_workflow(self):
+        """Test getting all jobs for full workflow execution."""
+        job1 = Job(
+            name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env")
+        )
+        job2 = Job(
+            name="job2", command=["echo", "2"], environment=JobEnvironment(conda="env")
+        )
+        job3 = Job(
+            name="job3", command=["echo", "3"], environment=JobEnvironment(conda="env")
+        )
+
+        workflow = Workflow(name="test", jobs=[job1, job2, job3])
+        runner = WorkflowRunner(workflow)
+
+        jobs_to_execute = runner._get_jobs_to_execute()
+
+        assert len(jobs_to_execute) == 3
+        assert all(job in jobs_to_execute for job in [job1, job2, job3])
+
+    def test_get_jobs_to_execute_single_job(self):
+        """Test executing single job."""
+        job1 = Job(
+            name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env")
+        )
+        job2 = Job(
+            name="job2", command=["echo", "2"], environment=JobEnvironment(conda="env")
+        )
+        job3 = Job(
+            name="job3", command=["echo", "3"], environment=JobEnvironment(conda="env")
+        )
+
+        workflow = Workflow(name="test", jobs=[job1, job2, job3])
+        runner = WorkflowRunner(workflow)
+
+        jobs_to_execute = runner._get_jobs_to_execute(single_job="job2")
+
+        assert len(jobs_to_execute) == 1
+        assert jobs_to_execute[0].name == "job2"
+
+    def test_get_jobs_to_execute_from_job(self):
+        """Test executing from specific job to end."""
+        job1 = Job(
+            name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env")
+        )
+        job2 = Job(
+            name="job2", command=["echo", "2"], environment=JobEnvironment(conda="env")
+        )
+        job3 = Job(
+            name="job3", command=["echo", "3"], environment=JobEnvironment(conda="env")
+        )
+
+        workflow = Workflow(name="test", jobs=[job1, job2, job3])
+        runner = WorkflowRunner(workflow)
+
+        jobs_to_execute = runner._get_jobs_to_execute(from_job="job2")
+
+        assert len(jobs_to_execute) == 2
+        job_names = [job.name for job in jobs_to_execute]
+        assert job_names == ["job2", "job3"]
+
+    def test_get_jobs_to_execute_to_job(self):
+        """Test executing from beginning to specific job."""
+        job1 = Job(
+            name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env")
+        )
+        job2 = Job(
+            name="job2", command=["echo", "2"], environment=JobEnvironment(conda="env")
+        )
+        job3 = Job(
+            name="job3", command=["echo", "3"], environment=JobEnvironment(conda="env")
+        )
+
+        workflow = Workflow(name="test", jobs=[job1, job2, job3])
+        runner = WorkflowRunner(workflow)
+
+        jobs_to_execute = runner._get_jobs_to_execute(to_job="job2")
+
+        assert len(jobs_to_execute) == 2
+        job_names = [job.name for job in jobs_to_execute]
+        assert job_names == ["job1", "job2"]
+
+    def test_get_jobs_to_execute_from_to_job(self):
+        """Test executing from one job to another."""
+        job1 = Job(
+            name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env")
+        )
+        job2 = Job(
+            name="job2", command=["echo", "2"], environment=JobEnvironment(conda="env")
+        )
+        job3 = Job(
+            name="job3", command=["echo", "3"], environment=JobEnvironment(conda="env")
+        )
+        job4 = Job(
+            name="job4", command=["echo", "4"], environment=JobEnvironment(conda="env")
+        )
+
+        workflow = Workflow(name="test", jobs=[job1, job2, job3, job4])
+        runner = WorkflowRunner(workflow)
+
+        jobs_to_execute = runner._get_jobs_to_execute(from_job="job2", to_job="job3")
+
+        assert len(jobs_to_execute) == 2
+        job_names = [job.name for job in jobs_to_execute]
+        assert job_names == ["job2", "job3"]
+
+    def test_get_jobs_to_execute_reverse_range(self):
+        """Test executing from later job to earlier job."""
+        job1 = Job(
+            name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env")
+        )
+        job2 = Job(
+            name="job2", command=["echo", "2"], environment=JobEnvironment(conda="env")
+        )
+        job3 = Job(
+            name="job3", command=["echo", "3"], environment=JobEnvironment(conda="env")
+        )
+        job4 = Job(
+            name="job4", command=["echo", "4"], environment=JobEnvironment(conda="env")
+        )
+
+        workflow = Workflow(name="test", jobs=[job1, job2, job3, job4])
+        runner = WorkflowRunner(workflow)
+
+        jobs_to_execute = runner._get_jobs_to_execute(from_job="job3", to_job="job2")
+
+        assert len(jobs_to_execute) == 2
+        job_names = [job.name for job in jobs_to_execute]
+        assert job_names == ["job2", "job3"]
+
+    def test_get_jobs_to_execute_nonexistent_job(self):
+        """Test error when specifying nonexistent job."""
+        job1 = Job(
+            name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env")
+        )
+
+        workflow = Workflow(name="test", jobs=[job1])
+        runner = WorkflowRunner(workflow)
+
+        with pytest.raises(
+            WorkflowValidationError, match="Job 'nonexistent' not found in workflow"
+        ):
+            runner._get_jobs_to_execute(single_job="nonexistent")
+
+        with pytest.raises(
+            WorkflowValidationError, match="Job 'nonexistent' not found in workflow"
+        ):
+            runner._get_jobs_to_execute(from_job="nonexistent")
+
+        with pytest.raises(
+            WorkflowValidationError, match="Job 'nonexistent' not found in workflow"
+        ):
+            runner._get_jobs_to_execute(to_job="nonexistent")
+
+    @patch("srunx.runner.Slurm")
+    def test_run_single_job_ignores_dependencies(self, mock_slurm_class):
+        """Test that single job execution ignores dependencies."""
+        mock_slurm = Mock()
+        mock_slurm_class.return_value = mock_slurm
+
+        job1 = Job(
+            name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env")
+        )
+        job2 = Job(
+            name="job2",
+            command=["echo", "2"],
+            environment=JobEnvironment(conda="env"),
+            depends_on=["job1"],
+        )
+
+        # Set up mock to return completed jobs
+        def mock_run(job):
+            job.status = JobStatus.COMPLETED
+            return job
+
+        mock_slurm.run.side_effect = mock_run
+
+        workflow = Workflow(name="test", jobs=[job1, job2])
+        runner = WorkflowRunner(workflow)
+
+        # Execute only job2, ignoring its dependency on job1
+        results = runner.run(single_job="job2")
+
+        assert len(results) == 1
+        assert "job2" in results
+        assert "job1" not in results
+        mock_slurm.run.assert_called_once()
+
+    @patch("srunx.runner.Slurm")
+    def test_run_from_job_ignores_external_dependencies(self, mock_slurm_class):
+        """Test that --from execution ignores dependencies outside the execution range."""
+        mock_slurm = Mock()
+        mock_slurm_class.return_value = mock_slurm
+
+        job1 = Job(
+            name="job1", command=["echo", "1"], environment=JobEnvironment(conda="env")
+        )
+        job2 = Job(
+            name="job2",
+            command=["echo", "2"],
+            environment=JobEnvironment(conda="env"),
+            depends_on=["job1"],
+        )
+        job3 = Job(
+            name="job3",
+            command=["echo", "3"],
+            environment=JobEnvironment(conda="env"),
+            depends_on=["job2"],
+        )
+
+        # Set job status to PENDING initially
+        for job in [job1, job2, job3]:
+            job._status = JobStatus.PENDING
+
+        # Set up mock to return completed jobs
+        def mock_run(job):
+            job.status = JobStatus.COMPLETED
+            return job
+
+        mock_slurm.run.side_effect = mock_run
+
+        workflow = Workflow(name="test", jobs=[job1, job2, job3])
+        runner = WorkflowRunner(workflow)
+
+        # Execute from job2 onwards, ignoring job2's dependency on job1
+        results = runner.run(from_job="job2")
+
+        assert len(results) == 2
+        assert "job2" in results
+        assert "job3" in results
+        assert "job1" not in results
+        # Should run both job2 and job3 (job3 should run after job2 completes)
+        assert mock_slurm.run.call_count == 2
+
+    def test_from_yaml_with_execution_options(self, temp_dir):
+        """Test loading workflow and using execution control options."""
+        yaml_content = {
+            "name": "test_workflow",
+            "jobs": [
+                {
+                    "name": "job1",
+                    "command": ["echo", "1"],
+                    "environment": {"conda": "env"},
+                },
+                {
+                    "name": "job2",
+                    "command": ["echo", "2"],
+                    "environment": {"conda": "env"},
+                    "depends_on": ["job1"],
+                },
+                {
+                    "name": "job3",
+                    "command": ["echo", "3"],
+                    "environment": {"conda": "env"},
+                    "depends_on": ["job2"],
+                },
+            ],
+        }
+
+        yaml_path = temp_dir / "workflow.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+
+        runner = WorkflowRunner.from_yaml(yaml_path)
+
+        # Test single job
+        jobs_to_execute = runner._get_jobs_to_execute(single_job="job2")
+        assert len(jobs_to_execute) == 1
+        assert jobs_to_execute[0].name == "job2"
+
+        # Test from job
+        jobs_to_execute = runner._get_jobs_to_execute(from_job="job2")
+        assert len(jobs_to_execute) == 2
+        job_names = [job.name for job in jobs_to_execute]
+        assert job_names == ["job2", "job3"]
+
+        # Test to job
+        jobs_to_execute = runner._get_jobs_to_execute(to_job="job2")
+        assert len(jobs_to_execute) == 2
+        job_names = [job.name for job in jobs_to_execute]
+        assert job_names == ["job1", "job2"]

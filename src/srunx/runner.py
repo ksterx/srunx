@@ -141,30 +141,155 @@ class WorkflowRunner:
                 independent_jobs.append(job)
         return independent_jobs
 
-    def run(self) -> dict[str, RunnableJobType]:
+    def _get_jobs_to_execute(
+        self,
+        from_job: str | None = None,
+        to_job: str | None = None,
+        single_job: str | None = None,
+    ) -> list[RunnableJobType]:
+        """Determine which jobs to execute based on the execution control options.
+
+        Args:
+            from_job: Start execution from this job (inclusive)
+            to_job: Stop execution at this job (inclusive)
+            single_job: Execute only this specific job
+
+        Returns:
+            List of jobs to execute.
+
+        Raises:
+            WorkflowValidationError: If specified jobs are not found.
+        """
+        all_jobs = self.workflow.jobs
+        job_names = {job.name for job in all_jobs}
+
+        # Validate job names exist
+        if single_job and single_job not in job_names:
+            raise WorkflowValidationError(f"Job '{single_job}' not found in workflow")
+        if from_job and from_job not in job_names:
+            raise WorkflowValidationError(f"Job '{from_job}' not found in workflow")
+        if to_job and to_job not in job_names:
+            raise WorkflowValidationError(f"Job '{to_job}' not found in workflow")
+
+        # Single job execution - return just that job
+        if single_job:
+            return [job for job in all_jobs if job.name == single_job]
+
+        # Full workflow execution - return all jobs
+        if not from_job and not to_job:
+            return all_jobs
+
+        # Partial execution - determine job range
+        jobs_to_execute = []
+
+        if from_job and to_job:
+            # Execute from from_job to to_job (inclusive)
+            start_idx = None
+            end_idx = None
+            for i, job in enumerate(all_jobs):
+                if job.name == from_job:
+                    start_idx = i
+                if job.name == to_job:
+                    end_idx = i
+
+            if start_idx is not None and end_idx is not None:
+                if start_idx <= end_idx:
+                    jobs_to_execute = all_jobs[start_idx : end_idx + 1]
+                else:
+                    # Handle reverse order - get all jobs between them
+                    jobs_to_execute = all_jobs[end_idx : start_idx + 1]
+            else:
+                jobs_to_execute = all_jobs
+
+        elif from_job:
+            # Execute from from_job to end
+            start_idx = None
+            for i, job in enumerate(all_jobs):
+                if job.name == from_job:
+                    start_idx = i
+                    break
+            if start_idx is not None:
+                jobs_to_execute = all_jobs[start_idx:]
+            else:
+                jobs_to_execute = all_jobs
+
+        elif to_job:
+            # Execute from beginning to to_job
+            end_idx = None
+            for i, job in enumerate(all_jobs):
+                if job.name == to_job:
+                    end_idx = i
+                    break
+            if end_idx is not None:
+                jobs_to_execute = all_jobs[: end_idx + 1]
+            else:
+                jobs_to_execute = all_jobs
+
+        return jobs_to_execute
+
+    def run(
+        self,
+        from_job: str | None = None,
+        to_job: str | None = None,
+        single_job: str | None = None,
+    ) -> dict[str, RunnableJobType]:
         """Run a workflow with dynamic job scheduling.
 
         Jobs are executed as soon as their dependencies are satisfied.
 
+        Args:
+            from_job: Start execution from this job (inclusive), ignoring dependencies
+            to_job: Stop execution at this job (inclusive)
+            single_job: Execute only this specific job, ignoring all dependencies
+
         Returns:
             Dictionary mapping job names to completed Job instances.
         """
-        logger.info(
-            f"🚀 Starting Workflow {self.workflow.name} with {len(self.workflow.jobs)} jobs"
-        )
+        # Get the jobs to execute based on options
+        jobs_to_execute = self._get_jobs_to_execute(from_job, to_job, single_job)
+
+        # Log execution plan
+        if single_job:
+            logger.info(f"🚀 Executing single job: {single_job}")
+        elif from_job or to_job:
+            job_range = []
+            if from_job:
+                job_range.append(f"from {from_job}")
+            if to_job:
+                job_range.append(f"to {to_job}")
+            logger.info(
+                f"🚀 Executing workflow {self.workflow.name} ({' '.join(job_range)}) - {len(jobs_to_execute)} jobs"
+            )
+        else:
+            logger.info(
+                f"🚀 Starting Workflow {self.workflow.name} with {len(jobs_to_execute)} jobs"
+            )
+
         for callback in self.callbacks:
             callback.on_workflow_started(self.workflow)
 
-        # Track all jobs and results
-        all_jobs = self.workflow.jobs.copy()
+        # Track jobs to execute and results
+        all_jobs = jobs_to_execute.copy()
         results: dict[str, RunnableJobType] = {}
         running_futures: dict[str, Any] = {}
 
-        # Build reverse dependency map for efficient lookups
+        # For partial execution, we need to handle dependencies differently
+        ignore_dependencies = single_job is not None or from_job is not None
+
+        # Build reverse dependency map for efficient lookups (only for jobs we're executing)
         dependents = defaultdict(set)
+        job_names_to_execute = {job.name for job in all_jobs}
+
         for job in all_jobs:
-            for dep in job.depends_on:
-                dependents[dep].add(job.name)
+            if not ignore_dependencies:
+                # Normal dependency handling
+                for dep in job.depends_on:
+                    dependents[dep].add(job.name)
+            else:
+                # For partial execution, only consider dependencies within the execution set
+                for dep in job.depends_on:
+                    if dep in job_names_to_execute:
+                        dependents[dep].add(job.name)
 
         def execute_job(job: RunnableJobType) -> RunnableJobType:
             """Execute a single job."""
@@ -184,19 +309,43 @@ class WorkflowRunner:
             # Find newly ready jobs
             newly_ready = []
             for dependent_name in dependents[job_name]:
-                dependent_job = next(j for j in all_jobs if j.name == dependent_name)
-                if (
-                    dependent_job.status == JobStatus.PENDING
-                    and dependent_job.dependencies_satisfied(completed_job_names)
-                ):
-                    newly_ready.append(dependent_name)
+                dependent_job = next(
+                    (j for j in all_jobs if j.name == dependent_name), None
+                )
+                if dependent_job is None:
+                    continue
+
+                if dependent_job.status == JobStatus.PENDING:
+                    if ignore_dependencies:
+                        # For partial execution, only check dependencies within our execution set
+                        deps_in_execution_set = [
+                            dep
+                            for dep in dependent_job.depends_on
+                            if dep in job_names_to_execute
+                        ]
+                        deps_satisfied = all(
+                            dep in completed_job_names for dep in deps_in_execution_set
+                        )
+                    else:
+                        # Normal dependency checking
+                        deps_satisfied = dependent_job.dependencies_satisfied(
+                            completed_job_names
+                        )
+
+                    if deps_satisfied:
+                        newly_ready.append(dependent_name)
 
             return newly_ready
 
         # Execute workflow with ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=8) as executor:
             # Submit initial ready jobs
-            initial_jobs = self.get_independent_jobs()
+            if ignore_dependencies:
+                # For partial execution, start with all jobs (dependencies are ignored or filtered)
+                initial_jobs = all_jobs
+            else:
+                # Normal execution - start with independent jobs
+                initial_jobs = [job for job in all_jobs if not job.depends_on]
 
             for job in initial_jobs:
                 future = executor.submit(execute_job, job)
