@@ -36,8 +36,8 @@ repos:
         files: ^requirements-dev\\.(in|txt)$
 
   # MyPy
-  # - repo: https://github.com/pre-commit/mirrors-mypy
-  #   rev: v1.10.0
-  #   hooks:
-  #     - id: mypy
-  #       args: [--config-file=pyproject.toml]
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0
+    hooks:
+      - id: mypy
+        args: [--config-file=pyproject.toml]
