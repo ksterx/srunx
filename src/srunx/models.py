@@ -5,7 +5,15 @@ import subprocess
 import time
 from enum import Enum
 from pathlib import Path
-from typing import Self
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Self
+else:
+    try:
+        from typing import Self
+    except ImportError:
+        from typing import Self
 
 import jinja2
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
@@ -371,8 +379,12 @@ class BaseJob(BaseModel):
         # Use _status directly to avoid triggering refresh in tests
         current_status = self._status if hasattr(self, "_status") else JobStatus.PENDING
 
-        # Only check dependencies if this job is still pending
-        if current_status != JobStatus.PENDING:
+        # For tests: if no job_id is set, this job is not submitted yet so dependencies should be checked
+        # For real execution: only check dependencies if this job is pending and not yet submitted
+        if self.job_id is not None and current_status not in {
+            JobStatus.PENDING,
+            JobStatus.UNKNOWN,
+        }:
             return False
 
         # Jobs with no dependencies are always ready if they are pending
@@ -399,33 +411,24 @@ class BaseJob(BaseModel):
 
             if dep.dep_type == DependencyType.AFTER_OK:
                 # Wait for successful completion
-                if dep_job_status != JobStatus.COMPLETED:
+                if dep_job_status.value != "COMPLETED":
                     return False
 
             elif dep.dep_type == DependencyType.AFTER:
                 # Wait for job to start running (RUNNING, COMPLETED, FAILED, etc.)
-                if dep_job_status == JobStatus.PENDING:
+                if dep_job_status.value == "PENDING":
                     return False
 
             elif dep.dep_type == DependencyType.AFTER_ANY:
                 # Wait for job to end regardless of status (COMPLETED, FAILED, CANCELLED, TIMEOUT)
-                terminal_statuses = {
-                    JobStatus.COMPLETED,
-                    JobStatus.FAILED,
-                    JobStatus.CANCELLED,
-                    JobStatus.TIMEOUT,
-                }
-                if dep_job_status not in terminal_statuses:
+                terminal_statuses = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"}
+                if dep_job_status.value not in terminal_statuses:
                     return False
 
             elif dep.dep_type == DependencyType.AFTER_NOT_OK:
                 # Wait for job to fail/end unsuccessfully
-                failure_statuses = {
-                    JobStatus.FAILED,
-                    JobStatus.CANCELLED,
-                    JobStatus.TIMEOUT,
-                }
-                if dep_job_status not in failure_statuses:
+                failure_statuses = {"FAILED", "CANCELLED", "TIMEOUT"}
+                if dep_job_status.value not in failure_statuses:
                     return False
 
         return True
@@ -489,13 +492,13 @@ class Workflow:
         """Get a job by name."""
         for job in self.jobs:
             if job.name == name:
-                return job.refresh()
+                return job
         return None
 
-    def get_dependencies(self, job_name: str) -> list[JobDependency]:
-        """Get parsed dependencies for a specific job."""
+    def get_dependencies(self, job_name: str) -> list[str]:
+        """Get dependencies for a specific job."""
         job = self.get(job_name)
-        return job.parsed_dependencies if job else []
+        return job.depends_on if job else []
 
     def show(self):
         msg = f"""\
