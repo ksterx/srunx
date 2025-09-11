@@ -16,7 +16,7 @@ else:
         from typing import Self
 
 import jinja2
-from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 from rich.console import Console
 from rich.syntax import Syntax
 
@@ -147,9 +147,35 @@ class JobDependency(BaseModel):
     """Represents a job dependency with type and target job name."""
 
     job_name: str = Field(description="Name of the job this dependency refers to")
-    dep_type: DependencyType = Field(
-        default=DependencyType.AFTER_OK, description="Type of dependency"
-    )
+    dep_type: str = Field(default="afterok", description="Type of dependency")
+
+    @field_validator("dep_type", mode="before")
+    @classmethod
+    def validate_dep_type(cls, v):
+        """Validate dependency type, converting to string value."""
+        if isinstance(v, DependencyType):
+            return v.value
+        elif isinstance(v, str):
+            # Validate it's a valid dependency type
+            valid_values = [t.value for t in DependencyType]
+            if v not in valid_values:
+                raise ValueError(
+                    f"Invalid dependency type '{v}'. Valid types: {valid_values}"
+                )
+            return v
+        else:
+            # Handle enum instance from different module boundaries
+            if hasattr(v, "value") and hasattr(v, "name"):
+                value = v.value
+                valid_values = [t.value for t in DependencyType]
+                if value in valid_values:
+                    return value
+            raise ValueError(f"Invalid dependency type: {v}")
+
+    @property
+    def dependency_type(self) -> DependencyType:
+        """Get the dependency type as a DependencyType enum."""
+        return DependencyType(self.dep_type)
 
     @classmethod
     def parse(cls, dep_str: str) -> Self:
@@ -164,25 +190,25 @@ class JobDependency(BaseModel):
         """
         if ":" in dep_str:
             dep_type_str, job_name = dep_str.split(":", 1)
-            try:
-                dep_type = DependencyType(dep_type_str)
-            except ValueError:
+            valid_types = [t.value for t in DependencyType]
+            if dep_type_str not in valid_types:
                 raise WorkflowValidationError(
                     f"Invalid dependency type '{dep_type_str}'. "
-                    f"Valid types: {[t.value for t in DependencyType]}"
-                ) from None
+                    f"Valid types: {valid_types}"
+                )
+            dep_type = dep_type_str
         else:
             # Default behavior - wait for successful completion
             job_name = dep_str
-            dep_type = DependencyType.AFTER_OK
+            dep_type = "afterok"
 
         return cls(job_name=job_name, dep_type=dep_type)
 
     def __str__(self) -> str:
         """String representation of the dependency."""
-        if self.dep_type == DependencyType.AFTER_OK:
+        if self.dep_type == "afterok":
             return self.job_name  # Keep backward compatibility
-        return f"{self.dep_type.value}:{self.job_name}"
+        return f"{self.dep_type}:{self.job_name}"
 
 
 class JobResource(BaseModel):
@@ -409,23 +435,23 @@ class BaseJob(BaseModel):
         for dep in parsed_deps:
             dep_job_status = job_statuses.get(dep.job_name, JobStatus.PENDING)
 
-            if dep.dep_type == DependencyType.AFTER_OK:
+            if dep.dep_type == "afterok":
                 # Wait for successful completion
                 if dep_job_status.value != "COMPLETED":
                     return False
 
-            elif dep.dep_type == DependencyType.AFTER:
+            elif dep.dep_type == "after":
                 # Wait for job to start running (RUNNING, COMPLETED, FAILED, etc.)
                 if dep_job_status.value == "PENDING":
                     return False
 
-            elif dep.dep_type == DependencyType.AFTER_ANY:
+            elif dep.dep_type == "afterany":
                 # Wait for job to end regardless of status (COMPLETED, FAILED, CANCELLED, TIMEOUT)
                 terminal_statuses = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"}
                 if dep_job_status.value not in terminal_statuses:
                     return False
 
-            elif dep.dep_type == DependencyType.AFTER_NOT_OK:
+            elif dep.dep_type == "afternotok":
                 # Wait for job to fail/end unsuccessfully
                 failure_statuses = {"FAILED", "CANCELLED", "TIMEOUT"}
                 if dep_job_status.value not in failure_statuses:

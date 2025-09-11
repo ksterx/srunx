@@ -7,7 +7,6 @@ import yaml  # type: ignore
 
 from srunx.exceptions import WorkflowValidationError
 from srunx.models import (
-    DependencyType,
     Job,
     JobDependency,
     JobEnvironment,
@@ -897,31 +896,31 @@ class TestJobDependency:
         """Test parsing simple dependency (default afterok)."""
         dep = JobDependency.parse("job_a")
         assert dep.job_name == "job_a"
-        assert dep.dep_type == DependencyType.AFTER_OK
+        assert dep.dep_type == "afterok"
 
     def test_parse_after_dependency(self):
         """Test parsing 'after' dependency."""
         dep = JobDependency.parse("after:job_a")
         assert dep.job_name == "job_a"
-        assert dep.dep_type == DependencyType.AFTER
+        assert dep.dep_type == "after"
 
     def test_parse_afterany_dependency(self):
         """Test parsing 'afterany' dependency."""
         dep = JobDependency.parse("afterany:job_a")
         assert dep.job_name == "job_a"
-        assert dep.dep_type == DependencyType.AFTER_ANY
+        assert dep.dep_type == "afterany"
 
     def test_parse_afternotok_dependency(self):
         """Test parsing 'afternotok' dependency."""
         dep = JobDependency.parse("afternotok:job_a")
         assert dep.job_name == "job_a"
-        assert dep.dep_type == DependencyType.AFTER_NOT_OK
+        assert dep.dep_type == "afternotok"
 
     def test_parse_explicit_afterok_dependency(self):
         """Test parsing explicit 'afterok' dependency."""
         dep = JobDependency.parse("afterok:job_a")
         assert dep.job_name == "job_a"
-        assert dep.dep_type == DependencyType.AFTER_OK
+        assert dep.dep_type == "afterok"
 
     def test_parse_invalid_dependency_type(self):
         """Test parsing invalid dependency type."""
@@ -931,17 +930,17 @@ class TestJobDependency:
     def test_str_representation(self):
         """Test string representation of dependencies."""
         # Default afterok should show just job name
-        dep1 = JobDependency(job_name="job_a", dep_type=DependencyType.AFTER_OK)
+        dep1 = JobDependency(job_name="job_a", dep_type="afterok")
         assert str(dep1) == "job_a"
 
         # Other types should show full format
-        dep2 = JobDependency(job_name="job_a", dep_type=DependencyType.AFTER)
+        dep2 = JobDependency(job_name="job_a", dep_type="after")
         assert str(dep2) == "after:job_a"
 
-        dep3 = JobDependency(job_name="job_a", dep_type=DependencyType.AFTER_ANY)
+        dep3 = JobDependency(job_name="job_a", dep_type="afterany")
         assert str(dep3) == "afterany:job_a"
 
-        dep4 = JobDependency(job_name="job_a", dep_type=DependencyType.AFTER_NOT_OK)
+        dep4 = JobDependency(job_name="job_a", dep_type="afternotok")
         assert str(dep4) == "afternotok:job_a"
 
 
@@ -961,19 +960,19 @@ class TestEnhancedDependencies:
 
         dep1 = job.parsed_dependencies[0]
         assert dep1.job_name == "job_a"
-        assert dep1.dep_type == DependencyType.AFTER_OK
+        assert dep1.dep_type == "afterok"
 
         dep2 = job.parsed_dependencies[1]
         assert dep2.job_name == "job_b"
-        assert dep2.dep_type == DependencyType.AFTER
+        assert dep2.dep_type == "after"
 
         dep3 = job.parsed_dependencies[2]
         assert dep3.job_name == "job_c"
-        assert dep3.dep_type == DependencyType.AFTER_ANY
+        assert dep3.dep_type == "afterany"
 
         dep4 = job.parsed_dependencies[3]
         assert dep4.job_name == "job_d"
-        assert dep4.dep_type == DependencyType.AFTER_NOT_OK
+        assert dep4.dep_type == "afternotok"
 
     def test_dependencies_satisfied_afterok(self):
         """Test dependencies_satisfied with afterok dependency."""
