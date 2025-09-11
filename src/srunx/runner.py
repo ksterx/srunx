@@ -9,13 +9,14 @@ from textwrap import dedent
 from typing import Any, Self
 
 import jinja2
-import yaml
+import yaml  # type: ignore
 
 from srunx.callbacks import Callback
 from srunx.client import Slurm
 from srunx.exceptions import WorkflowValidationError
 from srunx.logging import get_logger
 from srunx.models import (
+    DependencyType,
     Job,
     JobEnvironment,
     JobResource,
@@ -283,13 +284,13 @@ class WorkflowRunner:
         for job in all_jobs:
             if not ignore_dependencies:
                 # Normal dependency handling
-                for dep in job.depends_on:
-                    dependents[dep].add(job.name)
+                for parsed_dep in job.parsed_dependencies:
+                    dependents[parsed_dep.job_name].add(job.name)
             else:
                 # For partial execution, only consider dependencies within the execution set
-                for dep in job.depends_on:
-                    if dep in job_names_to_execute:
-                        dependents[dep].add(job.name)
+                for parsed_dep in job.parsed_dependencies:
+                    if parsed_dep.job_name in job_names_to_execute:
+                        dependents[parsed_dep.job_name].add(job.name)
 
         def execute_job(job: RunnableJobType) -> RunnableJobType:
             """Execute a single job."""
@@ -301,10 +302,62 @@ class WorkflowRunner:
             except Exception as e:
                 raise
 
+        def on_job_started(job_name: str) -> list[str]:
+            """Handle job start and return newly ready job names (for 'after' dependencies)."""
+            # Build current job status map
+            job_statuses = {}
+            for job in all_jobs:
+                job_statuses[job.name] = job.status
+            # Mark the started job as RUNNING (or whatever status it should be)
+            job_statuses[job_name] = JobStatus.RUNNING
+
+            # Find newly ready jobs that depend on this job starting
+            newly_ready = []
+            for dependent_name in dependents[job_name]:
+                dependent_job = next(
+                    (j for j in all_jobs if j.name == dependent_name), None
+                )
+                if dependent_job is None:
+                    continue
+
+                if dependent_job.status == JobStatus.PENDING:
+                    # Check if this job has "after" dependency on the started job
+                    has_after_dep = any(
+                        dep.job_name == job_name
+                        and dep.dep_type == DependencyType.AFTER
+                        for dep in dependent_job.parsed_dependencies
+                    )
+
+                    if has_after_dep:
+                        if ignore_dependencies:
+                            partial_job_statuses = {
+                                name: status
+                                for name, status in job_statuses.items()
+                                if name in job_names_to_execute
+                            }
+                            deps_satisfied = dependent_job.dependencies_satisfied(
+                                partial_job_statuses
+                            )
+                        else:
+                            deps_satisfied = dependent_job.dependencies_satisfied(
+                                job_statuses
+                            )
+
+                        if deps_satisfied:
+                            newly_ready.append(dependent_name)
+
+            return newly_ready
+
         def on_job_complete(job_name: str, result: RunnableJobType) -> list[str]:
             """Handle job completion and return newly ready job names."""
             results[job_name] = result
-            completed_job_names = list(set(results.keys()))
+
+            # Build current job status map
+            job_statuses = {}
+            for job in all_jobs:
+                job_statuses[job.name] = job.status
+            # Update the completed job's status
+            job_statuses[job_name] = result.status
 
             # Find newly ready jobs
             newly_ready = []
@@ -318,18 +371,18 @@ class WorkflowRunner:
                 if dependent_job.status == JobStatus.PENDING:
                     if ignore_dependencies:
                         # For partial execution, only check dependencies within our execution set
-                        deps_in_execution_set = [
-                            dep
-                            for dep in dependent_job.depends_on
-                            if dep in job_names_to_execute
-                        ]
-                        deps_satisfied = all(
-                            dep in completed_job_names for dep in deps_in_execution_set
+                        partial_job_statuses = {
+                            name: status
+                            for name, status in job_statuses.items()
+                            if name in job_names_to_execute
+                        }
+                        deps_satisfied = dependent_job.dependencies_satisfied(
+                            partial_job_statuses
                         )
                     else:
-                        # Normal dependency checking
+                        # Normal dependency checking with new interface
                         deps_satisfied = dependent_job.dependencies_satisfied(
-                            completed_job_names
+                            job_statuses
                         )
 
                     if deps_satisfied:
@@ -344,12 +397,30 @@ class WorkflowRunner:
                 # For partial execution, start with all jobs (dependencies are ignored or filtered)
                 initial_jobs = all_jobs
             else:
-                # Normal execution - start with independent jobs
-                initial_jobs = [job for job in all_jobs if not job.depends_on]
+                # Normal execution - start with independent jobs or jobs whose dependencies are satisfied
+                initial_jobs = []
+                job_statuses = {job.name: job.status for job in all_jobs}
+
+                for job in all_jobs:
+                    if not job.parsed_dependencies:
+                        # Jobs with no dependencies
+                        initial_jobs.append(job)
+                    else:
+                        # Check if dependencies are already satisfied
+                        if job.dependencies_satisfied(job_statuses):
+                            initial_jobs.append(job)
 
             for job in initial_jobs:
                 future = executor.submit(execute_job, job)
                 running_futures[job.name] = future
+
+                # Check for jobs that should start immediately after this job starts
+                newly_ready_on_start = on_job_started(job.name)
+                for ready_name in newly_ready_on_start:
+                    if ready_name not in running_futures:
+                        ready_job = next(j for j in all_jobs if j.name == ready_name)
+                        new_future = executor.submit(execute_job, ready_job)
+                        running_futures[ready_name] = new_future
 
             # Process completed jobs and schedule new ones
             while running_futures:
@@ -378,6 +449,20 @@ class WorkflowRunner:
                                 )
                                 new_future = executor.submit(execute_job, ready_job)
                                 running_futures[ready_name] = new_future
+
+                                # Check for jobs that should start immediately after this job starts
+                                newly_ready_on_start = on_job_started(ready_name)
+                                for start_ready_name in newly_ready_on_start:
+                                    if start_ready_name not in running_futures:
+                                        start_ready_job = next(
+                                            j
+                                            for j in all_jobs
+                                            if j.name == start_ready_name
+                                        )
+                                        start_future = executor.submit(
+                                            execute_job, start_ready_job
+                                        )
+                                        running_futures[start_ready_name] = start_future
 
                     except Exception as e:
                         logger.error(f"❌ Job {job_name} failed: {e}")

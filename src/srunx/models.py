@@ -126,6 +126,57 @@ class JobStatus(Enum):
     TIMEOUT = "TIMEOUT"
 
 
+class DependencyType(Enum):
+    """Dependency type enumeration for workflow job dependencies."""
+
+    AFTER_OK = "afterok"  # Wait for successful completion (default behavior)
+    AFTER = "after"  # Wait for job to start running
+    AFTER_ANY = "afterany"  # Wait for job to end regardless of status
+    AFTER_NOT_OK = "afternotok"  # Wait for job to fail/end unsuccessfully
+
+
+class JobDependency(BaseModel):
+    """Represents a job dependency with type and target job name."""
+
+    job_name: str = Field(description="Name of the job this dependency refers to")
+    dep_type: DependencyType = Field(
+        default=DependencyType.AFTER_OK, description="Type of dependency"
+    )
+
+    @classmethod
+    def parse(cls, dep_str: str) -> Self:
+        """Parse a dependency string into a JobDependency.
+
+        Formats supported:
+        - "job_a" -> afterok:job_a (default behavior)
+        - "after:job_a" -> after:job_a
+        - "afterany:job_a" -> afterany:job_a
+        - "afternotok:job_a" -> afternotok:job_a
+        - "afterok:job_a" -> afterok:job_a (explicit)
+        """
+        if ":" in dep_str:
+            dep_type_str, job_name = dep_str.split(":", 1)
+            try:
+                dep_type = DependencyType(dep_type_str)
+            except ValueError:
+                raise WorkflowValidationError(
+                    f"Invalid dependency type '{dep_type_str}'. "
+                    f"Valid types: {[t.value for t in DependencyType]}"
+                ) from None
+        else:
+            # Default behavior - wait for successful completion
+            job_name = dep_str
+            dep_type = DependencyType.AFTER_OK
+
+        return cls(job_name=job_name, dep_type=dep_type)
+
+    def __str__(self) -> str:
+        """String representation of the dependency."""
+        if self.dep_type == DependencyType.AFTER_OK:
+            return self.job_name  # Keep backward compatibility
+        return f"{self.dep_type.value}:{self.job_name}"
+
+
 class JobResource(BaseModel):
     """SLURM resource allocation requirements."""
 
@@ -212,6 +263,23 @@ class BaseJob(BaseModel):
     )
 
     _status: JobStatus = PrivateAttr(default=JobStatus.PENDING)
+    _parsed_dependencies: list[JobDependency] = PrivateAttr(default_factory=list)
+
+    def model_post_init(self, __context) -> None:
+        """Parse string dependencies into JobDependency objects after initialization."""
+        self._parsed_dependencies = [
+            JobDependency.parse(dep_str) for dep_str in self.depends_on
+        ]
+
+    @property
+    def parsed_dependencies(self) -> list[JobDependency]:
+        """Get the parsed dependency objects."""
+        if not self._parsed_dependencies and self.depends_on:
+            # Lazy initialization if not already parsed
+            self._parsed_dependencies = [
+                JobDependency.parse(dep_str) for dep_str in self.depends_on
+            ]
+        return self._parsed_dependencies
 
     @property
     def status(self) -> JobStatus:
@@ -286,13 +354,81 @@ class BaseJob(BaseModel):
 
         return self
 
-    def dependencies_satisfied(self, completed_job_names: list[str]) -> bool:
-        """All dependencies are completed & this job is still pending."""
+    def dependencies_satisfied(
+        self,
+        completed_job_names_or_statuses: list[str] | dict[str, JobStatus],
+        started_job_names: list[str] | None = None,
+        completed_job_names: list[str] | None = None,
+    ) -> bool:
+        """Check if all dependencies are satisfied based on their types.
+
+        Args:
+            completed_job_names_or_statuses: Either list of completed job names (old interface)
+                                           or dict mapping job names to their current status (new interface)
+            started_job_names: List of jobs that have started (for backward compatibility - unused)
+            completed_job_names: List of jobs that have completed successfully (for backward compatibility)
+        """
         # Use _status directly to avoid triggering refresh in tests
         current_status = self._status if hasattr(self, "_status") else JobStatus.PENDING
-        return current_status == JobStatus.PENDING and all(
-            dep in completed_job_names for dep in self.depends_on
-        )
+
+        # Only check dependencies if this job is still pending
+        if current_status != JobStatus.PENDING:
+            return False
+
+        # Jobs with no dependencies are always ready if they are pending
+        if not self.depends_on:
+            return True
+
+        # Handle backward compatibility
+        if isinstance(completed_job_names_or_statuses, list):
+            # Old interface - first argument is list of completed job names
+            completed_job_names = completed_job_names_or_statuses
+            return all(dep in completed_job_names for dep in self.depends_on)
+        elif completed_job_names is not None:
+            # Old interface called with named parameter
+            return all(dep in completed_job_names for dep in self.depends_on)
+
+        # New interface - first argument is dict of job statuses
+        job_statuses = completed_job_names_or_statuses
+
+        # Ensure parsed dependencies are initialized (robust against module reloads)
+        parsed_deps = self.parsed_dependencies  # This will trigger lazy init if needed
+
+        for dep in parsed_deps:
+            dep_job_status = job_statuses.get(dep.job_name, JobStatus.PENDING)
+
+            if dep.dep_type == DependencyType.AFTER_OK:
+                # Wait for successful completion
+                if dep_job_status != JobStatus.COMPLETED:
+                    return False
+
+            elif dep.dep_type == DependencyType.AFTER:
+                # Wait for job to start running (RUNNING, COMPLETED, FAILED, etc.)
+                if dep_job_status == JobStatus.PENDING:
+                    return False
+
+            elif dep.dep_type == DependencyType.AFTER_ANY:
+                # Wait for job to end regardless of status (COMPLETED, FAILED, CANCELLED, TIMEOUT)
+                terminal_statuses = {
+                    JobStatus.COMPLETED,
+                    JobStatus.FAILED,
+                    JobStatus.CANCELLED,
+                    JobStatus.TIMEOUT,
+                }
+                if dep_job_status not in terminal_statuses:
+                    return False
+
+            elif dep.dep_type == DependencyType.AFTER_NOT_OK:
+                # Wait for job to fail/end unsuccessfully
+                failure_statuses = {
+                    JobStatus.FAILED,
+                    JobStatus.CANCELLED,
+                    JobStatus.TIMEOUT,
+                }
+                if dep_job_status not in failure_statuses:
+                    return False
+
+        return True
 
 
 class Job(BaseJob):
@@ -322,8 +458,8 @@ class ShellJob(BaseJob):
     )
 
 
-type JobType = BaseJob | Job | ShellJob
-type RunnableJobType = Job | ShellJob
+JobType = BaseJob | Job | ShellJob
+RunnableJobType = Job | ShellJob
 
 
 class Workflow:
@@ -356,10 +492,10 @@ class Workflow:
                 return job.refresh()
         return None
 
-    def get_dependencies(self, job_name: str) -> list[str]:
-        """Get dependencies for a specific job."""
+    def get_dependencies(self, job_name: str) -> list[JobDependency]:
+        """Get parsed dependencies for a specific job."""
         job = self.get(job_name)
-        return job.depends_on if job else []
+        return job.parsed_dependencies if job else []
 
     def show(self):
         msg = f"""\
@@ -399,9 +535,8 @@ Jobs: {len(self.jobs)}
                 if job.script_vars:
                     msg += add_indent(2, f"{'Script vars:': <13} {job.script_vars}\n")
             if job.depends_on:
-                msg += add_indent(
-                    2, f"{'Dependencies:': <13} {', '.join(job.depends_on)}\n"
-                )
+                dep_strs = [str(dep) for dep in job.parsed_dependencies]
+                msg += add_indent(2, f"{'Dependencies:': <13} {', '.join(dep_strs)}\n")
 
         msg += f"{'=' * 80}\n"
         print(msg)
@@ -414,13 +549,14 @@ Jobs: {len(self.jobs)}
             raise WorkflowValidationError("Duplicate job names found in workflow")
 
         for job in self.jobs:
-            for dependency in job.depends_on:
-                if dependency not in job_names:
+            # Check that all dependency job names exist
+            for parsed_dep in job.parsed_dependencies:
+                if parsed_dep.job_name not in job_names:
                     raise WorkflowValidationError(
-                        f"Job '{job.name}' depends on unknown job '{dependency}'"
+                        f"Job '{job.name}' depends on unknown job '{parsed_dep.job_name}'"
                     )
 
-        # Check for circular dependencies (simple check)
+        # Check for circular dependencies
         visited = set()
         rec_stack = set()
 
@@ -435,8 +571,8 @@ Jobs: {len(self.jobs)}
 
             job = self.get(job_name)
             if job:
-                for dependency in job.depends_on:
-                    if has_cycle(dependency):
+                for parsed_dep in job.parsed_dependencies:
+                    if has_cycle(parsed_dep.job_name):
                         return True
 
             rec_stack.remove(job_name)

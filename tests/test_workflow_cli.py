@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import yaml
+import yaml  # type: ignore
 from typer.testing import CliRunner
 
 from srunx.cli.main import app as main_app

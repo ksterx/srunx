@@ -3,10 +3,18 @@
 from unittest.mock import Mock, patch
 
 import pytest
-import yaml
+import yaml  # type: ignore
 
 from srunx.exceptions import WorkflowValidationError
-from srunx.models import Job, JobEnvironment, JobStatus, ShellJob, Workflow
+from srunx.models import (
+    DependencyType,
+    Job,
+    JobDependency,
+    JobEnvironment,
+    JobStatus,
+    ShellJob,
+    Workflow,
+)
 from srunx.runner import WorkflowRunner, run_workflow_from_file
 
 
@@ -880,3 +888,234 @@ class TestWorkflowExecutionControl:
         assert len(jobs_to_execute) == 2
         job_names = [job.name for job in jobs_to_execute]
         assert job_names == ["job1", "job2"]
+
+
+class TestJobDependency:
+    """Test JobDependency class."""
+
+    def test_parse_simple_dependency(self):
+        """Test parsing simple dependency (default afterok)."""
+        dep = JobDependency.parse("job_a")
+        assert dep.job_name == "job_a"
+        assert dep.dep_type == DependencyType.AFTER_OK
+
+    def test_parse_after_dependency(self):
+        """Test parsing 'after' dependency."""
+        dep = JobDependency.parse("after:job_a")
+        assert dep.job_name == "job_a"
+        assert dep.dep_type == DependencyType.AFTER
+
+    def test_parse_afterany_dependency(self):
+        """Test parsing 'afterany' dependency."""
+        dep = JobDependency.parse("afterany:job_a")
+        assert dep.job_name == "job_a"
+        assert dep.dep_type == DependencyType.AFTER_ANY
+
+    def test_parse_afternotok_dependency(self):
+        """Test parsing 'afternotok' dependency."""
+        dep = JobDependency.parse("afternotok:job_a")
+        assert dep.job_name == "job_a"
+        assert dep.dep_type == DependencyType.AFTER_NOT_OK
+
+    def test_parse_explicit_afterok_dependency(self):
+        """Test parsing explicit 'afterok' dependency."""
+        dep = JobDependency.parse("afterok:job_a")
+        assert dep.job_name == "job_a"
+        assert dep.dep_type == DependencyType.AFTER_OK
+
+    def test_parse_invalid_dependency_type(self):
+        """Test parsing invalid dependency type."""
+        with pytest.raises(WorkflowValidationError, match="Invalid dependency type"):
+            JobDependency.parse("invalid:job_a")
+
+    def test_str_representation(self):
+        """Test string representation of dependencies."""
+        # Default afterok should show just job name
+        dep1 = JobDependency(job_name="job_a", dep_type=DependencyType.AFTER_OK)
+        assert str(dep1) == "job_a"
+
+        # Other types should show full format
+        dep2 = JobDependency(job_name="job_a", dep_type=DependencyType.AFTER)
+        assert str(dep2) == "after:job_a"
+
+        dep3 = JobDependency(job_name="job_a", dep_type=DependencyType.AFTER_ANY)
+        assert str(dep3) == "afterany:job_a"
+
+        dep4 = JobDependency(job_name="job_a", dep_type=DependencyType.AFTER_NOT_OK)
+        assert str(dep4) == "afternotok:job_a"
+
+
+class TestEnhancedDependencies:
+    """Test enhanced dependency functionality."""
+
+    def test_job_parses_dependencies_on_init(self):
+        """Test that jobs parse dependencies on initialization."""
+        job = Job(
+            name="test_job",
+            command=["echo", "test"],
+            depends_on=["job_a", "after:job_b", "afterany:job_c", "afternotok:job_d"],
+            environment=JobEnvironment(conda="env"),
+        )
+
+        assert len(job.parsed_dependencies) == 4
+
+        dep1 = job.parsed_dependencies[0]
+        assert dep1.job_name == "job_a"
+        assert dep1.dep_type == DependencyType.AFTER_OK
+
+        dep2 = job.parsed_dependencies[1]
+        assert dep2.job_name == "job_b"
+        assert dep2.dep_type == DependencyType.AFTER
+
+        dep3 = job.parsed_dependencies[2]
+        assert dep3.job_name == "job_c"
+        assert dep3.dep_type == DependencyType.AFTER_ANY
+
+        dep4 = job.parsed_dependencies[3]
+        assert dep4.job_name == "job_d"
+        assert dep4.dep_type == DependencyType.AFTER_NOT_OK
+
+    def test_dependencies_satisfied_afterok(self):
+        """Test dependencies_satisfied with afterok dependency."""
+        job = Job(
+            name="dependent",
+            command=["echo", "test"],
+            depends_on=["job_a"],
+            environment=JobEnvironment(conda="env"),
+        )
+
+        # Should not be satisfied if dependency is not completed
+        job_statuses = {"job_a": JobStatus.RUNNING}
+        assert not job.dependencies_satisfied(job_statuses)
+
+        # Should be satisfied if dependency is completed
+        job_statuses = {"job_a": JobStatus.COMPLETED}
+        assert job.dependencies_satisfied(job_statuses)
+
+        # Should not be satisfied if dependency failed
+        job_statuses = {"job_a": JobStatus.FAILED}
+        assert not job.dependencies_satisfied(job_statuses)
+
+    def test_dependencies_satisfied_after(self):
+        """Test dependencies_satisfied with after dependency."""
+        job = Job(
+            name="dependent",
+            command=["echo", "test"],
+            depends_on=["after:job_a"],
+            environment=JobEnvironment(conda="env"),
+        )
+
+        # Should not be satisfied if dependency is pending
+        job_statuses = {"job_a": JobStatus.PENDING}
+        assert not job.dependencies_satisfied(job_statuses)
+
+        # Should be satisfied if dependency is running
+        job_statuses = {"job_a": JobStatus.RUNNING}
+        assert job.dependencies_satisfied(job_statuses)
+
+        # Should be satisfied if dependency is completed
+        job_statuses = {"job_a": JobStatus.COMPLETED}
+        assert job.dependencies_satisfied(job_statuses)
+
+        # Should be satisfied if dependency failed
+        job_statuses = {"job_a": JobStatus.FAILED}
+        assert job.dependencies_satisfied(job_statuses)
+
+    def test_dependencies_satisfied_afterany(self):
+        """Test dependencies_satisfied with afterany dependency."""
+        job = Job(
+            name="dependent",
+            command=["echo", "test"],
+            depends_on=["afterany:job_a"],
+            environment=JobEnvironment(conda="env"),
+        )
+
+        # Should not be satisfied if dependency is pending
+        job_statuses = {"job_a": JobStatus.PENDING}
+        assert not job.dependencies_satisfied(job_statuses)
+
+        # Should not be satisfied if dependency is running
+        job_statuses = {"job_a": JobStatus.RUNNING}
+        assert not job.dependencies_satisfied(job_statuses)
+
+        # Should be satisfied if dependency completed successfully
+        job_statuses = {"job_a": JobStatus.COMPLETED}
+        assert job.dependencies_satisfied(job_statuses)
+
+        # Should be satisfied if dependency failed
+        job_statuses = {"job_a": JobStatus.FAILED}
+        assert job.dependencies_satisfied(job_statuses)
+
+        # Should be satisfied if dependency was cancelled
+        job_statuses = {"job_a": JobStatus.CANCELLED}
+        assert job.dependencies_satisfied(job_statuses)
+
+    def test_dependencies_satisfied_afternotok(self):
+        """Test dependencies_satisfied with afternotok dependency."""
+        job = Job(
+            name="dependent",
+            command=["echo", "test"],
+            depends_on=["afternotok:job_a"],
+            environment=JobEnvironment(conda="env"),
+        )
+
+        # Should not be satisfied if dependency is pending
+        job_statuses = {"job_a": JobStatus.PENDING}
+        assert not job.dependencies_satisfied(job_statuses)
+
+        # Should not be satisfied if dependency is running
+        job_statuses = {"job_a": JobStatus.RUNNING}
+        assert not job.dependencies_satisfied(job_statuses)
+
+        # Should not be satisfied if dependency completed successfully
+        job_statuses = {"job_a": JobStatus.COMPLETED}
+        assert not job.dependencies_satisfied(job_statuses)
+
+        # Should be satisfied if dependency failed
+        job_statuses = {"job_a": JobStatus.FAILED}
+        assert job.dependencies_satisfied(job_statuses)
+
+        # Should be satisfied if dependency was cancelled
+        job_statuses = {"job_a": JobStatus.CANCELLED}
+        assert job.dependencies_satisfied(job_statuses)
+
+    def test_mixed_dependencies(self):
+        """Test job with multiple different dependency types."""
+        job = Job(
+            name="dependent",
+            command=["echo", "test"],
+            depends_on=["job_a", "after:job_b", "afterany:job_c"],
+            environment=JobEnvironment(conda="env"),
+        )
+
+        # All dependencies must be satisfied
+        job_statuses = {
+            "job_a": JobStatus.COMPLETED,  # afterok: needs COMPLETED
+            "job_b": JobStatus.RUNNING,  # after: needs not PENDING
+            "job_c": JobStatus.FAILED,  # afterany: needs terminal status
+        }
+        assert job.dependencies_satisfied(job_statuses)
+
+        # If any dependency is not satisfied, should return False
+        job_statuses = {
+            "job_a": JobStatus.RUNNING,  # afterok: needs COMPLETED (not satisfied)
+            "job_b": JobStatus.RUNNING,  # after: needs not PENDING (satisfied)
+            "job_c": JobStatus.FAILED,  # afterany: needs terminal status (satisfied)
+        }
+        assert not job.dependencies_satisfied(job_statuses)
+
+    def test_backward_compatibility(self):
+        """Test backward compatibility with old interface."""
+        job = Job(
+            name="dependent",
+            command=["echo", "test"],
+            depends_on=["job_a", "job_b"],
+            environment=JobEnvironment(conda="env"),
+        )
+
+        # Old interface should still work
+        completed_jobs = ["job_a", "job_b"]
+        assert job.dependencies_satisfied({}, completed_job_names=completed_jobs)
+
+        completed_jobs = ["job_a"]  # job_b not completed
+        assert not job.dependencies_satisfied({}, completed_job_names=completed_jobs)
