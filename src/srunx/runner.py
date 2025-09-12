@@ -129,44 +129,72 @@ class WorkflowRunner:
         matches = re.findall(jinja_pattern, jobs_yaml)
         used_variables.update(matches)
 
-        # 2) Only evaluate args that are actually used
+        # 2) Find all variables that the used variables depend on (transitively)
+        def find_dependencies(
+            var_name: str, args: dict[str, Any], visited: set[str] | None = None
+        ) -> set[str]:
+            """Find all variables that a given variable depends on, transitively."""
+            if visited is None:
+                visited = set()
+
+            if var_name in visited or var_name not in args:
+                return set()
+
+            visited.add(var_name)
+            deps = {var_name}
+
+            var_value = args[var_name]
+            if isinstance(var_value, str):
+                # Find variables referenced in this variable's value
+                referenced_vars = re.findall(jinja_pattern, var_value)
+                for ref_var in referenced_vars:
+                    deps.update(find_dependencies(ref_var, args, visited.copy()))
+
+            return deps
+
+        # Find all required variables (including transitive dependencies)
+        required_variables = set()
+        for used_var in used_variables:
+            required_variables.update(find_dependencies(used_var, args))
+
+        # 3) Evaluate all required variables
         if args:
             evaluated_args: dict[str, Any] = {}
 
-            # First, add non-python variables that are used
+            # First, add non-python variables that are required
             for key, value in args.items():
-                if key in used_variables and not (
+                if key in required_variables and not (
                     isinstance(value, str) and value.startswith("python:")
                 ):
                     evaluated_args[key] = value
 
-            # Then evaluate python variables that are used, in dependency order
+            # Then evaluate python variables that are required, in dependency order
             python_vars = {
                 k: v
                 for k, v in args.items()
-                if isinstance(v, str) and v.startswith("python:")
+                if isinstance(v, str)
+                and v.startswith("python:")
+                and k in required_variables
             }
             evaluated_python_vars: set[str] = set()
 
             while python_vars:
                 made_progress = False
                 for key, value in list(python_vars.items()):
-                    if key not in used_variables:
-                        # Skip unused variables
-                        del python_vars[key]
-                        made_progress = True
-                        continue
-
                     code = value[len("python:") :].lstrip()
 
-                    # Check if this code depends on other python variables
+                    # Check if this code depends on other variables
                     depends_on = set()
                     for other_key in args.keys():
                         if other_key != key and other_key in code:
                             depends_on.add(other_key)
 
                     # Can evaluate if all dependencies are already evaluated
-                    if depends_on.issubset(evaluated_python_vars) or not depends_on:
+                    required_deps = depends_on & required_variables
+                    if (
+                        required_deps.issubset(evaluated_python_vars)
+                        or not required_deps
+                    ):
                         try:
                             # Allow {{ ... }} inside "python:" by rendering with Jinja first
                             code = jinja2.Template(
@@ -188,10 +216,7 @@ class WorkflowRunner:
                             del python_vars[key]
                             made_progress = True
                         except Exception as e:
-                            # If we can't evaluate it, skip it for now
-                            logger.warning(
-                                f"Skipping evaluation of unused variable {key}: {e}"
-                            )
+                            logger.warning(f"Failed to evaluate variable {key}: {e}")
                             del python_vars[key]
                             made_progress = True
 
@@ -220,7 +245,7 @@ class WorkflowRunner:
 
             args = evaluated_args
 
-        # 3) Render the jobs section with only the needed variables
+        # 4) Render the jobs section with the evaluated variables
         template = jinja2.Template(jobs_yaml, undefined=jinja2.DebugUndefined)
         try:
             rendered_yaml = template.render(**(args or {}))
