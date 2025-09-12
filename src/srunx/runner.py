@@ -275,7 +275,32 @@ class WorkflowRunner:
         running_futures: dict[str, Any] = {}
 
         # For partial execution, we need to handle dependencies differently
-        ignore_dependencies = single_job is not None or from_job is not None
+        ignore_dependencies = from_job is not None
+
+        # Special handling for single job execution - completely ignore all dependencies
+        if single_job is not None:
+            # Execute only the single job without any dependency processing
+            single_job_obj = next(job for job in all_jobs if job.name == single_job)
+
+            logger.info(f"🌋 {'SUBMITTED':<12} Job {single_job_obj.name:<12}")
+            try:
+                result = self.slurm.run(single_job_obj)
+                results[single_job] = result
+
+                if result.status == JobStatus.FAILED:
+                    logger.error(f"❌ Job {single_job} failed")
+                    raise RuntimeError(f"Job {single_job} failed")
+
+                logger.success(f"🎉 Job {single_job} completed!!")
+
+                for callback in self.callbacks:
+                    callback.on_workflow_completed(self.workflow)
+
+                return results
+
+            except Exception as e:
+                logger.error(f"❌ Job {single_job} failed: {e}")
+                raise
 
         # Build reverse dependency map for efficient lookups (only for jobs we're executing)
         dependents = defaultdict(set)
