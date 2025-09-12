@@ -188,11 +188,62 @@ class WorkflowRunner:
             evaluated_args: dict[str, Any] = {}
 
             # First, add non-python variables that are required
-            for key, value in args.items():
-                if key in required_variables and not (
-                    isinstance(value, str) and value.startswith("python:")
-                ):
-                    evaluated_args[key] = value
+            # We need to evaluate these in dependency order too
+            non_python_vars = {
+                k: v
+                for k, v in args.items()
+                if k in required_variables
+                and not (isinstance(v, str) and v.startswith("python:"))
+            }
+
+            # Process non-python vars in dependency order
+            processed_non_python: set[str] = set()
+            while len(processed_non_python) < len(non_python_vars):
+                made_progress = False
+                for key, value in non_python_vars.items():
+                    if key in processed_non_python:
+                        continue
+
+                    # Check if this variable depends on other non-python variables
+                    if isinstance(value, str):
+                        var_deps = set(re.findall(jinja_pattern, value))
+                        required_non_python_deps = var_deps & set(
+                            non_python_vars.keys()
+                        )
+
+                        if required_non_python_deps.issubset(processed_non_python):
+                            # All dependencies are ready, render this variable
+                            if var_deps:
+                                template = jinja2.Template(
+                                    value, undefined=jinja2.StrictUndefined
+                                )
+                                evaluated_args[key] = template.render(**evaluated_args)
+                            else:
+                                evaluated_args[key] = value
+                            processed_non_python.add(key)
+                            made_progress = True
+                    else:
+                        # Non-string value, no dependencies
+                        evaluated_args[key] = value
+                        processed_non_python.add(key)
+                        made_progress = True
+
+                if not made_progress:
+                    # Handle remaining variables (possibly with circular deps or missing deps)
+                    for key, value in non_python_vars.items():
+                        if key not in processed_non_python:
+                            if isinstance(value, str) and re.findall(
+                                jinja_pattern, value
+                            ):
+                                # Try to render with DebugUndefined
+                                template = jinja2.Template(
+                                    value, undefined=jinja2.DebugUndefined
+                                )
+                                evaluated_args[key] = template.render(**evaluated_args)
+                            else:
+                                evaluated_args[key] = value
+                            processed_non_python.add(key)
+                    break
 
             # Then evaluate python variables that are required, in dependency order
             python_vars = {
@@ -216,11 +267,10 @@ class WorkflowRunner:
                             depends_on.add(other_key)
 
                     # Can evaluate if all dependencies are already evaluated
+                    # Check both python variables and non-python variables
                     required_deps = depends_on & required_variables
-                    if (
-                        required_deps.issubset(evaluated_python_vars)
-                        or not required_deps
-                    ):
+                    available_vars = set(evaluated_args.keys())
+                    if required_deps.issubset(available_vars):
                         try:
                             # Allow {{ ... }} inside "python:" by rendering with Jinja first
                             code = jinja2.Template(
