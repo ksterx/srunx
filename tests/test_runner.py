@@ -321,7 +321,7 @@ class TestWorkflowRunner:
         assert job.command == ["echo", "hello"]
 
     def test_from_yaml_invalid_template(self, temp_dir):
-        """Test loading workflow with invalid Jinja template."""
+        """Test that workflow loads successfully with DebugUndefined handling."""
         yaml_content = {
             "name": "invalid_template_workflow",
             "args": {"valid_var": "value"},
@@ -338,8 +338,10 @@ class TestWorkflowRunner:
         with open(yaml_path, "w") as f:
             yaml.dump(yaml_content, f)
 
-        with pytest.raises(WorkflowValidationError, match="Template rendering failed"):
-            WorkflowRunner.from_yaml(yaml_path)
+        # Should now load successfully with DebugUndefined handling
+        runner = WorkflowRunner.from_yaml(yaml_path)
+        assert runner.workflow.name == "invalid_template_workflow"
+        assert len(runner.workflow.jobs) == 1
 
     def test_render_jobs_with_args_static_method(self):
         """Test _render_jobs_with_args static method."""
@@ -598,8 +600,10 @@ class TestRunWorkflowFromFile:
 
         results = run_workflow_from_file("test.yaml")
 
-        mock_runner_class.from_yaml.assert_called_once_with("test.yaml")
-        mock_runner.run.assert_called_once()
+        mock_runner_class.from_yaml.assert_called_once_with(
+            "test.yaml", single_job=None
+        )
+        mock_runner.run.assert_called_once_with(single_job=None)
         assert results == mock_results
 
 

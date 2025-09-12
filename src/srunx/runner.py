@@ -56,13 +56,17 @@ class WorkflowRunner:
 
     @classmethod
     def from_yaml(
-        cls, yaml_path: str | Path, callbacks: Sequence[Callback] | None = None
+        cls,
+        yaml_path: str | Path,
+        callbacks: Sequence[Callback] | None = None,
+        single_job: str | None = None,
     ) -> Self:
         """Load and validate a workflow from a YAML file.
 
         Args:
             yaml_path: Path to the YAML workflow definition file.
             callbacks: List of callbacks for job notifications.
+            single_job: If specified, only load and process this job.
 
         Returns:
             WorkflowRunner instance with loaded workflow.
@@ -82,6 +86,17 @@ class WorkflowRunner:
         name = data.get("name", "unnamed")
         args = data.get("args", {})
         jobs_data = data.get("jobs", [])
+
+        # If single_job is specified, filter jobs_data to only include that job
+        if single_job:
+            filtered_jobs_data = [
+                job for job in jobs_data if job.get("name") == single_job
+            ]
+            if not filtered_jobs_data:
+                raise WorkflowValidationError(
+                    f"Job '{single_job}' not found in workflow"
+                )
+            jobs_data = filtered_jobs_data
 
         # Render Jinja templates in jobs_data using args
         rendered_jobs_data = cls._render_jobs_with_args(jobs_data, args)
@@ -103,30 +118,110 @@ class WorkflowRunner:
         - Evaluate any "python:" values in args (Jinja → eval/exec).
         - Then render the whole jobs section with Jinja.
         """
-        # 1) Evaluate "python:" entries in args
-        if args:
-            evaluated_args: dict[str, Any] = dict(args)
-            for key, value in list(evaluated_args.items()):
-                if isinstance(value, str) and value.startswith("python:"):
-                    code = value[len("python:") :].lstrip()
-                    # Allow {{ ... }} inside "python:" by rendering with Jinja first
-                    code = jinja2.Template(
-                        code, undefined=jinja2.StrictUndefined
-                    ).render(**evaluated_args)
-                    code = dedent(code).lstrip()
+        # 1) Find which variables are actually used in the jobs
+        jobs_yaml = yaml.dump(jobs_data, default_flow_style=False)
+        used_variables = set()
 
-                    try:
-                        evaluated = eval(code, globals(), {"args": evaluated_args})
-                    except SyntaxError:
-                        ns: dict[str, Any] = {"args": evaluated_args}
-                        exec(code, globals(), ns)
-                        evaluated = ns.get("result")
-                    evaluated_args[key] = evaluated
+        # Extract variable names from Jinja templates in the jobs YAML
+        import re
+
+        jinja_pattern = r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}"
+        matches = re.findall(jinja_pattern, jobs_yaml)
+        used_variables.update(matches)
+
+        # 2) Only evaluate args that are actually used
+        if args:
+            evaluated_args: dict[str, Any] = {}
+
+            # First, add non-python variables that are used
+            for key, value in args.items():
+                if key in used_variables and not (
+                    isinstance(value, str) and value.startswith("python:")
+                ):
+                    evaluated_args[key] = value
+
+            # Then evaluate python variables that are used, in dependency order
+            python_vars = {
+                k: v
+                for k, v in args.items()
+                if isinstance(v, str) and v.startswith("python:")
+            }
+            evaluated_python_vars: set[str] = set()
+
+            while python_vars:
+                made_progress = False
+                for key, value in list(python_vars.items()):
+                    if key not in used_variables:
+                        # Skip unused variables
+                        del python_vars[key]
+                        made_progress = True
+                        continue
+
+                    code = value[len("python:") :].lstrip()
+
+                    # Check if this code depends on other python variables
+                    depends_on = set()
+                    for other_key in args.keys():
+                        if other_key != key and other_key in code:
+                            depends_on.add(other_key)
+
+                    # Can evaluate if all dependencies are already evaluated
+                    if depends_on.issubset(evaluated_python_vars) or not depends_on:
+                        try:
+                            # Allow {{ ... }} inside "python:" by rendering with Jinja first
+                            code = jinja2.Template(
+                                code, undefined=jinja2.StrictUndefined
+                            ).render(**evaluated_args)
+                            code = dedent(code).lstrip()
+
+                            try:
+                                evaluated = eval(
+                                    code, globals(), {"args": evaluated_args}
+                                )
+                            except SyntaxError:
+                                exec_ns: dict[str, Any] = {"args": evaluated_args}
+                                exec(code, globals(), exec_ns)
+                                evaluated = exec_ns.get("result")
+
+                            evaluated_args[key] = evaluated
+                            evaluated_python_vars.add(key)
+                            del python_vars[key]
+                            made_progress = True
+                        except Exception as e:
+                            # If we can't evaluate it, skip it for now
+                            logger.warning(
+                                f"Skipping evaluation of unused variable {key}: {e}"
+                            )
+                            del python_vars[key]
+                            made_progress = True
+
+                if not made_progress:
+                    # Circular dependency or other issue, try to evaluate remaining
+                    for key, value in python_vars.items():
+                        try:
+                            code = value[len("python:") :].lstrip()
+                            code = jinja2.Template(
+                                code, undefined=jinja2.DebugUndefined
+                            ).render(**evaluated_args)
+                            code = dedent(code).lstrip()
+                            try:
+                                evaluated = eval(
+                                    code, globals(), {"args": evaluated_args}
+                                )
+                            except SyntaxError:
+                                exec_ns2: dict[str, Any] = {"args": evaluated_args}
+                                exec(code, globals(), exec_ns2)
+                                evaluated = exec_ns2.get("result")
+                            evaluated_args[key] = evaluated
+                        except Exception:
+                            # Skip variables that can't be evaluated
+                            pass
+                    break
+
             args = evaluated_args
 
-        # 2) Render the entire jobs section with Jinja
-        jobs_yaml = yaml.dump(jobs_data, default_flow_style=False)
-        template = jinja2.Template(jobs_yaml, undefined=jinja2.StrictUndefined)
+        # 3) Render the jobs section with only the needed variables
+        template = jinja2.Template(jobs_yaml, undefined=jinja2.DebugUndefined)
         try:
             rendered_yaml = template.render(**(args or {}))
             return yaml.safe_load(rendered_yaml)
@@ -577,14 +672,17 @@ class WorkflowRunner:
         return Job.model_validate(job_data)
 
 
-def run_workflow_from_file(yaml_path: str | Path) -> dict[str, RunnableJobType]:
+def run_workflow_from_file(
+    yaml_path: str | Path, single_job: str | None = None
+) -> dict[str, RunnableJobType]:
     """Convenience function to run workflow from YAML file.
 
     Args:
         yaml_path: Path to YAML workflow file.
+        single_job: If specified, only run this job.
 
     Returns:
         Dictionary mapping job names to completed Job instances.
     """
-    runner = WorkflowRunner.from_yaml(yaml_path)
-    return runner.run()
+    runner = WorkflowRunner.from_yaml(yaml_path, single_job=single_job)
+    return runner.run(single_job=single_job)
