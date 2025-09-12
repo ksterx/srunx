@@ -129,6 +129,9 @@ class WorkflowRunner:
         matches = re.findall(jinja_pattern, jobs_yaml)
         used_variables.update(matches)
 
+        # logger.info(f"Jobs YAML: {jobs_yaml}")
+        # logger.info(f"Used variables: {used_variables}")
+
         # 2) Find all variables that the used variables depend on (transitively)
         def find_dependencies(
             var_name: str, args: dict[str, Any], visited: set[str] | None = None
@@ -152,10 +155,33 @@ class WorkflowRunner:
 
             return deps
 
+        def find_all_jinja_vars(text: str) -> set[str]:
+            """Find all Jinja variables in a text, including nested ones."""
+            all_vars = set()
+            current_vars = set(re.findall(jinja_pattern, text))
+            all_vars.update(current_vars)
+
+            # For each variable found, check if its value contains more variables
+            for var in current_vars:
+                if var in args:
+                    var_value = args[var]
+                    if isinstance(var_value, str):
+                        nested_vars = find_all_jinja_vars(var_value)
+                        all_vars.update(nested_vars)
+
+            return all_vars
+
         # Find all required variables (including transitive dependencies)
+        # Also look for nested Jinja variables in the jobs_yaml itself
+        all_text_vars = find_all_jinja_vars(jobs_yaml)
+        used_variables.update(all_text_vars)
+
         required_variables = set()
         for used_var in used_variables:
             required_variables.update(find_dependencies(used_var, args))
+
+        # logger.info(f"Required variables: {required_variables}")
+        # logger.info(f"Available args: {list(args.keys())}")
 
         # 3) Evaluate all required variables
         if args:
@@ -245,10 +271,13 @@ class WorkflowRunner:
 
             args = evaluated_args
 
+        # logger.info(f"Final evaluated args: {args}")
+
         # 4) Render the jobs section with the evaluated variables
         template = jinja2.Template(jobs_yaml, undefined=jinja2.DebugUndefined)
         try:
             rendered_yaml = template.render(**(args or {}))
+            # logger.info(f"Rendered YAML: {rendered_yaml}")
             return yaml.safe_load(rendered_yaml)
         except jinja2.TemplateError as e:
             logger.error(f"Jinja template rendering failed: {e}")
