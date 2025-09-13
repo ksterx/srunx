@@ -183,12 +183,18 @@ class WorkflowRunner:
         # logger.info(f"Required variables: {required_variables}")
         # logger.info(f"Available args: {list(args.keys())}")
 
-        # 3) Evaluate all required variables
+        # 3) Evaluate all required variables in correct dependency order
         if args:
             evaluated_args: dict[str, Any] = {}
 
-            # First, add non-python variables that are required
-            # We need to evaluate these in dependency order too
+            # Separate Python and non-Python variables
+            python_vars = {
+                k: v
+                for k, v in args.items()
+                if isinstance(v, str)
+                and v.startswith("python:")
+                and k in required_variables
+            }
             non_python_vars = {
                 k: v
                 for k, v in args.items()
@@ -196,7 +202,46 @@ class WorkflowRunner:
                 and not (isinstance(v, str) and v.startswith("python:"))
             }
 
-            # Process non-python vars in dependency order
+            # First, evaluate Python variables that don't depend on other variables or have simple dependencies
+            # This handles cases like 'today' which is used by non-Python variables
+            processed_python: set[str] = set()
+
+            # Find Python variables that non-Python variables depend on
+            python_vars_needed_by_non_python = set()
+            for _, value in non_python_vars.items():
+                if isinstance(value, str):
+                    var_deps = set(re.findall(jinja_pattern, value))
+                    python_vars_needed_by_non_python.update(
+                        var_deps & set(python_vars.keys())
+                    )
+
+            # Evaluate these critical Python variables first
+            for key in python_vars_needed_by_non_python:
+                if key in python_vars:
+                    value = python_vars[key]
+                    code = value[len("python:") :].lstrip()
+                    try:
+                        # Simple evaluation for variables that don't depend on others
+                        code = jinja2.Template(
+                            code, undefined=jinja2.DebugUndefined
+                        ).render(**evaluated_args)
+                        code = dedent(code).lstrip()
+
+                        try:
+                            evaluated = eval(code, globals(), {"args": evaluated_args})
+                        except SyntaxError:
+                            exec_ns: dict[str, Any] = {"args": evaluated_args}
+                            exec(code, globals(), exec_ns)
+                            evaluated = exec_ns.get("result")
+
+                        evaluated_args[key] = evaluated
+                        processed_python.add(key)
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to evaluate critical Python variable {key}: {e}"
+                        )
+
+            # Then process non-python vars in dependency order
             processed_non_python: set[str] = set()
             while len(processed_non_python) < len(non_python_vars):
                 made_progress = False
@@ -204,13 +249,14 @@ class WorkflowRunner:
                     if key in processed_non_python:
                         continue
 
-                    # Check if this variable depends on other non-python variables
+                    # Check if this variable depends on other variables
                     if isinstance(value, str):
                         var_deps = set(re.findall(jinja_pattern, value))
                         required_non_python_deps = var_deps & set(
                             non_python_vars.keys()
                         )
 
+                        # All required dependencies must be available
                         if required_non_python_deps.issubset(processed_non_python):
                             # All dependencies are ready, render this variable
                             if var_deps:
@@ -229,7 +275,7 @@ class WorkflowRunner:
                         made_progress = True
 
                 if not made_progress:
-                    # Handle remaining variables (possibly with circular deps or missing deps)
+                    # Handle remaining variables
                     for key, value in non_python_vars.items():
                         if key not in processed_non_python:
                             if isinstance(value, str) and re.findall(
@@ -245,19 +291,15 @@ class WorkflowRunner:
                             processed_non_python.add(key)
                     break
 
-            # Then evaluate python variables that are required, in dependency order
-            python_vars = {
-                k: v
-                for k, v in args.items()
-                if isinstance(v, str)
-                and v.startswith("python:")
-                and k in required_variables
+            # Finally, evaluate remaining Python variables in dependency order
+            # Remove already processed Python variables
+            remaining_python_vars = {
+                k: v for k, v in python_vars.items() if k not in processed_python
             }
-            evaluated_python_vars: set[str] = set()
 
-            while python_vars:
+            while remaining_python_vars:
                 made_progress = False
-                for key, value in list(python_vars.items()):
+                for key, value in list(remaining_python_vars.items()):
                     code = value[len("python:") :].lstrip()
 
                     # Check if this code depends on other variables
@@ -283,22 +325,23 @@ class WorkflowRunner:
                                     code, globals(), {"args": evaluated_args}
                                 )
                             except SyntaxError:
-                                exec_ns: dict[str, Any] = {"args": evaluated_args}
-                                exec(code, globals(), exec_ns)
-                                evaluated = exec_ns.get("result")
+                                exec_ns_remaining: dict[str, Any] = {
+                                    "args": evaluated_args
+                                }
+                                exec(code, globals(), exec_ns_remaining)
+                                evaluated = exec_ns_remaining.get("result")
 
                             evaluated_args[key] = evaluated
-                            evaluated_python_vars.add(key)
-                            del python_vars[key]
+                            del remaining_python_vars[key]
                             made_progress = True
                         except Exception as e:
                             logger.warning(f"Failed to evaluate variable {key}: {e}")
-                            del python_vars[key]
+                            del remaining_python_vars[key]
                             made_progress = True
 
                 if not made_progress:
                     # Circular dependency or other issue, try to evaluate remaining
-                    for key, value in python_vars.items():
+                    for key, value in remaining_python_vars.items():
                         try:
                             code = value[len("python:") :].lstrip()
                             code = jinja2.Template(
