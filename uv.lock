@@ -1720,7 +1720,7 @@ wheels = [
 
 [[package]]
 name = "srunx"
-version = "0.3.0.post1"
+version = "0.4.1"
 source = { editable = "." }
 dependencies = [
     { name = "jinja2" },

@@ -106,11 +106,13 @@ app = typer.Typer(
 )
 
 # Create subapps
-flow_app = typer.Typer(help="Workflow management")
 config_app = typer.Typer(help="Configuration management")
 
-app.add_typer(flow_app, name="flow")
 app.add_typer(config_app, name="config")
+
+# Create custom flow command that handles both simple execution and subcommands
+flow_app = typer.Typer(help="Workflow management")
+app.add_typer(flow_app, name="flow")
 
 
 def _parse_env_vars(env_var_list: list[str] | None) -> dict[str, str]:
@@ -428,11 +430,18 @@ def cancel(
         sys.exit(1)
 
 
-@flow_app.command("run")
-def flow_run(
+@flow_app.callback(invoke_without_command=True)
+def flow_callback(
+    ctx: typer.Context,
     yaml_file: Annotated[
-        Path, typer.Argument(help="Path to YAML workflow definition file")
-    ],
+        str | None, typer.Argument(help="Path to YAML workflow definition file")
+    ] = None,
+    validate: Annotated[
+        bool,
+        typer.Option(
+            "--validate", help="Only validate the workflow file without executing"
+        ),
+    ] = False,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -462,7 +471,27 @@ def flow_run(
         ),
     ] = None,
 ) -> None:
-    """Execute workflow from YAML file."""
+    """Execute or validate workflow from YAML file."""
+    if ctx.invoked_subcommand is None:
+        if yaml_file is None:
+            print(ctx.get_help())
+            return
+        # Convert string to Path
+        yaml_path = Path(yaml_file)
+        flow_run_impl(yaml_path, validate, dry_run, slack, debug, from_job, to_job, job)
+
+
+def flow_run_impl(
+    yaml_file: Path,
+    validate: bool = False,
+    dry_run: bool = False,
+    slack: bool = False,
+    debug: bool = False,
+    from_job: str | None = None,
+    to_job: str | None = None,
+    job: str | None = None,
+) -> None:
+    """Execute workflow from YAML file implementation."""
     configure_workflow_logging()
 
     # Validate mutually exclusive options
@@ -488,8 +517,18 @@ def flow_run(
                     "SLACK_WEBHOOK_URL not set, skipping Slack notifications"
                 )
 
-        # Load and run workflow
+        # Load workflow
         runner = WorkflowRunner.from_yaml(yaml_file, callbacks=callbacks)
+
+        # Validate workflow
+        runner.workflow.validate()
+
+        if validate:
+            console = Console()
+            console.print("✅ Workflow validation successful")
+            console.print(f"   Workflow: {runner.workflow.name}")
+            console.print(f"   Jobs: {len(runner.workflow.jobs)}")
+            return
 
         if dry_run:
             console = Console()
@@ -556,6 +595,44 @@ def flow_run(
         logger.error(f"💡 Error type: {type(e).__name__}")
         logger.error(traceback.format_exc())
         sys.exit(1)
+
+
+@flow_app.command("run")
+def flow_run(
+    yaml_file: Annotated[
+        Path, typer.Argument(help="Path to YAML workflow definition file")
+    ],
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run", help="Show what would be executed without running jobs"
+        ),
+    ] = False,
+    slack: Annotated[
+        bool, typer.Option("--slack", help="Send notifications to Slack")
+    ] = False,
+    debug: Annotated[
+        bool, typer.Option("--debug", help="Show rendered SLURM scripts for each job")
+    ] = False,
+    from_job: Annotated[
+        str | None,
+        typer.Option(
+            "--from",
+            help="Start execution from this job (ignoring dependencies before this job)",
+        ),
+    ] = None,
+    to_job: Annotated[
+        str | None, typer.Option("--to", help="Stop execution at this job (inclusive)")
+    ] = None,
+    job: Annotated[
+        str | None,
+        typer.Option(
+            "--job", help="Execute only this specific job (ignoring all dependencies)"
+        ),
+    ] = None,
+) -> None:
+    """Execute workflow from YAML file (backward compatibility)."""
+    flow_run_impl(yaml_file, False, dry_run, slack, debug, from_job, to_job, job)
 
 
 @flow_app.command("validate")

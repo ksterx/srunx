@@ -14,8 +14,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run srunx status <job_id>` - Check job status
 - `uv run srunx list` - List jobs
 - `uv run srunx cancel <job_id>` - Cancel job
-- `uv run srunx flow run <yaml_file>` - Execute workflow from YAML
-- `uv run srunx flow validate <yaml_file>` - Validate workflow YAML
+- `uv run srunx flow <yaml_file>` - Execute workflow from YAML
+- `uv run srunx flow <yaml_file> --validate` - Validate workflow YAML
+- `uv run srunx flow run <yaml_file>` - Execute workflow from YAML (backward compatibility)
 - `uv run srunx config show` - Show current configuration
 - `uv run srunx config paths` - Show configuration file paths
 
@@ -28,7 +29,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Direct Usage Examples
 - `uv run srunx submit python train.py --name ml_job --gpus-per-node 1`
 - `uv run srunx submit python process.py --conda ml_env --nodes 2`
-- `uv run srunx flow run workflow.yaml`
+- `uv run srunx flow workflow.yaml`
 
 ## Architecture Overview
 
