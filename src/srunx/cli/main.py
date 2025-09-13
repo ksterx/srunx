@@ -514,13 +514,14 @@ def flow_run(
                 console.print(f"Executing all jobs: {len(jobs_to_execute)} jobs")
 
             for job_obj in jobs_to_execute:
-                if isinstance(job_obj, Job) and job_obj.command:
+                # Use hasattr checks to be robust against module boundary issues
+                if hasattr(job_obj, "command") and job_obj.command:
                     command_str = (
                         job_obj.command
                         if isinstance(job_obj.command, str)
                         else " ".join(job_obj.command)
                     )
-                elif isinstance(job_obj, ShellJob):
+                elif hasattr(job_obj, "script_path") and job_obj.script_path:
                     command_str = f"Shell script: {job_obj.script_path}"
                 else:
                     command_str = "N/A"

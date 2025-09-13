@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from srunx.exceptions import WorkflowValidationError
 from srunx.models import (
     BaseJob,
+    ContainerResource,
     Job,
     JobEnvironment,
     JobResource,
@@ -107,8 +108,6 @@ class TestJobEnvironment:
 
     def test_job_environment_container(self):
         """Test JobEnvironment with container."""
-        from srunx.models import ContainerResource
-
         container = ContainerResource(image="/path/to/image.sqsh")
         env = JobEnvironment(container=container)
         assert env.container.image == "/path/to/image.sqsh"
@@ -172,7 +171,7 @@ class TestBaseJob:
         BaseJob.refresh(job)
 
         mock_run.assert_called_once()
-        assert job._status == JobStatus.RUNNING
+        assert job._status.value == "RUNNING"
 
     @patch("subprocess.run")
     @patch.object(BaseJob, "refresh", wraps=BaseJob.refresh)

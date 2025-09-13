@@ -122,7 +122,9 @@ def run(
                 raise ValueError("SLACK_WEBHOOK_URL environment variable is not set")
             callbacks.append(SlackCallback(webhook_url=webhook_url))
 
-        runner = WorkflowRunner.from_yaml(yaml_file, callbacks=callbacks)
+        runner = WorkflowRunner.from_yaml(
+            yaml_file, callbacks=callbacks, single_job=job
+        )
 
         # Validate dependencies
         runner.workflow.validate()
