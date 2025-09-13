@@ -5,15 +5,7 @@ import subprocess
 import time
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from typing import Self
-else:
-    try:
-        from typing import Self
-    except ImportError:
-        from typing import Self
+from typing import Self
 
 import jinja2
 from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
@@ -518,7 +510,7 @@ class Workflow:
         """Get a job by name."""
         for job in self.jobs:
             if job.name == name:
-                return job
+                return job.refresh()
         return None
 
     def get_dependencies(self, job_name: str) -> list[str]:
