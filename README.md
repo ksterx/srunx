@@ -47,7 +47,7 @@ You can try the workflow example:
 
 ```bash
 cd examples
-srunx flow run sample_workflow.yaml
+srunx flow sample_workflow.yaml
 ```
 
 ```mermaid
@@ -103,13 +103,16 @@ Execute the workflow:
 
 ```bash
 # Run workflow
-srunx flow run workflow.yaml
+srunx flow workflow.yaml
 
 # Validate workflow without execution
-srunx flow validate workflow.yaml
+srunx flow --validate workflow.yaml
 
 # Show execution plan
-srunx flow run workflow.yaml --dry-run
+srunx flow --dry-run workflow.yaml
+
+# Combine multiple options
+srunx flow --slack --validate workflow.yaml
 ```
 
 ### Template Variables with Args
@@ -264,7 +267,7 @@ runner = WorkflowRunner.from_yaml("workflow.yaml", callbacks=[slack_callback])
 or you can use the CLI:
 
 ```bash
-srunx flow run workflow.yaml --slack
+srunx flow --slack workflow.yaml
 ```
 
 ## API Reference
@@ -302,9 +305,28 @@ Workflow execution engine with YAML support.
 
 #### Workflow CLI (`srunx flow`)
 
-- Execute YAML-defined workflows
-- Validate workflow files
-- Show execution plans
+```bash
+# Execute workflow
+srunx flow workflow.yaml
+
+# Validate workflow
+srunx flow --validate workflow.yaml
+
+# Show execution plan
+srunx flow --dry-run workflow.yaml
+
+# Send Slack notifications
+srunx flow --slack workflow.yaml
+
+# Execute specific job only
+srunx flow --job job_name workflow.yaml
+
+# Execute from specific job
+srunx flow --from job_name workflow.yaml
+
+# Execute up to specific job
+srunx flow --to job_name workflow.yaml
+```
 
 ## Configuration
 
@@ -461,7 +483,7 @@ jobs:
 Run the workflow:
 
 ```bash
-srunx flow run ml_experiment.yaml
+srunx flow ml_experiment.yaml
 ```
 
 This approach provides several benefits:

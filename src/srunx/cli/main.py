@@ -434,7 +434,7 @@ def cancel(
 def flow_callback(
     ctx: typer.Context,
     yaml_file: Annotated[
-        str | None, typer.Argument(help="Path to YAML workflow definition file")
+        Path | None, typer.Argument(help="Path to YAML workflow definition file")
     ] = None,
     validate: Annotated[
         bool,
@@ -476,9 +476,7 @@ def flow_callback(
         if yaml_file is None:
             print(ctx.get_help())
             return
-        # Convert string to Path
-        yaml_path = Path(yaml_file)
-        flow_run_impl(yaml_path, validate, dry_run, slack, debug, from_job, to_job, job)
+        flow_run_impl(yaml_file, validate, dry_run, slack, debug, from_job, to_job, job)
 
 
 def flow_run_impl(

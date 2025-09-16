@@ -17,6 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run srunx flow <yaml_file>` - Execute workflow from YAML
 - `uv run srunx flow --validate <yaml_file>` - Validate workflow YAML
 - `uv run srunx flow --dry-run <yaml_file>` - Show workflow execution plan
+- `uv run srunx flow --slack --validate <yaml_file>` - Multiple flags are supported
 - `uv run srunx config show` - Show current configuration
 - `uv run srunx config paths` - Show configuration file paths
 
