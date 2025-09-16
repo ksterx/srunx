@@ -597,69 +597,6 @@ def flow_run_impl(
         sys.exit(1)
 
 
-@flow_app.command("run")
-def flow_run(
-    yaml_file: Annotated[
-        Path, typer.Argument(help="Path to YAML workflow definition file")
-    ],
-    dry_run: Annotated[
-        bool,
-        typer.Option(
-            "--dry-run", help="Show what would be executed without running jobs"
-        ),
-    ] = False,
-    slack: Annotated[
-        bool, typer.Option("--slack", help="Send notifications to Slack")
-    ] = False,
-    debug: Annotated[
-        bool, typer.Option("--debug", help="Show rendered SLURM scripts for each job")
-    ] = False,
-    from_job: Annotated[
-        str | None,
-        typer.Option(
-            "--from",
-            help="Start execution from this job (ignoring dependencies before this job)",
-        ),
-    ] = None,
-    to_job: Annotated[
-        str | None, typer.Option("--to", help="Stop execution at this job (inclusive)")
-    ] = None,
-    job: Annotated[
-        str | None,
-        typer.Option(
-            "--job", help="Execute only this specific job (ignoring all dependencies)"
-        ),
-    ] = None,
-) -> None:
-    """Execute workflow from YAML file (backward compatibility)."""
-    flow_run_impl(yaml_file, False, dry_run, slack, debug, from_job, to_job, job)
-
-
-@flow_app.command("validate")
-def flow_validate(
-    yaml_file: Annotated[
-        Path, typer.Argument(help="Path to YAML workflow definition file")
-    ],
-) -> None:
-    """Validate workflow YAML file."""
-    if not yaml_file.exists():
-        logger.error(f"Workflow file not found: {yaml_file}")
-        sys.exit(1)
-
-    try:
-        runner = WorkflowRunner.from_yaml(yaml_file)
-        runner.workflow.validate()
-
-        console = Console()
-        console.print("✅ Workflow validation successful")
-        console.print(f"   Workflow: {runner.workflow.name}")
-        console.print(f"   Jobs: {len(runner.workflow.jobs)}")
-
-    except Exception as e:
-        logger.error(f"Workflow validation failed: {e}")
-        sys.exit(1)
-
-
 @config_app.command("show")
 def config_show() -> None:
     """Show current configuration."""
