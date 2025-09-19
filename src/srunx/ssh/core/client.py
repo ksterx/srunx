@@ -499,10 +499,17 @@ class SSHSlurmClient:
     def get_job_status(self, job_id: str) -> str:
         """Get job status using SLURM commands"""
         try:
+            # Validate job_id to prevent command injection
+            # Allow numeric job IDs with optional step/array components (e.g., 12345, 12345_1, 12345.batch)
+            if not re.match(r"^[0-9]+([._][A-Za-z0-9_-]+)?$", job_id):
+                self.logger.error(f"Invalid job_id format: {job_id!r}")
+                return "ERROR"
+
             # Try sacct for completed jobs, squeue for running/pending
-            sacct_cmd = self._get_slurm_command(
-                "sacct -j {job_id} --format=JobID,State --noheader | grep -E '^[0-9]+' | head -1"
-            ).format(job_id=job_id)
+            # Do NOT use _get_slurm_command here; _execute_slurm_command will prepend the path safely
+            sacct_cmd = (
+                f"sacct -j {job_id} --format=JobID,State --noheader | grep -E '^[0-9]+' | head -1"
+            )
             stdout, stderr, exit_code = self._execute_slurm_command(sacct_cmd)
 
             if exit_code == 0 and stdout.strip():
@@ -510,9 +517,7 @@ class SSHSlurmClient:
                 return status
 
             # Fallback to squeue
-            squeue_cmd = self._get_slurm_command(
-                "squeue -j {job_id} -h -o %T | head -1"
-            ).format(job_id=job_id)
+            squeue_cmd = f"squeue -j {job_id} -h -o %T | head -1"
             stdout, stderr, exit_code = self._execute_slurm_command(squeue_cmd)
             if exit_code == 0 and stdout.strip():
                 return stdout.strip().split("\n")[0].strip()
