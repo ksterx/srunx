@@ -519,14 +519,70 @@ class WorkflowRunner:
         # For partial execution, we need to handle dependencies differently
         ignore_dependencies = from_job is not None
 
+        def execute_job_with_retry(job: RunnableJobType) -> RunnableJobType:
+            """Execute a job with retry logic."""
+            while True:
+                try:
+                    result = execute_job(job)
+
+                    # If job completed successfully, reset retry count and return
+                    if result.status == JobStatus.COMPLETED:
+                        job.reset_retry()
+                        return result
+
+                    # If job failed and can be retried
+                    if result.status == JobStatus.FAILED and job.can_retry():
+                        job.increment_retry()
+                        retry_msg = f"(retry {job.retry_count}/{job.retry})"
+                        logger.warning(
+                            f"⚠️  Job {job.name} failed, retrying {retry_msg}"
+                        )
+
+                        # Wait before retrying
+                        if job.retry_delay > 0:
+                            logger.info(
+                                f"⏳ Waiting {job.retry_delay}s before retry..."
+                            )
+                            time.sleep(job.retry_delay)
+
+                        # Reset job_id for retry
+                        job.job_id = None
+                        job.status = JobStatus.PENDING
+                        continue
+
+                    # Job failed and no more retries, or job cancelled/timeout
+                    return result
+
+                except Exception as e:
+                    # Handle job submission/execution errors
+                    if job.can_retry():
+                        job.increment_retry()
+                        retry_msg = f"(retry {job.retry_count}/{job.retry})"
+                        logger.warning(
+                            f"⚠️  Job {job.name} error: {e}, retrying {retry_msg}"
+                        )
+
+                        if job.retry_delay > 0:
+                            logger.info(
+                                f"⏳ Waiting {job.retry_delay}s before retry..."
+                            )
+                            time.sleep(job.retry_delay)
+
+                        # Reset job state for retry
+                        job.job_id = None
+                        job.status = JobStatus.PENDING
+                        continue
+                    else:
+                        # No more retries, re-raise the exception
+                        raise
+
         # Special handling for single job execution - completely ignore all dependencies
         if single_job is not None:
             # Execute only the single job without any dependency processing
             single_job_obj = next(job for job in all_jobs if job.name == single_job)
 
-            logger.info(f"🌋 {'SUBMITTED':<12} Job {single_job_obj.name:<12}")
             try:
-                result = self.slurm.run(single_job_obj)
+                result = execute_job_with_retry(single_job_obj)
                 results[single_job] = result
 
                 if result.status == JobStatus.FAILED:
@@ -678,7 +734,7 @@ class WorkflowRunner:
                             initial_jobs.append(job)
 
             for job in initial_jobs:
-                future = executor.submit(execute_job, job)
+                future = executor.submit(execute_job_with_retry, job)
                 running_futures[job.name] = future
 
                 # Check for jobs that should start immediately after this job starts
@@ -686,7 +742,7 @@ class WorkflowRunner:
                 for ready_name in newly_ready_on_start:
                     if ready_name not in running_futures:
                         ready_job = next(j for j in all_jobs if j.name == ready_name)
-                        new_future = executor.submit(execute_job, ready_job)
+                        new_future = executor.submit(execute_job_with_retry, ready_job)
                         running_futures[ready_name] = new_future
 
             # Process completed jobs and schedule new ones
@@ -714,7 +770,9 @@ class WorkflowRunner:
                                 ready_job = next(
                                     j for j in all_jobs if j.name == ready_name
                                 )
-                                new_future = executor.submit(execute_job, ready_job)
+                                new_future = executor.submit(
+                                    execute_job_with_retry, ready_job
+                                )
                                 running_futures[ready_name] = new_future
 
                                 # Check for jobs that should start immediately after this job starts
@@ -727,7 +785,7 @@ class WorkflowRunner:
                                             if j.name == start_ready_name
                                         )
                                         start_future = executor.submit(
-                                            execute_job, start_ready_job
+                                            execute_job_with_retry, start_ready_job
                                         )
                                         running_futures[start_ready_name] = start_future
 
@@ -782,7 +840,12 @@ class WorkflowRunner:
                 "Job cannot have both shell script fields (script_path/path) and 'command'"
             )
 
-        base = {"name": data["name"], "depends_on": data.get("depends_on", [])}
+        base = {
+            "name": data["name"],
+            "depends_on": data.get("depends_on", []),
+            "retry": data.get("retry", 0),
+            "retry_delay": data.get("retry_delay", 60),
+        }
 
         # Handle ShellJob (script_path or path)
         if data.get("script_path"):
