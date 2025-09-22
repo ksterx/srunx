@@ -2,6 +2,8 @@ name: test
 jobs:
   - name: a
     command: [python, sample_job.py, --sleep, "10", --msg, "A"]
+    retry: 2
+    retry_delay: 30
     environment:
       container:
         image: /nas/share/sqshes/sptrain+0.6.1.sqsh

@@ -143,14 +143,25 @@ class TestBaseJob:
         assert job.name == "job"
         assert job.job_id is None
         assert job.depends_on == []
+        assert job.retry == 0
+        assert job.retry_delay == 60
         assert job.status == JobStatus.PENDING
+        assert job.retry_count == 0
 
     def test_base_job_custom_values(self):
         """Test BaseJob with custom values."""
-        job = BaseJob(name="test_job", job_id=12345, depends_on=["job1", "job2"])
+        job = BaseJob(
+            name="test_job",
+            job_id=12345,
+            depends_on=["job1", "job2"],
+            retry=3,
+            retry_delay=120,
+        )
         assert job.name == "test_job"
         assert job.job_id == 12345
         assert job.depends_on == ["job1", "job2"]
+        assert job.retry == 3
+        assert job.retry_delay == 120
 
     def test_base_job_status_property(self):
         """Test BaseJob status property."""
@@ -200,6 +211,51 @@ class TestBaseJob:
         job_no_deps = BaseJob()
         job_no_deps._status = JobStatus.PENDING
         assert job_no_deps.dependencies_satisfied([])
+
+    def test_retry_methods(self):
+        """Test retry-related methods."""
+        job = BaseJob(retry=2)
+
+        # Initial state
+        assert job.retry_count == 0
+        assert job.can_retry() is True
+        assert job.should_retry() is False  # Not failed yet
+
+        # Simulate failure
+        job.status = JobStatus.FAILED
+        assert job.should_retry() is True
+
+        # First retry
+        job.increment_retry()
+        assert job.retry_count == 1
+        assert job.can_retry() is True
+        assert job.should_retry() is True
+
+        # Second retry
+        job.increment_retry()
+        assert job.retry_count == 2
+        assert job.can_retry() is False
+        assert job.should_retry() is False
+
+        # Reset retry count
+        job.reset_retry()
+        assert job.retry_count == 0
+        assert job.can_retry() is True
+
+    def test_retry_validation(self):
+        """Test retry validation."""
+        # Test negative retry value
+        with pytest.raises(ValidationError):
+            BaseJob(retry=-1)
+
+        # Test negative retry_delay value
+        with pytest.raises(ValidationError):
+            BaseJob(retry_delay=-1)
+
+        # Test valid values
+        job = BaseJob(retry=0, retry_delay=0)
+        assert job.retry == 0
+        assert job.retry_delay == 0
 
 
 class TestJob:

@@ -287,9 +287,16 @@ class BaseJob(BaseModel):
     depends_on: list[str] = Field(
         default_factory=list, description="Task dependencies for workflow execution"
     )
+    retry: int = Field(
+        default=0, ge=0, description="Number of retry attempts on failure"
+    )
+    retry_delay: int = Field(
+        default=60, ge=0, description="Delay between retries in seconds"
+    )
 
     _status: JobStatus = PrivateAttr(default=JobStatus.PENDING)
     _parsed_dependencies: list[JobDependency] = PrivateAttr(default_factory=list)
+    _retry_count: int = PrivateAttr(default=0)
 
     def model_post_init(self, __context) -> None:
         """Parse string dependencies into JobDependency objects after initialization."""
@@ -450,6 +457,27 @@ class BaseJob(BaseModel):
                     return False
 
         return True
+
+    @property
+    def retry_count(self) -> int:
+        """Get the current retry count."""
+        return self._retry_count
+
+    def can_retry(self) -> bool:
+        """Check if the job can be retried."""
+        return self._retry_count < self.retry
+
+    def increment_retry(self) -> None:
+        """Increment the retry count."""
+        self._retry_count += 1
+
+    def reset_retry(self) -> None:
+        """Reset the retry count."""
+        self._retry_count = 0
+
+    def should_retry(self) -> bool:
+        """Check if the job should be retried based on status and retry count."""
+        return self.status == JobStatus.FAILED and self.can_retry()
 
 
 class Job(BaseJob):

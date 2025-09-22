@@ -892,6 +892,51 @@ class TestWorkflowExecutionControl:
         job_names = [job.name for job in jobs_to_execute]
         assert job_names == ["job1", "job2"]
 
+    def test_parse_job_with_retry(self):
+        """Test parsing job with retry configuration."""
+        job_data = {
+            "name": "retry_job",
+            "command": ["python", "might_fail.py"],
+            "environment": {"conda": "env"},
+            "retry": 3,
+            "retry_delay": 120,
+        }
+        job = WorkflowRunner.parse_job(job_data)
+        assert isinstance(job, Job)
+        assert job.name == "retry_job"
+        assert job.retry == 3
+        assert job.retry_delay == 120
+        assert job.retry_count == 0
+
+    def test_parse_job_without_retry(self):
+        """Test parsing job without retry configuration uses defaults."""
+        job_data = {
+            "name": "no_retry_job",
+            "command": ["python", "script.py"],
+            "environment": {"conda": "env"},
+        }
+        job = WorkflowRunner.parse_job(job_data)
+        assert isinstance(job, Job)
+        assert job.name == "no_retry_job"
+        assert job.retry == 0  # Default value
+        assert job.retry_delay == 60  # Default value
+        assert job.retry_count == 0
+
+    def test_parse_shell_job_with_retry(self):
+        """Test parsing shell job with retry configuration."""
+        job_data = {
+            "name": "retry_shell_job",
+            "script_path": "/path/to/script.sh",
+            "retry": 2,
+            "retry_delay": 30,
+        }
+        job = WorkflowRunner.parse_job(job_data)
+        assert isinstance(job, ShellJob)
+        assert job.name == "retry_shell_job"
+        assert job.retry == 2
+        assert job.retry_delay == 30
+        assert job.retry_count == 0
+
 
 class TestJobDependency:
     """Test JobDependency class."""
