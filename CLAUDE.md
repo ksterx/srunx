@@ -14,6 +14,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run srunx status <job_id>` - Check job status
 - `uv run srunx list` - List jobs
 - `uv run srunx cancel <job_id>` - Cancel job
+- `uv run srunx ssh <script>` - Submit script to remote SLURM server via SSH
+- `uv run srunx ssh profile list` - List SSH connection profiles
+- `uv run srunx ssh profile add <name>` - Add SSH connection profile
 - `uv run srunx flow run <yaml_file>` - Execute workflow from YAML
 - `uv run srunx flow validate <yaml_file>` - Validate workflow YAML
 - `uv run srunx config show` - Show current configuration
@@ -28,6 +31,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Direct Usage Examples
 - `uv run srunx submit python train.py --name ml_job --gpus-per-node 1`
 - `uv run srunx submit python process.py --conda ml_env --nodes 2`
+- `uv run srunx ssh train.py --host dgx-server --job-name remote_training`
+- `uv run srunx ssh profile add myserver --hostname dgx.example.com --username researcher`
 - `uv run srunx flow run workflow.yaml`
 
 ## Architecture Overview
@@ -46,6 +51,19 @@ src/srunx/
 ├── cli/               # Command-line interfaces
 │   ├── main.py        # Main CLI commands
 │   └── workflow.py    # Workflow CLI
+├── ssh/               # SSH integration for remote SLURM
+│   ├── core/          # Core SSH SLURM functionality
+│   │   ├── client.py  # SSH SLURM client
+│   │   ├── config.py  # SSH profile configuration
+│   │   ├── proxy_client.py  # SSH proxy connection handling
+│   │   └── ssh_config.py    # SSH config file parsing
+│   ├── cli/           # SSH CLI interfaces
+│   │   ├── main.py    # SSH CLI entry point
+│   │   ├── profile.py # Profile management CLI
+│   │   └── submit.py  # Job submission CLI
+│   ├── helpers/       # SSH utility tools
+│   │   └── proxy_helper.py  # Proxy connection analysis
+│   └── example.py     # SSH usage examples
 └── templates/         # SLURM script templates
     ├── base.slurm.jinja
     └── advanced.slurm.jinja
@@ -73,6 +91,25 @@ src/srunx/
   - `queue()`: List user jobs
   - `monitor()`: Wait for job completion
   - `run()`: Submit and monitor job
+
+#### SSH Integration (`ssh/`)
+- **SSHSlurmClient**: Main SSH client for remote SLURM operations
+  - `connect()`: Establish SSH connection
+  - `submit_sbatch_job()`: Submit script content to remote SLURM
+  - `submit_sbatch_file()`: Submit script file to remote SLURM
+  - `monitor_job()`: Monitor remote job until completion
+  - `get_job_status()`: Query remote job status
+  - `upload_file()`: Upload local files to remote server
+  - Context manager support for automatic connection handling
+- **ConfigManager**: SSH profile management
+  - `add_profile()`: Add new SSH connection profile
+  - `get_profile()`: Retrieve profile by name
+  - `list_profiles()`: List all profiles
+  - `set_current_profile()`: Set default profile
+- **SSHConfigParser**: SSH config file parsing
+  - `get_host()`: Get SSH host configuration
+  - `list_hosts()`: List available hosts
+- **ProxySSHClient**: SSH ProxyJump connection handling
 
 #### Workflow Runner (`runner.py`)
 - **WorkflowRunner**: YAML workflow execution engine

@@ -507,9 +507,7 @@ class SSHSlurmClient:
 
             # Try sacct for completed jobs, squeue for running/pending
             # Do NOT use _get_slurm_command here; _execute_slurm_command will prepend the path safely
-            sacct_cmd = (
-                f"sacct -j {job_id} --format=JobID,State --noheader | grep -E '^[0-9]+' | head -1"
-            )
+            sacct_cmd = f"sacct -j {job_id} --format=JobID,State --noheader | grep -E '^[0-9]+' | head -1"
             stdout, stderr, exit_code = self._execute_slurm_command(sacct_cmd)
 
             if exit_code == 0 and stdout.strip():
@@ -732,3 +730,41 @@ class SSHSlurmClient:
             raise ConnectionError("SFTP client is not connected")
         with self.sftp_client.open(remote_path, "w") as f:
             f.write(content)
+
+    def _handle_slurm_error(
+        self, command: str, error_output: str, exit_code: int
+    ) -> None:
+        """Handle SLURM command errors with helpful suggestions"""
+        self.logger.error(
+            f"{command} failed with exit code {exit_code}: {error_output}"
+        )
+        # Common error patterns and suggestions
+        error_lower = error_output.lower()
+        if "command not found" in error_lower or "sbatch: not found" in error_lower:
+            self.logger.error("SLURM commands not found in PATH.")
+            self.logger.error("Ensure SLURM is installed and configured on the server.")
+        elif "permission denied" in error_lower:
+            self.logger.error(
+                "Permission denied. Check file permissions and user access."
+            )
+        elif "invalid partition" in error_lower:
+            self.logger.error(
+                "Invalid partition specified. Check available partitions with 'sinfo'."
+            )
+        elif "invalid qos" in error_lower:
+            self.logger.error(
+                "Invalid QoS specified. Check available QoS with 'sacctmgr show qos'."
+            )
+
+    def _execute_with_environment(self, command: str) -> tuple[str, str, int]:
+        """Execute command with full login environment"""
+        return self.execute_command(f'bash -l -c "{command}"')
+
+    def __enter__(self):
+        if self.connect():
+            return self
+        else:
+            raise ConnectionError("Failed to establish SSH connection")
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()

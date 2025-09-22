@@ -40,7 +40,13 @@ class ConfigManager:
         if self.config_path.exists():
             try:
                 with open(self.config_path) as f:
-                    self.config_data = json.load(f)
+                    content = f.read().strip()
+                    if not content:
+                        # Empty file, use defaults
+                        self.config_data = {"current_profile": None, "profiles": {}}
+                        self.save_config()
+                    else:
+                        self.config_data = json.loads(content)
             except (OSError, json.JSONDecodeError) as e:
                 raise RuntimeError(
                     f"Failed to load config from {self.config_path}: {e}"
@@ -118,3 +124,25 @@ class ConfigManager:
 
     def expand_path(self, path: str) -> str:
         return os.path.expanduser(path)
+
+    def set_profile_env_var(self, profile_name: str, key: str, value: str) -> bool:
+        """Set an environment variable for a profile."""
+        if profile_name in self.config_data.get("profiles", {}):
+            profile_data = self.config_data["profiles"][profile_name]
+            if "env_vars" not in profile_data:
+                profile_data["env_vars"] = {}
+            profile_data["env_vars"][key] = value
+            self.save_config()
+            return True
+        return False
+
+    def unset_profile_env_var(self, profile_name: str, key: str) -> bool:
+        """Unset an environment variable for a profile."""
+        if profile_name in self.config_data.get("profiles", {}):
+            profile_data = self.config_data["profiles"][profile_name]
+            env_vars = profile_data.get("env_vars", {})
+            if key in env_vars:
+                del env_vars[key]
+                self.save_config()
+                return True
+        return False

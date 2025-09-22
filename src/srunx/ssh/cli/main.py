@@ -3,11 +3,85 @@
 import argparse
 
 
+def show_ssh_help() -> None:
+    """Show comprehensive SSH help with examples."""
+    help_text = """
+Usage: srunx ssh <script> [options]
+       srunx ssh profile <command> [options]
+
+Submit and monitor SLURM jobs on remote servers via SSH.
+
+SCRIPT SUBMISSION:
+  srunx ssh <script_file> [OPTIONS]
+  
+  Submit a local script file to a remote SLURM server.
+
+CONNECTION OPTIONS:
+  --host HOST                SSH config host name (from ~/.ssh/config)
+  --profile PROFILE          Use saved connection profile
+  --hostname HOSTNAME        Direct connection hostname
+  --username USERNAME        SSH username
+  --key-file PATH           SSH private key file path
+  --port PORT               SSH port (default: 22)
+
+JOB OPTIONS:
+  --job-name NAME           SLURM job name
+  --env KEY=VALUE           Set environment variable (can be used multiple times)
+  --env-local KEY           Transfer local environment variable
+  --poll-interval SECONDS   Job status polling interval (default: 10)
+  --timeout SECONDS         Maximum monitoring time (default: unlimited)
+  --no-monitor             Submit job without monitoring
+  --no-cleanup             Keep uploaded files for debugging
+
+PROFILE MANAGEMENT:
+  srunx ssh profile list                    List all profiles
+  srunx ssh profile add NAME OPTIONS       Add new profile
+  srunx ssh profile remove NAME            Remove profile
+  srunx ssh profile set NAME               Set default profile
+  srunx ssh profile show NAME              Show profile details
+  srunx ssh profile update NAME OPTIONS    Update profile
+
+EXAMPLES:
+
+  # Submit using SSH config host
+  srunx ssh train.py --host dgx-server
+
+  # Submit using saved profile
+  srunx ssh experiment.sh --profile ml-cluster
+
+  # Direct connection
+  srunx ssh script.py --hostname dgx.example.com --username researcher --key-file ~/.ssh/dgx_key
+
+  # With environment variables
+  srunx ssh train.py --host server --env CUDA_VISIBLE_DEVICES=0,1,2,3 --env-local WANDB_API_KEY
+
+  # Background job submission
+  srunx ssh long_job.sh --host server --no-monitor
+
+  # Profile management
+  srunx ssh profile add dgx --ssh-host dgx1 --description "Main DGX server"
+  srunx ssh profile add direct --hostname 10.0.1.100 --username ml --key-file ~/.ssh/ml_key
+  srunx ssh profile set dgx
+  srunx ssh profile list
+
+For more details on specific commands, use:
+  srunx ssh profile --help
+"""
+    print(help_text.strip())
+
+
 def run_from_argv(argv: list[str]) -> None:
     """Main CLI entry point with clean subcommand routing for ssh integration.
 
     Delegates to profile or submit handlers depending on first arg.
+
+    If no arguments provided, shows help with examples.
     """
+
+    # If no arguments, show comprehensive help
+    if not argv:
+        show_ssh_help()
+        return
 
     # Check if first argument is 'profile' - if so, handle profile commands
     if len(argv) > 0 and argv[0] == "profile":

@@ -36,6 +36,7 @@ from srunx.models import (
     render_shell_job_script,
 )
 from srunx.runner import WorkflowRunner
+from srunx.ssh.cli.commands import ssh_app
 
 logger = get_logger(__name__)
 
@@ -109,22 +110,10 @@ app = typer.Typer(
 flow_app = typer.Typer(help="Workflow management")
 config_app = typer.Typer(help="Configuration management")
 
+
 app.add_typer(flow_app, name="flow")
 app.add_typer(config_app, name="config")
-
-
-# ssh-slurm integration: forward-compatible passthrough subcommand
-@app.command(
-    "ssh",
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
-    help="Submit and monitor SLURM jobs on remote hosts over SSH (formerly 'ssb')",
-)
-def ssh(ctx: typer.Context) -> None:
-    """Pass-through to the ssh-slurm CLI (profile and submit)."""
-    from srunx.ssh.cli.main import run_from_argv
-
-    # Forward all remaining args after 'ssh'
-    run_from_argv(list(ctx.args))
+app.add_typer(ssh_app, name="ssh")
 
 
 def _parse_env_vars(env_var_list: list[str] | None) -> dict[str, str]:
