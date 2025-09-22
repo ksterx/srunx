@@ -36,6 +36,7 @@ from srunx.models import (
     render_shell_job_script,
 )
 from srunx.runner import WorkflowRunner
+from srunx.ssh.cli.commands import ssh_app
 
 logger = get_logger(__name__)
 
@@ -109,8 +110,10 @@ app = typer.Typer(
 flow_app = typer.Typer(help="Workflow management")
 config_app = typer.Typer(help="Configuration management")
 
+
 app.add_typer(flow_app, name="flow")
 app.add_typer(config_app, name="config")
+app.add_typer(ssh_app, name="ssh")
 
 
 def _parse_env_vars(env_var_list: list[str] | None) -> dict[str, str]:

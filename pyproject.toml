@@ -11,6 +11,7 @@ dependencies = [
     "pydantic>=2.11.5",
     "pyyaml>=6.0.2",
     "rich>=14.0.0",
+    "paramiko>=4.0.0",
     "slack-sdk>=3.35.0",
     "typer>=0.17.3",
 ]
