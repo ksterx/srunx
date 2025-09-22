@@ -59,15 +59,16 @@ Example YAML workflow:
 )
 
 
-@app.command()
-def run(
+@app.callback(invoke_without_command=True)
+def execute_yaml(
+    ctx: typer.Context,
     yaml_file: Annotated[
-        Path, typer.Argument(help="Path to YAML workflow definition file")
-    ],
-    validate_only: Annotated[
+        Path | None, typer.Argument(help="Path to YAML workflow definition file")
+    ] = None,
+    validate: Annotated[
         bool,
         typer.Option(
-            "--validate-only", help="Only validate the workflow file without executing"
+            "--validate", help="Only validate the workflow file without executing"
         ),
     ] = False,
     dry_run: Annotated[
@@ -100,6 +101,40 @@ def run(
     ] = None,
 ) -> None:
     """Execute workflow from YAML file."""
+    # If a subcommand was invoked, don't run the callback
+    if ctx.invoked_subcommand is not None:
+        return
+
+    # If no yaml_file provided when no subcommand is invoked, show help
+    if yaml_file is None:
+        ctx.get_help()
+        ctx.exit()
+
+    # At this point, yaml_file is guaranteed to be Path, not None
+    assert yaml_file is not None  # for mypy
+    _execute_workflow(
+        yaml_file=yaml_file,
+        validate=validate,
+        dry_run=dry_run,
+        log_level=log_level,
+        slack=slack,
+        from_job=from_job,
+        to_job=to_job,
+        job=job,
+    )
+
+
+def _execute_workflow(
+    yaml_file: Path,
+    validate: bool = False,
+    dry_run: bool = False,
+    log_level: str = "INFO",
+    slack: bool = False,
+    from_job: str | None = None,
+    to_job: str | None = None,
+    job: str | None = None,
+) -> None:
+    """Common workflow execution logic."""
     # Configure logging for workflow execution
     configure_workflow_logging(level=log_level)
 
@@ -129,7 +164,7 @@ def run(
         # Validate dependencies
         runner.workflow.validate()
 
-        if validate_only:
+        if validate:
             logger.info("Workflow validation successful")
             return
 
@@ -209,6 +244,65 @@ def run(
         logger.error("📍 Error location:")
         logger.error(traceback.format_exc())
         sys.exit(1)
+
+
+@app.command(name="run")
+def run_command(
+    yaml_file: Annotated[
+        Path, typer.Argument(help="Path to YAML workflow definition file")
+    ],
+    validate: Annotated[
+        bool,
+        typer.Option(
+            "--validate", help="Only validate the workflow file without executing"
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run", help="Show what would be executed without running jobs"
+        ),
+    ] = False,
+    log_level: Annotated[
+        str, typer.Option("--log-level", help="Set logging level")
+    ] = "INFO",
+    slack: Annotated[
+        bool, typer.Option("--slack", help="Send notifications to Slack")
+    ] = False,
+    from_job: Annotated[
+        str | None,
+        typer.Option(
+            "--from",
+            help="Start execution from this job (ignoring dependencies before this job)",
+        ),
+    ] = None,
+    to_job: Annotated[
+        str | None, typer.Option("--to", help="Stop execution at this job (inclusive)")
+    ] = None,
+    job: Annotated[
+        str | None,
+        typer.Option(
+            "--job", help="Execute only this specific job (ignoring all dependencies)"
+        ),
+    ] = None,
+) -> None:
+    """Execute workflow from YAML file."""
+    _execute_workflow(
+        yaml_file, validate, dry_run, log_level, slack, from_job, to_job, job
+    )
+
+
+@app.command(name="validate")
+def validate_command(
+    yaml_file: Annotated[
+        Path, typer.Argument(help="Path to YAML workflow definition file")
+    ],
+    log_level: Annotated[
+        str, typer.Option("--log-level", help="Set logging level")
+    ] = "INFO",
+) -> None:
+    """Validate workflow YAML file without executing."""
+    _execute_workflow(yaml_file, validate=True, log_level=log_level)
 
 
 def main() -> None:

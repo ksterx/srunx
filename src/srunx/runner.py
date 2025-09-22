@@ -519,6 +519,16 @@ class WorkflowRunner:
         # For partial execution, we need to handle dependencies differently
         ignore_dependencies = from_job is not None
 
+        def execute_job(job: RunnableJobType) -> RunnableJobType:
+            """Execute a single job."""
+            logger.info(f"🌋 {'SUBMITTED':<12} Job {job.name:<12}")
+
+            try:
+                result = self.slurm.run(job)
+                return result
+            except Exception as e:
+                raise
+
         def execute_job_with_retry(job: RunnableJobType) -> RunnableJobType:
             """Execute a job with retry logic."""
             while True:
@@ -614,16 +624,6 @@ class WorkflowRunner:
                 for parsed_dep in job.parsed_dependencies:
                     if parsed_dep.job_name in job_names_to_execute:
                         dependents[parsed_dep.job_name].add(job.name)
-
-        def execute_job(job: RunnableJobType) -> RunnableJobType:
-            """Execute a single job."""
-            logger.info(f"🌋 {'SUBMITTED':<12} Job {job.name:<12}")
-
-            try:
-                result = self.slurm.run(job)
-                return result
-            except Exception as e:
-                raise
 
         def on_job_started(job_name: str) -> list[str]:
             """Handle job start and return newly ready job names (for 'after' dependencies)."""
