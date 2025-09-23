@@ -18,7 +18,33 @@ from ..core.client import SSHSlurmClient
 from ..core.config import ConfigManager
 from ..core.ssh_config import get_ssh_config_host
 
+try:
+    from slack_sdk import WebhookClient
+
+    SLACK_AVAILABLE = True
+except ImportError:
+    SLACK_AVAILABLE = False
+
 console = Console()
+
+
+def send_slack_notification(slack_client, message: str, color: str = "good") -> None:
+    """Send a notification to Slack."""
+    if not slack_client:
+        return
+
+    try:
+        slack_client.send(
+            text=message,
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"`{message}`"},
+                }
+            ],
+        )
+    except Exception as e:
+        console.print(f"[yellow]⚠️  Failed to send Slack notification: {e}[/yellow]")
 
 
 def setup_logging(verbose: bool = False):
@@ -85,6 +111,12 @@ def run_from_argv(argv: list[str]) -> None:
         action="append",
         metavar="KEY",
         help="Pass local environment variable to remote job (can be used multiple times)",
+    )
+
+    # Notification options
+    notif_group = parser.add_argument_group("Notification options")
+    notif_group.add_argument(
+        "--slack", action="store_true", help="Send notifications to Slack"
     )
 
     # Other options
@@ -304,6 +336,26 @@ def run_from_argv(argv: list[str]) -> None:
         if display_host is None:
             display_host = connection_params["hostname"]
 
+        # Setup Slack notification if requested
+        slack_client = None
+        if args.slack:
+            if not SLACK_AVAILABLE:
+                console.print(
+                    "[red]❌ Slack SDK not available. Install with: pip install slack-sdk[/red]"
+                )
+                sys.exit(1)
+
+            webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+            if not webhook_url:
+                console.print(
+                    "[red]❌ SLACK_WEBHOOK_URL environment variable is not set[/red]"
+                )
+                sys.exit(1)
+
+            slack_client = WebhookClient(webhook_url)
+            if args.verbose:
+                console.print("[dim]✅ Slack notifications enabled[/dim]")
+
         # Show connection status with rich
         with Status("[blue]Connecting to server...", console=console):
             if not client.connect():
@@ -337,9 +389,23 @@ def run_from_argv(argv: list[str]) -> None:
             )
             console.print(job_panel)
 
+            # Send Slack notification for job submission
+            if slack_client:
+                send_slack_notification(
+                    slack_client,
+                    f"🌋 SUBMITTED     Job {job.name:<12} (ID: {job.job_id}) on {display_host}",
+                )
+
             # Monitor job if requested
             if not args.no_monitor:
-                _monitor_job_with_rich(client, job, args.poll_interval, args.timeout)
+                _monitor_job_with_rich(
+                    client,
+                    job,
+                    args.poll_interval,
+                    args.timeout,
+                    slack_client,
+                    str(display_host) if display_host else None,
+                )
 
         finally:
             # Always disconnect
@@ -353,7 +419,12 @@ def run_from_argv(argv: list[str]) -> None:
 
 
 def _monitor_job_with_rich(
-    client: SSHSlurmClient, job, poll_interval: int, timeout: int | None
+    client: SSHSlurmClient,
+    job,
+    poll_interval: int,
+    timeout: int | None,
+    slack_client=None,
+    display_host: str | None = None,
 ):
     """Monitor job with rich progress display"""
     start_time = time.time()
@@ -437,6 +508,15 @@ def _monitor_job_with_rich(
         border_style=final_color,
     )
     console.print(result_panel)
+
+    # Send Slack notification for job completion
+    if slack_client:
+        status_icon = status_icons.get(job.status, "❓")
+        host_info = f" on {display_host}" if display_host else ""
+        send_slack_notification(
+            slack_client,
+            f"{status_icon} {job.status:<12} Job {job.name:<12} (ID: {job.job_id}){host_info} - Total time: {elapsed_time:.1f}s",
+        )
 
     # Show logs if job failed or had errors
     if job.status in ["FAILED", "CANCELLED", "TIMEOUT"]:

@@ -25,6 +25,13 @@ from ..core.client import SSHSlurmClient
 from ..core.config import ConfigManager
 from ..core.ssh_config import get_ssh_config_host
 
+try:
+    from slack_sdk import WebhookClient
+
+    SLACK_AVAILABLE = True
+except ImportError:
+    SLACK_AVAILABLE = False
+
 console = Console()
 
 # Create the main SSH app
@@ -47,6 +54,25 @@ def setup_logging(verbose: bool = False):
     """Configure logging for SSH operations."""
     level = logging.DEBUG if verbose else logging.WARNING
     logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=level)
+
+
+def send_slack_notification(slack_client, message: str) -> None:
+    """Send a notification to Slack."""
+    if not slack_client:
+        return
+
+    try:
+        slack_client.send(
+            text=message,
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"`{message}`"},
+                }
+            ],
+        )
+    except Exception as e:
+        console.print(f"[yellow]⚠️  Failed to send Slack notification: {e}[/yellow]")
 
 
 @ssh_app.command(name="submit")
@@ -112,6 +138,10 @@ def submit_job(
             help="Local environment variable key (can be used multiple times)",
         ),
     ] = None,
+    # Notification options
+    slack: Annotated[
+        bool, typer.Option("--slack", help="Send notifications to Slack")
+    ] = False,
     # Other options
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable verbose logging")
@@ -138,6 +168,26 @@ def submit_job(
             ssh_config,
             config_manager,
         )
+
+        # Setup Slack notification if requested
+        slack_client = None
+        if slack:
+            if not SLACK_AVAILABLE:
+                console.print(
+                    "[red]❌ Slack SDK not available. Install with: pip install slack-sdk[/red]"
+                )
+                raise typer.Exit(1)
+
+            webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+            if not webhook_url:
+                console.print(
+                    "[red]❌ SLACK_WEBHOOK_URL environment variable is not set[/red]"
+                )
+                raise typer.Exit(1)
+
+            slack_client = WebhookClient(webhook_url)
+            if verbose:
+                console.print("[dim]✅ Slack notifications enabled[/dim]")
 
         # Process environment variables
         env_vars = _process_environment_variables(
@@ -180,9 +230,18 @@ def submit_job(
             )
             console.print(job_panel)
 
+            # Send Slack notification for job submission
+            if slack_client:
+                send_slack_notification(
+                    slack_client,
+                    f"🌋 SUBMITTED     Job {job.name:<12} (ID: {job.job_id}) on {display_host}",
+                )
+
             # Monitor job if requested
             if not no_monitor:
-                _monitor_job_with_rich(client, job, poll_interval, timeout)
+                _monitor_job_with_rich(
+                    client, job, poll_interval, timeout, slack_client, display_host
+                )
 
         finally:
             client.disconnect()
@@ -622,7 +681,12 @@ def _create_ssh_client(
 
 
 def _monitor_job_with_rich(
-    client: SSHSlurmClient, job, poll_interval: int, timeout: int | None
+    client: SSHSlurmClient,
+    job,
+    poll_interval: int,
+    timeout: int | None,
+    slack_client=None,
+    display_host: str | None = None,
 ):
     """Monitor job with rich progress display."""
     start_time = time.time()
@@ -706,6 +770,15 @@ def _monitor_job_with_rich(
         border_style=final_color,
     )
     console.print(result_panel)
+
+    # Send Slack notification for job completion
+    if slack_client:
+        status_icon = status_icons.get(job.status, "❓")
+        host_info = f" on {display_host}" if display_host else ""
+        send_slack_notification(
+            slack_client,
+            f"{status_icon} {job.status:<12} Job {job.name:<12} (ID: {job.job_id}){host_info} - Total time: {elapsed_time:.1f}s",
+        )
 
     # Show logs if job failed or had errors
     if job.status in ["FAILED", "CANCELLED", "TIMEOUT"]:

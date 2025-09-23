@@ -1,5 +1,7 @@
 """SLURM client for job submission and management."""
 
+import glob
+import os
 import subprocess
 import tempfile
 import time
@@ -312,6 +314,171 @@ class Slurm:
         else:
             # This should not happen in practice, but needed for type safety
             return submitted_job
+
+    def get_job_output(
+        self, job_id: int | str, job_name: str | None = None
+    ) -> tuple[str, str]:
+        """Get job output from SLURM log files.
+
+        Args:
+            job_id: SLURM job ID
+            job_name: Job name for better log file detection
+
+        Returns:
+            Tuple of (output_content, error_content)
+        """
+        job_id_str = str(job_id)
+
+        # Try multiple common SLURM log file patterns
+        potential_log_patterns = [
+            # Pattern from SBATCH directives: %x_%j.log (job_name_job_id.log)
+            f"{job_name}_{job_id_str}.log" if job_name else None,
+            f"{job_name}_{job_id_str}.out" if job_name else None,
+            # Common SLURM_LOG_DIR patterns
+            f"*_{job_id_str}.log",
+            f"*_{job_id_str}.out",
+            # Default SLURM patterns
+            f"slurm-{job_id_str}.out",
+            f"slurm-{job_id_str}.err",
+            # Alternative patterns
+            f"job_{job_id_str}.log",
+            f"{job_id_str}.log",
+        ]
+
+        # Remove None values
+        patterns = [p for p in potential_log_patterns if p is not None]
+
+        # Common SLURM log directories to search
+        log_dirs = [
+            os.environ.get("SLURM_LOG_DIR", ""),
+            "./",  # Current directory
+            "/tmp",
+        ]
+
+        output_content = ""
+        error_content = ""
+        found_files = []
+
+        for log_dir in log_dirs:
+            if not log_dir:
+                continue
+
+            log_dir_path = Path(log_dir)
+            if not log_dir_path.exists():
+                continue
+
+            for pattern in patterns:
+                # Use glob to find matching files
+                search_pattern = str(log_dir_path / pattern)
+                matching_files = glob.glob(search_pattern)
+                found_files.extend(matching_files)
+
+        # Read content from found log files
+        if found_files:
+            # Use the first found file as primary output
+            primary_log = found_files[0]
+            try:
+                with open(primary_log, encoding="utf-8") as f:
+                    output_content = f.read()
+            except (OSError, UnicodeDecodeError) as e:
+                logger.warning(f"Failed to read log file {primary_log}: {e}")
+                output_content = f"Could not read log file {primary_log}: {e}"
+
+            # Look for separate error files
+            for log_file in found_files:
+                if "err" in Path(log_file).name.lower():
+                    try:
+                        with open(log_file, encoding="utf-8") as f:
+                            error_content += f.read()
+                    except (OSError, UnicodeDecodeError) as e:
+                        logger.warning(f"Failed to read error file {log_file}: {e}")
+        else:
+            logger.warning(f"No log files found for job {job_id_str}")
+
+        return output_content, error_content
+
+    def get_job_output_detailed(
+        self, job_id: int | str, job_name: str | None = None
+    ) -> dict[str, str | list[str] | None]:
+        """Get detailed job output information including found log files.
+
+        Args:
+            job_id: SLURM job ID
+            job_name: Job name for better log file detection
+
+        Returns:
+            Dictionary with detailed log information
+        """
+        job_id_str = str(job_id)
+
+        # Try multiple common SLURM log file patterns
+        potential_log_patterns = [
+            # Pattern from SBATCH directives: %x_%j.log (job_name_job_id.log)
+            f"{job_name}_{job_id_str}.log" if job_name else None,
+            f"{job_name}_{job_id_str}.out" if job_name else None,
+            # Common SLURM_LOG_DIR patterns
+            f"*_{job_id_str}.log",
+            f"*_{job_id_str}.out",
+            # Default SLURM patterns
+            f"slurm-{job_id_str}.out",
+            f"slurm-{job_id_str}.err",
+            # Alternative patterns
+            f"job_{job_id_str}.log",
+            f"{job_id_str}.log",
+        ]
+
+        patterns = [p for p in potential_log_patterns if p is not None]
+
+        log_dirs = [
+            os.environ.get("SLURM_LOG_DIR", ""),
+            "./",
+            "/tmp",
+        ]
+
+        found_files: list[str] = []
+        primary_log: str | None = None
+        output_content = ""
+        error_content = ""
+
+        for log_dir in log_dirs:
+            if not log_dir:
+                continue
+
+            log_dir_path = Path(log_dir)
+            if not log_dir_path.exists():
+                continue
+
+            for pattern in patterns:
+                search_pattern = str(log_dir_path / pattern)
+                matching_files = glob.glob(search_pattern)
+                found_files.extend(matching_files)
+
+        if found_files:
+            primary_log = found_files[0]
+            try:
+                with open(primary_log, encoding="utf-8") as f:
+                    output_content = f.read()
+            except (OSError, UnicodeDecodeError) as e:
+                logger.warning(f"Failed to read log file {primary_log}: {e}")
+                output_content = f"Could not read log file {primary_log}: {e}"
+
+            # Look for separate error files
+            for log_file in found_files:
+                if "err" in Path(log_file).name.lower():
+                    try:
+                        with open(log_file, encoding="utf-8") as f:
+                            error_content += f.read()
+                    except (OSError, UnicodeDecodeError) as e:
+                        logger.warning(f"Failed to read error file {log_file}: {e}")
+
+        return {
+            "found_files": found_files,
+            "primary_log": primary_log,
+            "output": output_content,
+            "error": error_content,
+            "slurm_log_dir": os.environ.get("SLURM_LOG_DIR"),
+            "searched_dirs": [d for d in log_dirs if d],
+        }
 
     def _get_default_template(self) -> str:
         """Get the default job template path."""
