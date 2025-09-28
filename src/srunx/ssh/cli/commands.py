@@ -24,6 +24,7 @@ from rich.text import Text
 from ..core.client import SSHSlurmClient
 from ..core.config import ConfigManager
 from ..core.ssh_config import get_ssh_config_host
+from .profile_impl import add_profile_impl
 
 try:
     from slack_sdk import WebhookClient
@@ -306,6 +307,9 @@ def add_profile(
         str | None, typer.Option("--key-file", help="SSH private key file path")
     ] = None,
     port: Annotated[int, typer.Option("--port", help="SSH port")] = 22,
+    proxy_jump: Annotated[
+        str | None, typer.Option("--proxy-jump", help="ProxyJump host")
+    ] = None,
     description: Annotated[
         str | None, typer.Option("--description", help="Profile description")
     ] = None,
@@ -317,10 +321,17 @@ def add_profile(
     ] = None,
 ):
     """Add a new connection profile."""
-    from .profile_impl import add_profile_impl
 
     add_profile_impl(
-        name, ssh_host, hostname, username, key_file, port, description, config
+        name,
+        ssh_host,
+        hostname,
+        username,
+        key_file,
+        port,
+        proxy_jump,
+        description,
+        config,
     )
 
 
@@ -390,6 +401,9 @@ def update_profile(
         str | None, typer.Option("--key-file", help="SSH private key file path")
     ] = None,
     port: Annotated[int | None, typer.Option("--port", help="SSH port")] = None,
+    proxy_jump: Annotated[
+        str | None, typer.Option("--proxy-jump", help="ProxyJump host")
+    ] = None,
     description: Annotated[
         str | None, typer.Option("--description", help="Profile description")
     ] = None,
@@ -404,7 +418,15 @@ def update_profile(
     from .profile_impl import update_profile_impl
 
     update_profile_impl(
-        name, ssh_host, hostname, username, key_file, port, description, config
+        name,
+        ssh_host,
+        hostname,
+        username,
+        key_file,
+        port,
+        proxy_jump,
+        description,
+        config,
     )
 
 
@@ -527,6 +549,7 @@ def _determine_connection_params(
                 "username": profile_obj.username,
                 "key_filename": profile_obj.key_filename,
                 "port": profile_obj.port,
+                "proxy_jump": profile_obj.proxy_jump,
             }
             display_host = profile
 
@@ -572,6 +595,7 @@ def _determine_connection_params(
                     "username": profile_obj.username,
                     "key_filename": profile_obj.key_filename,
                     "port": profile_obj.port,
+                    "proxy_jump": profile_obj.proxy_jump,
                 }
                 display_host = "current"
         else:

@@ -47,7 +47,7 @@ class SSHSlurmClient:
         self.sftp_client: paramiko.SFTPClient | None = None
         self.proxy_client: ProxySSHClient | None = None
         self.logger = logging.getLogger(__name__)
-        self.temp_dir = "/tmp/ssh-slurm"
+        self.temp_dir = "/nas/k_ishikawa/tmp/ssh-slurm"
         self._slurm_path: str | None = None  # Cache for SLURM command paths
         self._slurm_env: dict[str, str] | None = (
             None  # Cache for SLURM environment variables
@@ -371,31 +371,68 @@ class SSHSlurmClient:
                     modified_command = modified_command.replace(
                         cmd, f"{self._slurm_path}/{cmd}", 1
                     )
-            command_to_run = f"{env_setup} && {modified_command}"
+                    break
+            final_command = f"{env_setup} && {modified_command}"
         else:
-            # No SLURM path found - rely on login shell PATH
-            command_to_run = f"{env_setup} && {command}"
+            # Use login shell to find commands in PATH
+            final_command = f"{env_setup} && {command}"
 
-        return self.execute_command(f"bash -l -c '{command_to_run}'")
+        # Execute with bash login shell
+        full_cmd = f"bash -l -c '{final_command}'"
+        self.logger.debug(f"Executing SLURM command: {full_cmd}")
+        stdout, stderr, exit_code = self.execute_command(full_cmd)
+        self.logger.debug(
+            f"SLURM command result: exit_code={exit_code}, stdout_len={len(stdout)}, stderr_len={len(stderr)}"
+        )
+        if stderr and exit_code != 0:
+            self.logger.debug(
+                f"SLURM command stderr: {stderr[:500]}..."
+            )  # First 500 chars
+        return stdout, stderr, exit_code
 
     def _get_slurm_env_setup(self) -> str:
-        """Get commands to setup environment for SLURM"""
-        # Start with any custom environment variables
-        env_exports = " ".join(
-            [f"export {k}='{v}' &&" for k, v in self.custom_env_vars.items()]
-        )
-        return env_exports + " true"
+        """Get environment setup commands for SLURM execution"""
+        # Use the exact same environment setup as an interactive login shell
+        env_commands = [
+            "cd ~",
+            # Fully simulate login shell environment
+            "source /etc/profile 2>/dev/null || true",
+            "source ~/.bash_profile 2>/dev/null || true",
+            "source ~/.bashrc 2>/dev/null || true",
+            "source ~/.profile 2>/dev/null || true",
+            # Try multiple methods to load SLURM environment
+            "module load slurm 2>/dev/null || true",
+            "module load slurm/current 2>/dev/null || true",
+            # Check if sbatch is in PATH after module loads
+            'which sbatch >/dev/null 2>&1 || export PATH="$PATH:/cm/shared/apps/slurm/current/bin" 2>/dev/null || true',
+            # Final fallback - add known SLURM paths
+            'export PATH="$PATH:/usr/local/bin:/opt/slurm/bin:/cluster/slurm/bin" 2>/dev/null || true',
+        ]
+
+        # Add custom environment variables
+        for key, value in self.custom_env_vars.items():
+            # Properly escape the value
+            escaped_value = value.replace('"', '\\"').replace("$", "\\$")
+            env_commands.append(f'export {key}="{escaped_value}"')
+            self.logger.debug(f"Adding custom environment variable: {key}={value}")
+
+        return " && ".join(env_commands)
 
     def _verify_slurm_setup(self) -> None:
-        """Verify that SLURM commands are available and functional"""
+        """Verify that SLURM commands are working properly"""
         try:
-            stdout, stderr, exit_code = self._execute_slurm_command("sbatch --version")
-            if exit_code != 0:
-                self.logger.warning(
-                    f"SLURM sbatch not functional. stdout: {stdout}, stderr: {stderr}"
-                )
+            test_cmd = (
+                "sbatch --version 2>/dev/null | head -1 || echo 'SLURM_NOT_AVAILABLE'"
+            )
+            stdout, stderr, exit_code = self._execute_slurm_command(test_cmd)
+
+            if exit_code == 0 and "SLURM_NOT_AVAILABLE" not in stdout:
+                if self.verbose:
+                    self.logger.info(f"SLURM verification successful: {stdout.strip()}")
+            else:
+                self.logger.warning(f"SLURM verification failed: {stdout} / {stderr}")
         except Exception as e:
-            self.logger.warning(f"SLURM verification failed: {e}")
+            self.logger.warning(f"SLURM verification error: {e}")
 
     def submit_sbatch_job(
         self, script_content: str, job_name: str | None = None

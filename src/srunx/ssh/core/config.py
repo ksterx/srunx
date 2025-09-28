@@ -13,6 +13,7 @@ class ServerProfile:
     port: int = 22
     description: str | None = None
     ssh_host: str | None = None  # SSH config host name if using SSH config
+    proxy_jump: str | None = None  # ProxyJump host name if using ProxyJump
     env_vars: dict[str, str] | None = None  # Environment variables for this profile
 
     def to_dict(self) -> dict[str, Any]:
