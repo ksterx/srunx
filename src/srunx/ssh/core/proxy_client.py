@@ -1,6 +1,6 @@
 import logging
 
-import paramiko  # type: ignore
+import paramiko
 
 from .ssh_config import SSHHost, get_ssh_config_host
 
@@ -127,9 +127,17 @@ class ProxySSHClient:
             self.close_proxy()
             raise ValueError("No identity file specified for target host")
 
-        # Open a session channel
-        session = target_transport.open_session()
-        return target_client, session
+        if not target_transport.is_authenticated():
+            self.close_proxy()
+            raise Exception("Authentication failed")
+
+        # Create SSH client over the transport
+        target_client._transport = target_transport
+
+        self.logger.info(
+            f"Successfully connected to {target_host_config.effective_hostname} through {proxy_host_name}"
+        )
+        return target_client, proxy_channel
 
 
 def create_proxy_aware_connection(
@@ -141,57 +149,27 @@ def create_proxy_aware_connection(
     ssh_config_path: str | None = None,
     logger: logging.Logger | None = None,
 ) -> tuple[paramiko.SSHClient, ProxySSHClient | None]:
-    """Create an SSH connection that uses ProxyJump if specified"""
-    logger = logger or logging.getLogger(__name__)
+    """Create SSH connection with optional ProxyJump support"""
 
-    # If ProxyJump is not specified, create a direct connection
     if not proxy_jump:
+        # Direct connection
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         client.connect(
-            hostname=hostname,
-            username=username,
-            key_filename=key_filename,
-            port=port,
+            hostname=hostname, username=username, key_filename=key_filename, port=port
         )
         return client, None
 
-    # Parse SSH config for target host to inherit settings
-    target_config = get_ssh_config_host(hostname, ssh_config_path)
-    if not target_config:
-        target_config = SSHHost(hostname=hostname, user=username, port=port)
+    # ProxyJump connection
+    from .ssh_config import SSHHost
 
-    # Create ProxySSHClient and connect through proxy
-    proxy_client = ProxySSHClient(logger=logger)
-    target_client, proxy_channel = proxy_client.connect_through_proxy(
-        target_config, proxy_jump, ssh_config_path
+    target_host_config = SSHHost(
+        hostname=hostname, user=username, port=port, identity_file=key_filename
     )
 
-    # Wrap the channel in a Transport and open an SFTP client
-    transport = paramiko.Transport(proxy_channel)
-    transport.start_client()
-    if target_config.effective_identity_file:
-        try:
-            key = paramiko.RSAKey.from_private_key_file(
-                target_config.effective_identity_file
-            )
-        except paramiko.SSHException:
-            try:
-                key = paramiko.Ed25519Key.from_private_key_file(
-                    target_config.effective_identity_file
-                )
-            except paramiko.SSHException:
-                key = paramiko.ECDSAKey.from_private_key_file(
-                    target_config.effective_identity_file
-                )
-        transport.auth_publickey(target_config.effective_user, key)
-
-    # Create a client object using the transport
-    client = paramiko.SSHClient()
-    client._transport = transport  # type: ignore[attr-defined]
-
-    logger.info(
-        f"Connected to {hostname} via ProxyJump {proxy_jump} with user {username}"
+    proxy_client = ProxySSHClient(logger)
+    ssh_client, _ = proxy_client.connect_through_proxy(
+        target_host_config, proxy_jump, ssh_config_path
     )
 
-    return client, proxy_client
+    return ssh_client, proxy_client

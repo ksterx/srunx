@@ -1,7 +1,7 @@
 repos:
   # Ruff (linter + formatter)
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.13
+    rev: v0.13.2
     hooks:
       - id: ruff
         args: [--fix]
@@ -11,7 +11,7 @@ repos:
 
   # Pre-commit default hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: check-added-large-files
       - id: check-json
@@ -25,7 +25,7 @@ repos:
 
   # uv pip-compile
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.7.13
+    rev: 0.8.22
     hooks:
       - id: pip-compile
         name: pip-compile requirements.in
@@ -37,7 +37,7 @@ repos:
 
   # MyPy
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.10.0
+    rev: v1.18.2
     hooks:
       - id: mypy
         args: [--config-file=pyproject.toml]

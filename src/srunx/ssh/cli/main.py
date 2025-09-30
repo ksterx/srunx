@@ -92,7 +92,7 @@ def run_from_argv(argv: list[str]) -> None:
             prog="srunx ssh profile", description="Manage SSH SLURM server profiles"
         )
         parser.add_argument(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         )
 
         subparsers = parser.add_subparsers(

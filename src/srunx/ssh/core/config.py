@@ -13,6 +13,7 @@ class ServerProfile:
     port: int = 22
     description: str | None = None
     ssh_host: str | None = None  # SSH config host name if using SSH config
+    proxy_jump: str | None = None  # ProxyJump host name if using ProxyJump
     env_vars: dict[str, str] | None = None  # Environment variables for this profile
 
     def to_dict(self) -> dict[str, Any]:
@@ -32,9 +33,9 @@ class ConfigManager:
         self.load_config()
 
     def _get_default_config_path(self) -> Path:
-        config_dir = Path.home() / ".config"
+        config_dir = Path.home() / ".config" / "srunx"
         config_dir.mkdir(exist_ok=True)
-        return config_dir / "ssh-slurm.json"
+        return config_dir / "config.json"
 
     def load_config(self) -> None:
         if self.config_path.exists():

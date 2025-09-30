@@ -69,6 +69,7 @@ def add_profile_impl(
     username: str | None = None,
     key_file: str | None = None,
     port: int = 22,
+    proxy_jump: str | None = None,
     description: str | None = None,
     config: str | None = None,
 ):
@@ -105,6 +106,7 @@ def add_profile_impl(
             port=port,
             description=description,
             ssh_host=ssh_host,
+            proxy_jump=proxy_jump,
             env_vars={},
         )
 
@@ -125,6 +127,8 @@ def add_profile_impl(
                 profile_info.append(f"Key File: {key_file}")
                 if port != 22:
                     profile_info.append(f"Port: {port}")
+            if proxy_jump:
+                profile_info.append(f"ProxyJump: {proxy_jump}")
 
             if description:
                 profile_info.append(f"Description: {description}")
@@ -318,6 +322,7 @@ def update_profile_impl(
     username: str | None = None,
     key_file: str | None = None,
     port: int | None = None,
+    proxy_jump: str | None = None,
     description: str | None = None,
     config: str | None = None,
 ):
@@ -345,6 +350,8 @@ def update_profile_impl(
             update_params["key_filename"] = key_file
         if port is not None:
             update_params["port"] = port
+        if proxy_jump is not None:
+            update_params["proxy_jump"] = proxy_jump
         if description is not None:
             update_params["description"] = description
 

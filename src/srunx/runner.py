@@ -519,6 +519,68 @@ class WorkflowRunner:
         # For partial execution, we need to handle dependencies differently
         ignore_dependencies = from_job is not None
 
+        def _show_job_logs_on_failure(job: RunnableJobType) -> None:
+            """Show job logs when a job fails."""
+            try:
+                if not job.job_id:
+                    logger.warning("No job ID available for log retrieval")
+                    return
+
+                log_info = self.slurm.get_job_output_detailed(job.job_id, job.name)
+
+                found_files = log_info.get("found_files", [])
+                output = log_info.get("output", "")
+                error = log_info.get("error", "")
+                primary_log = log_info.get("primary_log")
+                slurm_log_dir = log_info.get("slurm_log_dir")
+                searched_dirs = log_info.get("searched_dirs", [])
+
+                # Ensure types are correct
+                if not isinstance(found_files, list):
+                    found_files = []
+                if not isinstance(output, str):
+                    output = ""
+                if not isinstance(error, str):
+                    error = ""
+                if not isinstance(searched_dirs, list):
+                    searched_dirs = []
+
+                if not found_files:
+                    logger.error("❌ No log files found")
+                    logger.info(f"📁 Searched in: {', '.join(searched_dirs)}")
+                    if slurm_log_dir:
+                        logger.info(f"💡 SLURM_LOG_DIR: {slurm_log_dir}")
+                    else:
+                        logger.info("💡 SLURM_LOG_DIR not set")
+                    return
+
+                logger.info(f"📁 Found {len(found_files)} log file(s)")
+                for log_file in found_files:
+                    logger.info(f"  📄 {log_file}")
+
+                if output:
+                    logger.error("📋 Job output:")
+                    # Truncate very long output
+                    lines = output.split("\n")
+                    max_lines = 50
+                    if len(lines) > max_lines:
+                        truncated_output = "\n".join(lines[-max_lines:])
+                        logger.error(
+                            f"{truncated_output}\n... (showing last {max_lines} lines of {len(lines)} total)"
+                        )
+                    else:
+                        logger.error(output)
+
+                if error:
+                    logger.error("❌ Error output:")
+                    logger.error(error)
+
+                if primary_log:
+                    logger.info(f"💡 Full log available at: {primary_log}")
+
+            except Exception as e:
+                logger.warning(f"Failed to retrieve job logs: {e}")
+
         def execute_job(job: RunnableJobType) -> RunnableJobType:
             """Execute a single job."""
             logger.info(f"🌋 {'SUBMITTED':<12} Job {job.name:<12}")
@@ -527,6 +589,9 @@ class WorkflowRunner:
                 result = self.slurm.run(job)
                 return result
             except Exception as e:
+                # Show SLURM logs when job fails
+                if hasattr(job, "job_id") and job.job_id:
+                    _show_job_logs_on_failure(job)
                 raise
 
         def execute_job_with_retry(job: RunnableJobType) -> RunnableJobType:
@@ -561,6 +626,9 @@ class WorkflowRunner:
                         continue
 
                     # Job failed and no more retries, or job cancelled/timeout
+                    # Show logs on final failure
+                    if result.status == JobStatus.FAILED:
+                        _show_job_logs_on_failure(result)
                     return result
 
                 except Exception as e:

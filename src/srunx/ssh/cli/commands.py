@@ -24,6 +24,14 @@ from rich.text import Text
 from ..core.client import SSHSlurmClient
 from ..core.config import ConfigManager
 from ..core.ssh_config import get_ssh_config_host
+from .profile_impl import add_profile_impl
+
+try:
+    from slack_sdk import WebhookClient
+
+    SLACK_AVAILABLE = True
+except ImportError:
+    SLACK_AVAILABLE = False
 
 console = Console()
 
@@ -49,6 +57,25 @@ def setup_logging(verbose: bool = False):
     logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=level)
 
 
+def send_slack_notification(slack_client, message: str) -> None:
+    """Send a notification to Slack."""
+    if not slack_client:
+        return
+
+    try:
+        slack_client.send(
+            text=message,
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"`{message}`"},
+                }
+            ],
+        )
+    except Exception as e:
+        console.print(f"[yellow]⚠️  Failed to send Slack notification: {e}[/yellow]")
+
+
 @ssh_app.command(name="submit")
 def submit_job(
     script_path: Annotated[Path, typer.Argument(help="Path to sbatch script file")],
@@ -72,7 +99,7 @@ def submit_job(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
     ssh_config: Annotated[
@@ -112,6 +139,10 @@ def submit_job(
             help="Local environment variable key (can be used multiple times)",
         ),
     ] = None,
+    # Notification options
+    slack: Annotated[
+        bool, typer.Option("--slack", help="Send notifications to Slack")
+    ] = False,
     # Other options
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable verbose logging")
@@ -138,6 +169,26 @@ def submit_job(
             ssh_config,
             config_manager,
         )
+
+        # Setup Slack notification if requested
+        slack_client = None
+        if slack:
+            if not SLACK_AVAILABLE:
+                console.print(
+                    "[red]❌ Slack SDK not available. Install with: pip install slack-sdk[/red]"
+                )
+                raise typer.Exit(1)
+
+            webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+            if not webhook_url:
+                console.print(
+                    "[red]❌ SLACK_WEBHOOK_URL environment variable is not set[/red]"
+                )
+                raise typer.Exit(1)
+
+            slack_client = WebhookClient(webhook_url)
+            if verbose:
+                console.print("[dim]✅ Slack notifications enabled[/dim]")
 
         # Process environment variables
         env_vars = _process_environment_variables(
@@ -180,9 +231,18 @@ def submit_job(
             )
             console.print(job_panel)
 
+            # Send Slack notification for job submission
+            if slack_client:
+                send_slack_notification(
+                    slack_client,
+                    f"🌋 SUBMITTED     Job {job.name:<12} (ID: {job.job_id}) on {display_host}",
+                )
+
             # Monitor job if requested
             if not no_monitor:
-                _monitor_job_with_rich(client, job, poll_interval, timeout)
+                _monitor_job_with_rich(
+                    client, job, poll_interval, timeout, slack_client, display_host
+                )
 
         finally:
             client.disconnect()
@@ -220,7 +280,7 @@ def list_profiles(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -247,21 +307,31 @@ def add_profile(
         str | None, typer.Option("--key-file", help="SSH private key file path")
     ] = None,
     port: Annotated[int, typer.Option("--port", help="SSH port")] = 22,
+    proxy_jump: Annotated[
+        str | None, typer.Option("--proxy-jump", help="ProxyJump host")
+    ] = None,
     description: Annotated[
         str | None, typer.Option("--description", help="Profile description")
     ] = None,
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
     """Add a new connection profile."""
-    from .profile_impl import add_profile_impl
 
     add_profile_impl(
-        name, ssh_host, hostname, username, key_file, port, description, config
+        name,
+        ssh_host,
+        hostname,
+        username,
+        key_file,
+        port,
+        proxy_jump,
+        description,
+        config,
     )
 
 
@@ -271,7 +341,7 @@ def remove_profile(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -287,7 +357,7 @@ def set_current_profile(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -305,7 +375,7 @@ def show_profile(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -331,13 +401,16 @@ def update_profile(
         str | None, typer.Option("--key-file", help="SSH private key file path")
     ] = None,
     port: Annotated[int | None, typer.Option("--port", help="SSH port")] = None,
+    proxy_jump: Annotated[
+        str | None, typer.Option("--proxy-jump", help="ProxyJump host")
+    ] = None,
     description: Annotated[
         str | None, typer.Option("--description", help="Profile description")
     ] = None,
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -345,7 +418,15 @@ def update_profile(
     from .profile_impl import update_profile_impl
 
     update_profile_impl(
-        name, ssh_host, hostname, username, key_file, port, description, config
+        name,
+        ssh_host,
+        hostname,
+        username,
+        key_file,
+        port,
+        proxy_jump,
+        description,
+        config,
     )
 
 
@@ -365,7 +446,7 @@ def set_env_var(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -382,7 +463,7 @@ def unset_env_var(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -398,7 +479,7 @@ def list_env_vars(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -468,6 +549,7 @@ def _determine_connection_params(
                 "username": profile_obj.username,
                 "key_filename": profile_obj.key_filename,
                 "port": profile_obj.port,
+                "proxy_jump": profile_obj.proxy_jump,
             }
             display_host = profile
 
@@ -513,6 +595,7 @@ def _determine_connection_params(
                     "username": profile_obj.username,
                     "key_filename": profile_obj.key_filename,
                     "port": profile_obj.port,
+                    "proxy_jump": profile_obj.proxy_jump,
                 }
                 display_host = "current"
         else:
@@ -622,7 +705,12 @@ def _create_ssh_client(
 
 
 def _monitor_job_with_rich(
-    client: SSHSlurmClient, job, poll_interval: int, timeout: int | None
+    client: SSHSlurmClient,
+    job,
+    poll_interval: int,
+    timeout: int | None,
+    slack_client=None,
+    display_host: str | None = None,
 ):
     """Monitor job with rich progress display."""
     start_time = time.time()
@@ -706,6 +794,15 @@ def _monitor_job_with_rich(
         border_style=final_color,
     )
     console.print(result_panel)
+
+    # Send Slack notification for job completion
+    if slack_client:
+        status_icon = status_icons.get(job.status, "❓")
+        host_info = f" on {display_host}" if display_host else ""
+        send_slack_notification(
+            slack_client,
+            f"{status_icon} {job.status:<12} Job {job.name:<12} (ID: {job.job_id}){host_info} - Total time: {elapsed_time:.1f}s",
+        )
 
     # Show logs if job failed or had errors
     if job.status in ["FAILED", "CANCELLED", "TIMEOUT"]:
