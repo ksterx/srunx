@@ -175,7 +175,7 @@ echo "Hello from SLURM!"
             remote_path = client.upload_file(test_path)
 
             # Verify upload was attempted
-            assert remote_path.startswith("/tmp/ssh-slurm/")
+            assert remote_path.startswith("/tmp/srunx/")
             assert Path(test_path).stem in remote_path
             client.sftp_client.put.assert_called_once()
 

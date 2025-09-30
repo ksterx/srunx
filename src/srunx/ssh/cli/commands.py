@@ -99,7 +99,7 @@ def submit_job(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
     ssh_config: Annotated[
@@ -280,7 +280,7 @@ def list_profiles(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -316,7 +316,7 @@ def add_profile(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -341,7 +341,7 @@ def remove_profile(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -357,7 +357,7 @@ def set_current_profile(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -375,7 +375,7 @@ def show_profile(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -410,7 +410,7 @@ def update_profile(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -446,7 +446,7 @@ def set_env_var(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -463,7 +463,7 @@ def unset_env_var(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):
@@ -479,7 +479,7 @@ def list_env_vars(
     config: Annotated[
         str | None,
         typer.Option(
-            "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
         ),
     ] = None,
 ):

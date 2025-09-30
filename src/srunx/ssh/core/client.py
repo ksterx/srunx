@@ -47,13 +47,13 @@ class SSHSlurmClient:
         self.sftp_client: paramiko.SFTPClient | None = None
         self.proxy_client: ProxySSHClient | None = None
         self.logger = logging.getLogger(__name__)
-        self.temp_dir = "/nas/k_ishikawa/tmp/ssh-slurm"
+        self.temp_dir = os.getenv("SRUNX_TEMP_DIR", "/tmp/srunx")
         self._slurm_path: str | None = None  # Cache for SLURM command paths
         self._slurm_env: dict[str, str] | None = (
             None  # Cache for SLURM environment variables
         )
         self.custom_env_vars = env_vars or {}  # Custom environment variables to pass
-        self.verbose = verbose  # Control detailed logging
+        self.verbose = verbose  # Control detailed logging  # Control detailed logging
 
     def connect(self) -> bool:
         try:
@@ -411,9 +411,9 @@ class SSHSlurmClient:
 
         # Add custom environment variables
         for key, value in self.custom_env_vars.items():
-            # Properly escape the value
-            escaped_value = value.replace('"', '\\"').replace("$", "\\$")
-            env_commands.append(f'export {key}="{escaped_value}"')
+            # Use single quotes to avoid shell interpretation
+            escaped_value = value.replace("'", "'\\''")
+            env_commands.append(f"export {key}='{escaped_value}'")
             self.logger.debug(f"Adding custom environment variable: {key}={value}")
 
         return " && ".join(env_commands)

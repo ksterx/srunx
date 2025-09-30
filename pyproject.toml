@@ -89,6 +89,7 @@ select = ["I", "E", "F", "B", "C", "UP"]
 ignore = ["E501", "C901", "F841", "B017"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.13"
 warn_unused_configs = true
 ignore_missing_imports = true
+disable_error_code = ["import-untyped"]

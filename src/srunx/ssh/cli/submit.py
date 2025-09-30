@@ -72,7 +72,7 @@ def run_from_argv(argv: list[str]) -> None:
         "--port", type=int, default=22, help="SSH port (default: 22)"
     )
     conn_group.add_argument(
-        "--config", help="Config file path (default: ~/.config/ssh-slurm.json)"
+        "--config", help="Config file path (default: ~/.config/srunx/config.json)"
     )
     conn_group.add_argument(
         "--ssh-config", help="SSH config file path (default: ~/.ssh/config)"

@@ -221,8 +221,8 @@ class TestBaseJob:
         assert job.can_retry() is True
         assert job.should_retry() is False  # Not failed yet
 
-        # Simulate failure
-        job.status = JobStatus.FAILED
+        # Simulate failure - use _status directly to avoid property getter
+        job._status = JobStatus.FAILED
         assert job.should_retry() is True
 
         # First retry

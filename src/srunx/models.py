@@ -477,7 +477,7 @@ class BaseJob(BaseModel):
 
     def should_retry(self) -> bool:
         """Check if the job should be retried based on status and retry count."""
-        return self.status == JobStatus.FAILED and self.can_retry()
+        return self._status.value == "FAILED" and self.can_retry()
 
 
 class Job(BaseJob):

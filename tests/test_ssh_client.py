@@ -186,7 +186,7 @@ class TestSSHSlurmClient:
 
             result = mock_ssh_client.upload_file(temp_path)
 
-            assert result.startswith("/tmp/ssh-slurm/")
+            assert result.startswith("/tmp/srunx/")
             # Check that the base filename (without directory) is in the result
             filename_base = Path(temp_path).stem  # filename without extension
             assert filename_base in result
@@ -275,7 +275,7 @@ class TestSSHSlurmClient:
         job = SlurmJob(
             job_id="12345",
             name="test_job",
-            script_path="/tmp/ssh-slurm/test_script.sh",
+            script_path="/tmp/srunx/test_script.sh",
             is_local_script=True,
             _cleanup=True,
         )
@@ -285,14 +285,14 @@ class TestSSHSlurmClient:
         mock_ssh_client.cleanup_job_files(job)
 
         mock_ssh_client.cleanup_file.assert_called_once_with(
-            "/tmp/ssh-slurm/test_script.sh"
+            "/tmp/srunx/test_script.sh"
         )
 
     def test_cleanup_job_files_no_cleanup(self, mock_ssh_client):
         job = SlurmJob(
             job_id="12345",
             name="test_job",
-            script_path="/tmp/ssh-slurm/test_script.sh",
+            script_path="/tmp/srunx/test_script.sh",
             _cleanup=False,
         )
 

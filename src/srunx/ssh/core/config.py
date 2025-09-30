@@ -33,9 +33,9 @@ class ConfigManager:
         self.load_config()
 
     def _get_default_config_path(self) -> Path:
-        config_dir = Path.home() / ".config"
+        config_dir = Path.home() / ".config" / "srunx"
         config_dir.mkdir(exist_ok=True)
-        return config_dir / "ssh-slurm.json"
+        return config_dir / "config.json"
 
     def load_config(self) -> None:
         if self.config_path.exists():
