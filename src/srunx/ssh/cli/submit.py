@@ -393,7 +393,7 @@ def run_from_argv(argv: list[str]) -> None:
             if slack_client:
                 send_slack_notification(
                     slack_client,
-                    f"🌋 SUBMITTED     Job {job.name:<12} (ID: {job.job_id}) on {display_host}",
+                    f"⚡ SUBMITTED     Job {job.name:<12} (ID: {job.job_id}) on {display_host}",
                 )
 
             # Monitor job if requested
