@@ -254,6 +254,132 @@ def submit_job(
         raise typer.Exit(1) from e
 
 
+@ssh_app.command("test")
+def test_connection(
+    # Connection options
+    host: Annotated[
+        str | None, typer.Option("--host", "-H", help="SSH host from .ssh/config")
+    ] = None,
+    profile: Annotated[
+        str | None, typer.Option("--profile", "-p", help="Use saved profile")
+    ] = None,
+    hostname: Annotated[
+        str | None, typer.Option("--hostname", help="DGX server hostname")
+    ] = None,
+    username: Annotated[
+        str | None, typer.Option("--username", help="SSH username")
+    ] = None,
+    key_file: Annotated[
+        str | None, typer.Option("--key-file", help="SSH private key file path")
+    ] = None,
+    port: Annotated[int, typer.Option("--port", help="SSH port")] = 22,
+    config: Annotated[
+        str | None,
+        typer.Option(
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
+        ),
+    ] = None,
+    ssh_config: Annotated[
+        str | None,
+        typer.Option(
+            "--ssh-config", help="SSH config file path (default: ~/.ssh/config)"
+        ),
+    ] = None,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="Enable verbose logging")
+    ] = False,
+):
+    """Test SSH connection and SLURM availability."""
+    from rich.table import Table
+
+    setup_logging(verbose)
+
+    try:
+        config_manager = ConfigManager(config)
+        connection_params, display_host = _determine_connection_params(
+            host,
+            profile,
+            hostname,
+            username,
+            key_file,
+            port,
+            ssh_config,
+            config_manager,
+        )
+
+        # Show connection info
+        console.print("\n[bold]Testing SSH connection to:[/bold]")
+        console.print(f"  Hostname: {connection_params['hostname']}")
+        console.print(f"  Username: {connection_params['username']}")
+        console.print(f"  Port: {connection_params.get('port', 22)}")
+        if connection_params.get("proxy_jump"):
+            console.print(f"  ProxyJump: {connection_params['proxy_jump']}")
+        console.print()
+
+        # Test connection
+        with Status(
+            "[bold yellow]Testing connection...[/bold yellow]", console=console
+        ):
+            client = _create_ssh_client(connection_params, {}, verbose)
+            result = client.test_connection()
+
+        # Display results
+        table = Table(title="Connection Test Results", show_header=True)
+        table.add_column("Check", style="cyan", no_wrap=True)
+        table.add_column("Status", style="magenta")
+        table.add_column("Details", style="white")
+
+        # SSH connection
+        ssh_status = "✅ Connected" if result["ssh_connected"] else "❌ Failed"
+        ssh_details = ""
+        if result["ssh_connected"]:
+            ssh_details = f"Host: {result['hostname']}, User: {result['user']}"
+        elif "error" in result:
+            ssh_details = str(result["error"])
+
+        table.add_row("SSH Connection", ssh_status, ssh_details)
+
+        console.print()
+        console.print(table)
+        console.print()
+
+        # Summary
+        if result["ssh_connected"]:
+            console.print(
+                Panel(
+                    "[bold green]✅ Connection test successful![/bold green]\n"
+                    "SSH connection is working.",
+                    title="Success",
+                    border_style="green",
+                )
+            )
+            raise typer.Exit(0)
+        elif result["ssh_connected"]:
+            console.print(
+                Panel(
+                    "[bold yellow]⚠️  Partial success[/bold yellow]\n"
+                    "SSH connection is working.",
+                    title="Warning",
+                    border_style="yellow",
+                )
+            )
+            raise typer.Exit(1)
+        else:
+            console.print(
+                Panel(
+                    "[bold red]❌ Connection test failed[/bold red]\n"
+                    f"Error: {result.get('error', 'Unknown error')}",
+                    title="Failed",
+                    border_style="red",
+                )
+            )
+            raise typer.Exit(1)
+
+    except Exception as e:
+        console.print(f"\n[red]Error: {e}[/red]")
+        raise typer.Exit(1) from e
+
+
 @ssh_app.callback(invoke_without_command=True)
 def ssh_main(ctx: typer.Context):
     """
@@ -264,6 +390,7 @@ def ssh_main(ctx: typer.Context):
     and direct connections.
 
     Examples:
+      srunx ssh test --host dgx-server
       srunx ssh submit train.py --host dgx-server
       srunx ssh submit experiment.sh --profile ml-cluster
       srunx ssh submit script.py --hostname server.com --username user --key-file ~/.ssh/key

@@ -1,27 +1,26 @@
 import json
 import os
-from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Self
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 
-@dataclass
-class ServerProfile:
-    hostname: str
-    username: str
-    key_filename: str
-    port: int = 22
-    description: str | None = None
-    ssh_host: str | None = None  # SSH config host name if using SSH config
-    proxy_jump: str | None = None  # ProxyJump host name if using ProxyJump
-    env_vars: dict[str, str] | None = None  # Environment variables for this profile
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Self:
-        return cls(**data)
+class ServerProfile(BaseModel):
+    hostname: str = Field(..., description="The hostname of the server")
+    username: str = Field(..., description="The username of the server")
+    key_filename: str = Field(..., description="The key filename of the server")
+    port: int = Field(22, description="The port of the server")
+    description: str | None = Field(None, description="The description of the server")
+    ssh_host: str | None = Field(
+        None, description="The SSH config host name if using SSH config"
+    )
+    proxy_jump: str | None = Field(
+        None, description="The ProxyJump host name if using ProxyJump"
+    )
+    env_vars: dict[str, str] | None = Field(
+        None, description="The environment variables for this profile"
+    )
 
 
 class ConfigManager:
@@ -34,7 +33,7 @@ class ConfigManager:
 
     def _get_default_config_path(self) -> Path:
         config_dir = Path.home() / ".config" / "srunx"
-        config_dir.mkdir(exist_ok=True)
+        config_dir.mkdir(parents=True, exist_ok=True)
         return config_dir / "config.json"
 
     def load_config(self) -> None:
@@ -69,7 +68,7 @@ class ConfigManager:
         if "profiles" not in self.config_data:
             self.config_data["profiles"] = {}
 
-        self.config_data["profiles"][name] = profile.to_dict()
+        self.config_data["profiles"][name] = profile.model_dump()
         self.save_config()
 
     def remove_profile(self, name: str) -> bool:
@@ -86,13 +85,13 @@ class ConfigManager:
     def get_profile(self, name: str) -> ServerProfile | None:
         profiles = self.config_data.get("profiles", {})
         if name in profiles:
-            return ServerProfile.from_dict(profiles[name])
+            return ServerProfile.model_validate(profiles[name])
         return None
 
     def list_profiles(self) -> dict[str, ServerProfile]:
         profiles = {}
         for name, data in self.config_data.get("profiles", {}).items():
-            profiles[name] = ServerProfile.from_dict(data)
+            profiles[name] = ServerProfile.model_validate(data)
         return profiles
 
     def set_current_profile(self, name: str) -> bool:

@@ -1,7 +1,6 @@
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -10,11 +9,11 @@ from srunx.ssh.core.ssh_config import SSHConfigParser, SSHHost
 
 class TestSSHHost:
     def test_create_basic_host(self):
-        host = SSHHost(hostname="example.com")
+        host = SSHHost(hostname="example.com", user="testuser")
 
         assert host.hostname == "example.com"
-        assert host.user is None
-        assert host.port is None
+        assert host.user == "testuser"
+        assert host.port == 22
         assert host.identity_file is None
         assert host.proxy_command is None
         assert host.proxy_jump is None
@@ -34,36 +33,10 @@ class TestSSHHost:
         assert host.hostname == "dgx.example.com"
         assert host.user == "researcher"
         assert host.port == 2222
-        assert host.identity_file == "~/.ssh/dgx_key"
+        assert host.identity_file == os.path.expanduser("~/.ssh/dgx_key")
         assert host.proxy_command == "ssh proxy-host nc %h %p"
         assert host.proxy_jump == "bastion.example.com"
         assert host.forward_agent is True
-
-    def test_effective_properties(self):
-        host = SSHHost(
-            hostname="example.com",
-            user="testuser",
-            port=2222,
-            identity_file="~/.ssh/test_key",
-        )
-
-        assert host.effective_hostname == "example.com"
-        assert host.effective_user == "testuser"
-        assert host.effective_port == 2222
-
-    def test_effective_port_default(self):
-        host = SSHHost(hostname="example.com")
-        assert host.effective_port == 22
-
-    def test_effective_identity_file_expansion(self):
-        host = SSHHost(hostname="example.com", identity_file="~/.ssh/id_rsa")
-
-        with patch.dict(os.environ, {"HOME": "/home/testuser"}):
-            assert host.effective_identity_file == "/home/testuser/.ssh/id_rsa"
-
-    def test_effective_identity_file_none(self):
-        host = SSHHost(hostname="example.com")
-        assert host.effective_identity_file is None
 
 
 class TestSSHConfigParser:
@@ -102,6 +75,7 @@ Host dgx-*
 
 Host proxy-test
     HostName internal.example.com
+    User internaluser
     ProxyCommand ssh bastion nc %h %p
 
 Host *

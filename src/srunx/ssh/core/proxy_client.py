@@ -23,19 +23,15 @@ class ProxySSHClient:
             self.proxy_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
             proxy_connect_kwargs = {
-                "hostname": proxy_host_config.effective_hostname,
-                "username": proxy_host_config.effective_user,
-                "port": proxy_host_config.effective_port,
+                "hostname": proxy_host_config.hostname,
+                "username": proxy_host_config.user,
+                "port": proxy_host_config.port,
             }
 
-            if proxy_host_config.effective_identity_file:
-                proxy_connect_kwargs["key_filename"] = (
-                    proxy_host_config.effective_identity_file
-                )
+            if proxy_host_config.identity_file:
+                proxy_connect_kwargs["key_filename"] = proxy_host_config.identity_file
 
-            self.logger.info(
-                f"Connecting to proxy host: {proxy_host_config.effective_hostname}"
-            )
+            self.logger.info(f"Connecting to proxy host: {proxy_host_config.hostname}")
             self.proxy_client.connect(**proxy_connect_kwargs)
 
             # Create a channel through the proxy to the target host
@@ -83,8 +79,8 @@ class ProxySSHClient:
         # Create proxy connection
         proxy_channel = self.create_proxy_connection(
             proxy_host_config,
-            target_host_config.effective_hostname,
-            target_host_config.effective_port,
+            target_host_config.hostname,
+            target_host_config.port,
         )
 
         # Connect to target through proxy
@@ -96,28 +92,24 @@ class ProxySSHClient:
         target_transport.start_client()
 
         # Authenticate with target host
-        if target_host_config.effective_identity_file:
+        if target_host_config.identity_file:
             try:
                 key = paramiko.RSAKey.from_private_key_file(
-                    target_host_config.effective_identity_file
+                    target_host_config.identity_file
                 )
-                target_transport.auth_publickey(target_host_config.effective_user, key)
+                target_transport.auth_publickey(target_host_config.user, key)
             except paramiko.SSHException:
                 try:
                     key = paramiko.Ed25519Key.from_private_key_file(
-                        target_host_config.effective_identity_file
+                        target_host_config.identity_file
                     )
-                    target_transport.auth_publickey(
-                        target_host_config.effective_user, key
-                    )
+                    target_transport.auth_publickey(target_host_config.user, key)
                 except paramiko.SSHException:
                     try:
                         key = paramiko.ECDSAKey.from_private_key_file(
-                            target_host_config.effective_identity_file
+                            target_host_config.identity_file
                         )
-                        target_transport.auth_publickey(
-                            target_host_config.effective_user, key
-                        )
+                        target_transport.auth_publickey(target_host_config.user, key)
                     except paramiko.SSHException as e:
                         self.close_proxy()
                         raise Exception(
@@ -135,7 +127,7 @@ class ProxySSHClient:
         target_client._transport = target_transport
 
         self.logger.info(
-            f"Successfully connected to {target_host_config.effective_hostname} through {proxy_host_name}"
+            f"Successfully connected to {target_host_config.hostname} through {proxy_host_name}"
         )
         return target_client, proxy_channel
 

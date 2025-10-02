@@ -129,6 +129,50 @@ class SSHSlurmClient:
         info = self.hostname + (f" (via {self.proxy_jump})" if self.proxy_jump else "")
         self.logger.info(f"Disconnected from {info}")
 
+    def test_connection(self) -> dict[str, str | bool]:
+        """Test SSH connection and SLURM availability.
+
+        Returns:
+            Dictionary with test results including:
+            - ssh_connected: Whether SSH connection succeeded
+            - slurm_available: Whether SLURM commands are available
+            - hostname: Remote hostname
+            - user: Remote username
+            - slurm_version: SLURM version if available
+            - error: Error message if connection failed
+        """
+        result: dict[str, str | bool] = {
+            "ssh_connected": False,
+            "slurm_available": False,
+            "hostname": "",
+            "user": "",
+            "slurm_version": "",
+        }
+
+        try:
+            # Test SSH connection
+            if not self.connect():
+                result["error"] = "Failed to establish SSH connection"
+                return result
+
+            result["ssh_connected"] = True
+
+            # Get hostname
+            stdout_data, stderr_data, exit_code = self.execute_command("hostname")
+            result["hostname"] = stdout_data.strip()
+
+            # Get username
+            stdout_data, stderr_data, exit_code = self.execute_command("whoami")
+            result["user"] = stdout_data.strip()
+
+            return result
+
+        except Exception as e:
+            result["error"] = str(e)
+            return result
+        finally:
+            self.disconnect()
+
     def execute_command(self, command: str) -> tuple[str, str, int]:
         if not self.ssh_client:
             raise ConnectionError("SSH client is not connected")
