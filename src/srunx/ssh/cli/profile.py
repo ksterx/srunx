@@ -50,7 +50,7 @@ def cmd_add(args, config_manager: ConfigManager):
             sys.exit(1)
 
         # Verify required SSH config values
-        if not ssh_host.effective_user:
+        if not ssh_host.user:
             print(
                 f"Error: No username found for SSH host '{args.ssh_host}' in SSH config",
                 file=sys.stderr,
@@ -73,19 +73,19 @@ def cmd_add(args, config_manager: ConfigManager):
             sys.exit(1)
 
         profile = ServerProfile(
-            hostname=ssh_host.effective_hostname,
-            username=ssh_host.effective_user,
+            hostname=ssh_host.hostname,
+            username=ssh_host.user,
             key_filename=ssh_host.effective_identity_file,
-            port=ssh_host.effective_port,
+            port=ssh_host.port,
             description=getattr(args, "description", None),
             ssh_host=args.ssh_host,  # Store the SSH config host name
         )
 
         print(f"Added profile '{args.name}' using SSH config host '{args.ssh_host}'")
-        print(f"  Hostname: {ssh_host.effective_hostname}")
-        print(f"  Username: {ssh_host.effective_user}")
+        print(f"  Hostname: {ssh_host.hostname}")
+        print(f"  Username: {ssh_host.user}")
         print(f"  Key file: {ssh_host.effective_identity_file}")
-        print(f"  Port: {ssh_host.effective_port}")
+        print(f"  Port: {ssh_host.port}")
         if ssh_host.proxy_jump:
             print(f"  ProxyJump: {ssh_host.proxy_jump}")
 
@@ -202,10 +202,10 @@ def cmd_update(args, config_manager: ConfigManager):
 
         # Update with SSH config values
         updates["ssh_host"] = args.ssh_host
-        updates["hostname"] = ssh_host.effective_hostname
-        updates["username"] = ssh_host.effective_user
+        updates["hostname"] = ssh_host.hostname
+        updates["username"] = ssh_host.user
         updates["key_filename"] = ssh_host.effective_identity_file
-        updates["port"] = ssh_host.effective_port
+        updates["port"] = ssh_host.port
         print(f"Updated profile '{args.name}' to use SSH config host '{args.ssh_host}'")
 
     # Handle direct parameter updates

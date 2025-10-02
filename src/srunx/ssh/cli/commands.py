@@ -638,10 +638,10 @@ def _determine_connection_params(
             raise typer.Exit(1)
 
         connection_params = {
-            "hostname": ssh_host.effective_hostname,
-            "username": ssh_host.effective_user,
+            "hostname": ssh_host.hostname,
+            "username": ssh_host.user,
             "key_filename": ssh_host.effective_identity_file,
-            "port": ssh_host.effective_port,
+            "port": ssh_host.port,
             "proxy_jump": ssh_host.proxy_jump,
         }
         display_host = host
@@ -662,10 +662,10 @@ def _determine_connection_params(
                 )
                 raise typer.Exit(1)
             connection_params = {
-                "hostname": ssh_host.effective_hostname,
-                "username": ssh_host.effective_user,
+                "hostname": ssh_host.hostname,
+                "username": ssh_host.user,
                 "key_filename": ssh_host.effective_identity_file,
-                "port": ssh_host.effective_port,
+                "port": ssh_host.port,
                 "proxy_jump": ssh_host.proxy_jump,
             }
             display_host = f"{profile} ({profile_obj.ssh_host})"
@@ -708,10 +708,10 @@ def _determine_connection_params(
                     )
                     raise typer.Exit(1)
                 connection_params = {
-                    "hostname": ssh_host.effective_hostname,
-                    "username": ssh_host.effective_user,
+                    "hostname": ssh_host.hostname,
+                    "username": ssh_host.user,
                     "key_filename": ssh_host.effective_identity_file,
-                    "port": ssh_host.effective_port,
+                    "port": ssh_host.port,
                     "proxy_jump": ssh_host.proxy_jump,
                 }
                 display_host = f"current ({profile_obj.ssh_host})"

@@ -64,9 +64,9 @@ class SSHConfigParser:
             if key == "host":
                 # Save previous host config
                 if current_host:
-                    self.hosts[current_host] = self._create_host(
-                        current_host, current_config
-                    )
+                    host = self._create_host(current_host, current_config)
+                    if host:
+                        self.hosts[current_host] = host
 
                 # Start new host
                 current_host = value
@@ -76,12 +76,17 @@ class SSHConfigParser:
 
         # Save last host
         if current_host:
-            self.hosts[current_host] = self._create_host(current_host, current_config)
+            host = self._create_host(current_host, current_config)
+            if host:
+                self.hosts[current_host] = host
 
-    def _create_host(self, host_pattern: str, config: dict[str, str]) -> SSHHost:
+    def _create_host(self, host_pattern: str, config: dict[str, str]) -> SSHHost | None:
         # For specific hosts, use HostName if specified, otherwise use the host pattern
         # For wildcard patterns (*), always use the provided hostname when querying
         hostname = config.get("hostname", host_pattern)
+
+        if "user" not in config:
+            return None
 
         # Parse port
         if config.get("port"):

@@ -148,10 +148,10 @@ def run_from_argv(argv: list[str]) -> None:
                 sys.exit(1)
 
             connection_params = {
-                "hostname": ssh_host.effective_hostname,
-                "username": ssh_host.effective_user,
+                "hostname": ssh_host.hostname,
+                "username": ssh_host.user,
                 "key_filename": ssh_host.effective_identity_file,
-                "port": ssh_host.effective_port,
+                "port": ssh_host.port,
                 "proxy_jump": ssh_host.proxy_jump,
             }
             display_host = args.host  # Use SSH config host name for display
@@ -173,10 +173,10 @@ def run_from_argv(argv: list[str]) -> None:
                     )
                     sys.exit(1)
                 connection_params = {
-                    "hostname": ssh_host.effective_hostname,
-                    "username": ssh_host.effective_user,
+                    "hostname": ssh_host.hostname,
+                    "username": ssh_host.user,
                     "key_filename": ssh_host.effective_identity_file,
-                    "port": ssh_host.effective_port,
+                    "port": ssh_host.port,
                     "proxy_jump": ssh_host.proxy_jump,
                 }
                 display_host = (
@@ -220,10 +220,10 @@ def run_from_argv(argv: list[str]) -> None:
                         )
                         sys.exit(1)
                     connection_params = {
-                        "hostname": ssh_host.effective_hostname,
-                        "username": ssh_host.effective_user,
+                        "hostname": ssh_host.hostname,
+                        "username": ssh_host.user,
                         "key_filename": ssh_host.effective_identity_file,
-                        "port": ssh_host.effective_port,
+                        "port": ssh_host.port,
                         "proxy_jump": ssh_host.proxy_jump,
                     }
                     display_host = (
