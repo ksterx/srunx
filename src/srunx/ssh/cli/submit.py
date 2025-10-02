@@ -150,7 +150,7 @@ def run_from_argv(argv: list[str]) -> None:
             connection_params = {
                 "hostname": ssh_host.hostname,
                 "username": ssh_host.user,
-                "key_filename": ssh_host.effective_identity_file,
+                "key_filename": ssh_host.identity_file,
                 "port": ssh_host.port,
                 "proxy_jump": ssh_host.proxy_jump,
             }
@@ -175,7 +175,7 @@ def run_from_argv(argv: list[str]) -> None:
                 connection_params = {
                     "hostname": ssh_host.hostname,
                     "username": ssh_host.user,
-                    "key_filename": ssh_host.effective_identity_file,
+                    "key_filename": ssh_host.identity_file,
                     "port": ssh_host.port,
                     "proxy_jump": ssh_host.proxy_jump,
                 }
@@ -222,7 +222,7 @@ def run_from_argv(argv: list[str]) -> None:
                     connection_params = {
                         "hostname": ssh_host.hostname,
                         "username": ssh_host.user,
-                        "key_filename": ssh_host.effective_identity_file,
+                        "key_filename": ssh_host.identity_file,
                         "port": ssh_host.port,
                         "proxy_jump": ssh_host.proxy_jump,
                     }

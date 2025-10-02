@@ -195,12 +195,11 @@ def handle_test_command(argv: list[str]) -> None:
             console.print(
                 Panel(
                     "[bold green]✅ Connection test successful![/bold green]\n"
-                    "SSH connection is working and SLURM is available.",
+                    "SSH connection is working.",
                     title="Success",
                     border_style="green",
                 )
             )
-            sys.exit(0)
         elif result["ssh_connected"]:
             console.print(
                 Panel(

@@ -312,6 +312,7 @@ def test_connection(
         console.print(f"  Hostname: {connection_params['hostname']}")
         console.print(f"  Username: {connection_params['username']}")
         console.print(f"  Port: {connection_params.get('port', 22)}")
+        console.print(f"  Key file: {connection_params.get('key_filename', 'None')}")
         if connection_params.get("proxy_jump"):
             console.print(f"  ProxyJump: {connection_params['proxy_jump']}")
         console.print()
@@ -353,7 +354,6 @@ def test_connection(
                     border_style="green",
                 )
             )
-            raise typer.Exit(0)
         elif result["ssh_connected"]:
             console.print(
                 Panel(
@@ -640,7 +640,7 @@ def _determine_connection_params(
         connection_params = {
             "hostname": ssh_host.hostname,
             "username": ssh_host.user,
-            "key_filename": ssh_host.effective_identity_file,
+            "key_filename": ssh_host.identity_file,
             "port": ssh_host.port,
             "proxy_jump": ssh_host.proxy_jump,
         }
@@ -664,7 +664,7 @@ def _determine_connection_params(
             connection_params = {
                 "hostname": ssh_host.hostname,
                 "username": ssh_host.user,
-                "key_filename": ssh_host.effective_identity_file,
+                "key_filename": ssh_host.identity_file,
                 "port": ssh_host.port,
                 "proxy_jump": ssh_host.proxy_jump,
             }
@@ -710,7 +710,7 @@ def _determine_connection_params(
                 connection_params = {
                     "hostname": ssh_host.hostname,
                     "username": ssh_host.user,
-                    "key_filename": ssh_host.effective_identity_file,
+                    "key_filename": ssh_host.identity_file,
                     "port": ssh_host.port,
                     "proxy_jump": ssh_host.proxy_jump,
                 }
