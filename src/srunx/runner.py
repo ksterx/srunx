@@ -583,7 +583,7 @@ class WorkflowRunner:
 
         def execute_job(job: RunnableJobType) -> RunnableJobType:
             """Execute a single job."""
-            logger.info(f"🌋 {'SUBMITTED':<12} Job {job.name:<12}")
+            logger.info(f"⚡ {'SUBMITTED':<12} Job {job.name:<12}")
 
             try:
                 result = self.slurm.run(job)

@@ -408,7 +408,9 @@ print(f"Job completed with status: {completed_job.status}")
 
 ### Slack Integration
 
-![image](public/slack_screenshot.png)
+<div align="center">
+  <img src="public/slack_screenshot.png" width="500">
+</div>
 
 ```python
 from srunx.callbacks import SlackCallback

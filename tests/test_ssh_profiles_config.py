@@ -80,7 +80,7 @@ class TestConfigManager:
         mock_home.return_value = temp_dir
 
         config_manager = ConfigManager()
-        expected_path = temp_dir / ".config" / "ssh-slurm.json"
+        expected_path = temp_dir / ".config" / "srunx" / "config.json"
 
         assert config_manager.config_path == expected_path
 
@@ -97,13 +97,14 @@ class TestConfigManager:
 
         assert "new-profile" in config_manager.config_data["profiles"]
         assert (
-            config_manager.config_data["profiles"]["new-profile"] == profile.to_dict()
+            config_manager.config_data["profiles"]["new-profile"]
+            == profile.model_dump()
         )
 
         # Verify it was saved to file
         with open(temp_config_file) as f:
             saved_data = json.load(f)
-        assert saved_data["profiles"]["new-profile"] == profile.to_dict()
+        assert saved_data["profiles"]["new-profile"] == profile.model_dump()
 
     def test_get_profile_existing(self, temp_config_file, sample_config_data):
         with open(temp_config_file, "w") as f:

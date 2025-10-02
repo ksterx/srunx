@@ -1,35 +1,30 @@
 import os
 import re
-from dataclasses import dataclass
 from pathlib import Path
 
+from pydantic import BaseModel, Field, field_validator
 
-@dataclass
-class SSHHost:
-    hostname: str
-    user: str | None = None
-    port: int | None = None
-    identity_file: str | None = None
-    proxy_command: str | None = None
-    proxy_jump: str | None = None
-    forward_agent: bool | None = None
 
-    @property
-    def effective_hostname(self) -> str:
-        return self.hostname
+class SSHHost(BaseModel):
+    hostname: str = Field(..., description="The hostname of the SSH host")
+    user: str = Field(..., description="The username of the SSH host")
+    port: int = Field(22, description="The port of the SSH host")
+    identity_file: str | None = Field(
+        None, description="The identity file of the SSH host"
+    )
+    proxy_command: str | None = Field(
+        None, description="The proxy command of the SSH host"
+    )
+    proxy_jump: str | None = Field(None, description="The proxy jump of the SSH host")
+    forward_agent: bool | None = Field(
+        None, description="The forward agent of the SSH host"
+    )
 
-    @property
-    def effective_user(self) -> str | None:
-        return self.user
-
-    @property
-    def effective_port(self) -> int:
-        return self.port or 22
-
-    @property
-    def effective_identity_file(self) -> str | None:
-        if self.identity_file:
-            return os.path.expanduser(self.identity_file)
+    @field_validator("identity_file")
+    @classmethod
+    def effective_identity_file(cls, v: str | None) -> str | None:
+        if v:
+            return os.path.expanduser(v)
         return None
 
 
@@ -69,9 +64,9 @@ class SSHConfigParser:
             if key == "host":
                 # Save previous host config
                 if current_host:
-                    self.hosts[current_host] = self._create_host(
-                        current_host, current_config
-                    )
+                    host = self._create_host(current_host, current_config)
+                    if host:
+                        self.hosts[current_host] = host
 
                 # Start new host
                 current_host = value
@@ -81,20 +76,23 @@ class SSHConfigParser:
 
         # Save last host
         if current_host:
-            self.hosts[current_host] = self._create_host(current_host, current_config)
+            host = self._create_host(current_host, current_config)
+            if host:
+                self.hosts[current_host] = host
 
-    def _create_host(self, host_pattern: str, config: dict[str, str]) -> SSHHost:
+    def _create_host(self, host_pattern: str, config: dict[str, str]) -> SSHHost | None:
         # For specific hosts, use HostName if specified, otherwise use the host pattern
         # For wildcard patterns (*), always use the provided hostname when querying
         hostname = config.get("hostname", host_pattern)
 
+        if "user" not in config:
+            return None
+
         # Parse port
-        port = None
-        if "port" in config:
-            try:
-                port = int(config["port"])
-            except ValueError:
-                pass
+        if config.get("port"):
+            port = int(config["port"])
+        else:
+            port = 22
 
         # Parse boolean values
         forward_agent = None
@@ -103,7 +101,7 @@ class SSHConfigParser:
 
         return SSHHost(
             hostname=hostname,
-            user=config.get("user"),
+            user=config["user"],
             port=port,
             identity_file=config.get("identityfile"),
             proxy_command=config.get("proxycommand"),
@@ -157,8 +155,8 @@ class SSHConfigParser:
         host = self.get_host(hostname)
         files = []
 
-        if host and host.effective_identity_file:
-            files.append(host.effective_identity_file)
+        if host and host.identity_file:
+            files.append(host.identity_file)
 
         # Add default identity files if none specified
         if not files:
@@ -171,7 +169,7 @@ class SSHConfigParser:
             for key in default_keys:
                 key_path = os.path.expanduser(key)
                 if os.path.exists(key_path):
-                    files.append(key_path)
+                    files.append(str(key_path))
 
         return files
 

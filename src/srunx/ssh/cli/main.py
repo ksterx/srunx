@@ -8,13 +8,19 @@ def show_ssh_help() -> None:
     help_text = """
 Usage: srunx ssh <script> [options]
        srunx ssh profile <command> [options]
+       srunx ssh test [options]
 
 Submit and monitor SLURM jobs on remote servers via SSH.
 
 SCRIPT SUBMISSION:
   srunx ssh <script_file> [OPTIONS]
-  
+
   Submit a local script file to a remote SLURM server.
+
+CONNECTION TEST:
+  srunx ssh test [OPTIONS]
+
+  Test SSH connection and SLURM availability.
 
 CONNECTION OPTIONS:
   --host HOST                SSH config host name (from ~/.ssh/config)
@@ -42,6 +48,10 @@ PROFILE MANAGEMENT:
   srunx ssh profile update NAME OPTIONS    Update profile
 
 EXAMPLES:
+
+  # Test connection
+  srunx ssh test --host dgx-server
+  srunx ssh test --profile ml-cluster
 
   # Submit using SSH config host
   srunx ssh train.py --host dgx-server
@@ -73,7 +83,7 @@ For more details on specific commands, use:
 def run_from_argv(argv: list[str]) -> None:
     """Main CLI entry point with clean subcommand routing for ssh integration.
 
-    Delegates to profile or submit handlers depending on first arg.
+    Delegates to profile, test, or submit handlers depending on first arg.
 
     If no arguments provided, shows help with examples.
     """
@@ -81,6 +91,14 @@ def run_from_argv(argv: list[str]) -> None:
     # If no arguments, show comprehensive help
     if not argv:
         show_ssh_help()
+        return
+
+    # Check if first argument is 'test' - if so, handle connection test
+    if len(argv) > 0 and argv[0] == "test":
+        from .test import handle_test_command
+
+        # Remove 'test' and parse the rest
+        handle_test_command(argv[1:])
         return
 
     # Check if first argument is 'profile' - if so, handle profile commands

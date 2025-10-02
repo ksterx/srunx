@@ -91,7 +91,7 @@ class SlackCallback(Callback):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"`🌋 {'SUBMITTED':<12} Job {job.name:<12} (ID: {job.job_id})`",
+                        "text": f"`⚡ {'SUBMITTED':<12} Job {job.name:<12} (ID: {job.job_id})`",
                     },
                 }
             ],

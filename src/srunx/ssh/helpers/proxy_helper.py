@@ -17,14 +17,14 @@ def suggest_port_forwarding(host: str, ssh_config_path: str | None = None):
     print("\nTo use this host with srunx ssh, consider these alternatives:")
     print("\n1. SSH Port Forwarding:")
     print(
-        f"   ssh -L <local_port>:{ssh_host.hostname}:{ssh_host.effective_port} {ssh_host.proxy_jump}"
+        f"   ssh -L <local_port>:{ssh_host.hostname}:{ssh_host.port} {ssh_host.proxy_jump}"
     )
     print("   Then create a profile pointing to localhost:<local_port>")
 
     print("\n2. Create a direct connection profile:")
     print("   If you have direct access to the target host, create a profile with:")
     print(
-        f"   srunx ssh profile add {host}-direct <real_hostname> {ssh_host.effective_user} {ssh_host.effective_identity_file}"
+        f"   srunx ssh profile add {host}-direct <real_hostname> {ssh_host.user} {ssh_host.identity_file}"
     )
 
     print("\n3. Use SSH config with a bastion setup:")
@@ -65,10 +65,10 @@ def main():
         sys.exit(1)
 
     print(f"SSH Config Analysis for '{args.host}':")
-    print(f"  Hostname: {ssh_host.effective_hostname}")
-    print(f"  Username: {ssh_host.effective_user}")
-    print(f"  Port: {ssh_host.effective_port}")
-    print(f"  Identity File: {ssh_host.effective_identity_file}")
+    print(f"  Hostname: {ssh_host.hostname}")
+    print(f"  Username: {ssh_host.user}")
+    print(f"  Port: {ssh_host.port}")
+    print(f"  Identity File: {ssh_host.identity_file}")
     if ssh_host.proxy_jump:
         print(f"  ProxyJump: {ssh_host.proxy_jump}")
 
@@ -79,10 +79,8 @@ def main():
         print(f"\nHost '{args.host}' should work directly with srunx ssh.")
 
     if args.test_connection and not ssh_host.proxy_jump:
-        print(
-            f"\nTesting connectivity to {ssh_host.effective_hostname}:{ssh_host.effective_port}..."
-        )
-        if check_connectivity(ssh_host.effective_hostname, ssh_host.effective_port):
+        print(f"\nTesting connectivity to {ssh_host.hostname}:{ssh_host.port}...")
+        if check_connectivity(ssh_host.hostname, ssh_host.port):
             print("✓ Direct connection successful")
         else:
             print("✗ Direct connection failed")
