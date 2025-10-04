@@ -465,4 +465,5 @@ $RECYCLE.BIN/
 .coverage
 coverage.xml
 docs/generated/
-public/
+public/*
+!public/slack_screenshot.png
