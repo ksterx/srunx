@@ -5,6 +5,8 @@
 
 import os
 import sys
+import tomllib
+from pathlib import Path
 
 sys.path.insert(0, os.path.abspath("../src"))
 
@@ -14,7 +16,20 @@ sys.path.insert(0, os.path.abspath("../src"))
 project = "srunx"
 copyright = "2025, ksterx"
 author = "ksterx"
-release = "0.2.1"
+
+# Derive version from pyproject.toml
+# Fallback to env var SRUNX_DOCS_VERSION or a default if unavailable
+try:
+    _project_root = Path(__file__).resolve().parents[1]
+    _pyproject = _project_root / "pyproject.toml"
+    with _pyproject.open("rb") as f:
+        _data = tomllib.load(f)
+    release = _data["project"]["version"]
+except Exception:
+    release = os.environ.get("SRUNX_DOCS_VERSION", "0.0.0")
+
+# Optional: Sphinx "version" (short X.Y) can be set if needed
+version = release
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
