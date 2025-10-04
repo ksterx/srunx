@@ -35,7 +35,7 @@ jobs:
         uses: actions/configure-pages@v4
 
       - name: Generate API docs
-        run: uv run sphinx-apidoc -f -o docs/generated src/srunx
+        run: uv run sphinx-apidoc --implicit-namespaces -f -o docs/generated src/srunx
 
       - name: Build docs
         run: |
