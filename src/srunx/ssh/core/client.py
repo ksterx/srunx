@@ -527,16 +527,35 @@ class SSHSlurmClient:
         try:
             path_obj = Path(script_path)
             if path_obj.exists():
-                # Local file: upload and submit
+                # Local file: upload to temp directory
                 remote_path = self.upload_file(script_path)
-                job = self.submit_sbatch_job(
-                    f"#!/bin/bash\n{remote_path}", job_name=job_name
+
+                # Generate job name from filename if not provided
+                if not job_name:
+                    job_name = path_obj.stem
+
+                # Build sbatch command with job name and log file options
+                safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", job_name)
+                cmd = f"{self._get_slurm_command('sbatch')}"
+                cmd += f" -J {safe_name}"
+                cmd += " -o $SLURM_LOG_DIR/%x_%j.log"
+                cmd += f" {remote_path}"
+
+                stdout, stderr, exit_code = self._execute_slurm_command(cmd)
+                if exit_code == 0:
+                    match = re.search(r"Submitted batch job (\d+)", stdout)
+                    if match:
+                        job_id = match.group(1)
+                        job = SlurmJob(job_id=job_id, name=safe_name)
+                        job.script_path = remote_path
+                        job.is_local_script = True
+                        job._cleanup = cleanup
+                        return job
+
+                self.logger.error(
+                    f"Failed to submit job. stdout: {stdout}, stderr: {stderr}, exit_code: {exit_code}"
                 )
-                if job:
-                    job.script_path = remote_path
-                    job.is_local_script = True
-                    job._cleanup = cleanup
-                return job
+                return None
             else:
                 # Remote file: submit directly on server
                 # Validate remote file
@@ -547,11 +566,15 @@ class SSHSlurmClient:
                     )
                     return None
 
-                # Submit the job
+                # Generate job name from filename if not provided
+                if not job_name:
+                    job_name = Path(script_path).stem
+
+                # Build sbatch command with job name and log file options
+                safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", job_name)
                 cmd = f"{self._get_slurm_command('sbatch')}"
-                if job_name:
-                    safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", job_name)
-                    cmd += f" --job-name={safe_name}"
+                cmd += f" -J {safe_name}"
+                cmd += " -o $SLURM_LOG_DIR/%x_%j.log"
                 cmd += f" {script_path}"
 
                 stdout, stderr, exit_code = self._execute_slurm_command(cmd)
@@ -559,7 +582,7 @@ class SSHSlurmClient:
                     match = re.search(r"Submitted batch job (\d+)", stdout)
                     if match:
                         job_id = match.group(1)
-                        job = SlurmJob(job_id=job_id, name=job_name or f"job_{job_id}")
+                        job = SlurmJob(job_id=job_id, name=safe_name)
                         job.script_path = script_path
                         return job
 
@@ -748,6 +771,7 @@ class SSHSlurmClient:
                             if log_file.strip():
                                 found_files.append(log_file.strip())
 
+            found_files = list(set(found_files))
             if found_files:
                 primary_log = found_files[0]
                 stdout_output, _, _ = self.execute_command(
