@@ -35,7 +35,7 @@ srunx supports three environment types:
 
 1. **Conda**: ``--conda env_name``
 2. **Virtual Environment**: ``--venv /path/to/venv``
-3. **Singularity (SQSH)**: ``--sqsh /path/to/container.sqsh``
+3. **Singularity**: ``--container /path/to/container.sqsh``
 
 Command Line Interface
 ----------------------

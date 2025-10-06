@@ -354,7 +354,7 @@ Create a custom SLURM template:
 #SBATCH --gpus-per-node={{ gpus_per_node }}
 {% endif -%}
 #SBATCH --time={{ time_limit }}
-#SBATCH --output={{ log_dir }}/%x_%j.out
+#SBATCH --output={{ log_dir }}/%x_%j.log
 
 {{ environment_setup }}
 

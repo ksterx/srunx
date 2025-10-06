@@ -10,8 +10,7 @@ logging.basicConfig(level=logging.INFO)
 def main():
     sample_sbatch_script = """#!/bin/bash
 #SBATCH --job-name=test_job
-#SBATCH --output=test_output.out
-#SBATCH --error=test_error.err
+#SBATCH --output=test_output.log
 #SBATCH --time=00:05:00
 #SBATCH --ntasks=1
 

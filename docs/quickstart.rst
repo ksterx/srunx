@@ -103,12 +103,12 @@ Python Virtual Environment
 
    srunx submit python script.py --venv /path/to/venv
 
-Singularity Container (SQSH)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Singularity Container
+~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: bash
 
-   srunx submit python script.py --sqsh /path/to/container.sqsh
+   srunx submit python script.py --container /path/to/container.sqsh
 
 Next Steps
 ----------

@@ -49,7 +49,7 @@ Each task supports the following configuration options:
      # OR
      venv: /path/to/virtualenv
      # OR
-     sqsh: /path/to/container.sqsh
+     container: /path/to/container.sqsh
 
 **Resource Allocation**
 

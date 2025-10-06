@@ -267,7 +267,7 @@ class Slurm:
                 case JobStatus.FAILED:
                     err_msg = job_status_msg(job) + "\n"
                     if isinstance(job, Job):
-                        log_file = Path(job.log_dir) / f"{job.name}_{job.job_id}.out"
+                        log_file = Path(job.log_dir) / f"{job.name}_{job.job_id}.log"
                         if log_file.exists():
                             with open(log_file) as f:
                                 err_msg += f.read()
@@ -280,7 +280,7 @@ class Slurm:
                 case JobStatus.CANCELLED | JobStatus.TIMEOUT:
                     err_msg = job_status_msg(job) + "\n"
                     if isinstance(job, Job):
-                        log_file = Path(job.log_dir) / f"{job.name}_{job.job_id}.out"
+                        log_file = Path(job.log_dir) / f"{job.name}_{job.job_id}.log"
                         if log_file.exists():
                             with open(log_file) as f:
                                 err_msg += f.read()

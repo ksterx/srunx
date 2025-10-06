@@ -710,12 +710,12 @@ class SSHSlurmClient:
                 )
 
                 # Try default patterns as fallback
-                default_patterns = [f"slurm-{job_id}.out", f"slurm-{job_id}.err"]
+                default_patterns = [f"{job_name}_{job_id}.log", f"{job_id}.log"]
                 for pattern in default_patterns:
                     stdout_output, _, _ = self.execute_command(
                         f"cat {pattern} 2>/dev/null || echo ''"
                     )
-                    if "out" in pattern:
+                    if "log" in pattern:
                         output_content += stdout_output
                     else:
                         error_content += stdout_output
@@ -738,8 +738,8 @@ class SSHSlurmClient:
                 # Common SLURM_LOG_DIR patterns
                 f"*_{job_id}.log",
                 # Default SLURM patterns
-                f"slurm-{job_id}.out",
-                f"slurm-{job_id}.err",
+                f"{job_name}_{job_id}.log",
+                f"{job_id}.log",
                 # Alternative patterns
                 f"job_{job_id}.log",
                 f"{job_id}.log",
