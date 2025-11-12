@@ -1,0 +1,54 @@
+#!/bin/bash
+#SBATCH --job-name={{ job_name }}
+#SBATCH --output={{ log_dir }}/{{ job_name }}_%j.log
+#SBATCH --error={{ log_dir }}/{{ job_name }}_%j.log
+#SBATCH --nodes={{ nodes }}
+#SBATCH --ntasks-per-node={{ ntasks_per_node }}
+#SBATCH --cpus-per-task={{ cpus_per_task }}
+{% if gpus_per_node > 0 %}
+#SBATCH --gres=gpu:{{ gpus_per_node }}
+{% endif %}
+{% if memory_per_node %}
+#SBATCH --mem={{ memory_per_node }}
+{% endif %}
+{% if time_limit %}
+#SBATCH --time={{ time_limit }}
+{% endif %}
+{% if partition %}
+#SBATCH --partition={{ partition }}
+{% endif %}
+{% if nodelist %}
+#SBATCH --nodelist={{ nodelist }}
+{% endif %}
+
+# Horovod Distributed Training Setup
+set -e
+
+# Change to working directory
+cd {{ work_dir }}
+
+# Environment setup
+{{ environment_setup }}
+
+# Horovod environment variables
+export NCCL_DEBUG=INFO
+export HOROVOD_GPU_OPERATIONS=NCCL
+export HOROVOD_TIMELINE={{ log_dir }}/horovod_timeline_{{ job_name }}_$SLURM_JOB_ID.json
+
+# Logging
+echo "=== Horovod Job Configuration ==="
+echo "Job ID: $SLURM_JOB_ID"
+echo "Job Name: {{ job_name }}"
+echo "Nodes: {{ nodes }}"
+echo "Tasks per node: {{ ntasks_per_node }}"
+echo "GPUs per node: {{ gpus_per_node }}"
+echo "Total GPUs: $(({{ nodes }} * {{ gpus_per_node }}))"
+echo "=================================="
+
+# Run with horovodrun
+horovodrun -np $(({{ nodes }} * {{ ntasks_per_node }})) \
+    -H $(scontrol show hostname $SLURM_JOB_NODELIST | paste -sd, | sed 's/,/:{{ gpus_per_node }},/g'):{{ gpus_per_node }} \
+    {{ command }}
+
+echo "Job completed at $(date)"
+echo "Horovod timeline saved to: $HOROVOD_TIMELINE"

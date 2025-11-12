@@ -20,6 +20,7 @@ from srunx.config import (
     get_config,
     get_config_paths,
 )
+from srunx.history import get_history
 from srunx.logging import (
     configure_cli_logging,
     configure_workflow_logging,
@@ -37,6 +38,7 @@ from srunx.models import (
 )
 from srunx.runner import WorkflowRunner
 from srunx.ssh.cli.commands import ssh_app
+from srunx.template import get_template_info, get_template_path, list_templates
 
 logger = get_logger(__name__)
 
@@ -109,11 +111,13 @@ app = typer.Typer(
 # Create subapps
 flow_app = typer.Typer(help="Workflow management")
 config_app = typer.Typer(help="Configuration management")
+template_app = typer.Typer(help="Job template management")
 
 
 app.add_typer(flow_app, name="flow")
 app.add_typer(config_app, name="config")
 app.add_typer(ssh_app, name="ssh")
+app.add_typer(template_app, name="template")
 
 
 def _parse_env_vars(env_var_list: list[str] | None) -> dict[str, str]:
@@ -431,6 +435,34 @@ def cancel(
         sys.exit(1)
 
 
+@app.command("logs")
+def logs(
+    job_id: Annotated[int, typer.Argument(help="Job ID to show logs for")],
+    follow: Annotated[
+        bool, typer.Option("--follow", "-f", help="Stream logs in real-time (like tail -f)")
+    ] = False,
+    last: Annotated[
+        int | None, typer.Option("--last", "-n", help="Show only the last N lines")
+    ] = None,
+    job_name: Annotated[
+        str | None, typer.Option("--name", help="Job name for better log file detection")
+    ] = None,
+) -> None:
+    """Display job logs with optional real-time streaming."""
+    try:
+        client = Slurm()
+        client.tail_log(
+            job_id=job_id,
+            job_name=job_name,
+            follow=follow,
+            last_n=last,
+        )
+
+    except Exception as e:
+        logger.error(f"Error retrieving logs for job {job_id}: {e}")
+        sys.exit(1)
+
+
 @flow_app.command("run")
 def flow_run(
     yaml_file: Annotated[
@@ -661,6 +693,328 @@ def config_init(
 
     except Exception as e:
         logger.error(f"Error creating configuration file: {e}")
+        sys.exit(1)
+
+
+@template_app.command("list")
+def template_list() -> None:
+    """List all available job templates."""
+    templates = list_templates()
+
+    console = Console()
+    table = Table(title="Available Job Templates")
+    table.add_column("Name", style="cyan")
+    table.add_column("Description", style="magenta")
+    table.add_column("Use Case", style="green")
+
+    for template in templates:
+        table.add_row(
+            template["name"],
+            template["description"],
+            template["use_case"],
+        )
+
+    console.print(table)
+
+
+@template_app.command("show")
+def template_show(
+    name: Annotated[str, typer.Argument(help="Template name")],
+) -> None:
+    """Show template details and content."""
+    try:
+        info = get_template_info(name)
+        template_path = get_template_path(name)
+
+        console = Console()
+        console.print(f"\n[bold cyan]Template: {info['name']}[/bold cyan]")
+        console.print(f"[yellow]Description:[/yellow] {info['description']}")
+        console.print(f"[yellow]Use Case:[/yellow] {info['use_case']}")
+        console.print(f"[yellow]Path:[/yellow] {template_path}\n")
+
+        # Read and display template content
+        with open(template_path, encoding="utf-8") as f:
+            content = f.read()
+
+        syntax = Syntax(
+            content,
+            "bash",
+            theme="monokai",
+            line_numbers=True,
+            background_color="default",
+        )
+
+        panel = Panel(
+            syntax,
+            title=f"[bold cyan]{info['name']}.slurm[/bold cyan]",
+            border_style="blue",
+            padding=(1, 2),
+        )
+
+        console.print(panel)
+
+    except ValueError as e:
+        logger.error(str(e))
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Error showing template: {e}")
+        sys.exit(1)
+
+
+@template_app.command("apply")
+def template_apply(
+    name: Annotated[str, typer.Argument(help="Template name to apply")],
+    command: Annotated[
+        list[str], typer.Argument(help="Command to execute in the job")
+    ],
+    job_name: Annotated[
+        str, typer.Option("--job-name", help="Job name")
+    ] = "job",
+    # Resource options
+    nodes: Annotated[int, typer.Option("-N", "--nodes", help="Number of nodes")] = 1,
+    gpus_per_node: Annotated[
+        int, typer.Option("--gpus-per-node", help="Number of GPUs per node")
+    ] = 1,
+    ntasks_per_node: Annotated[
+        int, typer.Option("--ntasks-per-node", help="Number of tasks per node")
+    ] = 1,
+    cpus_per_task: Annotated[
+        int, typer.Option("--cpus-per-task", help="Number of CPUs per task")
+    ] = 1,
+    memory: Annotated[
+        str | None, typer.Option("--memory", "--mem", help="Memory per node")
+    ] = None,
+    time: Annotated[str | None, typer.Option("--time", help="Time limit")] = None,
+    partition: Annotated[
+        str | None, typer.Option("--partition", help="SLURM partition")
+    ] = None,
+    # Environment options
+    conda: Annotated[
+        str | None, typer.Option("--conda", help="Conda environment name")
+    ] = None,
+    venv: Annotated[
+        str | None, typer.Option("--venv", help="Virtual environment path")
+    ] = None,
+    # Job options
+    wait: Annotated[
+        bool, typer.Option("--wait", help="Wait for job completion")
+    ] = False,
+    slack: Annotated[
+        bool, typer.Option("--slack", help="Send notifications to Slack")
+    ] = False,
+) -> None:
+    """Apply a template and submit a job."""
+    try:
+        template_path = get_template_path(name)
+
+        # Create resources
+        resources = JobResource(
+            nodes=nodes,
+            gpus_per_node=gpus_per_node,
+            ntasks_per_node=ntasks_per_node,
+            cpus_per_task=cpus_per_task,
+            memory_per_node=memory,
+            time_limit=time,
+            partition=partition,
+        )
+
+        # Create environment
+        env_config: dict[str, Any] = {}
+        if conda:
+            env_config["conda"] = conda
+        if venv:
+            env_config["venv"] = venv
+
+        environment = JobEnvironment.model_validate(env_config)
+
+        # Create job
+        job = Job(
+            name=job_name,
+            command=command,
+            resources=resources,
+            environment=environment,
+        )
+
+        # Setup callbacks
+        callbacks: list[Callback] = []
+        if slack:
+            webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+            if not webhook_url:
+                raise ValueError("SLACK_WEBHOOK_URL is not set")
+            callbacks.append(SlackCallback(webhook_url=webhook_url))
+
+        # Submit job with the specified template
+        client = Slurm(callbacks=callbacks)
+        submitted_job = client.submit(job, template_path=template_path)
+
+        console = Console()
+        console.print(
+            f"✅ Job submitted successfully with template '[cyan]{name}[/cyan]': [bold green]{submitted_job.job_id}[/bold green]"
+        )
+        console.print(f"   Job name: {submitted_job.name}")
+        if isinstance(submitted_job, Job) and submitted_job.command:
+            command_str = (
+                submitted_job.command
+                if isinstance(submitted_job.command, str)
+                else " ".join(submitted_job.command)
+            )
+            console.print(f"   Command: {command_str}")
+
+        if wait:
+            try:
+                final_job = client.monitor(submitted_job)
+                if final_job.status.name == "COMPLETED":
+                    console.print("✅ Job completed successfully")
+                else:
+                    console.print(f"❌ Job failed with status: {final_job.status.name}")
+                    sys.exit(1)
+            except KeyboardInterrupt:
+                console.print("\n⚠️  Monitoring interrupted by user")
+                console.print(
+                    f"Job {submitted_job.job_id} is still running in the background"
+                )
+
+    except ValueError as e:
+        logger.error(str(e))
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Error applying template: {e}")
+        sys.exit(1)
+
+
+@app.command("history")
+def history(
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Number of jobs to show")] = 50,
+) -> None:
+    """Show job execution history."""
+    try:
+        history_db = get_history()
+        jobs = history_db.get_recent_jobs(limit=limit)
+
+        if not jobs:
+            console = Console()
+            console.print("[yellow]No job history found[/yellow]")
+            return
+
+        console = Console()
+        table = Table(title=f"Job History (Last {len(jobs)} jobs)")
+        table.add_column("Job ID", style="cyan")
+        table.add_column("Name", style="magenta")
+        table.add_column("Status", style="green")
+        table.add_column("Submitted", style="yellow")
+        table.add_column("Duration", justify="right")
+        table.add_column("GPUs", justify="right")
+
+        for job in jobs:
+            duration = ""
+            if job["duration_seconds"]:
+                mins, secs = divmod(int(job["duration_seconds"]), 60)
+                hours, mins = divmod(mins, 60)
+                if hours > 0:
+                    duration = f"{hours}h {mins}m"
+                elif mins > 0:
+                    duration = f"{mins}m {secs}s"
+                else:
+                    duration = f"{secs}s"
+
+            submitted_at = job["submitted_at"]
+            if submitted_at:
+                # Parse and format date
+                from datetime import datetime
+                dt = datetime.fromisoformat(submitted_at)
+                submitted_at = dt.strftime("%Y-%m-%d %H:%M")
+
+            table.add_row(
+                str(job["job_id"]),
+                job["job_name"],
+                job["status"],
+                submitted_at,
+                duration,
+                str(job["gpus_per_node"] or 0),
+            )
+
+        console.print(table)
+
+    except Exception as e:
+        logger.error(f"Error retrieving job history: {e}")
+        sys.exit(1)
+
+
+@app.command("report")
+def report(
+    from_date: Annotated[
+        str | None, typer.Option("--from", help="Start date (YYYY-MM-DD)")
+    ] = None,
+    to_date: Annotated[
+        str | None, typer.Option("--to", help="End date (YYYY-MM-DD)")
+    ] = None,
+    workflow: Annotated[
+        str | None, typer.Option("--workflow", help="Workflow name")
+    ] = None,
+) -> None:
+    """Generate job execution report."""
+    try:
+        history_db = get_history()
+
+        if workflow:
+            stats = history_db.get_workflow_stats(workflow)
+
+            console = Console()
+            console.print(f"\n[bold cyan]Workflow Report: {workflow}[/bold cyan]")
+            console.print(f"Total Executions: {stats['total_executions']}")
+            if stats['avg_duration_seconds']:
+                mins = int(stats['avg_duration_seconds'] / 60)
+                console.print(f"Average Duration: {mins} minutes")
+            console.print(f"First Execution: {stats['first_execution']}")
+            console.print(f"Last Execution: {stats['last_execution']}\n")
+
+        else:
+            stats = history_db.get_job_stats(from_date=from_date, to_date=to_date)
+
+            console = Console()
+            console.print("\n[bold cyan]Job Execution Report[/bold cyan]")
+
+            if from_date or to_date:
+                date_range = []
+                if from_date:
+                    date_range.append(f"From: {from_date}")
+                if to_date:
+                    date_range.append(f"To: {to_date}")
+                console.print(f"[yellow]{' | '.join(date_range)}[/yellow]\n")
+
+            # Summary table
+            summary_table = Table(title="Summary")
+            summary_table.add_column("Metric", style="cyan")
+            summary_table.add_column("Value", style="green", justify="right")
+
+            summary_table.add_row("Total Jobs", str(stats["total_jobs"]))
+
+            if stats["avg_duration_seconds"]:
+                mins = int(stats["avg_duration_seconds"] / 60)
+                summary_table.add_row("Average Duration", f"{mins} minutes")
+
+            summary_table.add_row(
+                "Total GPU Hours", f"{stats['total_gpu_hours']:.1f} hours"
+            )
+
+            console.print(summary_table)
+
+            # Status breakdown
+            if stats["jobs_by_status"]:
+                console.print()
+                status_table = Table(title="Jobs by Status")
+                status_table.add_column("Status", style="cyan")
+                status_table.add_column("Count", style="green", justify="right")
+
+                for status, count in stats["jobs_by_status"].items():
+                    status_table.add_row(status, str(count))
+
+                console.print(status_table)
+
+            console.print()
+
+    except Exception as e:
+        logger.error(f"Error generating report: {e}")
         sys.exit(1)
 
 

@@ -1,0 +1,68 @@
+#!/bin/bash
+#SBATCH --job-name={{ job_name }}
+#SBATCH --output={{ log_dir }}/{{ job_name }}_%j.log
+#SBATCH --error={{ log_dir }}/{{ job_name }}_%j.log
+#SBATCH --nodes={{ nodes }}
+#SBATCH --ntasks-per-node={{ ntasks_per_node }}
+#SBATCH --cpus-per-task={{ cpus_per_task }}
+{% if gpus_per_node > 0 %}
+#SBATCH --gres=gpu:{{ gpus_per_node }}
+{% endif %}
+{% if memory_per_node %}
+#SBATCH --mem={{ memory_per_node }}
+{% endif %}
+{% if time_limit %}
+#SBATCH --time={{ time_limit }}
+{% endif %}
+{% if partition %}
+#SBATCH --partition={{ partition }}
+{% endif %}
+{% if nodelist %}
+#SBATCH --nodelist={{ nodelist }}
+{% endif %}
+
+# TensorFlow MultiWorkerMirroredStrategy Setup
+set -e
+
+# Change to working directory
+cd {{ work_dir }}
+
+# Environment setup
+{{ environment_setup }}
+
+# Get worker addresses
+WORKER_HOSTS=$(scontrol show hostname $SLURM_JOB_NODELIST | awk '{print $1":12345"}' | paste -sd,)
+
+# TensorFlow distributed environment variables
+export TF_CONFIG=$(cat <<EOF
+{
+  "cluster": {
+    "worker": ["$WORKER_HOSTS"]
+  },
+  "task": {
+    "type": "worker",
+    "index": $SLURM_PROCID
+  }
+}
+EOF
+)
+
+# GPU configuration
+export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID
+
+# Logging
+echo "=== TensorFlow MultiWorker Job Configuration ==="
+echo "Job ID: $SLURM_JOB_ID"
+echo "Job Name: {{ job_name }}"
+echo "Nodes: {{ nodes }}"
+echo "Tasks per node: {{ ntasks_per_node }}"
+echo "GPUs per node: {{ gpus_per_node }}"
+echo "Worker hosts: $WORKER_HOSTS"
+echo "Task index: $SLURM_PROCID"
+echo "TF_CONFIG: $TF_CONFIG"
+echo "================================================"
+
+# Run the command
+{{ command }}
+
+echo "Job completed at $(date)"
