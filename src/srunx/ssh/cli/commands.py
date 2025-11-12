@@ -254,6 +254,155 @@ def submit_job(
         raise typer.Exit(1) from e
 
 
+@ssh_app.command("logs")
+def show_logs(
+    job_id: Annotated[str, typer.Argument(help="SLURM job ID")],
+    # Connection options
+    host: Annotated[
+        str | None, typer.Option("--host", "-H", help="SSH host from .ssh/config")
+    ] = None,
+    profile: Annotated[
+        str | None, typer.Option("--profile", "-p", help="Use saved profile")
+    ] = None,
+    hostname: Annotated[
+        str | None, typer.Option("--hostname", help="DGX server hostname")
+    ] = None,
+    username: Annotated[
+        str | None, typer.Option("--username", help="SSH username")
+    ] = None,
+    key_file: Annotated[
+        str | None, typer.Option("--key-file", help="SSH private key file path")
+    ] = None,
+    port: Annotated[int, typer.Option("--port", help="SSH port")] = 22,
+    config: Annotated[
+        str | None,
+        typer.Option(
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
+        ),
+    ] = None,
+    ssh_config: Annotated[
+        str | None,
+        typer.Option(
+            "--ssh-config", help="SSH config file path (default: ~/.ssh/config)"
+        ),
+    ] = None,
+    # Log options
+    follow: Annotated[
+        bool, typer.Option("--follow", "-f", help="Stream logs in real-time (like tail -f)")
+    ] = False,
+    last: Annotated[
+        int | None, typer.Option("--last", "-n", help="Show only the last N lines")
+    ] = None,
+    job_name: Annotated[
+        str | None, typer.Option("--name", help="Job name for better log file detection")
+    ] = None,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="Enable verbose logging")
+    ] = False,
+):
+    """Display job logs from remote SLURM server via SSH."""
+    from rich.syntax import Syntax
+
+    setup_logging(verbose)
+
+    try:
+        config_manager = ConfigManager(config)
+        connection_params, display_host = _determine_connection_params(
+            host,
+            profile,
+            hostname,
+            username,
+            key_file,
+            port,
+            ssh_config,
+            config_manager,
+        )
+
+        # Create and connect client
+        client = _create_ssh_client(connection_params, {}, verbose)
+
+        with Status("[blue]Connecting to server...", console=console):
+            if not client.connect():
+                console.print("[red]❌ Failed to connect to server[/red]")
+                raise typer.Exit(1)
+            console.print(f"[green]✅ Connected to {display_host}[/green]")
+
+        try:
+            if follow:
+                # Real-time streaming mode
+                tail_cmd, status_msg = client.tail_log(
+                    job_id=job_id,
+                    job_name=job_name,
+                    follow=True,
+                    last_n=last,
+                )
+
+                if not tail_cmd:
+                    console.print(f"[red]{status_msg}[/red]")
+                    raise typer.Exit(1)
+
+                console.print(f"[yellow]{status_msg}[/yellow]")
+
+                # Execute tail -f command with real-time output
+                try:
+                    if client.ssh_client:
+                        # Get SSH transport channel
+                        transport = client.ssh_client.get_transport()
+                        if transport:
+                            channel = transport.open_session()
+                            channel.exec_command(tail_cmd)
+
+                            # Stream output in real-time
+                            while True:
+                                if channel.recv_ready():
+                                    data = channel.recv(1024).decode("utf-8")
+                                    console.print(data, end="")
+
+                                if channel.exit_status_ready():
+                                    break
+
+                                # Check if job finished
+                                job_status = client.get_job_status(job_id)
+                                if job_status in ["COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"]:
+                                    console.print(f"\n[yellow]Job {job_id} finished with status: {job_status}[/yellow]")
+                                    break
+
+                                time.sleep(0.1)
+
+                except KeyboardInterrupt:
+                    console.print("\n[yellow]Streaming stopped by user[/yellow]")
+
+            else:
+                # Static display mode
+                with Status("[blue]Fetching logs...", console=console):
+                    output, status_msg = client.tail_log(
+                        job_id=job_id,
+                        job_name=job_name,
+                        follow=False,
+                        last_n=last,
+                    )
+
+                if output:
+                    console.print(f"[cyan]{status_msg}[/cyan]\n")
+                    # Try to syntax highlight if it looks like code/logs
+                    if any(keyword in output.lower() for keyword in ["error", "traceback", "exception", "failed"]):
+                        syntax = Syntax(output, "log", theme="monokai", line_numbers=False)
+                        console.print(syntax)
+                    else:
+                        console.print(output)
+                else:
+                    console.print(f"[yellow]{status_msg}[/yellow]")
+
+        finally:
+            client.disconnect()
+            if verbose:
+                console.print("[dim]🔌 Disconnected from server[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from e
+
+
 @ssh_app.command("test")
 def test_connection(
     # Connection options

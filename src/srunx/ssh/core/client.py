@@ -830,6 +830,72 @@ class SSHSlurmClient:
             time.sleep(poll_interval)
         return job
 
+    def tail_log(
+        self,
+        job_id: str,
+        job_name: str | None = None,
+        follow: bool = False,
+        last_n: int | None = None,
+        poll_interval: float = 1.0,
+    ) -> tuple[str, str]:
+        """Display job logs with optional real-time streaming via SSH.
+
+        Args:
+            job_id: SLURM job ID
+            job_name: Job name for better log file detection
+            follow: If True, continuously stream new log lines (like tail -f)
+            last_n: Show only the last N lines
+            poll_interval: Polling interval in seconds for follow mode
+
+        Returns:
+            Tuple of (output_content, status_message)
+        """
+        # Find the log file
+        log_info = self.get_job_output_detailed(job_id, job_name)
+        primary_log = log_info.get("primary_log")
+        found_files = log_info.get("found_files", [])
+
+        if not found_files:
+            searched_dirs = log_info.get("searched_dirs", [])
+            msg = f"No log files found for job {job_id}\n"
+            msg += f"Searched in: {', '.join(searched_dirs)}\n"
+            slurm_log_dir = log_info.get("slurm_log_dir")
+            if slurm_log_dir:
+                msg += f"SLURM_LOG_DIR: {slurm_log_dir}\n"
+            return "", msg
+
+        if not primary_log:
+            return "", "Could not find primary log file"
+
+        if follow:
+            # Real-time streaming mode (like tail -f)
+            status_msg = f"Streaming logs from {primary_log} (Ctrl+C to stop)...\n"
+
+            # Build tail command
+            tail_cmd = "tail -f"
+            if last_n:
+                tail_cmd = f"tail -n {last_n} -f"
+
+            tail_cmd += f" {primary_log}"
+
+            # Start streaming
+            # For SSH streaming, we'll return the command to execute
+            # The CLI will handle the actual streaming
+            return tail_cmd, status_msg
+
+        else:
+            # Static display mode
+            output = log_info.get("output", "")
+
+            if last_n and isinstance(output, str):
+                lines = output.split("\n")
+                output = "\n".join(lines[-last_n:])
+
+            if output:
+                return output, f"Log file: {primary_log}"
+            else:
+                return "", "Log file is empty"
+
     def _write_remote_file(self, remote_path: str, content: str) -> None:
         if not self.sftp_client:
             raise ConnectionError("SFTP client is not connected")
