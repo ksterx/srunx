@@ -11,6 +11,9 @@ from srunx.models import JobStatus, JobType
 
 logger = get_logger(__name__)
 
+# Current schema version
+SCHEMA_VERSION = 1
+
 
 class JobHistory:
     """Manage job execution history in SQLite database."""
@@ -31,10 +34,20 @@ class JobHistory:
 
         self.db_path = db_path
         self._init_database()
+        self._run_migrations()
 
     def _init_database(self) -> None:
-        """Initialize database schema."""
+        """Initialize database schema with version tracking."""
         with sqlite3.connect(self.db_path) as conn:
+            # Create schema version table
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS jobs (
@@ -75,6 +88,84 @@ class JobHistory:
                 """
             )
             conn.commit()
+
+    def _get_current_version(self) -> int:
+        """Get current database schema version.
+
+        Returns:
+            Current schema version, or 0 if no version is set
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            try:
+                cursor = conn.execute(
+                    "SELECT MAX(version) FROM schema_version"
+                )
+                result = cursor.fetchone()
+                version = result[0] if result and result[0] else 0
+
+                # Handle backward compatibility: if version is 0 but jobs table exists,
+                # assume schema v1 and set it
+                if version == 0:
+                    cursor = conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'"
+                    )
+                    if cursor.fetchone():
+                        logger.info("Detected existing database without version, setting to v1")
+                        self._set_version(1)
+                        return 1
+
+                return version
+            except sqlite3.OperationalError:
+                # Table doesn't exist yet
+                return 0
+
+    def _set_version(self, version: int) -> None:
+        """Set database schema version.
+
+        Args:
+            version: Version number to set
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+                (version,),
+            )
+            conn.commit()
+
+    def _run_migrations(self) -> None:
+        """Run database migrations if needed."""
+        current_version = self._get_current_version()
+
+        if current_version < SCHEMA_VERSION:
+            logger.info(
+                f"Running database migrations from version {current_version} to {SCHEMA_VERSION}"
+            )
+
+            # Run migrations in order
+            for version in range(current_version + 1, SCHEMA_VERSION + 1):
+                migration_method = getattr(self, f"_migrate_to_v{version}", None)
+                if migration_method:
+                    logger.info(f"Applying migration to version {version}")
+                    migration_method()
+                    self._set_version(version)
+                else:
+                    logger.warning(f"No migration method found for version {version}")
+
+            logger.info("Database migrations completed successfully")
+        elif current_version == SCHEMA_VERSION:
+            logger.debug(f"Database schema is up to date (version {SCHEMA_VERSION})")
+        else:
+            logger.warning(
+                f"Database schema version ({current_version}) is newer than expected ({SCHEMA_VERSION})"
+            )
+
+    # Migration methods for future schema changes
+    # def _migrate_to_v2(self) -> None:
+    #     """Migrate database schema from v1 to v2."""
+    #     with sqlite3.connect(self.db_path) as conn:
+    #         # Example: Add new column
+    #         conn.execute("ALTER TABLE jobs ADD COLUMN new_field TEXT")
+    #         conn.commit()
 
     def record_job(
         self,

@@ -330,18 +330,23 @@ def show_logs(
         try:
             if follow:
                 # Real-time streaming mode
-                tail_cmd, status_msg = client.tail_log(
+                log_result = client.tail_log(
                     job_id=job_id,
                     job_name=job_name,
                     follow=True,
                     last_n=last,
                 )
 
-                if not tail_cmd:
-                    console.print(f"[red]{status_msg}[/red]")
+                if not log_result["success"]:
+                    console.print(f"[red]{log_result['status_message']}[/red]")
                     raise typer.Exit(1)
 
-                console.print(f"[yellow]{status_msg}[/yellow]")
+                tail_cmd = log_result["tail_command"]
+                if not tail_cmd:
+                    console.print("[red]Failed to generate tail command[/red]")
+                    raise typer.Exit(1)
+
+                console.print(f"[yellow]{log_result['status_message']}[/yellow]")
 
                 # Execute tail -f command with real-time output
                 try:
@@ -375,14 +380,17 @@ def show_logs(
             else:
                 # Static display mode
                 with Status("[blue]Fetching logs...", console=console):
-                    output, status_msg = client.tail_log(
+                    log_result = client.tail_log(
                         job_id=job_id,
                         job_name=job_name,
                         follow=False,
                         last_n=last,
                     )
 
-                if output:
+                output = log_result["log_content"]
+                status_msg = log_result["status_message"]
+
+                if output and isinstance(output, str):
                     console.print(f"[cyan]{status_msg}[/cyan]\n")
                     # Try to syntax highlight if it looks like code/logs
                     if any(keyword in output.lower() for keyword in ["error", "traceback", "exception", "failed"]):

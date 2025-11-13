@@ -837,7 +837,7 @@ class SSHSlurmClient:
         follow: bool = False,
         last_n: int | None = None,
         poll_interval: float = 1.0,
-    ) -> tuple[str, str]:
+    ) -> dict[str, str | bool | None]:
         """Display job logs with optional real-time streaming via SSH.
 
         Args:
@@ -848,7 +848,12 @@ class SSHSlurmClient:
             poll_interval: Polling interval in seconds for follow mode
 
         Returns:
-            Tuple of (output_content, status_message)
+            Dictionary with log information:
+            - success: Whether log retrieval was successful
+            - log_content: Log content (empty in follow mode)
+            - tail_command: Command to execute for follow mode (None in static mode)
+            - status_message: Status or error message
+            - log_file: Path to the primary log file
         """
         # Find the log file
         log_info = self.get_job_output_detailed(job_id, job_name)
@@ -857,44 +862,74 @@ class SSHSlurmClient:
 
         if not found_files:
             searched_dirs = log_info.get("searched_dirs", [])
+            searched_dirs_list = searched_dirs if isinstance(searched_dirs, list) else []
             msg = f"No log files found for job {job_id}\n"
-            msg += f"Searched in: {', '.join(searched_dirs)}\n"
+            msg += f"Searched in: {', '.join(searched_dirs_list)}\n"
             slurm_log_dir = log_info.get("slurm_log_dir")
             if slurm_log_dir:
                 msg += f"SLURM_LOG_DIR: {slurm_log_dir}\n"
-            return "", msg
+            return {
+                "success": False,
+                "log_content": "",
+                "tail_command": None,
+                "status_message": msg,
+                "log_file": None,
+            }
 
         if not primary_log:
-            return "", "Could not find primary log file"
+            return {
+                "success": False,
+                "log_content": "",
+                "tail_command": None,
+                "status_message": "Could not find primary log file",
+                "log_file": None,
+            }
+
+        # Convert primary_log to string for type safety
+        primary_log_str = str(primary_log) if primary_log else ""
 
         if follow:
             # Real-time streaming mode (like tail -f)
-            status_msg = f"Streaming logs from {primary_log} (Ctrl+C to stop)...\n"
-
             # Build tail command
             tail_cmd = "tail -f"
             if last_n:
                 tail_cmd = f"tail -n {last_n} -f"
 
-            tail_cmd += f" {primary_log}"
+            tail_cmd += f" {primary_log_str}"
 
-            # Start streaming
-            # For SSH streaming, we'll return the command to execute
-            # The CLI will handle the actual streaming
-            return tail_cmd, status_msg
+            return {
+                "success": True,
+                "log_content": "",
+                "tail_command": tail_cmd,
+                "status_message": f"Streaming logs from {primary_log_str} (Ctrl+C to stop)...",
+                "log_file": primary_log_str,
+            }
 
         else:
             # Static display mode
-            output = log_info.get("output", "")
+            output_raw = log_info.get("output", "")
+            output = str(output_raw) if output_raw else ""
 
             if last_n and isinstance(output, str):
                 lines = output.split("\n")
                 output = "\n".join(lines[-last_n:])
 
             if output:
-                return output, f"Log file: {primary_log}"
+                return {
+                    "success": True,
+                    "log_content": output,
+                    "tail_command": None,
+                    "status_message": f"Log file: {primary_log_str}",
+                    "log_file": primary_log_str,
+                }
             else:
-                return "", "Log file is empty"
+                return {
+                    "success": True,
+                    "log_content": "",
+                    "tail_command": None,
+                    "status_message": "Log file is empty",
+                    "log_file": primary_log_str,
+                }
 
     def _write_remote_file(self, remote_path: str, content: str) -> None:
         if not self.sftp_client:
