@@ -51,9 +51,13 @@ class TestResourcesCommand:
 
     def test_resources_table_format_default(self, runner, mock_snapshot_all_partitions):
         """Test resources command with default table format."""
-        with patch("srunx.monitor.resource_monitor.ResourceMonitor") as mock_monitor_class:
+        with patch(
+            "srunx.monitor.resource_monitor.ResourceMonitor"
+        ) as mock_monitor_class:
             mock_monitor = MagicMock()
-            mock_monitor.get_partition_resources.return_value = mock_snapshot_all_partitions
+            mock_monitor.get_partition_resources.return_value = (
+                mock_snapshot_all_partitions
+            )
             mock_monitor_class.return_value = mock_monitor
 
             result = runner.invoke(app, ["resources"])
@@ -76,7 +80,9 @@ class TestResourcesCommand:
 
     def test_resources_table_format_with_partition(self, runner, mock_snapshot):
         """Test resources command with specific partition."""
-        with patch("srunx.monitor.resource_monitor.ResourceMonitor") as mock_monitor_class:
+        with patch(
+            "srunx.monitor.resource_monitor.ResourceMonitor"
+        ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = mock_snapshot
             mock_monitor_class.return_value = mock_monitor
@@ -98,9 +104,13 @@ class TestResourcesCommand:
 
     def test_resources_json_format_default(self, runner, mock_snapshot_all_partitions):
         """Test resources command with JSON format."""
-        with patch("srunx.monitor.resource_monitor.ResourceMonitor") as mock_monitor_class:
+        with patch(
+            "srunx.monitor.resource_monitor.ResourceMonitor"
+        ) as mock_monitor_class:
             mock_monitor = MagicMock()
-            mock_monitor.get_partition_resources.return_value = mock_snapshot_all_partitions
+            mock_monitor.get_partition_resources.return_value = (
+                mock_snapshot_all_partitions
+            )
             mock_monitor_class.return_value = mock_monitor
 
             result = runner.invoke(app, ["resources", "--format", "json"])
@@ -119,7 +129,9 @@ class TestResourcesCommand:
 
     def test_resources_json_format_with_partition(self, runner, mock_snapshot):
         """Test resources command with JSON format and partition."""
-        with patch("srunx.monitor.resource_monitor.ResourceMonitor") as mock_monitor_class:
+        with patch(
+            "srunx.monitor.resource_monitor.ResourceMonitor"
+        ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = mock_snapshot
             mock_monitor_class.return_value = mock_monitor
@@ -154,7 +166,9 @@ class TestResourcesCommand:
             nodes_down=0,
         )
 
-        with patch("srunx.monitor.resource_monitor.ResourceMonitor") as mock_monitor_class:
+        with patch(
+            "srunx.monitor.resource_monitor.ResourceMonitor"
+        ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = snapshot
             mock_monitor_class.return_value = mock_monitor
@@ -179,7 +193,9 @@ class TestResourcesCommand:
             nodes_down=2,  # 2 nodes down
         )
 
-        with patch("srunx.monitor.resource_monitor.ResourceMonitor") as mock_monitor_class:
+        with patch(
+            "srunx.monitor.resource_monitor.ResourceMonitor"
+        ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = snapshot
             mock_monitor_class.return_value = mock_monitor
@@ -195,7 +211,9 @@ class TestResourcesCommand:
 
     def test_resources_error_handling(self, runner):
         """Test resources command error handling."""
-        with patch("srunx.monitor.resource_monitor.ResourceMonitor") as mock_monitor_class:
+        with patch(
+            "srunx.monitor.resource_monitor.ResourceMonitor"
+        ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.side_effect = Exception(
                 "SLURM connection error"
@@ -221,12 +239,16 @@ class TestResourcesCommand:
             nodes_down=0,
         )
 
-        with patch("srunx.monitor.resource_monitor.ResourceMonitor") as mock_monitor_class:
+        with patch(
+            "srunx.monitor.resource_monitor.ResourceMonitor"
+        ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = snapshot
             mock_monitor_class.return_value = mock_monitor
 
-            result = runner.invoke(app, ["resources", "-p", "nonexistent", "-f", "json"])
+            result = runner.invoke(
+                app, ["resources", "-p", "nonexistent", "-f", "json"]
+            )
 
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -236,7 +258,9 @@ class TestResourcesCommand:
 
     def test_resources_short_flags(self, runner, mock_snapshot):
         """Test resources command with short flag variants."""
-        with patch("srunx.monitor.resource_monitor.ResourceMonitor") as mock_monitor_class:
+        with patch(
+            "srunx.monitor.resource_monitor.ResourceMonitor"
+        ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = mock_snapshot
             mock_monitor_class.return_value = mock_monitor
@@ -264,7 +288,9 @@ class TestResourcesCommand:
             nodes_down=0,
         )
 
-        with patch("srunx.monitor.resource_monitor.ResourceMonitor") as mock_monitor_class:
+        with patch(
+            "srunx.monitor.resource_monitor.ResourceMonitor"
+        ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = snapshot
             mock_monitor_class.return_value = mock_monitor

@@ -88,7 +88,9 @@ class JobMonitor(BaseMonitor):
             SlurmError: If SLURM command fails.
         """
         jobs = self._get_monitored_jobs()
-        return {str(job.job_id): job.status.value for job in jobs if job.job_id is not None}
+        return {
+            str(job.job_id): job.status.value for job in jobs if job.job_id is not None
+        }
 
     def _notify_callbacks(self, event: str) -> None:
         """Notify callbacks of job state transitions.

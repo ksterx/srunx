@@ -1,9 +1,10 @@
 """Tests for BaseMonitor abstract class."""
 
-import pytest
-from unittest.mock import MagicMock, patch
 import signal
 import time
+from unittest.mock import patch
+
+import pytest
 
 from srunx.monitor.base import BaseMonitor
 from srunx.monitor.types import MonitorConfig, WatchMode
@@ -50,6 +51,7 @@ class TestBaseMonitor:
     def test_aggressive_polling_warning(self, caplog):
         """Test warning is logged for aggressive polling intervals."""
         import logging
+
         caplog.set_level(logging.WARNING)
 
         config = MonitorConfig(poll_interval=3)
@@ -104,7 +106,7 @@ class TestBaseMonitor:
         monitor.get_current_state = mock_get_state
 
         # Run continuous monitoring (will stop after 3 iterations)
-        with patch.object(time, 'sleep'):
+        with patch.object(time, "sleep"):
             monitor.watch_continuous()
 
     def test_is_aggressive_property(self):

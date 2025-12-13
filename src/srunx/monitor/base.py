@@ -1,9 +1,10 @@
 """Base monitor class for SLURM monitoring implementations."""
 
-from abc import ABC, abstractmethod
-from typing import Any
 import signal
 import time
+from abc import ABC, abstractmethod
+from typing import Any
+
 from loguru import logger
 
 from srunx.callbacks import Callback

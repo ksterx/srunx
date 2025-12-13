@@ -1,8 +1,9 @@
 """Tests for ResourceMonitor class."""
 
-import pytest
-from unittest.mock import MagicMock, patch
 import subprocess
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from srunx.monitor.resource_monitor import ResourceMonitor
 from srunx.monitor.types import MonitorConfig, ResourceSnapshot
@@ -270,8 +271,9 @@ class TestResourceMonitor:
 
     def test_watch_continuous_resource_changes(self):
         """Test watch_continuous notifies on resource availability changes."""
-        from srunx.monitor.types import MonitorConfig, WatchMode
         import threading
+
+        from srunx.monitor.types import WatchMode
 
         config = MonitorConfig(
             poll_interval=1,
@@ -330,8 +332,9 @@ class TestResourceMonitor:
 
     def test_watch_continuous_duplicate_notification_prevention(self):
         """Test watch_continuous prevents duplicate notifications."""
-        from srunx.monitor.types import MonitorConfig, WatchMode
         import threading
+
+        from srunx.monitor.types import WatchMode
 
         config = MonitorConfig(
             poll_interval=1,
@@ -378,9 +381,10 @@ class TestResourceMonitor:
 
     def test_watch_continuous_keyboard_interrupt(self):
         """Test watch_continuous handles KeyboardInterrupt gracefully."""
-        from srunx.monitor.types import MonitorConfig, WatchMode
         import threading
         import time
+
+        from srunx.monitor.types import WatchMode
 
         config = MonitorConfig(
             poll_interval=1,

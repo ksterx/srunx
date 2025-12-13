@@ -1,7 +1,8 @@
 """Tests for JobMonitor class."""
 
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import MagicMock, patch
 
 from srunx.models import Job, JobStatus
 from srunx.monitor.job_monitor import JobMonitor
@@ -234,8 +235,9 @@ class TestJobMonitor:
 
     def test_watch_continuous_state_changes(self):
         """Test watch_continuous notifies on job state changes."""
-        from srunx.monitor.types import MonitorConfig, WatchMode
         import threading
+
+        from srunx.monitor.types import WatchMode
 
         config = MonitorConfig(
             poll_interval=1,
@@ -278,8 +280,9 @@ class TestJobMonitor:
 
     def test_watch_continuous_no_duplicate_notifications(self):
         """Test watch_continuous prevents duplicate notifications."""
-        from srunx.monitor.types import MonitorConfig, WatchMode
         import threading
+
+        from srunx.monitor.types import WatchMode
 
         config = MonitorConfig(
             poll_interval=1,
@@ -318,9 +321,10 @@ class TestJobMonitor:
 
     def test_watch_continuous_keyboard_interrupt(self):
         """Test watch_continuous handles KeyboardInterrupt gracefully."""
-        from srunx.monitor.types import MonitorConfig, WatchMode
         import threading
         import time
+
+        from srunx.monitor.types import WatchMode
 
         config = MonitorConfig(
             poll_interval=1,
@@ -351,7 +355,6 @@ class TestJobMonitor:
     @pytest.mark.slow
     def test_stability_many_jobs(self):
         """Test monitoring many jobs simultaneously for stability."""
-        from srunx.monitor.types import MonitorConfig
 
         # Monitor 10 jobs
         job_ids = list(range(1000, 1010))
@@ -378,8 +381,9 @@ class TestJobMonitor:
     @pytest.mark.slow
     def test_stability_many_state_changes(self):
         """Test handling many state changes without issues."""
-        from srunx.monitor.types import MonitorConfig, WatchMode
         import threading
+
+        from srunx.monitor.types import WatchMode
 
         config = MonitorConfig(
             poll_interval=1,

@@ -291,8 +291,8 @@ class TestSlackCallbackSecurity:
     def test_invalid_webhook_url_too_few_segments_rejected(self):
         """Test that URLs with fewer than 3 segments are rejected."""
         invalid_urls = [
-            "https://hooks.slack.com/services/A",              # Only 1 segment
-            "https://hooks.slack.com/services/A/B",            # Only 2 segments
+            "https://hooks.slack.com/services/A",  # Only 1 segment
+            "https://hooks.slack.com/services/A/B",  # Only 2 segments
         ]
         for url in invalid_urls:
             with pytest.raises(ValueError, match="Invalid Slack webhook URL"):
@@ -330,33 +330,33 @@ class TestSlackCallbackSecurity:
         malicious_input = "<script>alert('xss')</script>"
         sanitized = SlackCallback._sanitize_text(malicious_input)
         # All angle brackets should be escaped
-        assert '<' not in sanitized
-        assert '>' not in sanitized
-        assert '&lt;script&gt;' in sanitized
+        assert "<" not in sanitized
+        assert ">" not in sanitized
+        assert "&lt;script&gt;" in sanitized
 
     def test_sanitize_html_img_injection(self):
         """Test that HTML img tag injection is prevented."""
         malicious_input = "<img src=x onerror=alert(1)>"
         sanitized = SlackCallback._sanitize_text(malicious_input)
-        assert '<' not in sanitized
-        assert '>' not in sanitized
-        assert '&lt;img' in sanitized
+        assert "<" not in sanitized
+        assert ">" not in sanitized
+        assert "&lt;img" in sanitized
 
     def test_sanitize_html_iframe_injection(self):
         """Test that iframe injection is prevented."""
         malicious_input = "test<iframe>evil</iframe>"
         sanitized = SlackCallback._sanitize_text(malicious_input)
-        assert '<' not in sanitized
-        assert '>' not in sanitized
-        assert 'iframe' in sanitized
-        assert '&lt;' in sanitized
+        assert "<" not in sanitized
+        assert ">" not in sanitized
+        assert "iframe" in sanitized
+        assert "&lt;" in sanitized
 
     def test_sanitize_markdown_backtick_injection(self):
         """Test that backtick code block injection is prevented."""
         malicious_input = "`malicious code`"
         sanitized = SlackCallback._sanitize_text(malicious_input)
         # Backticks should be replaced with single quotes
-        assert '`' not in sanitized
+        assert "`" not in sanitized
         assert "'malicious code'" in sanitized
 
     def test_sanitize_markdown_bold_asterisk(self):
@@ -364,7 +364,7 @@ class TestSlackCallbackSecurity:
         input_text = "*bold attack*"
         sanitized = SlackCallback._sanitize_text(input_text)
         # Asterisks should be escaped
-        assert sanitized.count('\\*') == 2
+        assert sanitized.count("\\*") == 2
         assert "\\*bold attack\\*" in sanitized
 
     def test_sanitize_markdown_italic_underscore(self):
@@ -372,7 +372,7 @@ class TestSlackCallbackSecurity:
         input_text = "_italic attack_"
         sanitized = SlackCallback._sanitize_text(input_text)
         # Underscores should be escaped
-        assert sanitized.count('\\_') == 2
+        assert sanitized.count("\\_") == 2
         assert "\\_italic attack\\_" in sanitized
 
     def test_sanitize_markdown_strikethrough_tilde(self):
@@ -380,7 +380,7 @@ class TestSlackCallbackSecurity:
         input_text = "~strike attack~"
         sanitized = SlackCallback._sanitize_text(input_text)
         # Tildes should be escaped
-        assert sanitized.count('\\~') == 2
+        assert sanitized.count("\\~") == 2
         assert "\\~strike attack\\~" in sanitized
 
     def test_sanitize_markdown_link_brackets(self):
@@ -388,38 +388,38 @@ class TestSlackCallbackSecurity:
         input_text = "[link](http://evil.com)"
         sanitized = SlackCallback._sanitize_text(input_text)
         # Square brackets should be escaped with backslashes
-        assert '\\[' in sanitized
-        assert '\\]' in sanitized
-        assert '\\[link\\]' in sanitized
+        assert "\\[" in sanitized
+        assert "\\]" in sanitized
+        assert "\\[link\\]" in sanitized
 
     def test_sanitize_control_characters_newline(self):
         """Test that newline characters are removed."""
         text_with_newline = "line1\nline2"
         sanitized = SlackCallback._sanitize_text(text_with_newline)
-        assert '\n' not in sanitized
+        assert "\n" not in sanitized
         assert "line1 line2" in sanitized
 
     def test_sanitize_control_characters_carriage_return(self):
         """Test that carriage return characters are removed."""
         text_with_cr = "line1\rline2"
         sanitized = SlackCallback._sanitize_text(text_with_cr)
-        assert '\r' not in sanitized
+        assert "\r" not in sanitized
         assert "line1 line2" in sanitized
 
     def test_sanitize_control_characters_tab(self):
         """Test that tab characters are removed."""
         text_with_tab = "col1\tcol2"
         sanitized = SlackCallback._sanitize_text(text_with_tab)
-        assert '\t' not in sanitized
+        assert "\t" not in sanitized
         assert "col1 col2" in sanitized
 
     def test_sanitize_control_characters_all_combined(self):
         """Test that all control characters are handled together."""
         text_with_controls = "line1\nline2\rline3\ttab"
         sanitized = SlackCallback._sanitize_text(text_with_controls)
-        assert '\n' not in sanitized
-        assert '\r' not in sanitized
-        assert '\t' not in sanitized
+        assert "\n" not in sanitized
+        assert "\r" not in sanitized
+        assert "\t" not in sanitized
         assert "line1 line2 line3 tab" in sanitized
 
     def test_sanitize_length_limit_short_text(self):
@@ -427,22 +427,22 @@ class TestSlackCallbackSecurity:
         short_text = "A" * 100
         sanitized = SlackCallback._sanitize_text(short_text)
         assert len(sanitized) == 100
-        assert '...' not in sanitized
+        assert "..." not in sanitized
 
     def test_sanitize_length_limit_exact_limit(self):
         """Test that text at exactly 1000 chars is not truncated."""
         text_1000 = "A" * 1000
         sanitized = SlackCallback._sanitize_text(text_1000)
         assert len(sanitized) == 1000
-        assert '...' not in sanitized
+        assert "..." not in sanitized
 
     def test_sanitize_length_limit_exceeds_limit(self):
         """Test that text exceeding 1000 chars is truncated."""
         long_text = "A" * 2000
         sanitized = SlackCallback._sanitize_text(long_text)
         assert len(sanitized) == 1003  # 1000 + '...'
-        assert sanitized.endswith('...')
-        assert sanitized.startswith('A')
+        assert sanitized.endswith("...")
+        assert sanitized.startswith("A")
 
     def test_sanitize_ampersand_escaping_order(self):
         """Test that ampersand is escaped first to avoid double-escaping."""
@@ -451,25 +451,27 @@ class TestSlackCallbackSecurity:
         # Ampersand should be escaped to &amp; first
         # Then < and > are escaped to &lt; and &gt;
         # We should NOT see &amp;lt; (double-escaped)
-        assert '&amp;' in sanitized
-        assert '&lt;' in sanitized
-        assert '&gt;' in sanitized
-        assert '&amp;lt;' not in sanitized  # No double-escaping
+        assert "&amp;" in sanitized
+        assert "&lt;" in sanitized
+        assert "&gt;" in sanitized
+        assert "&amp;lt;" not in sanitized  # No double-escaping
         assert sanitized == "A&amp;B&lt;C&gt;D"
 
     def test_sanitize_combined_attack_vectors(self):
         """Test multiple attack vectors combined."""
-        malicious_input = "<script>alert('xss')</script>\n`code`\n*bold*_italic_~strike~[link](url)"
+        malicious_input = (
+            "<script>alert('xss')</script>\n`code`\n*bold*_italic_~strike~[link](url)"
+        )
         sanitized = SlackCallback._sanitize_text(malicious_input)
         # Dangerous raw characters should not be present
-        assert '<' not in sanitized
-        assert '>' not in sanitized
-        assert '`' not in sanitized
-        assert '\n' not in sanitized
+        assert "<" not in sanitized
+        assert ">" not in sanitized
+        assert "`" not in sanitized
+        assert "\n" not in sanitized
         # Should contain escaped/replaced versions
-        assert '&lt;' in sanitized  # HTML tags escaped
-        assert '&gt;' in sanitized  # HTML tags escaped
-        assert '\\*' in sanitized   # Markdown bold escaped
-        assert '\\_' in sanitized   # Markdown italic escaped
-        assert '\\[' in sanitized   # Markdown link brackets escaped
-        assert '\\]' in sanitized   # Markdown link brackets escaped
+        assert "&lt;" in sanitized  # HTML tags escaped
+        assert "&gt;" in sanitized  # HTML tags escaped
+        assert "\\*" in sanitized  # Markdown bold escaped
+        assert "\\_" in sanitized  # Markdown italic escaped
+        assert "\\[" in sanitized  # Markdown link brackets escaped
+        assert "\\]" in sanitized  # Markdown link brackets escaped

@@ -39,8 +39,7 @@ class ReportConfig:
         invalid = set(self.include) - valid_include
         if invalid:
             raise ValueError(
-                f"Invalid include options: {invalid}. "
-                f"Valid options: {valid_include}"
+                f"Invalid include options: {invalid}. Valid options: {valid_include}"
             )
 
         # Validate schedule format (basic check)

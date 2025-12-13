@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
+
 from pydantic import BaseModel, Field, computed_field
 
 
@@ -73,9 +74,7 @@ class ResourceSnapshot(BaseModel):
     total_gpus: int = Field(ge=0, description="Total GPUs in partition")
     gpus_in_use: int = Field(ge=0, description="GPUs currently allocated to jobs")
     gpus_available: int = Field(ge=0, description="GPUs available for new jobs")
-    jobs_running: int = Field(
-        ge=0, description="Number of running jobs using GPUs"
-    )
+    jobs_running: int = Field(ge=0, description="Number of running jobs using GPUs")
     nodes_total: int = Field(ge=0, description="Total nodes in partition")
     nodes_idle: int = Field(ge=0, description="Idle nodes ready for jobs")
     nodes_down: int = Field(

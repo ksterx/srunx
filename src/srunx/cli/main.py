@@ -417,7 +417,9 @@ def list_jobs(
                     "name": job.name,
                     "status": job.status.name if hasattr(job, "status") else "UNKNOWN",
                     "nodes": getattr(getattr(job, "resources", None), "nodes", None),
-                    "time_limit": getattr(getattr(job, "resources", None), "time_limit", None),
+                    "time_limit": getattr(
+                        getattr(job, "resources", None), "time_limit", None
+                    ),
                 }
                 if show_gpus:
                     resources = getattr(job, "resources", None)
@@ -458,7 +460,9 @@ def list_jobs(
                 else:
                     row.append("0")
 
-            row.append(getattr(getattr(job, "resources", None), "time_limit", None) or "N/A")
+            row.append(
+                getattr(getattr(job, "resources", None), "time_limit", None) or "N/A"
+            )
             table.add_row(*row)
 
         console = Console()
@@ -577,7 +581,11 @@ def monitor(
     ] = None,
     continuous: Annotated[
         bool,
-        typer.Option("--continuous", "-c", help="Enable continuous monitoring mode (until Ctrl+C)"),
+        typer.Option(
+            "--continuous",
+            "-c",
+            help="Enable continuous monitoring mode (until Ctrl+C)",
+        ),
     ] = False,
     all_jobs: Annotated[
         bool,
@@ -648,6 +656,9 @@ def monitor(
             mode=WatchMode.CONTINUOUS if continuous else WatchMode.UNTIL_CONDITION,
             notify_on_change=continuous,
         )
+
+        # At this point job_ids is guaranteed to be non-None due to validation above
+        assert job_ids is not None
 
         # Create and run monitor
         job_monitor = JobMonitor(
@@ -774,7 +785,9 @@ def watch(
     ] = False,
     min_gpus: Annotated[
         int | None,
-        typer.Option("--min-gpus", "-g", help="Minimum GPUs required (for resources mode)"),
+        typer.Option(
+            "--min-gpus", "-g", help="Minimum GPUs required (for resources mode)"
+        ),
     ] = None,
     partition: Annotated[
         str | None,
@@ -794,24 +807,41 @@ def watch(
     ] = None,
     continuous: Annotated[
         bool,
-        typer.Option("--continuous", "-c", help="Enable continuous monitoring mode (until Ctrl+C)"),
+        typer.Option(
+            "--continuous",
+            "-c",
+            help="Enable continuous monitoring mode (until Ctrl+C)",
+        ),
     ] = False,
     # New options for scheduled reporting
     schedule: Annotated[
         str | None,
-        typer.Option("--schedule", "-s", help="Schedule for periodic reports (e.g., '1h', '30m', '0 9 * * *')"),
+        typer.Option(
+            "--schedule",
+            "-s",
+            help="Schedule for periodic reports (e.g., '1h', '30m', '0 9 * * *')",
+        ),
     ] = None,
     include: Annotated[
         str | None,
-        typer.Option("--include", help="Report sections to include (comma-separated: jobs,resources,user)"),
+        typer.Option(
+            "--include",
+            help="Report sections to include (comma-separated: jobs,resources,user)",
+        ),
     ] = None,
     user: Annotated[
         str | None,
-        typer.Option("--user", "-u", help="User to filter for user stats (defaults to current user)"),
+        typer.Option(
+            "--user",
+            "-u",
+            help="User to filter for user stats (defaults to current user)",
+        ),
     ] = None,
     timeframe: Annotated[
         str,
-        typer.Option("--timeframe", help="Timeframe for completed/failed job aggregation"),
+        typer.Option(
+            "--timeframe", help="Timeframe for completed/failed job aggregation"
+        ),
     ] = "24h",
     daemon: Annotated[
         bool,
@@ -864,7 +894,9 @@ def watch(
     if not resources:
         console.print("[red]Error: Currently only --resources mode is supported[/red]")
         console.print("Usage: srunx watch --resources --min-gpus N")
-        console.print("       srunx watch --schedule SCHEDULE --notify URL  # For scheduled reports")
+        console.print(
+            "       srunx watch --schedule SCHEDULE --notify URL  # For scheduled reports"
+        )
         sys.exit(1)
 
     # Validate min_gpus for resources mode

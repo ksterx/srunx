@@ -146,20 +146,20 @@ class SlackCallback(Callback):
             characters removed.
         """
         # Remove or replace control characters
-        text = text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+        text = text.replace("\n", " ").replace("\r", " ").replace("\t", " ")
 
         # Escape special characters that could enable injection attacks
         # Note: & must be first to avoid double-escaping
         replacements = {
-            '&': '&amp;',   # HTML entity escape (must be first)
-            '<': '&lt;',    # Prevent HTML/script tag injection
-            '>': '&gt;',    # Prevent HTML/script tag injection
-            '`': "'",       # Prevent code block injection
-            '*': '\\*',     # Escape markdown bold
-            '_': '\\_',     # Escape markdown italic
-            '~': '\\~',     # Escape markdown strikethrough
-            '[': '\\[',     # Escape markdown link syntax
-            ']': '\\]',     # Escape markdown link syntax
+            "&": "&amp;",  # HTML entity escape (must be first)
+            "<": "&lt;",  # Prevent HTML/script tag injection
+            ">": "&gt;",  # Prevent HTML/script tag injection
+            "`": "'",  # Prevent code block injection
+            "*": "\\*",  # Escape markdown bold
+            "_": "\\_",  # Escape markdown italic
+            "~": "\\~",  # Escape markdown strikethrough
+            "[": "\\[",  # Escape markdown link syntax
+            "]": "\\]",  # Escape markdown link syntax
         }
         for char, replacement in replacements.items():
             text = text.replace(char, replacement)
@@ -167,7 +167,7 @@ class SlackCallback(Callback):
         # Limit length to prevent message overflow
         max_length = 1000
         if len(text) > max_length:
-            text = text[:max_length] + '...'
+            text = text[:max_length] + "..."
 
         return text
 
@@ -334,7 +334,6 @@ class SlackCallback(Callback):
         Args:
             report: Generated report containing job and resource statistics.
         """
-        from srunx.monitor.report_types import Report
 
         # Build report sections
         sections = []
@@ -364,7 +363,6 @@ class SlackCallback(Callback):
         Returns:
             Slack block for header
         """
-        from srunx.monitor.report_types import Report
 
         timestamp = report.timestamp.strftime("%Y-%m-%d %H:%M:%S")
         return {
@@ -384,7 +382,6 @@ class SlackCallback(Callback):
         Returns:
             Slack block for job stats
         """
-        from srunx.monitor.report_types import JobStats
 
         text = (
             "*Job Queue Status*\n"
@@ -414,7 +411,6 @@ class SlackCallback(Callback):
         Returns:
             Slack block for resource stats
         """
-        from srunx.monitor.report_types import ResourceStats
 
         partition_info = f" (partition: {stats.partition})" if stats.partition else ""
 
@@ -422,7 +418,7 @@ class SlackCallback(Callback):
             f"*🎮 GPU Resources{partition_info}*\n"
             f"💾 Total GPUs: {stats.total_gpus}\n"
             f"⚡ In Use: {stats.gpus_in_use} ({stats.utilization:.1f}%)\n"
-            f"✨ Available: {stats.gpus_available} ({100-stats.utilization:.1f}%)\n"
+            f"✨ Available: {stats.gpus_available} ({100 - stats.utilization:.1f}%)\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"*🖥️  Nodes:*\n"
             f"  • Total: {stats.nodes_total} nodes\n"
@@ -447,7 +443,6 @@ class SlackCallback(Callback):
         Returns:
             Slack block for user stats
         """
-        from srunx.monitor.report_types import JobStats
 
         text = (
             "*👤 Your Jobs*\n"

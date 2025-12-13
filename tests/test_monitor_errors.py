@@ -3,8 +3,6 @@
 import subprocess
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from srunx.models import Job, JobStatus
 from srunx.monitor.job_monitor import JobMonitor
 from srunx.monitor.resource_monitor import ResourceMonitor
@@ -64,9 +62,7 @@ class TestJobMonitorErrorRecovery:
 
         job1 = Job(name="job1", job_id=123, command=["test"])
         job1._status = JobStatus.COMPLETED
-        monitor.client.retrieve = MagicMock(
-            side_effect=[job1, Exception("Timeout")]
-        )
+        monitor.client.retrieve = MagicMock(side_effect=[job1, Exception("Timeout")])
 
         state = monitor.get_current_state()
 
