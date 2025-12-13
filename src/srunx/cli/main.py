@@ -379,8 +379,26 @@ def status(
 
 
 @app.command("list")
-def list_jobs() -> None:
-    """List user's jobs in the queue."""
+def list_jobs(
+    show_gpus: Annotated[
+        bool,
+        typer.Option("--show-gpus", "-g", help="Show GPU allocation for each job"),
+    ] = False,
+    format: Annotated[
+        str,
+        typer.Option("--format", "-f", help="Output format: table or json"),
+    ] = "table",
+) -> None:
+    """List user's jobs in the queue.
+
+    Examples:
+        srunx list
+        srunx list --show-gpus
+        srunx list --format json
+        srunx list --show-gpus --format json
+    """
+    import json
+
     try:
         client = Slurm()
         jobs = client.queue()
@@ -390,27 +408,134 @@ def list_jobs() -> None:
             console.print("No jobs in queue")
             return
 
+        # JSON format output
+        if format == "json":
+            job_data = []
+            for job in jobs:
+                data = {
+                    "job_id": job.job_id,
+                    "name": job.name,
+                    "status": job.status.name if hasattr(job, "status") else "UNKNOWN",
+                    "nodes": getattr(getattr(job, "resources", None), "nodes", None),
+                    "time_limit": getattr(getattr(job, "resources", None), "time_limit", None),
+                }
+                if show_gpus:
+                    resources = getattr(job, "resources", None)
+                    if resources:
+                        total_gpus = resources.nodes * resources.gpus_per_node
+                        data["gpus"] = total_gpus
+                    else:
+                        data["gpus"] = 0
+                job_data.append(data)
+
+            console = Console()
+            console.print(json.dumps(job_data, indent=2))
+            return
+
+        # Table format output
         table = Table(title="Job Queue")
         table.add_column("Job ID", style="cyan")
         table.add_column("Name", style="magenta")
         table.add_column("Status", style="green")
         table.add_column("Nodes", justify="right")
+        if show_gpus:
+            table.add_column("GPUs", justify="right", style="yellow")
         table.add_column("Time", justify="right")
 
         for job in jobs:
-            table.add_row(
+            row = [
                 str(job.job_id) if job.job_id else "N/A",
                 job.name,
                 job.status.name if hasattr(job, "status") else "UNKNOWN",
                 str(getattr(getattr(job, "resources", None), "nodes", "N/A") or "N/A"),
-                getattr(getattr(job, "resources", None), "time_limit", None) or "N/A",
-            )
+            ]
+
+            if show_gpus:
+                resources = getattr(job, "resources", None)
+                if resources:
+                    total_gpus = resources.nodes * resources.gpus_per_node
+                    row.append(str(total_gpus))
+                else:
+                    row.append("0")
+
+            row.append(getattr(getattr(job, "resources", None), "time_limit", None) or "N/A")
+            table.add_row(*row)
 
         console = Console()
         console.print(table)
 
     except Exception as e:
         logger.error(f"Error retrieving job queue: {e}")
+        sys.exit(1)
+
+
+@app.command("resources")
+def resources(
+    partition: Annotated[
+        str | None,
+        typer.Option("--partition", "-p", help="SLURM partition to query"),
+    ] = None,
+    format: Annotated[
+        str,
+        typer.Option("--format", "-f", help="Output format: table or json"),
+    ] = "table",
+) -> None:
+    """Display current GPU resource availability.
+
+    Examples:
+        srunx resources
+        srunx resources --partition gpu
+        srunx resources --format json
+        srunx resources --partition gpu --format json
+    """
+    import json
+    from srunx.monitor.resource_monitor import ResourceMonitor
+
+    try:
+        # Use ResourceMonitor to query partition resources
+        monitor = ResourceMonitor(min_gpus=0, partition=partition)
+        snapshot = monitor.get_partition_resources()
+
+        # JSON format output
+        if format == "json":
+            data = {
+                "partition": snapshot.partition,
+                "gpus_total": snapshot.total_gpus,
+                "gpus_in_use": snapshot.gpus_in_use,
+                "gpus_available": snapshot.gpus_available,
+                "jobs_running": snapshot.jobs_running,
+                "nodes_total": snapshot.nodes_total,
+                "nodes_idle": snapshot.nodes_idle,
+                "nodes_down": snapshot.nodes_down,
+            }
+            console = Console()
+            console.print(json.dumps(data, indent=2))
+            return
+
+        # Table format output
+        partition_name = snapshot.partition or "all partitions"
+        table = Table(title=f"GPU Resources - {partition_name}")
+
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", justify="right", style="green")
+
+        table.add_row("Total GPUs", str(snapshot.total_gpus))
+        table.add_row("GPUs in Use", str(snapshot.gpus_in_use))
+        table.add_row("GPUs Available", str(snapshot.gpus_available))
+        table.add_row("", "")  # Separator
+        table.add_row("Running Jobs", str(snapshot.jobs_running))
+        table.add_row("", "")  # Separator
+        table.add_row("Total Nodes", str(snapshot.nodes_total))
+        table.add_row("Idle Nodes", str(snapshot.nodes_idle))
+        table.add_row("Down Nodes", str(snapshot.nodes_down))
+
+        console = Console()
+        console.print(table)
+
+    except Exception as e:
+        logger.error(f"Error querying resources: {e}")
+        console = Console()
+        console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
 
 
@@ -428,6 +553,263 @@ def cancel(
 
     except Exception as e:
         logger.error(f"Error cancelling job {job_id}: {e}")
+        sys.exit(1)
+
+
+@app.command("monitor")
+def monitor(
+    job_ids: Annotated[
+        list[int] | None,
+        typer.Argument(help="Job IDs to monitor (space-separated, or use --all)"),
+    ] = None,
+    interval: Annotated[
+        int,
+        typer.Option("--interval", "-i", help="Polling interval in seconds"),
+    ] = 60,
+    timeout: Annotated[
+        int | None,
+        typer.Option("--timeout", "-t", help="Timeout in seconds (None = no timeout)"),
+    ] = None,
+    notify: Annotated[
+        str | None,
+        typer.Option("--notify", "-n", help="Slack webhook URL for notifications"),
+    ] = None,
+    continuous: Annotated[
+        bool,
+        typer.Option("--continuous", "-c", help="Enable continuous monitoring mode (until Ctrl+C)"),
+    ] = False,
+    all_jobs: Annotated[
+        bool,
+        typer.Option("--all", "-a", help="Monitor all jobs for current user"),
+    ] = False,
+) -> None:
+    """Monitor jobs until they reach terminal status or continuously report state changes.
+
+    Modes:
+        Until-condition (default): Monitor until all jobs reach terminal status
+        Continuous (--continuous): Monitor indefinitely and notify on state changes
+
+    Examples:
+        # Until-condition mode
+        srunx monitor 12345
+        srunx monitor 12345 67890 --interval 30
+        srunx monitor 12345 --timeout 3600 --notify https://hooks.slack.com/...
+
+        # Monitor all jobs
+        srunx monitor --all
+        srunx monitor --all --continuous
+
+        # Continuous mode
+        srunx monitor 12345 --continuous
+        srunx monitor 12345 67890 --continuous --interval 30 --notify https://hooks.slack.com/...
+    """
+    from srunx.monitor.job_monitor import JobMonitor
+    from srunx.monitor.types import MonitorConfig, WatchMode
+    from srunx.client import Slurm
+
+    console = Console()
+
+    # Validate job_ids and all_jobs options
+    if not job_ids and not all_jobs:
+        console.print("[red]Error: Either specify job IDs or use --all flag[/red]")
+        sys.exit(1)
+    if job_ids and all_jobs:
+        console.print("[red]Error: Cannot specify both job IDs and --all flag[/red]")
+        sys.exit(1)
+
+    # Get job IDs if --all is specified
+    if all_jobs:
+        client = Slurm()
+        all_user_jobs = client.queue()
+        job_ids = [job.job_id for job in all_user_jobs if job.job_id is not None]
+        if not job_ids:
+            console.print("[yellow]No jobs found for current user[/yellow]")
+            sys.exit(0)
+        console.print(f"📋 Monitoring {len(job_ids)} jobs for current user")
+
+    # Validate polling interval
+    if interval < 5:
+        console.print(
+            "[yellow]⚠️  Warning: Aggressive polling interval (<5s) may impact "
+            "SLURM performance on large clusters[/yellow]"
+        )
+
+    try:
+        # Setup callbacks
+        callbacks: list[Callback] = []
+        if notify:
+            callbacks.append(SlackCallback(notify))
+
+        # Create monitor config
+        config = MonitorConfig(
+            poll_interval=interval,
+            timeout=timeout if not continuous else None,
+            mode=WatchMode.CONTINUOUS if continuous else WatchMode.UNTIL_CONDITION,
+            notify_on_change=continuous,
+        )
+
+        # Create and run monitor
+        job_monitor = JobMonitor(
+            job_ids=job_ids,
+            config=config,
+            callbacks=callbacks,
+        )
+
+        if continuous:
+            console.print(
+                f"🔄 Continuously monitoring jobs {job_ids} "
+                f"(interval={interval}s, press Ctrl+C to stop)"
+            )
+            job_monitor.watch_continuous()
+            console.print("✅ Monitoring stopped")
+        else:
+            console.print(
+                f"🔍 Monitoring jobs {job_ids} "
+                f"(interval={interval}s, timeout={timeout or 'None'}s)"
+            )
+            console.print("Press Ctrl+C to stop monitoring")
+            job_monitor.watch_until()
+            console.print("✅ All jobs reached terminal status")
+
+    except TimeoutError as e:
+        console.print(f"[red]⏱️  {e}[/red]")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Monitoring stopped by user[/yellow]")
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"Error monitoring jobs: {e}")
+        console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
+
+
+@app.command("watch")
+def watch(
+    resources: Annotated[
+        bool,
+        typer.Option("--resources", "-r", help="Watch GPU resources instead of jobs"),
+    ] = False,
+    min_gpus: Annotated[
+        int | None,
+        typer.Option("--min-gpus", "-g", help="Minimum GPUs required (for resources mode)"),
+    ] = None,
+    partition: Annotated[
+        str | None,
+        typer.Option("--partition", "-p", help="SLURM partition to monitor"),
+    ] = None,
+    interval: Annotated[
+        int,
+        typer.Option("--interval", "-i", help="Polling interval in seconds"),
+    ] = 60,
+    timeout: Annotated[
+        int | None,
+        typer.Option("--timeout", "-t", help="Timeout in seconds (None = no timeout)"),
+    ] = None,
+    notify: Annotated[
+        str | None,
+        typer.Option("--notify", "-n", help="Slack webhook URL for notifications"),
+    ] = None,
+    continuous: Annotated[
+        bool,
+        typer.Option("--continuous", "-c", help="Enable continuous monitoring mode (until Ctrl+C)"),
+    ] = False,
+) -> None:
+    """Watch GPU resources until threshold is met or continuously monitor availability.
+
+    Modes:
+        Until-available (default): Monitor until GPUs become available
+        Continuous (--continuous): Monitor indefinitely and notify on changes
+
+    Examples:
+        # Until-available mode
+        srunx watch --resources --min-gpus 2
+        srunx watch --resources --min-gpus 4 --partition gpu --interval 30
+        srunx watch --resources --min-gpus 2 --timeout 3600 --notify https://hooks.slack.com/...
+
+        # Continuous mode
+        srunx watch --resources --min-gpus 2 --continuous
+        srunx watch --resources --min-gpus 4 --continuous --partition gpu --notify https://hooks.slack.com/...
+    """
+    from srunx.monitor.resource_monitor import ResourceMonitor
+    from srunx.monitor.types import MonitorConfig, WatchMode
+
+    console = Console()
+
+    # Validate resources mode
+    if not resources:
+        console.print("[red]Error: Currently only --resources mode is supported[/red]")
+        console.print("Usage: srunx watch --resources --min-gpus N")
+        sys.exit(1)
+
+    # Validate min_gpus for resources mode
+    if min_gpus is None:
+        console.print("[red]Error: --min-gpus is required for resources mode[/red]")
+        console.print("Usage: srunx watch --resources --min-gpus N")
+        sys.exit(1)
+
+    if min_gpus < 0:
+        console.print("[red]Error: --min-gpus must be >= 0[/red]")
+        sys.exit(1)
+
+    # Validate polling interval
+    if interval < 5:
+        console.print(
+            "[yellow]⚠️  Warning: Aggressive polling interval (<5s) may impact "
+            "SLURM performance on large clusters[/yellow]"
+        )
+
+    # Default timeout for until-available mode (not needed for continuous mode)
+    if timeout is None and not continuous:
+        timeout = 3600  # 1 hour default for until-available mode
+
+    try:
+        # Setup callbacks
+        callbacks: list[Callback] = []
+        if notify:
+            callbacks.append(SlackCallback(notify))
+
+        # Create monitor config
+        config = MonitorConfig(
+            poll_interval=interval,
+            timeout=timeout if not continuous else None,
+            mode=WatchMode.CONTINUOUS if continuous else WatchMode.UNTIL_CONDITION,
+            notify_on_change=continuous,
+        )
+
+        # Create and run resource monitor
+        resource_monitor = ResourceMonitor(
+            min_gpus=min_gpus,
+            partition=partition,
+            config=config,
+            callbacks=callbacks,
+        )
+
+        partition_info = f" on partition '{partition}'" if partition else ""
+        if continuous:
+            console.print(
+                f"🔄 Continuously watching resources{partition_info} "
+                f"(min_gpus={min_gpus}, interval={interval}s, press Ctrl+C to stop)"
+            )
+            resource_monitor.watch_continuous()
+            console.print("✅ Watching stopped")
+        else:
+            console.print(
+                f"🔍 Watching resources{partition_info} "
+                f"(min_gpus={min_gpus}, interval={interval}s, timeout={timeout}s)"
+            )
+            console.print("Press Ctrl+C to stop watching")
+            resource_monitor.watch_until()
+            console.print(f"✅ Resources available: {min_gpus}+ GPUs ready")
+
+    except TimeoutError as e:
+        console.print(f"[red]⏱️  {e}[/red]")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Watching stopped by user[/yellow]")
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"Error watching resources: {e}")
+        console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
 
 

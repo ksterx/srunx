@@ -480,6 +480,54 @@ class Slurm:
             "searched_dirs": [d for d in log_dirs if d],
         }
 
+    def _get_job_gpu_count(self, job_id: int) -> int | None:
+        """
+        Get GPU count for a job by parsing scontrol output.
+
+        Tries TRES field first, then falls back to Gres field for compatibility.
+
+        Args:
+            job_id: SLURM job ID
+
+        Returns:
+            GPU count if found, None otherwise
+
+        Raises:
+            subprocess.CalledProcessError: If scontrol command fails
+        """
+        import re
+
+        try:
+            result = subprocess.run(
+                ["scontrol", "show", "job", str(job_id)],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=10,
+            )
+
+            # Try TRES field first (most reliable)
+            # Pattern: TRES=...gres/gpu=N
+            match = re.search(r"TRES=.*?gres/gpu=(\d+)", result.stdout)
+            if match:
+                return int(match.group(1))
+
+            # Fallback to Gres or TresPerNode field
+            # Pattern: Gres=gpu:N or TresPerNode=...gpu:N
+            match = re.search(r"(?:TresPerNode|Gres)=.*?gpu[:/](\d+)", result.stdout)
+            if match:
+                return int(match.group(1))
+
+            # No GPU information found
+            return None
+
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Timeout querying GPU count for job {job_id}")
+            return None
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to query GPU count for job {job_id}: {e}")
+            return None
+
     def _get_default_template(self) -> str:
         """Get the default job template path."""
         return str(files("srunx.templates").joinpath("advanced.slurm.jinja"))
