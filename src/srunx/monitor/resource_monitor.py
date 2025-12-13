@@ -45,7 +45,7 @@ class ResourceMonitor(BaseMonitor):
         self.partition = partition
         self._was_available = False
 
-        logger.info(
+        logger.debug(
             f"ResourceMonitor initialized for min_gpus={min_gpus}, "
             f"partition={partition or 'all'}"
         )

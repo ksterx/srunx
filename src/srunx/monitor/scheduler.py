@@ -4,7 +4,7 @@ import os
 import re
 import signal
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -13,8 +13,14 @@ from loguru import logger
 
 from srunx.callbacks import Callback
 from srunx.client import Slurm
-from srunx.models import JobStatus
-from srunx.monitor.report_types import JobStats, Report, ReportConfig, ResourceStats
+from srunx.models import Job, JobStatus
+from srunx.monitor.report_types import (
+    JobStats,
+    Report,
+    ReportConfig,
+    ResourceStats,
+    RunningJob,
+)
 from srunx.monitor.resource_monitor import ResourceMonitor
 
 
@@ -150,7 +156,6 @@ class ScheduledReporter:
         """Setup signal handlers for graceful shutdown."""
 
         def signal_handler(signum: int, frame: object) -> None:
-            logger.info(f"Received signal {signum}, shutting down...")
             self.stop()
             sys.exit(0)
 
@@ -162,6 +167,7 @@ class ScheduledReporter:
         try:
             report = self._generate_report()
             self._send_report(report)
+            logger.debug("Report sent successfully")
         except (ValueError, RuntimeError, ConnectionError, OSError) as e:
             logger.error(f"Failed to generate/send report: {e}")
         except Exception as e:
@@ -184,6 +190,9 @@ class ScheduledReporter:
 
         if "user" in self.config.include:
             report.user_stats = self._get_user_stats()
+
+        if "running" in self.config.include:
+            report.running_jobs = self._get_running_jobs()
 
         return report
 
@@ -309,6 +318,91 @@ class ScheduledReporter:
             cancelled=cancelled,
         )
 
+    def _get_running_jobs(self) -> list[RunningJob]:
+        """Get list of running and pending jobs.
+
+        Returns:
+            List of running jobs (limited by max_jobs config)
+        """
+        try:
+            # Get all jobs in queue
+            all_jobs = self.client.queue()
+
+            # Filter to running and pending only
+            active_jobs = [
+                j
+                for j in all_jobs
+                if j.status in (JobStatus.RUNNING, JobStatus.PENDING)
+            ]
+
+            # Sort by status (running first) then by job_id
+            active_jobs.sort(
+                key=lambda j: (0 if j.status == JobStatus.RUNNING else 1, j.job_id or 0)
+            )
+
+            # Limit to max_jobs
+            active_jobs = active_jobs[: self.config.max_jobs]
+
+            # Convert to RunningJob format
+            running_jobs = []
+            for job in active_jobs:
+                # Calculate runtime for running jobs
+                runtime = None
+                if job.status == JobStatus.RUNNING and job.elapsed_time:
+                    # elapsed_time is a string like "1-02:03:04" or "02:03:04"
+                    runtime = self._parse_elapsed_time(job.elapsed_time)
+
+                # Get GPU count
+                gpus = 0
+                if isinstance(job, Job) and job.resources.gpus_per_node:
+                    nodes = job.resources.nodes or 1
+                    gpus = job.resources.gpus_per_node * nodes
+
+                running_jobs.append(
+                    RunningJob(
+                        job_id=job.job_id or 0,
+                        name=job.name,
+                        user=job.user or "unknown",
+                        status=job.status.value,
+                        partition=job.partition,
+                        runtime=runtime,
+                        nodes=job.nodes or 1,
+                        gpus=gpus,
+                    )
+                )
+
+            return running_jobs
+
+        except (RuntimeError, ValueError, ConnectionError, OSError) as e:
+            logger.warning(f"Failed to retrieve job list: {e}")
+            return []
+        except Exception as e:
+            logger.exception(f"Unexpected error retrieving job list: {e}")
+            return []
+
+    def _parse_elapsed_time(self, elapsed: str) -> timedelta:
+        """Parse SLURM elapsed time string.
+
+        Args:
+            elapsed: Time string like "1-02:03:04" or "02:03:04"
+
+        Returns:
+            Timedelta object
+        """
+        days = 0
+        if "-" in elapsed:
+            day_part, time_part = elapsed.split("-")
+            days = int(day_part)
+        else:
+            time_part = elapsed
+
+        parts = time_part.split(":")
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        seconds = int(parts[2]) if len(parts) > 2 else 0
+
+        return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+
     def _send_report(self, report: Report) -> None:
         """Send report via callback.
 
@@ -330,20 +424,42 @@ class ScheduledReporter:
 
         Runs until interrupted by SIGINT or SIGTERM.
         """
-        logger.info(
-            f"Starting scheduled reporter with schedule: {self.config.schedule}"
-        )
-        logger.info(f"Report includes: {', '.join(self.config.include)}")
+        from rich.console import Console
+        from rich.live import Live
+        from rich.panel import Panel
+        from rich.table import Table
+
+        console = Console()
 
         # Send initial report immediately
-        logger.info("Sending initial report...")
+        console.print("[cyan]📤 Sending initial report...[/cyan]")
         self._generate_and_send_report()
+        console.print("[green]✓ Initial report sent[/green]\n")
 
-        # Start scheduler
+        # Create status display
+        def create_status() -> Panel:
+            table = Table(show_header=False, box=None, padding=(0, 1))
+            table.add_column("Status", style="dim")
+            table.add_column("Value", style="cyan")
+
+            table.add_row("🔄 Status", "Running")
+            table.add_row("📅 Schedule", self.config.schedule)
+            table.add_row("📊 Sections", ", ".join(self.config.include))
+
+            return Panel(
+                table,
+                title="[bold blue]Scheduled Reporter[/bold blue]",
+                subtitle="[dim]Press Ctrl+C to stop[/dim]",
+                border_style="blue",
+            )
+
+        # Start scheduler with live display
         try:
-            self.scheduler.start()
+            with Live(create_status(), console=console, refresh_per_second=1):
+                self.scheduler.start()
         except (KeyboardInterrupt, SystemExit):
-            logger.info("Scheduler stopped")
+            console.print("\n[yellow]⏹ Stopping scheduler...[/yellow]")
+            pass
 
     def stop(self) -> None:
         """Stop the scheduler gracefully."""

@@ -755,25 +755,41 @@ def _run_scheduled_reporting(
         # Create and run reporter
         reporter = ScheduledReporter(client, callback, config)
 
-        console.print("[green]Starting scheduled reporting[/green]")
-        console.print(f"Schedule: {schedule}")
-        console.print(f"Including: {', '.join(include_list)}")
+        # Display startup info in a nice panel
+        from rich.panel import Panel
+        from rich.table import Table
+
+        info_table = Table(show_header=False, box=None, padding=(0, 2))
+        info_table.add_column("Key", style="cyan", no_wrap=True)
+        info_table.add_column("Value", style="white")
+
+        info_table.add_row("📅 Schedule", schedule)
+        info_table.add_row("📊 Sections", ", ".join(include_list))
         if partition:
-            console.print(f"Partition: {partition}")
-        console.print(f"Webhook: {notify[:50]}...")
-        console.print("\n[yellow]Press Ctrl+C to stop[/yellow]\n")
+            info_table.add_row("🔧 Partition", partition)
+        info_table.add_row("🔔 Webhook", f"{notify[:50]}...")
+
+        console.print(
+            Panel(
+                info_table,
+                title="[bold green]🚀 Scheduled Reporter[/bold green]",
+                subtitle="[dim]Press Ctrl+C to stop[/dim]",
+                border_style="green",
+            )
+        )
+        console.print()
 
         # Run reporter (blocking)
         reporter.run()
 
     except ValueError as e:
-        console.print(f"[red]Configuration error: {e}[/red]")
+        console.print(f"[red]❌ Configuration error: {e}[/red]")
         sys.exit(1)
     except KeyboardInterrupt:
-        console.print("\n[yellow]Stopped by user[/yellow]")
+        console.print("\n[green]✓ Scheduler stopped gracefully[/green]")
         sys.exit(0)
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[red]❌ Error: {e}[/red]")
         sys.exit(1)
 
 
