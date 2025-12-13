@@ -1,6 +1,6 @@
 """srunx - Python library for SLURM job management."""
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 __author__ = "ksterx"
 __description__ = "Python library for SLURM workload manager integration"
 

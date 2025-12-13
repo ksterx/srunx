@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.8.0] - 2025-12-13
+
+### Added
+
+#### Scheduled Reporting System
+- **Scheduled Reports**: Send periodic SLURM cluster status reports to Slack
+  - `srunx watch --schedule <interval>` for interval-based scheduling (e.g., `1h`, `30m`, `1d`)
+  - `srunx watch --schedule "<cron>"` for cron-based scheduling (e.g., `"0 9 * * *"`)
+  - Integrated with existing `watch` command for unified monitoring experience
+
+- **Report Content**:
+  - Job queue statistics (pending, running, completed, failed, cancelled)
+  - GPU resource utilization (total, in-use, available with percentage)
+  - Node statistics (total, idle, down nodes)
+  - User-specific job statistics (optional)
+
+- **Configuration Options**:
+  - `--include`: Customize report sections (jobs, resources, user)
+  - `--partition`: Target specific SLURM partition
+  - `--user`: Filter for specific user's jobs
+  - `--timeframe`: Aggregation window for historical job data (default: 24h)
+  - `--daemon`: Run as background daemon (default: true)
+
+- **ScheduledReporter Class**: Core scheduling engine using APScheduler
+  - Interval and cron trigger support
+  - Graceful shutdown on SIGINT/SIGTERM
+  - Error recovery and retry logic
+  - Minimum interval enforcement (60 seconds) to prevent SLURM overload
+
+- **Enhanced SlackCallback**:
+  - `on_scheduled_report()`: Format and send rich Slack messages
+  - Structured report sections with emojis for readability
+  - GPU utilization percentage calculation
+  - Partition-specific resource display
+
+### Dependencies
+
+- **apscheduler>=3.10.0**: Scheduling framework for periodic task execution
+- **tzlocal>=5.3.1**: Timezone handling for cron triggers (dependency of APScheduler)
+
+### Documentation
+
+- Updated README with scheduled reporting examples and usage patterns
+- Added comprehensive docstrings for all new classes and methods
+- Created `SPEC_SCHEDULED_REPORTING.md` with detailed technical specification
+
 ## [0.7.0] - 2025-12-13
 
 ### Added

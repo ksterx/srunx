@@ -489,6 +489,7 @@ def resources(
         srunx resources --partition gpu --format json
     """
     import json
+
     from srunx.monitor.resource_monitor import ResourceMonitor
 
     try:
@@ -603,9 +604,9 @@ def monitor(
         srunx monitor 12345 --continuous
         srunx monitor 12345 67890 --continuous --interval 30 --notify https://hooks.slack.com/...
     """
+    from srunx.client import Slurm
     from srunx.monitor.job_monitor import JobMonitor
     from srunx.monitor.types import MonitorConfig, WatchMode
-    from srunx.client import Slurm
 
     console = Console()
 
@@ -683,6 +684,88 @@ def monitor(
         sys.exit(1)
 
 
+def _run_scheduled_reporting(
+    schedule: str,
+    notify: str | None,
+    include: str | None,
+    partition: str | None,
+    user: str | None,
+    timeframe: str,
+    daemon: bool,
+    console: Console,
+) -> None:
+    """Run scheduled reporting mode.
+
+    Args:
+        schedule: Schedule specification (interval or cron)
+        notify: Slack webhook URL
+        include: Comma-separated list of report sections
+        partition: SLURM partition to monitor
+        user: User to filter for user stats
+        timeframe: Timeframe for completed/failed job aggregation
+        daemon: Run as background daemon
+        console: Rich console for output
+    """
+    from srunx.callbacks import SlackCallback
+    from srunx.client import Slurm
+    from srunx.monitor.report_types import ReportConfig
+    from srunx.monitor.scheduler import ScheduledReporter
+
+    # Validate required options
+    if notify is None:
+        console.print("[red]Error: --notify is required for scheduled reporting[/red]")
+        console.print("Usage: srunx watch --schedule SCHEDULE --notify WEBHOOK_URL")
+        sys.exit(1)
+
+    # Parse include option
+    include_list = ["jobs", "resources", "user"]  # Default: all
+    if include is not None:
+        include_list = [s.strip() for s in include.split(",")]
+
+    try:
+        # Create configuration
+        config = ReportConfig(
+            schedule=schedule,
+            include=include_list,
+            partition=partition,
+            user=user,
+            timeframe=timeframe,
+            daemon=daemon,
+        )
+
+        # Create client and callback (validates webhook URL)
+        client = Slurm()
+        try:
+            callback = SlackCallback(notify)
+        except ValueError as e:
+            console.print(f"[red]Invalid webhook URL: {e}[/red]")
+            sys.exit(1)
+
+        # Create and run reporter
+        reporter = ScheduledReporter(client, callback, config)
+
+        console.print("[green]Starting scheduled reporting[/green]")
+        console.print(f"Schedule: {schedule}")
+        console.print(f"Including: {', '.join(include_list)}")
+        if partition:
+            console.print(f"Partition: {partition}")
+        console.print(f"Webhook: {notify[:50]}...")
+        console.print("\n[yellow]Press Ctrl+C to stop[/yellow]\n")
+
+        # Run reporter (blocking)
+        reporter.run()
+
+    except ValueError as e:
+        console.print(f"[red]Configuration error: {e}[/red]")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Stopped by user[/yellow]")
+        sys.exit(0)
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
+
+
 @app.command("watch")
 def watch(
     resources: Annotated[
@@ -713,32 +796,75 @@ def watch(
         bool,
         typer.Option("--continuous", "-c", help="Enable continuous monitoring mode (until Ctrl+C)"),
     ] = False,
+    # New options for scheduled reporting
+    schedule: Annotated[
+        str | None,
+        typer.Option("--schedule", "-s", help="Schedule for periodic reports (e.g., '1h', '30m', '0 9 * * *')"),
+    ] = None,
+    include: Annotated[
+        str | None,
+        typer.Option("--include", help="Report sections to include (comma-separated: jobs,resources,user)"),
+    ] = None,
+    user: Annotated[
+        str | None,
+        typer.Option("--user", "-u", help="User to filter for user stats (defaults to current user)"),
+    ] = None,
+    timeframe: Annotated[
+        str,
+        typer.Option("--timeframe", help="Timeframe for completed/failed job aggregation"),
+    ] = "24h",
+    daemon: Annotated[
+        bool,
+        typer.Option("--daemon/--no-daemon", help="Run as background daemon"),
+    ] = True,
 ) -> None:
-    """Watch GPU resources until threshold is met or continuously monitor availability.
+    """Watch GPU resources or send periodic status reports.
 
     Modes:
-        Until-available (default): Monitor until GPUs become available
-        Continuous (--continuous): Monitor indefinitely and notify on changes
+        Resource monitoring (--resources): Monitor GPU availability
+            - Until-available (default): Wait until GPUs become available
+            - Continuous (--continuous): Monitor indefinitely and notify on changes
+
+        Scheduled reporting (--schedule): Send periodic status reports
+            - Interval: "1h", "30m", "1d"
+            - Cron: "0 9 * * *" (daily at 9am)
 
     Examples:
-        # Until-available mode
+        # Resource monitoring
         srunx watch --resources --min-gpus 2
-        srunx watch --resources --min-gpus 4 --partition gpu --interval 30
-        srunx watch --resources --min-gpus 2 --timeout 3600 --notify https://hooks.slack.com/...
+        srunx watch --resources --min-gpus 4 --continuous --notify $SLACK_WEBHOOK
 
-        # Continuous mode
-        srunx watch --resources --min-gpus 2 --continuous
-        srunx watch --resources --min-gpus 4 --continuous --partition gpu --notify https://hooks.slack.com/...
+        # Scheduled reporting
+        srunx watch --schedule 1h --notify $SLACK_WEBHOOK
+        srunx watch --schedule "0 9 * * *" --notify $SLACK_WEBHOOK --include jobs,resources
+        srunx watch --schedule 30m --notify $SLACK_WEBHOOK --partition gpu --user researcher
     """
+    console = Console()
+
+    # Mode selection: Scheduled reporting vs Resource monitoring
+    if schedule is not None:
+        # Scheduled reporting mode
+        _run_scheduled_reporting(
+            schedule=schedule,
+            notify=notify,
+            include=include,
+            partition=partition,
+            user=user,
+            timeframe=timeframe,
+            daemon=daemon,
+            console=console,
+        )
+        return
+
+    # Resource monitoring mode (existing functionality)
     from srunx.monitor.resource_monitor import ResourceMonitor
     from srunx.monitor.types import MonitorConfig, WatchMode
-
-    console = Console()
 
     # Validate resources mode
     if not resources:
         console.print("[red]Error: Currently only --resources mode is supported[/red]")
         console.print("Usage: srunx watch --resources --min-gpus N")
+        console.print("       srunx watch --schedule SCHEDULE --notify URL  # For scheduled reports")
         sys.exit(1)
 
     # Validate min_gpus for resources mode

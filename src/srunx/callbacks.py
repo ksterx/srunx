@@ -9,6 +9,7 @@ from srunx.models import JobType, Workflow
 from srunx.utils import job_status_msg
 
 if TYPE_CHECKING:
+    from srunx.monitor.report_types import JobStats, Report, ResourceStats
     from srunx.monitor.types import ResourceSnapshot
 
 
@@ -84,6 +85,14 @@ class Callback:
 
         Args:
             snapshot: Resource snapshot at the time resources were exhausted.
+        """
+        pass
+
+    def on_scheduled_report(self, report: "Report") -> None:
+        """Called when a scheduled report is generated.
+
+        Args:
+            report: Generated report containing job and resource statistics.
         """
         pass
 
@@ -318,3 +327,138 @@ class SlackCallback(Callback):
                 }
             ],
         )
+
+    def on_scheduled_report(self, report: "Report") -> None:
+        """Send scheduled report to Slack.
+
+        Args:
+            report: Generated report containing job and resource statistics.
+        """
+        from srunx.monitor.report_types import Report
+
+        # Build report sections
+        sections = []
+        sections.append(self._build_header_section(report))
+
+        if report.job_stats:
+            sections.append(self._build_job_stats_section(report.job_stats))
+
+        if report.resource_stats:
+            sections.append(self._build_resource_stats_section(report.resource_stats))
+
+        if report.user_stats:
+            sections.append(self._build_user_stats_section(report.user_stats))
+
+        # Send to Slack
+        self.client.send(
+            text="SLURM Status Report",
+            blocks=sections,
+        )
+
+    def _build_header_section(self, report: "Report") -> dict:
+        """Build report header section.
+
+        Args:
+            report: Report to format
+
+        Returns:
+            Slack block for header
+        """
+        from srunx.monitor.report_types import Report
+
+        timestamp = report.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        return {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": f"📊 SLURM Status Report - {timestamp}",
+            },
+        }
+
+    def _build_job_stats_section(self, stats: "JobStats") -> dict:
+        """Build job statistics section.
+
+        Args:
+            stats: Job statistics to format
+
+        Returns:
+            Slack block for job stats
+        """
+        from srunx.monitor.report_types import JobStats
+
+        text = (
+            "*Job Queue Status*\n"
+            f"⏳ PENDING: {stats.pending} jobs\n"
+            f"🔄 RUNNING: {stats.running} jobs\n"
+            f"✅ COMPLETED: {stats.completed} jobs (last 24h)\n"
+            f"❌ FAILED: {stats.failed} jobs (last 24h)\n"
+            f"🚫 CANCELLED: {stats.cancelled} jobs (last 24h)\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📈 Total Active: {stats.total_active} jobs"
+        )
+
+        return {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": text,
+            },
+        }
+
+    def _build_resource_stats_section(self, stats: "ResourceStats") -> dict:
+        """Build resource statistics section.
+
+        Args:
+            stats: Resource statistics to format
+
+        Returns:
+            Slack block for resource stats
+        """
+        from srunx.monitor.report_types import ResourceStats
+
+        partition_info = f" (partition: {stats.partition})" if stats.partition else ""
+
+        text = (
+            f"*🎮 GPU Resources{partition_info}*\n"
+            f"💾 Total GPUs: {stats.total_gpus}\n"
+            f"⚡ In Use: {stats.gpus_in_use} ({stats.utilization:.1f}%)\n"
+            f"✨ Available: {stats.gpus_available} ({100-stats.utilization:.1f}%)\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"*🖥️  Nodes:*\n"
+            f"  • Total: {stats.nodes_total} nodes\n"
+            f"  • Idle: {stats.nodes_idle} nodes\n"
+            f"  • Down: {stats.nodes_down} nodes"
+        )
+
+        return {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": text,
+            },
+        }
+
+    def _build_user_stats_section(self, stats: "JobStats") -> dict:
+        """Build user statistics section.
+
+        Args:
+            stats: User job statistics to format
+
+        Returns:
+            Slack block for user stats
+        """
+        from srunx.monitor.report_types import JobStats
+
+        text = (
+            "*👤 Your Jobs*\n"
+            f"⏳ PENDING: {stats.pending} jobs\n"
+            f"🔄 RUNNING: {stats.running} jobs"
+        )
+
+        return {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": text,
+            },
+        }

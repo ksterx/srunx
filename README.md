@@ -151,6 +151,41 @@ monitor = JobMonitor(
     callbacks=[slack_callback]
 )
 monitor.watch_continuous()  # Ctrl+C to stop
+```
+
+### Scheduled Reporting
+
+Send periodic status reports to Slack at specified intervals:
+
+```bash
+# Send report every hour
+srunx watch --schedule 1h --notify $SLACK_WEBHOOK
+
+# Send report every 30 minutes
+srunx watch --schedule 30m --notify $SLACK_WEBHOOK
+
+# Send daily report at 9:00 AM (cron format)
+srunx watch --schedule "0 9 * * *" --notify $SLACK_WEBHOOK
+
+# Customize report content
+srunx watch --schedule 2h --notify $SLACK_WEBHOOK --include jobs,resources
+
+# Monitor specific partition with user stats
+srunx watch --schedule 1h --notify $SLACK_WEBHOOK \
+  --partition gpu \
+  --user researcher \
+  --include jobs,resources,user
+```
+
+**Report includes:**
+- 📊 **Job Queue Status**: Pending, running, completed, failed job counts
+- 🎮 **GPU Resources**: Total, in-use, available GPUs with utilization percentage
+- 🖥️  **Node Statistics**: Total, idle, down nodes
+- 👤 **User Jobs**: Your personal job queue status (optional)
+
+**Schedule formats:**
+- Interval: `1h`, `30m`, `1d` (hours, minutes, days)
+- Cron: `"0 9 * * *"` (minute hour day month weekday)
 
 # Resource monitoring
 resource_monitor = ResourceMonitor(
