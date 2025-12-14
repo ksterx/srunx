@@ -563,140 +563,6 @@ def cancel(
         sys.exit(1)
 
 
-@app.command("monitor")
-def monitor(
-    job_ids: Annotated[
-        list[int] | None,
-        typer.Argument(help="Job IDs to monitor (space-separated, or use --all)"),
-    ] = None,
-    interval: Annotated[
-        int,
-        typer.Option("--interval", "-i", help="Polling interval in seconds"),
-    ] = 60,
-    timeout: Annotated[
-        int | None,
-        typer.Option("--timeout", "-t", help="Timeout in seconds (None = no timeout)"),
-    ] = None,
-    notify: Annotated[
-        str | None,
-        typer.Option("--notify", "-n", help="Slack webhook URL for notifications"),
-    ] = None,
-    continuous: Annotated[
-        bool,
-        typer.Option(
-            "--continuous",
-            "-c",
-            help="Enable continuous monitoring mode (until Ctrl+C)",
-        ),
-    ] = False,
-    all_jobs: Annotated[
-        bool,
-        typer.Option("--all", "-a", help="Monitor all jobs for current user"),
-    ] = False,
-) -> None:
-    """Monitor jobs until they reach terminal status or continuously report state changes.
-
-    Modes:
-        Until-condition (default): Monitor until all jobs reach terminal status
-        Continuous (--continuous): Monitor indefinitely and notify on state changes
-
-    Examples:
-        # Until-condition mode
-        srunx monitor 12345
-        srunx monitor 12345 67890 --interval 30
-        srunx monitor 12345 --timeout 3600 --notify https://hooks.slack.com/...
-
-        # Monitor all jobs
-        srunx monitor --all
-        srunx monitor --all --continuous
-
-        # Continuous mode
-        srunx monitor 12345 --continuous
-        srunx monitor 12345 67890 --continuous --interval 30 --notify https://hooks.slack.com/...
-    """
-    from srunx.client import Slurm
-    from srunx.monitor.job_monitor import JobMonitor
-    from srunx.monitor.types import MonitorConfig, WatchMode
-
-    console = Console()
-
-    # Validate job_ids and all_jobs options
-    if not job_ids and not all_jobs:
-        console.print("[red]Error: Either specify job IDs or use --all flag[/red]")
-        sys.exit(1)
-    if job_ids and all_jobs:
-        console.print("[red]Error: Cannot specify both job IDs and --all flag[/red]")
-        sys.exit(1)
-
-    # Get job IDs if --all is specified
-    if all_jobs:
-        client = Slurm()
-        all_user_jobs = client.queue()
-        job_ids = [job.job_id for job in all_user_jobs if job.job_id is not None]
-        if not job_ids:
-            console.print("[yellow]No jobs found for current user[/yellow]")
-            sys.exit(0)
-        console.print(f"📋 Monitoring {len(job_ids)} jobs for current user")
-
-    # Validate polling interval
-    if interval < 5:
-        console.print(
-            "[yellow]⚠️  Warning: Aggressive polling interval (<5s) may impact "
-            "SLURM performance on large clusters[/yellow]"
-        )
-
-    try:
-        # Setup callbacks
-        callbacks: list[Callback] = []
-        if notify:
-            callbacks.append(SlackCallback(notify))
-
-        # Create monitor config
-        config = MonitorConfig(
-            poll_interval=interval,
-            timeout=timeout if not continuous else None,
-            mode=WatchMode.CONTINUOUS if continuous else WatchMode.UNTIL_CONDITION,
-            notify_on_change=continuous,
-        )
-
-        # At this point job_ids is guaranteed to be non-None due to validation above
-        assert job_ids is not None
-
-        # Create and run monitor
-        job_monitor = JobMonitor(
-            job_ids=job_ids,
-            config=config,
-            callbacks=callbacks,
-        )
-
-        if continuous:
-            console.print(
-                f"🔄 Continuously monitoring jobs {job_ids} "
-                f"(interval={interval}s, press Ctrl+C to stop)"
-            )
-            job_monitor.watch_continuous()
-            console.print("✅ Monitoring stopped")
-        else:
-            console.print(
-                f"🔍 Monitoring jobs {job_ids} "
-                f"(interval={interval}s, timeout={timeout or 'None'}s)"
-            )
-            console.print("Press Ctrl+C to stop monitoring")
-            job_monitor.watch_until()
-            console.print("✅ All jobs reached terminal status")
-
-    except TimeoutError as e:
-        console.print(f"[red]⏱️  {e}[/red]")
-        sys.exit(1)
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Monitoring stopped by user[/yellow]")
-        sys.exit(0)
-    except Exception as e:
-        logger.error(f"Error monitoring jobs: {e}")
-        console.print(f"[red]Error: {e}[/red]")
-        sys.exit(1)
-
-
 def _run_scheduled_reporting(
     schedule: str,
     notify: str | None,
@@ -888,6 +754,19 @@ def watch(
         srunx watch --schedule 30m --notify $SLACK_WEBHOOK --partition gpu --user researcher
     """
     console = Console()
+
+    # Deprecation warning
+    console.print(
+        "[yellow]⚠️  WARNING: 'srunx watch' is deprecated and will be removed in a future version.[/yellow]"
+    )
+    console.print(
+        "[yellow]   Please use the new 'srunx monitor' subcommands instead:[/yellow]"
+    )
+    console.print(
+        "[yellow]   - For resource monitoring: srunx monitor resources[/yellow]"
+    )
+    console.print("[yellow]   - For cluster reports: srunx monitor cluster[/yellow]")
+    console.print()
 
     # Mode selection: Scheduled reporting vs Resource monitoring
     if schedule is not None:
