@@ -327,6 +327,7 @@ class ScheduledReporter:
         try:
             # Get all jobs in queue
             all_jobs = self.client.queue()
+            logger.debug(f"Retrieved {len(all_jobs)} total jobs from queue")
 
             # Filter to running and pending only
             active_jobs = [
@@ -334,6 +335,9 @@ class ScheduledReporter:
                 for j in all_jobs
                 if j.status in (JobStatus.RUNNING, JobStatus.PENDING)
             ]
+            logger.debug(
+                f"Filtered to {len(active_jobs)} active jobs (RUNNING/PENDING)"
+            )
 
             # Sort by status (running first) then by job_id
             active_jobs.sort(
@@ -345,6 +349,7 @@ class ScheduledReporter:
 
             # Convert to RunningJob format
             running_jobs = []
+            logger.debug(f"Converting {len(active_jobs)} jobs to RunningJob format")
             for job in active_jobs:
                 # Calculate runtime for running jobs
                 runtime = None
@@ -371,6 +376,7 @@ class ScheduledReporter:
                     )
                 )
 
+            logger.info(f"Returning {len(running_jobs)} running jobs for report")
             return running_jobs
 
         except (RuntimeError, ValueError, ConnectionError, OSError) as e:

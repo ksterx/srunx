@@ -369,7 +369,16 @@ class SlackCallback(Callback):
             sections.append({"type": "divider"})
 
         if report.running_jobs:
+            from loguru import logger
+
+            logger.info(
+                f"Adding running jobs section with {len(report.running_jobs)} jobs"
+            )
             sections.append(self._build_running_jobs_section(report.running_jobs))
+        else:
+            from loguru import logger
+
+            logger.warning("No running jobs to display in report")
 
         # Send to Slack
         self.client.send(
