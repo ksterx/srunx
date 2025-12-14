@@ -341,16 +341,39 @@ class SlackNotificationFormatter:
         # Running Jobs
         if running_jobs:
             headers = ["ID", "Name", "User", "Runtime", "GPU"]
-            rows = [
-                [
-                    str(job.get("id", "-")),
-                    job.get("name", "-")[:12],
-                    job.get("user", "-")[:8],
-                    job.get("runtime", "-")[:8],
-                    str(job.get("gpus", "-")),
-                ]
-                for job in running_jobs
-            ]
+            rows = []
+            for job in running_jobs:
+                # Format runtime from timedelta
+                runtime_str = "-"
+                if job.get("runtime"):
+                    rt = job["runtime"]
+                    # runtime is a timedelta dict from asdict()
+                    if isinstance(rt, dict):
+                        days = rt.get("days", 0)
+                        seconds = rt.get("seconds", 0)
+                    else:
+                        # Shouldn't happen, but handle it
+                        days = 0
+                        seconds = 0
+
+                    hours, remainder = divmod(seconds, 3600)
+                    minutes, _ = divmod(remainder, 60)
+
+                    if days > 0:
+                        runtime_str = f"{days}d{hours:02d}:{minutes:02d}"
+                    else:
+                        runtime_str = f"{hours:02d}:{minutes:02d}"
+
+                rows.append(
+                    [
+                        str(job.get("job_id", "-")),
+                        job.get("name", "-")[:12],
+                        job.get("user", "-")[:8],
+                        runtime_str[:8],
+                        str(job.get("gpus", "-")),
+                    ]
+                )
+
             sections.append(
                 self.table.data_table(
                     headers, rows, title=f"Active Jobs ({len(running_jobs)})", width=60

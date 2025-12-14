@@ -1,15 +1,17 @@
 """Callback system for job state notifications."""
 
 import re
+from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 from slack_sdk import WebhookClient
 
+from srunx.formatters import SlackNotificationFormatter
 from srunx.models import JobType, Workflow
 from srunx.utils import job_status_msg
 
 if TYPE_CHECKING:
-    from srunx.monitor.report_types import JobStats, Report, ResourceStats, RunningJob
+    from srunx.monitor.report_types import Report
     from srunx.monitor.types import ResourceSnapshot
 
 
@@ -115,6 +117,7 @@ class SlackCallback(Callback):
                 "Invalid Slack webhook URL. Must be https://hooks.slack.com/services/..."
             )
         self.client = WebhookClient(webhook_url)
+        self.formatter = SlackNotificationFormatter()
 
     @staticmethod
     def _is_valid_slack_webhook(url: str) -> bool:
@@ -286,20 +289,22 @@ class SlackCallback(Callback):
         Args:
             snapshot: Resource snapshot at the time resources became available.
         """
-        if snapshot.partition:
-            safe_partition = self._sanitize_text(snapshot.partition)
-            partition_info = f" on {safe_partition}"
-        else:
-            partition_info = ""
+        # Use new unified formatter
+        message = self.formatter.resource_available(
+            partition=snapshot.partition,
+            available_gpus=snapshot.gpus_available,
+            total_gpus=snapshot.total_gpus,
+            idle_nodes=snapshot.nodes_idle,
+            total_nodes=snapshot.nodes_total,
+            utilization=snapshot.gpu_utilization,
+        )
+
         self.client.send(
             text="Resources available",
             blocks=[
                 {
                     "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"✅ Resources available{partition_info}: {snapshot.gpus_available} GPU(s) free",
-                    },
+                    "text": {"type": "mrkdwn", "text": message},
                 }
             ],
         )
@@ -334,284 +339,42 @@ class SlackCallback(Callback):
         Args:
             report: Generated report containing job and resource statistics.
         """
+        from loguru import logger
 
-        # Build report sections
-        sections = []
-        sections.append(self._build_header_section(report))
-
-        # Add timestamp context
-        timestamp = report.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-        sections.append(
-            {
-                "type": "context",
-                "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": f"🕐 {timestamp}",
-                    }
-                ],
-            }
-        )
-
-        # Add divider
-        sections.append({"type": "divider"})
-
-        if report.job_stats:
-            sections.append(self._build_job_stats_section(report.job_stats))
-            sections.append({"type": "divider"})
-
-        if report.resource_stats:
-            sections.append(self._build_resource_stats_section(report.resource_stats))
-            sections.append({"type": "divider"})
-
-        if report.user_stats:
-            sections.append(self._build_user_stats_section(report.user_stats))
-            sections.append({"type": "divider"})
-
+        # Log running jobs presence
         if report.running_jobs:
-            from loguru import logger
-
             logger.info(
                 f"Adding running jobs section with {len(report.running_jobs)} jobs"
             )
-            sections.append(self._build_running_jobs_section(report.running_jobs))
         else:
-            from loguru import logger
-
             logger.info("No running jobs to display in report")
+
+        # Convert dataclasses to dicts for formatter
+        job_stats_dict = asdict(report.job_stats) if report.job_stats else None
+        resource_stats_dict = (
+            asdict(report.resource_stats) if report.resource_stats else None
+        )
+        running_jobs_list = (
+            [asdict(job) for job in report.running_jobs]
+            if report.running_jobs
+            else None
+        )
+
+        # Use new unified formatter
+        message = self.formatter.cluster_status(
+            job_stats=job_stats_dict,
+            resource_stats=resource_stats_dict,
+            running_jobs=running_jobs_list,
+            timestamp=report.timestamp,
+        )
 
         # Send to Slack
         self.client.send(
             text="SLURM Status Report",
-            blocks=sections,
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": message},
+                }
+            ],
         )
-
-    def _build_header_section(self, report: "Report") -> dict:
-        """Build report header section.
-
-        Args:
-            report: Report to format
-
-        Returns:
-            Slack block for header
-        """
-
-        timestamp = report.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-        return {
-            "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": "📊 SLURM Cluster Status",
-                "emoji": True,
-            },
-        }
-
-    def _build_job_stats_section(self, stats: "JobStats") -> dict:
-        """Build job statistics section.
-
-        Args:
-            stats: Job statistics to format
-
-        Returns:
-            Slack block for job stats
-        """
-
-        # Build status summary
-        active_summary = (
-            f"*{stats.total_active} active jobs*"
-            if stats.total_active > 0
-            else "No active jobs"
-        )
-
-        fields = [
-            {
-                "type": "mrkdwn",
-                "text": f"*Queue Status*\n{active_summary}",
-            },
-            {
-                "type": "mrkdwn",
-                "text": f"⏳ Pending\n`{stats.pending:>3d}`",
-            },
-            {
-                "type": "mrkdwn",
-                "text": f"🔄 Running\n`{stats.running:>3d}`",
-            },
-        ]
-
-        # Add completed jobs if any
-        if stats.completed > 0 or stats.failed > 0 or stats.cancelled > 0:
-            fields.extend(
-                [
-                    {
-                        "type": "mrkdwn",
-                        "text": f"✅ Completed\n`{stats.completed:>3d}`",
-                    },
-                    {
-                        "type": "mrkdwn",
-                        "text": f"❌ Failed\n`{stats.failed:>3d}`",
-                    },
-                    {
-                        "type": "mrkdwn",
-                        "text": f"🚫 Cancelled\n`{stats.cancelled:>3d}`",
-                    },
-                ]
-            )
-
-        return {
-            "type": "section",
-            "fields": fields,
-        }
-
-    def _build_resource_stats_section(self, stats: "ResourceStats") -> dict:
-        """Build resource statistics section.
-
-        Args:
-            stats: Resource statistics to format
-
-        Returns:
-            Slack block for resource stats
-        """
-
-        partition_info = f" (`{stats.partition}`)" if stats.partition else ""
-
-        # GPU utilization bar
-        if stats.total_gpus > 0:
-            bar_length = 10
-            filled = int((stats.utilization / 100) * bar_length)
-            bar = "█" * filled + "░" * (bar_length - filled)
-            gpu_status = f"{bar} {stats.utilization:.0f}%"
-            gpu_summary = (
-                f"*GPU Resources{partition_info}*\n"
-                f"{gpu_status}\n"
-                f"• Total: {stats.total_gpus} | "
-                f"In Use: {stats.gpus_in_use} | "
-                f"Available: {stats.gpus_available}"
-            )
-        else:
-            gpu_summary = f"*GPU Resources{partition_info}*\nNo GPUs available"
-
-        # Node status
-        node_status = f"*Nodes:* {stats.nodes_total} total"
-        if stats.nodes_idle > 0:
-            node_status += f" | {stats.nodes_idle} idle"
-        if stats.nodes_down > 0:
-            node_status += f" | ⚠️ {stats.nodes_down} down"
-
-        return {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"{gpu_summary}\n\n{node_status}",
-            },
-        }
-
-    def _build_user_stats_section(self, stats: "JobStats") -> dict:
-        """Build user statistics section.
-
-        Args:
-            stats: User job statistics to format
-
-        Returns:
-            Slack block for user stats
-        """
-
-        if stats.total_active == 0:
-            summary = "No active jobs"
-        else:
-            summary = f"{stats.total_active} active job{'s' if stats.total_active > 1 else ''}"
-
-        fields = [
-            {
-                "type": "mrkdwn",
-                "text": f"*Your Jobs*\n{summary}",
-            },
-            {
-                "type": "mrkdwn",
-                "text": f"⏳ Pending\n`{stats.pending:>3d}`",
-            },
-            {
-                "type": "mrkdwn",
-                "text": f"🔄 Running\n`{stats.running:>3d}`",
-            },
-        ]
-
-        return {
-            "type": "section",
-            "fields": fields,
-        }
-
-    def _build_running_jobs_section(self, jobs: list["RunningJob"]) -> dict:
-        """Build running jobs list section.
-
-        Args:
-            jobs: List of running jobs to display
-
-        Returns:
-            Slack block for running jobs
-        """
-
-        if not jobs:
-            return {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": "*Active Jobs*\nNo active jobs",
-                },
-            }
-
-        # Build job list
-        job_lines = [f"*Active Jobs* ({len(jobs)} shown)"]
-
-        for job in jobs:
-            # Format runtime
-            if job.runtime:
-                days = job.runtime.days
-                hours, remainder = divmod(job.runtime.seconds, 3600)
-                minutes, _ = divmod(remainder, 60)
-
-                if days > 0:
-                    runtime_str = f"{days}d {hours:02d}:{minutes:02d}"
-                else:
-                    runtime_str = f"{hours:02d}:{minutes:02d}"
-            else:
-                runtime_str = "-"
-
-            # Status emoji
-            status_emoji = "🔄" if job.status == "RUNNING" else "⏳"
-
-            # Format job line
-            job_line = (
-                f"{status_emoji} `{job.job_id:>6}` "
-                f"*{self._truncate(job.name, 20)}* "
-                f"| {self._truncate(job.user, 12)} "
-                f"| ⏱ {runtime_str:>9} "
-            )
-
-            # Add GPU info if present
-            if job.gpus > 0:
-                job_line += f"| 🎮 {job.gpus}"
-
-            job_lines.append(job_line)
-
-        return {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": "\n".join(job_lines),
-            },
-        }
-
-    @staticmethod
-    def _truncate(text: str, max_length: int) -> str:
-        """Truncate text to maximum length.
-
-        Args:
-            text: Text to truncate
-            max_length: Maximum length
-
-        Returns:
-            Truncated text with ellipsis if needed
-        """
-        if len(text) <= max_length:
-            return text
-        return text[: max_length - 1] + "…"
