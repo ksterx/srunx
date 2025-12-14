@@ -220,7 +220,7 @@ class Slurm:
                     nodes = 1
 
                 # Parse GPU count from TRES (e.g., "gpu:8" or "billing=8,cpu=8,gres/gpu=8,mem=100G,node=1")
-                gpus_per_node = 0
+                gpus = 0
                 if tres and "gpu" in tres.lower():
                     # Try to extract gpu count from various TRES formats
                     import re
@@ -228,18 +228,18 @@ class Slurm:
                     # Match patterns like "gpu:8", "gres/gpu=8", "gres/gpu:a100:8"
                     gpu_match = re.search(r"gpu[:/=](?:\w+:)?(\d+)", tres.lower())
                     if gpu_match:
-                        gpus_per_node = int(gpu_match.group(1))
+                        gpus = int(gpu_match.group(1))
 
                 job = BaseJob(
                     name=job_name,
                     job_id=job_id,
+                    user=user_name,
+                    partition=partition,
+                    elapsed_time=elapsed_time,
+                    nodes=nodes,
+                    gpus=gpus,
                 )
                 job.status = status
-                job.user = user_name  # type: ignore[attr-defined]
-                job.partition = partition  # type: ignore[attr-defined]
-                job.elapsed_time = elapsed_time  # type: ignore[attr-defined]
-                job.nodes = nodes  # type: ignore[attr-defined]
-                job.gpus_per_node = gpus_per_node  # type: ignore[attr-defined]
                 jobs.append(job)
 
         return jobs

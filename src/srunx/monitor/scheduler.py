@@ -353,19 +353,9 @@ class ScheduledReporter:
             for job in active_jobs:
                 # Calculate runtime for running jobs
                 runtime = None
-                if (
-                    job.status == JobStatus.RUNNING
-                    and hasattr(job, "elapsed_time")
-                    and job.elapsed_time
-                ):
+                if job.status == JobStatus.RUNNING and job.elapsed_time:
                     # elapsed_time is a string like "1-02:03:04" or "02:03:04"
                     runtime = self._parse_elapsed_time(job.elapsed_time)
-
-                # Get GPU count from BaseJob attributes (set by queue())
-                gpus = 0
-                if hasattr(job, "gpus_per_node") and job.gpus_per_node:
-                    nodes = job.nodes if hasattr(job, "nodes") and job.nodes else 1
-                    gpus = job.gpus_per_node * nodes
 
                 running_jobs.append(
                     RunningJob(
@@ -373,10 +363,10 @@ class ScheduledReporter:
                         name=job.name,
                         user=job.user or "unknown",
                         status=job.status.value,
-                        partition=job.partition if hasattr(job, "partition") else None,
+                        partition=job.partition,
                         runtime=runtime,
-                        nodes=job.nodes if hasattr(job, "nodes") and job.nodes else 1,
-                        gpus=gpus,
+                        nodes=job.nodes or 1,
+                        gpus=job.gpus or 0,
                     )
                 )
 
