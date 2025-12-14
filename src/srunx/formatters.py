@@ -138,6 +138,9 @@ class SlackTableFormatter:
         num_cols = len(headers)
         col_width = (width - num_cols - 1) // num_cols
 
+        # Calculate actual table width (including borders)
+        actual_width = num_cols * col_width + num_cols + 1
+
         def format_row(items: list[str]) -> str:
             cells = [item[:col_width].ljust(col_width) for item in items]
             return "│" + "│".join(cells) + "│"
@@ -146,14 +149,14 @@ class SlackTableFormatter:
 
         # Title if provided
         if title:
-            padding = width - len(title) - 4
+            padding = actual_width - len(title) - 4
             left_pad = padding // 2
             right_pad = padding - left_pad
-            lines.append(f"┌{'─' * (width - 2)}┐")
+            lines.append(f"┌{'─' * (actual_width - 2)}┐")
             lines.append(f"│ {' ' * left_pad}{title}{' ' * right_pad} │")
-            lines.append(f"├{'─' * (width - 2)}┤")
+            lines.append(f"├{'─' * (actual_width - 2)}┤")
         else:
-            lines.append(f"┌{'─' * (width - 2)}┐")
+            lines.append(f"┌{'─' * (actual_width - 2)}┐")
 
         # Headers
         lines.append(format_row(headers))
