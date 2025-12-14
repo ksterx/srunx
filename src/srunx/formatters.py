@@ -436,7 +436,7 @@ class SlackNotificationFormatter:
 
             sections.append(
                 self.table.data_table(
-                    headers, rows, title=f"Active Jobs ({len(running_jobs)})", width=60
+                    headers, rows, title=f"Active Jobs ({len(running_jobs)})", width=70
                 )
             )
 

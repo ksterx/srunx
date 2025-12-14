@@ -180,10 +180,11 @@ class Slurm:
         Returns:
             List of Job objects.
         """
+        # Format: JobID Partition Name User State Time TimeLimit Nodes Nodelist TRES
         cmd = [
             "squeue",
             "--format",
-            "%.18i %.9P %.15j %.8u %.8T %.10M %.9l %.6D %R",
+            "%.18i %.9P %.30j %.12u %.8T %.10M %.9l %.6D %R %b",
             "--noheader",
         ]
         if user:
@@ -196,22 +197,49 @@ class Slurm:
             if not line.strip():
                 continue
 
-            parts = line.split()
+            parts = line.split(maxsplit=9)  # Split into at most 10 parts
             if len(parts) >= 5:
                 job_id = int(parts[0])
+                partition = parts[1] if len(parts) > 1 else None
                 job_name = parts[2]
+                user_name = parts[3] if len(parts) > 3 else None
                 status_str = parts[4]
+                elapsed_time = parts[5] if len(parts) > 5 else None
+                nodes_str = parts[7] if len(parts) > 7 else "1"
+                tres = parts[9] if len(parts) > 9 else ""
 
                 try:
                     status = JobStatus(status_str)
                 except ValueError:
                     status = JobStatus.PENDING  # Default for unknown status
 
+                # Parse number of nodes
+                try:
+                    nodes = int(nodes_str)
+                except (ValueError, AttributeError):
+                    nodes = 1
+
+                # Parse GPU count from TRES (e.g., "gpu:8" or "billing=8,cpu=8,gres/gpu=8,mem=100G,node=1")
+                gpus_per_node = 0
+                if tres and "gpu" in tres.lower():
+                    # Try to extract gpu count from various TRES formats
+                    import re
+
+                    # Match patterns like "gpu:8", "gres/gpu=8", "gres/gpu:a100:8"
+                    gpu_match = re.search(r"gpu[:/=](?:\w+:)?(\d+)", tres.lower())
+                    if gpu_match:
+                        gpus_per_node = int(gpu_match.group(1))
+
                 job = BaseJob(
                     name=job_name,
                     job_id=job_id,
                 )
                 job.status = status
+                job.user = user_name  # type: ignore[attr-defined]
+                job.partition = partition  # type: ignore[attr-defined]
+                job.elapsed_time = elapsed_time  # type: ignore[attr-defined]
+                job.nodes = nodes  # type: ignore[attr-defined]
+                job.gpus_per_node = gpus_per_node  # type: ignore[attr-defined]
                 jobs.append(job)
 
         return jobs
