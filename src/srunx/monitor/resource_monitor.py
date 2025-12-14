@@ -151,11 +151,14 @@ class ResourceMonitor(BaseMonitor):
 
                 parts = line.split()
                 if len(parts) < 3:
+                    logger.debug(f"Skipping malformed sinfo line: {line}")
                     continue
 
                 # parts: [nodename, gres, state]
                 gres = parts[1]
                 state = parts[2].lower()
+
+                logger.debug(f"Node {parts[0]}: gres='{gres}', state='{state}'")
 
                 nodes_total += 1
 
@@ -167,13 +170,27 @@ class ResourceMonitor(BaseMonitor):
 
                 # Skip unavailable nodes for GPU count
                 if state in ("down", "drain", "draining", "down*", "drain*"):
+                    logger.debug(f"Skipping {parts[0]} (state: {state})")
                     continue
 
-                # Parse GPU count from gres (format: gpu:N or gres/gpu:N)
-                match = re.search(r"gpu:(\d+)", gres, re.IGNORECASE)
+                # Parse GPU count from gres using robust pattern
+                # Matches: "gpu:8", "gres/gpu=8", "gres/gpu:a100:8", etc.
+                match = re.search(r"gpu[:/=](?:\w+:)?(\d+)", gres, re.IGNORECASE)
                 if match:
-                    total_gpus += int(match.group(1))
+                    gpu_count = int(match.group(1))
+                    logger.debug(f"Found {gpu_count} GPUs on {parts[0]}")
+                    total_gpus += gpu_count
+                elif "gpu" in gres.lower():
+                    logger.warning(
+                        f"Failed to parse GPU count from gres: '{gres}' on {parts[0]}"
+                    )
+                else:
+                    logger.debug(f"No GPU on {parts[0]}")
 
+            logger.info(
+                f"Node stats: {nodes_total} total, {nodes_idle} idle, "
+                f"{nodes_down} down, {total_gpus} total GPUs"
+            )
             return nodes_total, nodes_idle, nodes_down, total_gpus
 
         except subprocess.TimeoutExpired:
@@ -215,9 +232,11 @@ class ResourceMonitor(BaseMonitor):
 
                 parts = line.split()
                 if len(parts) < 3:
+                    logger.debug(f"Skipping malformed squeue line: {line}")
                     continue
 
                 # parts: [job_id, state, tres]
+                job_id = parts[0]
                 state = parts[1]
                 tres = parts[2]
 
@@ -227,11 +246,21 @@ class ResourceMonitor(BaseMonitor):
 
                 jobs_running += 1
 
-                # Parse GPU count from tres (format: gpu:N or gres/gpu:N)
-                match = re.search(r"gpu:(\d+)", tres, re.IGNORECASE)
+                # Parse GPU count from tres using robust pattern
+                # Matches: "gpu:8", "gres/gpu=8", "gres/gpu:a100:8", etc.
+                match = re.search(r"gpu[:/=](?:\w+:)?(\d+)", tres, re.IGNORECASE)
                 if match:
-                    gpus_in_use += int(match.group(1))
+                    gpu_count = int(match.group(1))
+                    logger.debug(
+                        f"Job {job_id} using {gpu_count} GPUs (tres: '{tres}')"
+                    )
+                    gpus_in_use += gpu_count
+                elif "gpu" in tres.lower():
+                    logger.warning(
+                        f"Failed to parse GPU count from tres: '{tres}' for job {job_id}"
+                    )
 
+            logger.info(f"GPU usage: {gpus_in_use} GPUs in use by {jobs_running} jobs")
             return gpus_in_use, jobs_running
 
         except subprocess.TimeoutExpired:

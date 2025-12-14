@@ -97,7 +97,10 @@ class SlackTableFormatter:
         key_width = min(max_key_len + 2, width // 2)
         value_width = width - key_width - 3
 
-        lines = [f"┌{'─' * (width - 2)}┐"]
+        # Calculate actual table width (including borders)
+        actual_width = key_width + value_width + 3
+
+        lines = [f"┌{'─' * (actual_width - 2)}┐"]
 
         for i, (key, value) in enumerate(data.items()):
             # Truncate if needed
