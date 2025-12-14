@@ -14,6 +14,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from srunx.callbacks import Callback, SlackCallback
+from srunx.cli.monitor import monitor_app
 from srunx.client import Slurm
 from srunx.config import (
     create_example_config,
@@ -113,6 +114,7 @@ config_app = typer.Typer(help="Configuration management")
 
 app.add_typer(flow_app, name="flow")
 app.add_typer(config_app, name="config")
+app.add_typer(monitor_app, name="monitor")
 app.add_typer(ssh_app, name="ssh")
 
 
