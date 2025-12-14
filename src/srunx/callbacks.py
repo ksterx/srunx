@@ -296,7 +296,7 @@ class SlackCallback(Callback):
             total_gpus=snapshot.total_gpus,
             idle_nodes=snapshot.nodes_idle,
             total_nodes=snapshot.nodes_total,
-            utilization=snapshot.gpu_utilization,
+            utilization=snapshot.gpu_utilization * 100,  # Convert 0-1 to 0-100
         )
 
         self.client.send(

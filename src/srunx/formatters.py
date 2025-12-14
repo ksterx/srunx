@@ -1,10 +1,50 @@
 """Unified Slack message formatters with table-based layouts."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 class SlackTableFormatter:
     """Format data as ASCII tables for Slack code blocks."""
+
+    @staticmethod
+    def _sanitize_text(text: str) -> str:
+        """Sanitize text for safe use in Slack messages.
+
+        Prevents injection attacks by escaping special characters and
+        removing control characters that could break message formatting.
+
+        Args:
+            text: Text to sanitize.
+
+        Returns:
+            Sanitized text with special characters escaped and control
+            characters removed.
+        """
+        # Remove or replace control characters
+        text = text.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+
+        # Escape special characters that could enable injection attacks
+        # Note: & must be first to avoid double-escaping
+        replacements = {
+            "&": "&amp;",  # HTML entity escape (must be first)
+            "<": "&lt;",  # Prevent HTML/script tag injection
+            ">": "&gt;",  # Prevent HTML/script tag injection
+            "`": "'",  # Prevent code block injection
+            "*": "\\*",  # Escape markdown bold
+            "_": "\\_",  # Escape markdown italic
+            "~": "\\~",  # Escape markdown strikethrough
+            "[": "\\[",  # Escape markdown link syntax
+            "]": "\\]",  # Escape markdown link syntax
+        }
+        for char, replacement in replacements.items():
+            text = text.replace(char, replacement)
+
+        # Limit length to prevent message overflow
+        max_length = 1000
+        if len(text) > max_length:
+            text = text[:max_length] + "..."
+
+        return text
 
     @staticmethod
     def header(title: str, timestamp: datetime | None = None) -> str:
@@ -272,8 +312,11 @@ class SlackNotificationFormatter:
 
         progress = self.table.progress_bar(total_gpus - available_gpus, total_gpus)
 
+        # Sanitize partition name
+        partition_safe = self.table._sanitize_text(partition) if partition else "all"
+
         data = {
-            "Partition": partition or "all",
+            "Partition": partition_safe,
             "Available GPUs": f"{available_gpus} / {total_gpus}",
             "Utilization": f"{utilization:.0f}% {progress}",
             "Idle Nodes": f"{idle_nodes} / {total_nodes}",
@@ -310,10 +353,15 @@ class SlackNotificationFormatter:
 
         # Queue Status
         if job_stats:
+            # Calculate total_active from pending + running (not included in asdict)
+            pending = job_stats.get("pending", 0)
+            running = job_stats.get("running", 0)
+            total_active = pending + running
+
             queue_data = {
-                "Total Active": str(job_stats.get("total_active", 0)),
-                "Pending": str(job_stats.get("pending", 0)),
-                "Running": str(job_stats.get("running", 0)),
+                "Total Active": str(total_active),
+                "Pending": str(pending),
+                "Running": str(running),
             }
             sections.append(self.table.key_value_table(queue_data))
 
@@ -322,11 +370,16 @@ class SlackNotificationFormatter:
             total = resource_stats.get("total_gpus", 0)
             in_use = resource_stats.get("gpus_in_use", 0)
             available = resource_stats.get("gpus_available", 0)
-            utilization = resource_stats.get("utilization", 0.0)
+            # Calculate utilization from in_use/total (not included in asdict)
+            utilization = (in_use / total * 100) if total > 0 else 0.0
             progress = self.table.progress_bar(in_use, total)
 
             partition_info = resource_stats.get("partition")
-            partition_text = f" ({partition_info})" if partition_info else ""
+            partition_text = (
+                f" ({self.table._sanitize_text(partition_info)})"
+                if partition_info
+                else ""
+            )
 
             resource_data = {
                 f"GPU Resources{partition_text}": "",
@@ -347,12 +400,15 @@ class SlackNotificationFormatter:
                 runtime_str = "-"
                 if job.get("runtime"):
                     rt = job["runtime"]
-                    # runtime is a timedelta dict from asdict()
-                    if isinstance(rt, dict):
+                    # asdict() keeps timedelta objects as-is
+                    if isinstance(rt, timedelta):
+                        days = rt.days
+                        seconds = rt.seconds
+                    elif isinstance(rt, dict):
+                        # Fallback for dict format (shouldn't happen with asdict)
                         days = rt.get("days", 0)
                         seconds = rt.get("seconds", 0)
                     else:
-                        # Shouldn't happen, but handle it
                         days = 0
                         seconds = 0
 
@@ -364,11 +420,15 @@ class SlackNotificationFormatter:
                     else:
                         runtime_str = f"{hours:02d}:{minutes:02d}"
 
+                # Sanitize job name and user
+                job_name = self.table._sanitize_text(job.get("name", "-"))
+                job_user = self.table._sanitize_text(job.get("user", "-"))
+
                 rows.append(
                     [
                         str(job.get("job_id", "-")),
-                        job.get("name", "-")[:12],
-                        job.get("user", "-")[:8],
+                        job_name[:12],
+                        job_user[:8],
                         runtime_str[:8],
                         str(job.get("gpus", "-")),
                     ]
