@@ -103,9 +103,9 @@ class SlackTableFormatter:
         lines = [f"┌{'─' * (actual_width - 2)}┐"]
 
         for i, (key, value) in enumerate(data.items()):
-            # Truncate if needed
-            key_display = key[:key_width].ljust(key_width)
-            value_display = value[:value_width].ljust(value_width)
+            # Account for padding space: reduce text width by 1
+            key_display = key[: (key_width - 1)].ljust(key_width - 1)
+            value_display = value[: (value_width - 1)].ljust(value_width - 1)
 
             if i == 0:
                 lines.append(f"│ {key_display}│ {value_display}│")
