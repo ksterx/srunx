@@ -729,7 +729,7 @@ def _run_scheduled_reporting(
         sys.exit(1)
 
     # Parse include option
-    include_list = ["jobs", "resources", "user"]  # Default: all
+    include_list = ["jobs", "resources", "user", "running"]  # Default: all
     if include is not None:
         include_list = [s.strip() for s in include.split(",")]
 
@@ -842,7 +842,7 @@ def watch(
         str | None,
         typer.Option(
             "--include",
-            help="Report sections to include (comma-separated: jobs,resources,user)",
+            help="Report sections to include (comma-separated: jobs,resources,user,running)",
         ),
     ] = None,
     user: Annotated[

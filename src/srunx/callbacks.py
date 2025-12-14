@@ -378,7 +378,7 @@ class SlackCallback(Callback):
         else:
             from loguru import logger
 
-            logger.warning("No running jobs to display in report")
+            logger.info("No running jobs to display in report")
 
         # Send to Slack
         self.client.send(
