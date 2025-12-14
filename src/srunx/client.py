@@ -225,8 +225,8 @@ class Slurm:
                     # Try to extract gpu count from various TRES formats
                     import re
 
-                    # Match patterns like "gpu:8", "gres/gpu=8", "gres/gpu:a100:8"
-                    gpu_match = re.search(r"gpu[:/=](?:\w+:)?(\d+)", tres.lower())
+                    # Match patterns like "gpu:8", "gres/gpu=8", "gpu:NVIDIA-A100:8"
+                    gpu_match = re.search(r"gpu[:/=](?:[^:]+:)?(\d+)", tres.lower())
                     if gpu_match:
                         gpus = int(gpu_match.group(1))
 

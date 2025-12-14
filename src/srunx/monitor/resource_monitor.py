@@ -174,8 +174,8 @@ class ResourceMonitor(BaseMonitor):
                     continue
 
                 # Parse GPU count from gres using robust pattern
-                # Matches: "gpu:8", "gres/gpu=8", "gres/gpu:a100:8", etc.
-                match = re.search(r"gpu[:/=](?:\w+:)?(\d+)", gres, re.IGNORECASE)
+                # Matches: "gpu:8", "gres/gpu=8", "gpu:NVIDIA-A100:8", etc.
+                match = re.search(r"gpu[:/=](?:[^:]+:)?(\d+)", gres, re.IGNORECASE)
                 if match:
                     gpu_count = int(match.group(1))
                     logger.debug(f"Found {gpu_count} GPUs on {parts[0]}")
@@ -247,8 +247,8 @@ class ResourceMonitor(BaseMonitor):
                 jobs_running += 1
 
                 # Parse GPU count from tres using robust pattern
-                # Matches: "gpu:8", "gres/gpu=8", "gres/gpu:a100:8", etc.
-                match = re.search(r"gpu[:/=](?:\w+:)?(\d+)", tres, re.IGNORECASE)
+                # Matches: "gpu:8", "gres:gpu=8", "gres:gpu:NVIDIA-A100:8", etc.
+                match = re.search(r"gpu[:/=](?:[^:]+:)?(\d+)", tres, re.IGNORECASE)
                 if match:
                     gpu_count = int(match.group(1))
                     logger.debug(
