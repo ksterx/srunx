@@ -20,13 +20,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run srunx cancel <job_id>` - Cancel job
 
 #### Monitoring
-- `uv run srunx monitor <job_id>` - Monitor job until completion
-- `uv run srunx monitor <job_id> --continuous` - Continuously monitor job state changes
-- `uv run srunx monitor --all` - Monitor all user jobs
-- `uv run srunx monitor <job_id> --interval 30` - Monitor with 30s polling interval
-- `uv run srunx watch --resources --min-gpus 4` - Wait for 4 GPUs to become available
-- `uv run srunx watch --resources --continuous` - Continuously monitor GPU availability
-- `uv run srunx watch --resources --partition gpu` - Monitor specific partition
+- `uv run srunx monitor jobs <job_id>` - Monitor job until completion
+- `uv run srunx monitor jobs <job_id> --continuous` - Continuously monitor job state changes
+- `uv run srunx monitor jobs --all` - Monitor all user jobs
+- `uv run srunx monitor jobs <job_id> --interval 30` - Monitor with 30s polling interval
+- `uv run srunx monitor resources --min-gpus 4` - Wait for 4 GPUs to become available
+- `uv run srunx monitor resources --min-gpus 2 --continuous` - Continuously monitor GPU availability
+- `uv run srunx monitor resources --min-gpus 4 --partition gpu` - Monitor specific partition
+- `uv run srunx monitor cluster --schedule 1h --notify $WEBHOOK` - Send periodic cluster reports
 - `uv run srunx resources` - Display current GPU resource availability
 - `uv run srunx resources --partition gpu --format json` - Show partition resources in JSON
 
@@ -59,14 +60,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 # Submit a job and monitor until completion
 job_id=$(uv run srunx submit python train.py --gpus-per-node 2 | grep "Job ID" | awk '{print $3}')
-uv run srunx monitor $job_id
+uv run srunx monitor jobs $job_id
 
 # Wait for GPUs to become available, then submit
-uv run srunx watch --resources --min-gpus 4
+uv run srunx monitor resources --min-gpus 4
 uv run srunx submit python train.py --gpus-per-node 4
 
 # Continuously monitor all user jobs with notifications
-uv run srunx monitor --all --continuous --interval 30
+uv run srunx monitor jobs --all --continuous --interval 30
+
+# Send periodic cluster reports
+uv run srunx monitor cluster --schedule 1h --notify $SLACK_WEBHOOK
 
 # Check current resource availability
 uv run srunx resources --partition gpu
@@ -93,7 +97,8 @@ src/srunx/
 ├── logging.py         # Centralized logging configuration
 ├── utils.py           # Utility functions
 ├── cli/               # Command-line interfaces
-│   ├── main.py        # Main CLI commands (including monitor, watch, resources)
+│   ├── main.py        # Main CLI commands (submit, status, list, cancel, resources)
+│   ├── monitor.py     # Monitor subcommands (jobs, resources, cluster)
 │   └── workflow.py    # Workflow CLI
 ├── monitor/           # Job and resource monitoring
 │   ├── base.py        # BaseMonitor abstract class
@@ -226,7 +231,8 @@ src/srunx/
 - **WorkflowExecutionError**: Workflow execution errors
 
 #### CLI (`cli/`)
-- **Main CLI**: Job management commands (submit, status, list, cancel)
+- **Main CLI**: Job management commands (submit, status, list, cancel, resources)
+- **Monitor CLI**: Monitor subcommands (jobs, resources, cluster)
 - **Workflow CLI**: YAML workflow execution with validation
 
 ### Template System

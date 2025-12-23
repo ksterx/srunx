@@ -115,12 +115,6 @@ srunx resources --partition gpu
 
 # Show output in JSON format
 srunx resources --format json
-
-# Wait for minimum GPUs to become available
-srunx watch --resources --min-gpus 4
-
-# Watch specific partition with timeout
-srunx watch --resources --partition gpu --min-gpus 2 --timeout 7200
 ```
 
 ### Programmatic Monitoring
@@ -151,30 +145,6 @@ monitor = JobMonitor(
     callbacks=[slack_callback]
 )
 monitor.watch_continuous()  # Ctrl+C to stop
-```
-
-### Scheduled Reporting
-
-Send periodic status reports to Slack at specified intervals:
-
-```bash
-# Send report every hour
-srunx watch --schedule 1h --notify $SLACK_WEBHOOK
-
-# Send report every 30 minutes
-srunx watch --schedule 30m --notify $SLACK_WEBHOOK
-
-# Send daily report at 9:00 AM (cron format)
-srunx watch --schedule "0 9 * * *" --notify $SLACK_WEBHOOK
-
-# Customize report content
-srunx watch --schedule 2h --notify $SLACK_WEBHOOK --include jobs,resources
-
-# Monitor specific partition with user stats
-srunx watch --schedule 1h --notify $SLACK_WEBHOOK \
-  --partition gpu \
-  --user researcher \
-  --include jobs,resources,user
 ```
 
 **Report includes:**

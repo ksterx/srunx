@@ -12,11 +12,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 #### Scheduled Reporting System
-- **Scheduled Reports**: Send periodic SLURM cluster status reports to Slack
-  - `srunx watch --schedule <interval>` for interval-based scheduling (e.g., `1h`, `30m`, `1d`)
-  - `srunx watch --schedule "<cron>"` for cron-based scheduling (e.g., `"0 9 * * *"`)
-  - Integrated with existing `watch` command for unified monitoring experience
-
 - **Report Content**:
   - Job queue statistics (pending, running, completed, failed, cancelled)
   - GPU resource utilization (total, in-use, available with percentage)
@@ -83,8 +78,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CLI Commands**
   - `srunx monitor <job_id>`: Monitor job until completion
   - `srunx monitor --continuous <job_id>`: Continuous job monitoring
-  - `srunx watch --min-gpus <n>`: Wait for GPU availability
-  - `srunx watch --continuous --min-gpus <n>`: Continuous resource monitoring
   - `srunx list --watch`: Live job queue updates
 
 ### Security
