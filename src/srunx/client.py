@@ -180,10 +180,11 @@ class Slurm:
         Returns:
             List of Job objects.
         """
+        # Format: JobID Partition Name User State Time TimeLimit Nodes Nodelist TRES
         cmd = [
             "squeue",
             "--format",
-            "%.18i %.9P %.15j %.8u %.8T %.10M %.9l %.6D %R",
+            "%.18i %.9P %.30j %.12u %.8T %.10M %.9l %.6D %R %b",
             "--noheader",
         ]
         if user:
@@ -196,20 +197,47 @@ class Slurm:
             if not line.strip():
                 continue
 
-            parts = line.split()
+            parts = line.split(maxsplit=9)  # Split into at most 10 parts
             if len(parts) >= 5:
                 job_id = int(parts[0])
+                partition = parts[1] if len(parts) > 1 else None
                 job_name = parts[2]
+                user_name = parts[3] if len(parts) > 3 else None
                 status_str = parts[4]
+                elapsed_time = parts[5] if len(parts) > 5 else None
+                nodes_str = parts[7] if len(parts) > 7 else "1"
+                tres = parts[9] if len(parts) > 9 else ""
 
                 try:
                     status = JobStatus(status_str)
                 except ValueError:
                     status = JobStatus.PENDING  # Default for unknown status
 
+                # Parse number of nodes
+                try:
+                    nodes = int(nodes_str)
+                except (ValueError, AttributeError):
+                    nodes = 1
+
+                # Parse GPU count from TRES (e.g., "gpu:8" or "billing=8,cpu=8,gres/gpu=8,mem=100G,node=1")
+                gpus = 0
+                if tres and "gpu" in tres.lower():
+                    # Try to extract gpu count from various TRES formats
+                    import re
+
+                    # Match patterns like "gpu:8", "gres/gpu=8", "gpu:NVIDIA-A100:8"
+                    gpu_match = re.search(r"gpu[:/=](?:[^:]+:)?(\d+)", tres.lower())
+                    if gpu_match:
+                        gpus = int(gpu_match.group(1))
+
                 job = BaseJob(
                     name=job_name,
                     job_id=job_id,
+                    user=user_name,
+                    partition=partition,
+                    elapsed_time=elapsed_time,
+                    nodes=nodes,
+                    gpus=gpus,
                 )
                 job.status = status
                 jobs.append(job)
@@ -479,6 +507,54 @@ class Slurm:
             "slurm_log_dir": os.environ.get("SLURM_LOG_DIR"),
             "searched_dirs": [d for d in log_dirs if d],
         }
+
+    def _get_job_gpu_count(self, job_id: int) -> int | None:
+        """
+        Get GPU count for a job by parsing scontrol output.
+
+        Tries TRES field first, then falls back to Gres field for compatibility.
+
+        Args:
+            job_id: SLURM job ID
+
+        Returns:
+            GPU count if found, None otherwise
+
+        Raises:
+            subprocess.CalledProcessError: If scontrol command fails
+        """
+        import re
+
+        try:
+            result = subprocess.run(
+                ["scontrol", "show", "job", str(job_id)],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=10,
+            )
+
+            # Try TRES field first (most reliable)
+            # Pattern: TRES=...gres/gpu=N
+            match = re.search(r"TRES=.*?gres/gpu=(\d+)", result.stdout)
+            if match:
+                return int(match.group(1))
+
+            # Fallback to Gres or TresPerNode field
+            # Pattern: Gres=gpu:N or TresPerNode=...gpu:N
+            match = re.search(r"(?:TresPerNode|Gres)=.*?gpu[:/](\d+)", result.stdout)
+            if match:
+                return int(match.group(1))
+
+            # No GPU information found
+            return None
+
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Timeout querying GPU count for job {job_id}")
+            return None
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to query GPU count for job {job_id}: {e}")
+            return None
 
     def _get_default_template(self) -> str:
         """Get the default job template path."""

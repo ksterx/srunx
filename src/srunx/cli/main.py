@@ -14,6 +14,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from srunx.callbacks import Callback, SlackCallback
+from srunx.cli.monitor import monitor_app
 from srunx.client import Slurm
 from srunx.config import (
     create_example_config,
@@ -113,6 +114,7 @@ config_app = typer.Typer(help="Configuration management")
 
 app.add_typer(flow_app, name="flow")
 app.add_typer(config_app, name="config")
+app.add_typer(monitor_app, name="monitor")
 app.add_typer(ssh_app, name="ssh")
 
 
@@ -379,8 +381,26 @@ def status(
 
 
 @app.command("list")
-def list_jobs() -> None:
-    """List user's jobs in the queue."""
+def list_jobs(
+    show_gpus: Annotated[
+        bool,
+        typer.Option("--show-gpus", "-g", help="Show GPU allocation for each job"),
+    ] = False,
+    format: Annotated[
+        str,
+        typer.Option("--format", "-f", help="Output format: table or json"),
+    ] = "table",
+) -> None:
+    """List user's jobs in the queue.
+
+    Examples:
+        srunx list
+        srunx list --show-gpus
+        srunx list --format json
+        srunx list --show-gpus --format json
+    """
+    import json
+
     try:
         client = Slurm()
         jobs = client.queue()
@@ -390,27 +410,139 @@ def list_jobs() -> None:
             console.print("No jobs in queue")
             return
 
+        # JSON format output
+        if format == "json":
+            job_data = []
+            for job in jobs:
+                data = {
+                    "job_id": job.job_id,
+                    "name": job.name,
+                    "status": job.status.name if hasattr(job, "status") else "UNKNOWN",
+                    "nodes": getattr(getattr(job, "resources", None), "nodes", None),
+                    "time_limit": getattr(
+                        getattr(job, "resources", None), "time_limit", None
+                    ),
+                }
+                if show_gpus:
+                    resources = getattr(job, "resources", None)
+                    if resources:
+                        total_gpus = resources.nodes * resources.gpus_per_node
+                        data["gpus"] = total_gpus
+                    else:
+                        data["gpus"] = 0
+                job_data.append(data)
+
+            console = Console()
+            console.print(json.dumps(job_data, indent=2))
+            return
+
+        # Table format output
         table = Table(title="Job Queue")
         table.add_column("Job ID", style="cyan")
         table.add_column("Name", style="magenta")
         table.add_column("Status", style="green")
         table.add_column("Nodes", justify="right")
+        if show_gpus:
+            table.add_column("GPUs", justify="right", style="yellow")
         table.add_column("Time", justify="right")
 
         for job in jobs:
-            table.add_row(
+            row = [
                 str(job.job_id) if job.job_id else "N/A",
                 job.name,
                 job.status.name if hasattr(job, "status") else "UNKNOWN",
                 str(getattr(getattr(job, "resources", None), "nodes", "N/A") or "N/A"),
-                getattr(getattr(job, "resources", None), "time_limit", None) or "N/A",
+            ]
+
+            if show_gpus:
+                resources = getattr(job, "resources", None)
+                if resources:
+                    total_gpus = resources.nodes * resources.gpus_per_node
+                    row.append(str(total_gpus))
+                else:
+                    row.append("0")
+
+            row.append(
+                getattr(getattr(job, "resources", None), "time_limit", None) or "N/A"
             )
+            table.add_row(*row)
 
         console = Console()
         console.print(table)
 
     except Exception as e:
         logger.error(f"Error retrieving job queue: {e}")
+        sys.exit(1)
+
+
+@app.command("resources")
+def resources(
+    partition: Annotated[
+        str | None,
+        typer.Option("--partition", "-p", help="SLURM partition to query"),
+    ] = None,
+    format: Annotated[
+        str,
+        typer.Option("--format", "-f", help="Output format: table or json"),
+    ] = "table",
+) -> None:
+    """Display current GPU resource availability.
+
+    Examples:
+        srunx resources
+        srunx resources --partition gpu
+        srunx resources --format json
+        srunx resources --partition gpu --format json
+    """
+    import json
+
+    from srunx.monitor.resource_monitor import ResourceMonitor
+
+    try:
+        # Use ResourceMonitor to query partition resources
+        monitor = ResourceMonitor(min_gpus=0, partition=partition)
+        snapshot = monitor.get_partition_resources()
+
+        # JSON format output
+        if format == "json":
+            data = {
+                "partition": snapshot.partition,
+                "gpus_total": snapshot.total_gpus,
+                "gpus_in_use": snapshot.gpus_in_use,
+                "gpus_available": snapshot.gpus_available,
+                "jobs_running": snapshot.jobs_running,
+                "nodes_total": snapshot.nodes_total,
+                "nodes_idle": snapshot.nodes_idle,
+                "nodes_down": snapshot.nodes_down,
+            }
+            console = Console()
+            console.print(json.dumps(data, indent=2))
+            return
+
+        # Table format output
+        partition_name = snapshot.partition or "all partitions"
+        table = Table(title=f"GPU Resources - {partition_name}")
+
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", justify="right", style="green")
+
+        table.add_row("Total GPUs", str(snapshot.total_gpus))
+        table.add_row("GPUs in Use", str(snapshot.gpus_in_use))
+        table.add_row("GPUs Available", str(snapshot.gpus_available))
+        table.add_row("", "")  # Separator
+        table.add_row("Running Jobs", str(snapshot.jobs_running))
+        table.add_row("", "")  # Separator
+        table.add_row("Total Nodes", str(snapshot.nodes_total))
+        table.add_row("Idle Nodes", str(snapshot.nodes_idle))
+        table.add_row("Down Nodes", str(snapshot.nodes_down))
+
+        console = Console()
+        console.print(table)
+
+    except Exception as e:
+        logger.error(f"Error querying resources: {e}")
+        console = Console()
+        console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
 
 

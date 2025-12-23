@@ -10,15 +10,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run <command>` - Run commands in virtual environment
 
 ### CLI Usage
+
+#### Job Management
 - `uv run srunx submit <command>` - Submit SLURM job
 - `uv run srunx status <job_id>` - Check job status
 - `uv run srunx list` - List jobs
+- `uv run srunx list --show-gpus` - List jobs with GPU allocation
+- `uv run srunx list --format json` - List jobs in JSON format
 - `uv run srunx cancel <job_id>` - Cancel job
+
+#### Monitoring
+- `uv run srunx monitor jobs <job_id>` - Monitor job until completion
+- `uv run srunx monitor jobs <job_id> --continuous` - Continuously monitor job state changes
+- `uv run srunx monitor jobs --all` - Monitor all user jobs
+- `uv run srunx monitor jobs <job_id> --interval 30` - Monitor with 30s polling interval
+- `uv run srunx monitor resources --min-gpus 4` - Wait for 4 GPUs to become available
+- `uv run srunx monitor resources --min-gpus 2 --continuous` - Continuously monitor GPU availability
+- `uv run srunx monitor resources --min-gpus 4 --partition gpu` - Monitor specific partition
+- `uv run srunx monitor cluster --schedule 1h --notify $WEBHOOK` - Send periodic cluster reports
+- `uv run srunx resources` - Display current GPU resource availability
+- `uv run srunx resources --partition gpu --format json` - Show partition resources in JSON
+
+#### SSH Integration
 - `uv run srunx ssh <script>` - Submit script to remote SLURM server via SSH
 - `uv run srunx ssh profile list` - List SSH connection profiles
 - `uv run srunx ssh profile add <name>` - Add SSH connection profile
+
+#### Workflows
 - `uv run srunx flow run <yaml_file>` - Execute workflow from YAML
 - `uv run srunx flow validate <yaml_file>` - Validate workflow YAML
+
+#### Configuration
 - `uv run srunx config show` - Show current configuration
 - `uv run srunx config paths` - Show configuration file paths
 
@@ -29,10 +51,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run pytest -v` - Run tests with verbose output
 
 ### Direct Usage Examples
+
+#### Job Submission
 - `uv run srunx submit python train.py --name ml_job --gpus-per-node 1`
 - `uv run srunx submit python process.py --conda ml_env --nodes 2`
+
+#### Monitoring Workflows
+```bash
+# Submit a job and monitor until completion
+job_id=$(uv run srunx submit python train.py --gpus-per-node 2 | grep "Job ID" | awk '{print $3}')
+uv run srunx monitor jobs $job_id
+
+# Wait for GPUs to become available, then submit
+uv run srunx monitor resources --min-gpus 4
+uv run srunx submit python train.py --gpus-per-node 4
+
+# Continuously monitor all user jobs with notifications
+uv run srunx monitor jobs --all --continuous --interval 30
+
+# Send periodic cluster reports
+uv run srunx monitor cluster --schedule 1h --notify $SLACK_WEBHOOK
+
+# Check current resource availability
+uv run srunx resources --partition gpu
+```
+
+#### SSH Integration
 - `uv run srunx ssh train.py --host dgx-server --job-name remote_training`
 - `uv run srunx ssh profile add myserver --hostname dgx.example.com --username researcher`
+
+#### Workflows
 - `uv run srunx flow run workflow.yaml`
 
 ## Architecture Overview
@@ -49,8 +97,14 @@ src/srunx/
 ├── logging.py         # Centralized logging configuration
 ├── utils.py           # Utility functions
 ├── cli/               # Command-line interfaces
-│   ├── main.py        # Main CLI commands
+│   ├── main.py        # Main CLI commands (submit, status, list, cancel, resources)
+│   ├── monitor.py     # Monitor subcommands (jobs, resources, cluster)
 │   └── workflow.py    # Workflow CLI
+├── monitor/           # Job and resource monitoring
+│   ├── base.py        # BaseMonitor abstract class
+│   ├── job_monitor.py # JobMonitor for job state tracking
+│   ├── resource_monitor.py  # ResourceMonitor for GPU availability
+│   └── types.py       # MonitorConfig, ResourceSnapshot, WatchMode
 ├── ssh/               # SSH integration for remote SLURM
 │   ├── core/          # Core SSH SLURM functionality
 │   │   ├── client.py  # SSH SLURM client
@@ -111,6 +165,37 @@ src/srunx/
   - `list_hosts()`: List available hosts
 - **ProxySSHClient**: SSH ProxyJump connection handling
 
+#### Monitoring System (`monitor/`)
+- **BaseMonitor**: Abstract base class for monitoring operations
+  - `watch_until()`: Monitor until condition met (blocking)
+  - `watch_continuous()`: Monitor continuously with state change notifications
+  - `check_condition()`: Abstract method for condition checking
+  - `get_current_state()`: Abstract method for state retrieval
+  - Signal handling (SIGTERM, SIGINT) for graceful shutdown
+  - Configurable polling intervals with aggressive polling warnings
+- **JobMonitor**: SLURM job monitoring until terminal states
+  - Monitor single or multiple jobs simultaneously
+  - Track state transitions (PENDING → RUNNING → COMPLETED/FAILED)
+  - Configurable target statuses (default: COMPLETED, FAILED, CANCELLED, TIMEOUT)
+  - Duplicate notification prevention
+  - Integration with Slurm client for job status queries
+- **ResourceMonitor**: GPU resource availability monitoring
+  - Query partition resources using `sinfo` and `squeue`
+  - Track available/in-use/total GPUs
+  - Threshold-based availability detection
+  - Node statistics (total, idle, down nodes)
+  - DOWN/DRAIN node filtering for accurate availability
+  - Partition-specific or cluster-wide monitoring
+- **MonitorConfig**: Configuration dataclass
+  - `poll_interval`: Polling frequency in seconds (default: 60)
+  - `timeout`: Maximum monitoring duration (None = no timeout)
+  - `mode`: WatchMode.UNTIL_CONDITION or WatchMode.CONTINUOUS
+  - `notify_on_change`: Enable state change notifications
+- **ResourceSnapshot**: Immutable resource state snapshot
+  - Timestamp, partition, GPU metrics, node statistics
+  - Computed fields: `gpu_utilization`, `has_available_gpus`
+  - `meets_threshold()`: Check minimum GPU availability
+
 #### Workflow Runner (`runner.py`)
 - **WorkflowRunner**: YAML workflow execution engine
   - `from_yaml()`: Load workflow from YAML file
@@ -146,7 +231,8 @@ src/srunx/
 - **WorkflowExecutionError**: Workflow execution errors
 
 #### CLI (`cli/`)
-- **Main CLI**: Job management commands (submit, status, list, cancel)
+- **Main CLI**: Job management commands (submit, status, list, cancel, resources)
+- **Monitor CLI**: Monitor subcommands (jobs, resources, cluster)
 - **Workflow CLI**: YAML workflow execution with validation
 
 ### Template System
@@ -212,3 +298,10 @@ Do what has been asked; nothing more, nothing less.
 NEVER create files unless they're absolutely necessary for achieving your goal.
 ALWAYS prefer editing an existing file to creating a new one.
 NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
+
+## Active Technologies
+- Python 3.11+ (project already uses Python 3.12) (001-slurm-job-resource-monitor)
+- N/A (stateless monitoring, no persistence in v1) (001-slurm-job-resource-monitor)
+
+## Recent Changes
+- 001-slurm-job-resource-monitor: Added Python 3.11+ (project already uses Python 3.12)

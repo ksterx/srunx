@@ -12,6 +12,8 @@ A modern Python library for SLURM workload manager integration with workflow orc
 - 🧩 **Workflow Orchestration**: YAML-based workflow definitions with Prefect integration
 - ⚡ **Fine-Grained Parallel Execution**: Jobs execute immediately when their specific dependencies complete, not entire workflow phases
 - 🔗 **Branched Dependency Control**: Independent branches in dependency graphs run simultaneously without false dependencies
+- 📊 **Real-Time Monitoring**: Track job states and GPU resource availability with automatic state detection
+- 🔔 **Notification System**: Slack integration and custom callbacks for job state changes
 - 🔌 **Remote SSH Integration**: Submit and monitor SLURM jobs on remote servers via SSH
 - 📝 **Template System**: Customizable Jinja2 templates for SLURM scripts
 - 🛡️ **Type Safe**: Full type hints and mypy compatibility
@@ -19,6 +21,7 @@ A modern Python library for SLURM workload manager integration with workflow orc
 - 🚀 **Simple Job Submission**: Easy-to-use API for submitting SLURM jobs
 - ⚙️ **Flexible Configuration**: Support for various environments (conda, venv, sqsh)
 - 📋 **Job Management**: Submit, monitor, cancel, and list jobs
+- 🔄 **Error Recovery**: Graceful handling of SLURM command failures and network issues
 
 ## Installation
 
@@ -67,6 +70,151 @@ graph TD
 ```
 
 Jobs run precisely when they're ready, minimizing wasted compute hours. The workflow engine provides fine-grained dependency control: when Job A completes, B1 and C start immediately in parallel. As soon as B1 finishes, B2 starts regardless of C's status. Job D waits only for both B2 and C to complete, enabling maximum parallelization.
+
+## Job and Resource Monitoring
+
+srunx provides comprehensive monitoring capabilities for tracking job states and GPU resource availability on SLURM clusters.
+
+### Monitor Commands
+
+The `srunx monitor` command provides three monitoring modes:
+
+```bash
+srunx monitor jobs      # Monitor SLURM job state changes
+srunx monitor resources # Monitor GPU resource availability
+srunx monitor cluster   # Scheduled periodic status reports
+```
+
+### Job Monitoring
+
+Monitor SLURM jobs until completion or continuously track state changes:
+
+```bash
+# Monitor single job until completion
+srunx monitor jobs 12345
+
+# Monitor multiple jobs
+srunx monitor jobs 12345 12346 12347
+
+# Monitor all your jobs
+srunx monitor jobs --all
+
+# Continuous monitoring with state change notifications
+srunx monitor jobs 12345 --continuous
+
+# With custom poll interval and timeout
+srunx monitor jobs 12345 --interval 30 --timeout 3600
+
+# With Slack notifications
+srunx monitor jobs 12345 --continuous --notify $WEBHOOK_URL
+```
+
+### Resource Monitoring
+
+Monitor GPU resource availability and wait for sufficient resources:
+
+```bash
+# Display current resource availability
+srunx monitor resources
+
+# Display resources for specific partition
+srunx monitor resources --partition gpu
+
+# Wait for 4 GPUs to become available
+srunx monitor resources --min-gpus 4
+
+# Continuous resource monitoring with notifications
+srunx monitor resources --min-gpus 2 --continuous --notify $WEBHOOK_URL
+
+# Show output in JSON format
+srunx monitor resources --format json
+```
+
+### Scheduled Cluster Reports
+
+Send periodic SLURM cluster status reports via Slack:
+
+```bash
+# Send hourly status reports
+srunx monitor cluster --schedule 1h --notify $WEBHOOK_URL
+
+# Send reports every 30 minutes
+srunx monitor cluster --schedule 30m --notify $WEBHOOK_URL
+
+# Daily reports at 9 AM (cron format)
+srunx monitor cluster --schedule "0 9 * * *" --notify $WEBHOOK_URL
+
+# Customize report contents
+srunx monitor cluster --schedule 1h --notify $WEBHOOK_URL \
+  --include jobs,resources,running --max-jobs 20
+```
+
+### Programmatic Monitoring
+
+```python
+from srunx import Slurm
+from srunx.monitor import JobMonitor, ResourceMonitor
+from srunx.monitor.types import MonitorConfig
+from srunx.callbacks import SlackCallback
+
+client = Slurm()
+
+# Submit a job
+job = client.submit(job)
+
+# Monitor until completion
+monitor = JobMonitor(
+    job_ids=[job.job_id],
+    config=MonitorConfig(poll_interval=30, timeout=3600)
+)
+monitor.watch_until()  # Blocks until job completes or timeout
+
+# Continuous monitoring with callbacks
+slack_callback = SlackCallback(webhook_url="your_webhook_url")
+monitor = JobMonitor(
+    job_ids=[job.job_id],
+    config=MonitorConfig(poll_interval=10, notify_on_change=True),
+    callbacks=[slack_callback]
+)
+monitor.watch_continuous()  # Ctrl+C to stop
+```
+
+**Report includes:**
+- 📊 **Job Queue Status**: Pending, running, completed, failed job counts
+- 🎮 **GPU Resources**: Total, in-use, available GPUs with utilization percentage
+- 🖥️  **Node Statistics**: Total, idle, down nodes
+- 👤 **User Jobs**: Your personal job queue status (optional)
+
+**Schedule formats:**
+- Interval: `1h`, `30m`, `1d` (hours, minutes, days)
+- Cron: `"0 9 * * *"` (minute hour day month weekday)
+
+# Resource monitoring
+resource_monitor = ResourceMonitor(
+    min_gpus=4,
+    partition="gpu",
+    config=MonitorConfig(poll_interval=60, timeout=7200)
+)
+resource_monitor.watch_until()  # Blocks until resources available
+```
+
+### Monitor Multiple Jobs
+
+```bash
+# Monitor multiple jobs simultaneously
+srunx monitor 12345 12346 12347
+
+# Monitor all your jobs
+srunx monitor $(srunx list --format json | jq -r '.[].job_id | @sh')
+```
+
+### Advanced Monitoring Features
+
+- **Automatic State Detection**: Monitors detect PENDING → RUNNING → COMPLETED/FAILED transitions
+- **Error Recovery**: Gracefully handles SLURM command failures and network issues
+- **Timeout Support**: Configure maximum monitoring duration with automatic cleanup
+- **Callback System**: Integrate with Slack, email, or custom notification systems
+- **Resource Thresholds**: Wait for specific GPU counts before proceeding with workflows
 
 ## Remote SSH Integration
 
@@ -445,6 +593,22 @@ Environment setup (conda, venv, sqsh, environment variables).
 
 Main interface for SLURM operations (submit, status, cancel, list).
 
+#### `JobMonitor`
+
+Monitor SLURM jobs until terminal states (COMPLETED, FAILED, CANCELLED, TIMEOUT) with automatic state transition detection and callback support.
+
+#### `ResourceMonitor`
+
+Monitor GPU resource availability on SLURM partitions with threshold-based waiting and state change notifications.
+
+#### `MonitorConfig`
+
+Configuration for monitoring behavior (poll interval, timeout, notification settings).
+
+#### `SlackCallback`
+
+Slack webhook integration for job and resource state notifications with automatic message sanitization.
+
 #### `WorkflowRunner`
 
 Workflow execution engine with YAML support.
@@ -455,8 +619,12 @@ Workflow execution engine with YAML support.
 
 - `submit` - Submit SLURM jobs
 - `status` - Check job status
-- `queue` - List jobs
+- `list` - List jobs with optional GPU information
 - `cancel` - Cancel jobs
+- `monitor` - Comprehensive monitoring with three modes:
+  - `jobs` - Monitor SLURM job state changes
+  - `resources` - Monitor GPU resource availability
+  - `cluster` - Scheduled periodic status reports
 - `ssh` - Submit and monitor SLURM jobs on remote hosts over SSH
 
 #### Workflow CLI (`srunx flow`)

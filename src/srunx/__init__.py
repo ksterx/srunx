@@ -1,10 +1,11 @@
 """srunx - Python library for SLURM job management."""
 
+__version__ = "0.8.0"
 __author__ = "ksterx"
 __description__ = "Python library for SLURM workload manager integration"
 
 # Main public API
-from .callbacks import Callback
+from .callbacks import Callback, SlackCallback
 from .client import Slurm, cancel_job, retrieve_job, submit_job
 from .logging import (
     configure_cli_logging,
@@ -22,6 +23,9 @@ from .models import (
     Workflow,
     render_job_script,
 )
+from .monitor.job_monitor import JobMonitor
+from .monitor.resource_monitor import ResourceMonitor
+from .monitor.types import MonitorConfig, ResourceSnapshot, WatchMode
 from .runner import WorkflowRunner
 
 __all__ = [
@@ -30,7 +34,9 @@ __all__ = [
     "submit_job",
     "retrieve_job",
     "cancel_job",
+    # Callbacks
     "Callback",
+    "SlackCallback",
     # Models
     "BaseJob",
     "Job",
@@ -40,6 +46,12 @@ __all__ = [
     "JobStatus",
     "Workflow",
     "render_job_script",
+    # Monitoring
+    "JobMonitor",
+    "ResourceMonitor",
+    "MonitorConfig",
+    "ResourceSnapshot",
+    "WatchMode",
     # Workflows
     "WorkflowRunner",
     # Logging
