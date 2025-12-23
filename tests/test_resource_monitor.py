@@ -17,7 +17,7 @@ class TestResourceMonitor:
         monitor = ResourceMonitor(min_gpus=2)
         assert monitor.min_gpus == 2
         assert monitor.partition is None
-        assert monitor._was_available is False
+        assert monitor._was_available is None  # Uninitialized until first check
 
     def test_init_with_partition(self):
         """Test initialization with specific partition."""
@@ -183,7 +183,7 @@ class TestResourceMonitor:
         callback = MagicMock()
         monitor.callbacks = [callback]
 
-        # First call: resources available
+        # First call: resources available (initializes by setting opposite, then detects transition)
         snapshot_available = ResourceSnapshot(
             partition=None,
             total_gpus=10,
@@ -196,13 +196,13 @@ class TestResourceMonitor:
         monitor.get_partition_resources = MagicMock(return_value=snapshot_available)
 
         monitor._notify_callbacks("state_changed")
-        assert callback.on_resources_available.call_count == 1
+        assert callback.on_resources_available.call_count == 1  # Notifies on first call
 
         # Second call: still available (should not notify)
         monitor._notify_callbacks("state_changed")
         assert callback.on_resources_available.call_count == 1
 
-        # Third call: resources exhausted
+        # Third call: resources exhausted (transition detected, should notify)
         snapshot_exhausted = ResourceSnapshot(
             partition=None,
             total_gpus=10,
@@ -419,3 +419,41 @@ class TestResourceMonitor:
 
             # Thread should exit cleanly
             assert not thread.is_alive()
+            # Verify stop flag is set
+            assert monitor._stop_requested is True
+
+    @patch("subprocess.run")
+    def test_get_node_stats_unparseable_gpu_count(self, mock_run):
+        """Test _get_node_stats handles unparseable GPU count in gres."""
+        # Node has "gpu" in gres but count cannot be parsed
+        mock_run.return_value = MagicMock(
+            stdout="node01 gpu:unknown idle\nnode02 gpu:nvidia idle\n",
+            returncode=0,
+        )
+
+        monitor = ResourceMonitor(min_gpus=2)
+        nodes_total, nodes_idle, nodes_down, total_gpus = monitor._get_node_stats()
+
+        # Both nodes counted, but no GPUs since format is unparseable
+        assert nodes_total == 2
+        assert nodes_idle == 2
+        assert nodes_down == 0
+        assert total_gpus == 0
+
+    @patch("subprocess.run")
+    def test_get_node_stats_nonexistent_partition(self, mock_run):
+        """Test _get_node_stats handles nonexistent partition gracefully."""
+        # Simulate empty output when partition doesn't exist
+        mock_run.return_value = MagicMock(
+            stdout="",
+            returncode=0,
+        )
+
+        monitor = ResourceMonitor(min_gpus=2, partition="nonexistent")
+        nodes_total, nodes_idle, nodes_down, total_gpus = monitor._get_node_stats()
+
+        # Should return zeros without crashing
+        assert nodes_total == 0
+        assert nodes_idle == 0
+        assert nodes_down == 0
+        assert total_gpus == 0

@@ -43,7 +43,7 @@ class ResourceMonitor(BaseMonitor):
 
         self.min_gpus = min_gpus
         self.partition = partition
-        self._was_available = False
+        self._was_available: bool | None = None  # None = uninitialized
 
         logger.debug(
             f"ResourceMonitor initialized for min_gpus={min_gpus}, "
@@ -162,14 +162,23 @@ class ResourceMonitor(BaseMonitor):
 
                 nodes_total += 1
 
+                # Normalize state for consistent matching
+                state_lower = state.lower()
+
+                # Check if node is down or draining (using consistent substring matching)
+                is_unavailable = any(
+                    keyword in state_lower
+                    for keyword in ["down", "drain", "maint", "reserved"]
+                )
+
                 # Count node states
-                if "down" in state or "drain" in state:
+                if is_unavailable:
                     nodes_down += 1
-                elif "idle" in state:
+                elif "idle" in state_lower:
                     nodes_idle += 1
 
                 # Skip unavailable nodes for GPU count
-                if state in ("down", "drain", "draining", "down*", "drain*"):
+                if is_unavailable:
                     logger.debug(f"Skipping {parts[0]} (state: {state})")
                     continue
 
@@ -284,6 +293,16 @@ class ResourceMonitor(BaseMonitor):
         """
         snapshot = self.get_partition_resources()
         is_available = snapshot.meets_threshold(self.min_gpus)
+
+        # Initialize state on first check
+        # Set to opposite of current state so first call detects transition and notifies
+        # This handles both direct calls and calls from watch_continuous after BaseMonitor
+        # detected a state change
+        if self._was_available is None:
+            self._was_available = not is_available
+            logger.debug(
+                f"Initializing availability tracking (current: {is_available})"
+            )
 
         # Notify only on state transitions
         if is_available != self._was_available:

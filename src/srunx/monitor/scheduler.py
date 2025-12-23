@@ -135,8 +135,16 @@ class ScheduledReporter:
         value = int(match.group(1))
         unit = match.group(2)
 
-        # Enforce minimum interval of 1 minute
-        if unit == "s" and value < 60:
+        # Convert to seconds for validation
+        unit_to_seconds = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+        interval_seconds = value * unit_to_seconds[unit]
+
+        # Enforce minimum interval of 60 seconds (1 minute)
+        if interval_seconds == 0:
+            raise ValueError(
+                "Interval cannot be zero. Use a positive value (e.g., 1m, 1h, 1d)."
+            )
+        if interval_seconds < 60:
             raise ValueError(
                 "Minimum interval is 60 seconds (1m). "
                 "Use higher intervals to avoid SLURM overload."
@@ -162,17 +170,24 @@ class ScheduledReporter:
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
-    def _generate_and_send_report(self) -> None:
-        """Generate report and send via callback."""
+    def _generate_and_send_report(self) -> bool:
+        """Generate report and send via callback.
+
+        Returns:
+            True if report was sent successfully, False otherwise
+        """
         try:
             report = self._generate_report()
             self._send_report(report)
             logger.debug("Report sent successfully")
+            return True
         except (ValueError, RuntimeError, ConnectionError, OSError) as e:
             logger.error(f"Failed to generate/send report: {e}")
+            return False
         except Exception as e:
             logger.exception(f"Unexpected error in report generation: {e}")
             # Don't re-raise to allow scheduler to continue
+            return False
 
     def _generate_report(self) -> Report:
         """Generate report based on configuration.
@@ -397,6 +412,14 @@ class ScheduledReporter:
             time_part = elapsed
 
         parts = time_part.split(":")
+        if len(parts) < 2:
+            # Invalid format, return zero timedelta
+            logger.warning(
+                f"Invalid elapsed time format: '{elapsed}'. "
+                "Expected format: 'HH:MM:SS' or 'D-HH:MM:SS'"
+            )
+            return timedelta()
+
         hours = int(parts[0])
         minutes = int(parts[1])
         seconds = int(parts[2]) if len(parts) > 2 else 0
@@ -433,8 +456,10 @@ class ScheduledReporter:
 
         # Send initial report immediately
         console.print("[cyan]📤 Sending initial report...[/cyan]")
-        self._generate_and_send_report()
-        console.print("[green]✓ Initial report sent[/green]\n")
+        if self._generate_and_send_report():
+            console.print("[green]✓ Initial report sent[/green]\n")
+        else:
+            console.print("[red]✗ Failed to send initial report (see logs)[/red]\n")
 
         # Create status display
         def create_status() -> Panel:
