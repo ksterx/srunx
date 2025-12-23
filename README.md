@@ -75,46 +75,78 @@ Jobs run precisely when they're ready, minimizing wasted compute hours. The work
 
 srunx provides comprehensive monitoring capabilities for tracking job states and GPU resource availability on SLURM clusters.
 
-### Monitor Job Completion
+### Monitor Commands
 
-Wait for a job to complete and get notified of state transitions:
+The `srunx monitor` command provides three monitoring modes:
+
+```bash
+srunx monitor jobs      # Monitor SLURM job state changes
+srunx monitor resources # Monitor GPU resource availability
+srunx monitor cluster   # Scheduled periodic status reports
+```
+
+### Job Monitoring
+
+Monitor SLURM jobs until completion or continuously track state changes:
 
 ```bash
 # Monitor single job until completion
-srunx monitor 12345
+srunx monitor jobs 12345
 
-# Monitor with custom poll interval (default: 10s)
-srunx monitor 12345 --poll-interval 30
+# Monitor multiple jobs
+srunx monitor jobs 12345 12346 12347
 
-# Set timeout for monitoring (default: no timeout)
-srunx monitor 12345 --timeout 3600  # 1 hour timeout
-```
+# Monitor all your jobs
+srunx monitor jobs --all
 
-### Continuous Job Monitoring
+# Continuous monitoring with state change notifications
+srunx monitor jobs 12345 --continuous
 
-Monitor job state changes continuously with real-time notifications:
+# With custom poll interval and timeout
+srunx monitor jobs 12345 --interval 30 --timeout 3600
 
-```bash
-# Continuously monitor job state changes (Ctrl+C to stop)
-srunx monitor 12345 --continuous
-
-# Continuous monitoring with Slack notifications
-srunx monitor 12345 --continuous --slack WEBHOOK_URL
+# With Slack notifications
+srunx monitor jobs 12345 --continuous --notify $WEBHOOK_URL
 ```
 
 ### Resource Monitoring
 
-Monitor GPU resource availability and wait for resources:
+Monitor GPU resource availability and wait for sufficient resources:
 
 ```bash
 # Display current resource availability
-srunx resources
+srunx monitor resources
 
 # Display resources for specific partition
-srunx resources --partition gpu
+srunx monitor resources --partition gpu
+
+# Wait for 4 GPUs to become available
+srunx monitor resources --min-gpus 4
+
+# Continuous resource monitoring with notifications
+srunx monitor resources --min-gpus 2 --continuous --notify $WEBHOOK_URL
 
 # Show output in JSON format
-srunx resources --format json
+srunx monitor resources --format json
+```
+
+### Scheduled Cluster Reports
+
+Send periodic SLURM cluster status reports via Slack:
+
+```bash
+# Send hourly status reports
+srunx monitor cluster --schedule 1h --notify $WEBHOOK_URL
+
+# Send reports every 30 minutes
+srunx monitor cluster --schedule 30m --notify $WEBHOOK_URL
+
+# Daily reports at 9 AM (cron format)
+srunx monitor cluster --schedule "0 9 * * *" --notify $WEBHOOK_URL
+
+# Customize report contents
+srunx monitor cluster --schedule 1h --notify $WEBHOOK_URL \
+  --include jobs,resources,running --max-jobs 20
 ```
 
 ### Programmatic Monitoring
@@ -589,9 +621,10 @@ Workflow execution engine with YAML support.
 - `status` - Check job status
 - `list` - List jobs with optional GPU information
 - `cancel` - Cancel jobs
-- `monitor` - Monitor job(s) until completion or continuously
-- `watch` - Wait for resource availability
-- `resources` - Display current GPU resource availability
+- `monitor` - Comprehensive monitoring with three modes:
+  - `jobs` - Monitor SLURM job state changes
+  - `resources` - Monitor GPU resource availability
+  - `cluster` - Scheduled periodic status reports
 - `ssh` - Submit and monitor SLURM jobs on remote hosts over SSH
 
 #### Workflow CLI (`srunx flow`)

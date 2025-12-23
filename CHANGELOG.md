@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+#### Resource Monitor Improvements (2025-12-23)
+- **Bug #1**: Zero-value schedule validation - Added explicit validation to prevent zero-second intervals with clear error messages
+- **Bug #3**: Elapsed time parsing crash - Added format validation to prevent crashes on malformed time strings with warning logs
+- **Bug #5**: Node state matching - Implemented consistent substring matching for node states (down/drain/maint/reserved) instead of exact matching
+- **Bug #6**: Resource availability initialization - Fixed state initialization to prevent missed notifications by using lazy initialization pattern
+- **Bug #8**: Report failure messaging - Added accurate success/failure messages for initial report generation
+
+### Improved
+
+#### Code Quality (2025-12-23)
+- Added warning logs for invalid elapsed time formats to aid debugging
+- Enhanced test coverage with 2 new edge case tests:
+  - Unparseable GPU count handling in SLURM output
+  - Nonexistent partition graceful error handling
+- Improved keyboard interrupt test assertions for better signal handling verification
+- All 19 resource monitor tests passing
+- Pre-commit hooks (ruff, mypy) passing
+
+#### Documentation (2025-12-23)
+- Created comprehensive monitoring guide (`docs/monitoring.rst`) covering:
+  - Job monitoring with state transitions
+  - Resource monitoring with GPU availability tracking
+  - Scheduled reporting with Slack integration
+  - Programmatic usage examples
+  - Best practices and troubleshooting
+- Updated README.md with new `srunx monitor` subcommand structure
+- Updated API reference documentation
+
 ## [0.8.0] - 2025-12-13
 
 ### Added
