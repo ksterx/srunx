@@ -50,6 +50,7 @@ Define a workflow:
    quickstart
    user_guide
    workflows
+   monitoring
 
 .. toctree::
    :maxdepth: 2

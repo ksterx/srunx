@@ -294,6 +294,31 @@ class BaseJob(BaseModel):
         default=60, ge=0, description="Delay between retries in seconds"
     )
 
+    # NEW: Runtime information for monitoring
+    partition: str | None = Field(
+        default=None, description="SLURM partition where job is/was running"
+    )
+    user: str | None = Field(default=None, description="Username of job owner")
+    elapsed_time: str | None = Field(
+        default=None,
+        description="Elapsed time in SLURM format (e.g., '1-02:30:45')",
+    )
+    nodes: int | None = Field(
+        default=None, ge=0, description="Number of nodes allocated to job"
+    )
+    nodelist: str | None = Field(
+        default=None,
+        description="Comma-separated list of nodes (e.g., 'node[01-04]')",
+    )
+    cpus: int | None = Field(
+        default=None, ge=0, description="Total CPU count allocated to job"
+    )
+    gpus: int | None = Field(
+        default=None,
+        ge=0,
+        description="Total GPU count allocated to job (parsed from TresPerNode)",
+    )
+
     _status: JobStatus = PrivateAttr(default=JobStatus.PENDING)
     _parsed_dependencies: list[JobDependency] = PrivateAttr(default_factory=list)
     _retry_count: int = PrivateAttr(default=0)
