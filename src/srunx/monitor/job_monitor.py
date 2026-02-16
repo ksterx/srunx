@@ -156,6 +156,22 @@ class JobMonitor(BaseMonitor):
         """
         logger.debug(f"Job {job.job_id} transitioned to {status.value}")
 
+        # Update history database for terminal states
+        if status in {
+            JobStatus.COMPLETED,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+            JobStatus.TIMEOUT,
+        }:
+            try:
+                from srunx.history import get_history
+
+                history = get_history()
+                if job.job_id:
+                    history.update_job_completion(job.job_id, status)
+            except Exception as e:
+                logger.warning(f"Failed to update job history: {e}")
+
         for callback in self.callbacks:
             try:
                 if status == JobStatus.RUNNING:

@@ -385,8 +385,26 @@ def status(
 
 
 @app.command("list")
-def list_jobs() -> None:
-    """List user's jobs in the queue."""
+def list_jobs(
+    show_gpus: Annotated[
+        bool,
+        typer.Option("--show-gpus", "-g", help="Show GPU allocation for each job"),
+    ] = False,
+    format: Annotated[
+        str,
+        typer.Option("--format", "-f", help="Output format: table or json"),
+    ] = "table",
+) -> None:
+    """List user's jobs in the queue.
+
+    Examples:
+        srunx list
+        srunx list --show-gpus
+        srunx list --format json
+        srunx list --show-gpus --format json
+    """
+    import json
+
     try:
         client = Slurm()
         jobs = client.queue()
@@ -396,21 +414,62 @@ def list_jobs() -> None:
             console.print("No jobs in queue")
             return
 
+        # JSON format output
+        if format == "json":
+            job_data = []
+            for job in jobs:
+                data = {
+                    "job_id": job.job_id,
+                    "name": job.name,
+                    "status": job.status.name if hasattr(job, "status") else "UNKNOWN",
+                    "nodes": getattr(getattr(job, "resources", None), "nodes", None),
+                    "time_limit": getattr(
+                        getattr(job, "resources", None), "time_limit", None
+                    ),
+                }
+                if show_gpus:
+                    resources = getattr(job, "resources", None)
+                    if resources:
+                        total_gpus = resources.nodes * resources.gpus_per_node
+                        data["gpus"] = total_gpus
+                    else:
+                        data["gpus"] = 0
+                job_data.append(data)
+
+            console = Console()
+            console.print(json.dumps(job_data, indent=2))
+            return
+
+        # Table format output
         table = Table(title="Job Queue")
         table.add_column("Job ID", style="cyan")
         table.add_column("Name", style="magenta")
         table.add_column("Status", style="green")
         table.add_column("Nodes", justify="right")
+        if show_gpus:
+            table.add_column("GPUs", justify="right", style="yellow")
         table.add_column("Time", justify="right")
 
         for job in jobs:
-            table.add_row(
+            row = [
                 str(job.job_id) if job.job_id else "N/A",
                 job.name,
                 job.status.name if hasattr(job, "status") else "UNKNOWN",
                 str(getattr(getattr(job, "resources", None), "nodes", "N/A") or "N/A"),
-                getattr(getattr(job, "resources", None), "time_limit", None) or "N/A",
+            ]
+
+            if show_gpus:
+                resources = getattr(job, "resources", None)
+                if resources:
+                    total_gpus = resources.nodes * resources.gpus_per_node
+                    row.append(str(total_gpus))
+                else:
+                    row.append("0")
+
+            row.append(
+                getattr(getattr(job, "resources", None), "time_limit", None) or "N/A"
             )
+            table.add_row(*row)
 
         console = Console()
         console.print(table)
@@ -1032,12 +1091,12 @@ def report(
 
             console = Console()
             console.print(f"\n[bold cyan]Workflow Report: {workflow}[/bold cyan]")
-            console.print(f"Total Executions: {stats['total_executions']}")
+            console.print(f"Total Jobs: {stats['total_jobs']}")
             if stats["avg_duration_seconds"]:
                 mins = int(stats["avg_duration_seconds"] / 60)
                 console.print(f"Average Duration: {mins} minutes")
-            console.print(f"First Execution: {stats['first_execution']}")
-            console.print(f"Last Execution: {stats['last_execution']}\n")
+            console.print(f"First Submitted: {stats['first_submitted']}")
+            console.print(f"Last Submitted: {stats['last_submitted']}\n")
 
         else:
             stats = history_db.get_job_stats(from_date=from_date, to_date=to_date)

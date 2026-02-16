@@ -18,11 +18,13 @@ class TestLogStreaming:
         log_file.write_text("Line 1\nLine 2\nLine 3\n")
 
         # Mock get_job_output_detailed to return our test file
-        def mock_get_job_output_detailed(self, job_id, job_name=None):
+        def mock_get_job_output_detailed(
+            self, job_id, job_name=None, skip_content=False
+        ):
             return {
                 "found_files": [str(log_file)],
                 "primary_log": str(log_file),
-                "output": log_file.read_text(),
+                "output": "" if skip_content else log_file.read_text(),
                 "error": "",
                 "slurm_log_dir": str(tmp_path),
                 "searched_dirs": [str(tmp_path)],
@@ -52,11 +54,13 @@ class TestLogStreaming:
         log_file.write_text(log_content)
 
         # Mock get_job_output_detailed
-        def mock_get_job_output_detailed(self, job_id, job_name=None):
+        def mock_get_job_output_detailed(
+            self, job_id, job_name=None, skip_content=False
+        ):
             return {
                 "found_files": [str(log_file)],
                 "primary_log": str(log_file),
-                "output": log_file.read_text(),
+                "output": "" if skip_content else log_file.read_text(),
                 "error": "",
                 "slurm_log_dir": str(tmp_path),
                 "searched_dirs": [str(tmp_path)],
@@ -80,7 +84,9 @@ class TestLogStreaming:
         """Test log display when no log file is found."""
 
         # Mock get_job_output_detailed to return empty results
-        def mock_get_job_output_detailed(self, job_id, job_name=None):
+        def mock_get_job_output_detailed(
+            self, job_id, job_name=None, skip_content=False
+        ):
             return {
                 "found_files": [],
                 "primary_log": None,
@@ -233,6 +239,310 @@ class TestJobHistory:
 
         assert stats["total_jobs"] >= 5
         assert isinstance(stats["jobs_by_status"], dict)
+
+    def test_job_history_stats_with_date_filter(self, tmp_path):
+        """Test job statistics with date range filtering."""
+
+        from srunx.history import JobHistory
+
+        db_path = tmp_path / "test_history_dates.db"
+        history = JobHistory(db_path=db_path)
+
+        # Record jobs with different dates via direct SQL
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO jobs (job_id, job_name, status, submitted_at) VALUES (?, ?, ?, ?)",
+                (1001, "old_job", "COMPLETED", "2025-01-15T10:00:00"),
+            )
+            conn.execute(
+                "INSERT INTO jobs (job_id, job_name, status, submitted_at) VALUES (?, ?, ?, ?)",
+                (1002, "recent_job", "COMPLETED", "2025-06-15T10:00:00"),
+            )
+            conn.execute(
+                "INSERT INTO jobs (job_id, job_name, status, submitted_at) VALUES (?, ?, ?, ?)",
+                (1003, "latest_job", "FAILED", "2025-12-01T10:00:00"),
+            )
+            conn.commit()
+
+        # Filter by date range
+        stats = history.get_job_stats(from_date="2025-06-01", to_date="2025-12-31")
+        assert stats["total_jobs"] == 2  # recent_job and latest_job
+
+        # Filter only from_date
+        stats = history.get_job_stats(from_date="2025-12-01")
+        assert stats["total_jobs"] == 1  # latest_job only
+
+        # Filter only to_date (should include all before end of day)
+        stats = history.get_job_stats(to_date="2025-01-15")
+        assert stats["total_jobs"] == 1  # old_job only
+
+    def test_job_history_workflow_stats(self, tmp_path):
+        """Test workflow statistics with correct labels."""
+        from srunx.history import JobHistory
+
+        db_path = tmp_path / "test_workflow_stats.db"
+        history = JobHistory(db_path=db_path)
+
+        # Record jobs in a workflow
+        import sqlite3
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO jobs (job_id, job_name, status, submitted_at, workflow_name, duration_seconds) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    2001,
+                    "wf_step1",
+                    "COMPLETED",
+                    "2025-06-01T10:00:00",
+                    "ml_pipeline",
+                    120.0,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO jobs (job_id, job_name, status, submitted_at, workflow_name, duration_seconds) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    2002,
+                    "wf_step2",
+                    "COMPLETED",
+                    "2025-06-01T11:00:00",
+                    "ml_pipeline",
+                    300.0,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO jobs (job_id, job_name, status, submitted_at, workflow_name) VALUES (?, ?, ?, ?, ?)",
+                (2003, "wf_step3", "RUNNING", "2025-06-01T12:00:00", "ml_pipeline"),
+            )
+            conn.commit()
+
+        stats = history.get_workflow_stats("ml_pipeline")
+        assert stats["total_jobs"] == 3
+        assert (
+            stats["avg_duration_seconds"] == 210.0
+        )  # (120 + 300) / 2, excluding RUNNING
+        assert stats["first_submitted"] == "2025-06-01T10:00:00"
+        assert stats["last_submitted"] == "2025-06-01T12:00:00"
+
+    def test_job_history_record_uses_private_status(self, tmp_path):
+        """Test that record_job uses _status (private attr) not status property."""
+        from srunx.history import JobHistory
+
+        db_path = tmp_path / "test_status.db"
+        history = JobHistory(db_path=db_path)
+
+        job = Job(
+            name="status_test",
+            command=["python", "train.py"],
+            resources=JobResource(nodes=1),
+            environment=JobEnvironment(),
+        )
+        job.job_id = 30001
+        job._status = JobStatus.PENDING
+
+        history.record_job(job)
+
+        recent_jobs = history.get_recent_jobs(limit=1)
+        assert recent_jobs[0]["status"] == "PENDING"
+
+
+class TestLastNOptimization:
+    """Test that --last N reads files efficiently."""
+
+    def test_tail_log_last_n_skips_content_read(self, tmp_path, monkeypatch):
+        """Test that last_n mode skips full content read via skip_content."""
+        log_file = tmp_path / "job_789.log"
+        log_file.write_text("\n".join([f"Line {i}" for i in range(1, 51)]))
+
+        skip_content_called_with = []
+
+        def mock_get_job_output_detailed(
+            self, job_id, job_name=None, skip_content=False
+        ):
+            skip_content_called_with.append(skip_content)
+            return {
+                "found_files": [str(log_file)],
+                "primary_log": str(log_file),
+                "output": "" if skip_content else log_file.read_text(),
+                "error": "",
+                "slurm_log_dir": str(tmp_path),
+                "searched_dirs": [str(tmp_path)],
+            }
+
+        monkeypatch.setattr(
+            Slurm, "get_job_output_detailed", mock_get_job_output_detailed
+        )
+        client = Slurm()
+
+        with patch("rich.console.Console") as MockConsole:
+            mock_console = MockConsole.return_value
+            client.tail_log(job_id=789, follow=False, last_n=5)
+
+        # Should have called with skip_content=True
+        assert skip_content_called_with == [True]
+
+    def test_tail_log_last_n_reads_correct_lines(self, tmp_path, monkeypatch):
+        """Test that last_n reads exactly the last N lines."""
+        lines = [f"Line {i}\n" for i in range(1, 101)]
+        log_file = tmp_path / "job_100.log"
+        log_file.write_text("".join(lines))
+
+        def mock_get_job_output_detailed(
+            self, job_id, job_name=None, skip_content=False
+        ):
+            return {
+                "found_files": [str(log_file)],
+                "primary_log": str(log_file),
+                "output": "",
+                "error": "",
+                "slurm_log_dir": str(tmp_path),
+                "searched_dirs": [str(tmp_path)],
+            }
+
+        monkeypatch.setattr(
+            Slurm, "get_job_output_detailed", mock_get_job_output_detailed
+        )
+        client = Slurm()
+
+        printed_texts = []
+        with patch("rich.console.Console") as MockConsole:
+            mock_console = MockConsole.return_value
+            mock_console.print.side_effect = (
+                lambda *args, **kwargs: printed_texts.append(args[0] if args else "")
+            )
+            client.tail_log(job_id=100, follow=False, last_n=3)
+
+        # The second print call (after the file path) should contain last 3 lines
+        output_text = printed_texts[1]  # index 0 is the file path line
+        assert "Line 98" in output_text
+        assert "Line 99" in output_text
+        assert "Line 100" in output_text
+        assert "Line 97" not in output_text
+
+    def test_tail_log_static_no_last_n_reads_full_content(self, tmp_path, monkeypatch):
+        """Test that static mode without last_n reads full content."""
+        log_file = tmp_path / "job_200.log"
+        log_file.write_text("Full content here\n")
+
+        skip_content_called_with = []
+
+        def mock_get_job_output_detailed(
+            self, job_id, job_name=None, skip_content=False
+        ):
+            skip_content_called_with.append(skip_content)
+            return {
+                "found_files": [str(log_file)],
+                "primary_log": str(log_file),
+                "output": "" if skip_content else log_file.read_text(),
+                "error": "",
+                "slurm_log_dir": str(tmp_path),
+                "searched_dirs": [str(tmp_path)],
+            }
+
+        monkeypatch.setattr(
+            Slurm, "get_job_output_detailed", mock_get_job_output_detailed
+        )
+        client = Slurm()
+
+        with patch("rich.console.Console") as MockConsole:
+            mock_console = MockConsole.return_value
+            client.tail_log(job_id=200, follow=False)
+
+        # Should have called with skip_content=False
+        assert skip_content_called_with == [False]
+
+
+class TestJobMonitorHistoryIntegration:
+    """Test that JobMonitor updates history on terminal states."""
+
+    def test_notify_transition_updates_history_on_completion(self):
+        """Test that _notify_transition updates history for completed jobs."""
+        from unittest.mock import MagicMock
+
+        from srunx.monitor.job_monitor import JobMonitor
+
+        monitor = JobMonitor(job_ids=[123])
+        monitor.callbacks = []
+
+        job = Job(name="hist_test", job_id=123, command=["test"])
+        job._status = JobStatus.COMPLETED
+
+        with patch("srunx.history.get_history") as mock_get_history:
+            mock_history = MagicMock()
+            mock_get_history.return_value = mock_history
+
+            monitor._notify_transition(job, JobStatus.COMPLETED)
+
+            mock_history.update_job_completion.assert_called_once_with(
+                123, JobStatus.COMPLETED
+            )
+
+    def test_notify_transition_updates_history_on_failure(self):
+        """Test that _notify_transition updates history for failed jobs."""
+        from unittest.mock import MagicMock
+
+        from srunx.monitor.job_monitor import JobMonitor
+
+        monitor = JobMonitor(job_ids=[456])
+        monitor.callbacks = []
+
+        job = Job(name="fail_test", job_id=456, command=["test"])
+        job._status = JobStatus.FAILED
+
+        with patch("srunx.history.get_history") as mock_get_history:
+            mock_history = MagicMock()
+            mock_get_history.return_value = mock_history
+
+            monitor._notify_transition(job, JobStatus.FAILED)
+
+            mock_history.update_job_completion.assert_called_once_with(
+                456, JobStatus.FAILED
+            )
+
+    def test_notify_transition_skips_history_for_running(self):
+        """Test that _notify_transition does NOT update history for non-terminal states."""
+        from unittest.mock import MagicMock
+
+        from srunx.monitor.job_monitor import JobMonitor
+
+        monitor = JobMonitor(job_ids=[789])
+        callback = MagicMock()
+        monitor.callbacks = [callback]
+
+        job = Job(name="run_test", job_id=789, command=["test"])
+        job._status = JobStatus.RUNNING
+
+        with patch("srunx.history.get_history") as mock_get_history:
+            monitor._notify_transition(job, JobStatus.RUNNING)
+
+            # History should NOT be called for RUNNING status
+            mock_get_history.assert_not_called()
+
+        # But callback should still be called
+        callback.on_job_running.assert_called_once_with(job)
+
+    def test_notify_transition_handles_history_error(self):
+        """Test that history errors don't break callback notifications."""
+        from unittest.mock import MagicMock
+
+        from srunx.monitor.job_monitor import JobMonitor
+
+        monitor = JobMonitor(job_ids=[101])
+        callback = MagicMock()
+        monitor.callbacks = [callback]
+
+        job = Job(name="err_test", job_id=101, command=["test"])
+        job._status = JobStatus.COMPLETED
+
+        with patch("srunx.history.get_history") as mock_get_history:
+            mock_get_history.side_effect = Exception("DB error")
+
+            # Should not raise
+            monitor._notify_transition(job, JobStatus.COMPLETED)
+
+        # Callback should still be called despite history error
+        callback.on_job_completed.assert_called_once_with(job)
 
 
 @pytest.mark.skip(reason="SSH tests require actual SSH connection")

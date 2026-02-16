@@ -477,13 +477,14 @@ class Slurm:
         return output_content, error_content
 
     def get_job_output_detailed(
-        self, job_id: int | str, job_name: str | None = None
+        self, job_id: int | str, job_name: str | None = None, skip_content: bool = False
     ) -> dict[str, str | list[str] | None]:
         """Get detailed job output information including found log files.
 
         Args:
             job_id: SLURM job ID
             job_name: Job name for better log file detection
+            skip_content: If True, only find log files without reading content
 
         Returns:
             Dictionary with detailed log information
@@ -534,21 +535,23 @@ class Slurm:
 
         if found_files:
             primary_log = found_files[0]
-            try:
-                with open(primary_log, encoding="utf-8") as f:
-                    output_content = f.read()
-            except (OSError, UnicodeDecodeError) as e:
-                logger.warning(f"Failed to read log file {primary_log}: {e}")
-                output_content = f"Could not read log file {primary_log}: {e}"
 
-            # Look for separate error files
-            for log_file in found_files:
-                if "err" in Path(log_file).name.lower():
-                    try:
-                        with open(log_file, encoding="utf-8") as f:
-                            error_content += f.read()
-                    except (OSError, UnicodeDecodeError) as e:
-                        logger.warning(f"Failed to read error file {log_file}: {e}")
+            if not skip_content:
+                try:
+                    with open(primary_log, encoding="utf-8") as f:
+                        output_content = f.read()
+                except (OSError, UnicodeDecodeError) as e:
+                    logger.warning(f"Failed to read log file {primary_log}: {e}")
+                    output_content = f"Could not read log file {primary_log}: {e}"
+
+                # Look for separate error files
+                for log_file in found_files:
+                    if "err" in Path(log_file).name.lower():
+                        try:
+                            with open(log_file, encoding="utf-8") as f:
+                                error_content += f.read()
+                        except (OSError, UnicodeDecodeError) as e:
+                            logger.warning(f"Failed to read error file {log_file}: {e}")
 
         return {
             "found_files": found_files,
@@ -576,13 +579,18 @@ class Slurm:
             last_n: Show only the last N lines
             poll_interval: Polling interval in seconds for follow mode
         """
+        from collections import deque
+
         from rich.console import Console
 
         console = Console()
         job_id_str = str(job_id)
 
-        # Find the log file
-        log_info = self.get_job_output_detailed(job_id, job_name)
+        # Skip reading full content when we only need file paths
+        skip_content = follow or (last_n is not None)
+        log_info = self.get_job_output_detailed(
+            job_id, job_name, skip_content=skip_content
+        )
         primary_log = log_info.get("primary_log")
         found_files = log_info.get("found_files", [])
 
@@ -615,8 +623,8 @@ class Slurm:
                 # If last_n is specified, show last N lines first
                 if last_n:
                     with open(log_file, encoding="utf-8") as f:
-                        lines = f.readlines()
-                        for line in lines[-last_n:]:
+                        tail_lines = deque(f, maxlen=last_n)
+                        for line in tail_lines:
                             console.print(line, end="")
 
                 # Start streaming from current position
@@ -644,11 +652,13 @@ class Slurm:
                             time.sleep(poll_interval)
             else:
                 # Static display mode
-                output = log_info.get("output", "")
-
-                if last_n and isinstance(output, str):
-                    lines = output.split("\n")
-                    output = "\n".join(lines[-last_n:])
+                if last_n:
+                    # Read only last N lines efficiently using deque
+                    with open(log_file, encoding="utf-8") as f:
+                        tail_lines = deque(f, maxlen=last_n)
+                    output = "".join(tail_lines)
+                else:
+                    output = str(log_info.get("output", ""))
 
                 if output:
                     console.print(output)

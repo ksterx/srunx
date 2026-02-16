@@ -215,7 +215,7 @@ class JobHistory:
                         job.job_id,
                         job.name,
                         command_str,
-                        job.status.value if hasattr(job, "status") else "UNKNOWN",
+                        job._status.value if hasattr(job, "_status") else "UNKNOWN",
                         getattr(getattr(job, "resources", None), "nodes", None) or None,
                         getattr(getattr(job, "resources", None), "gpus_per_node", None)
                         or None,
@@ -390,22 +390,26 @@ class JobHistory:
             Dictionary with workflow statistics
         """
         with sqlite3.connect(self.db_path) as conn:
+            # Count all jobs in this workflow
             cursor = conn.execute(
-                """
-                SELECT COUNT(*), AVG(duration_seconds), MIN(submitted_at), MAX(submitted_at)
-                FROM jobs
-                WHERE workflow_name = ? AND duration_seconds IS NOT NULL
-                """,
+                "SELECT COUNT(*), MIN(submitted_at), MAX(submitted_at) FROM jobs WHERE workflow_name = ?",
                 (workflow_name,),
             )
-            row = cursor.fetchone()
+            count_row = cursor.fetchone()
+
+            # Average duration only for completed jobs
+            cursor = conn.execute(
+                "SELECT AVG(duration_seconds) FROM jobs WHERE workflow_name = ? AND duration_seconds IS NOT NULL",
+                (workflow_name,),
+            )
+            avg_row = cursor.fetchone()
 
             return {
                 "workflow_name": workflow_name,
-                "total_executions": row[0],
-                "avg_duration_seconds": row[1],
-                "first_execution": row[2],
-                "last_execution": row[3],
+                "total_jobs": count_row[0],
+                "avg_duration_seconds": avg_row[0],
+                "first_submitted": count_row[1],
+                "last_submitted": count_row[2],
             }
 
 
