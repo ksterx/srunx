@@ -95,3 +95,4 @@ python_version = "3.13"
 warn_unused_configs = true
 ignore_missing_imports = true
 disable_error_code = ["import-untyped"]
+plugins = ["pydantic.mypy"]
