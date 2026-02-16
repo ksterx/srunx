@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import shlex
 import time
 import uuid
 from dataclasses import dataclass
@@ -862,7 +863,9 @@ class SSHSlurmClient:
 
         if not found_files:
             searched_dirs = log_info.get("searched_dirs", [])
-            searched_dirs_list = searched_dirs if isinstance(searched_dirs, list) else []
+            searched_dirs_list = (
+                searched_dirs if isinstance(searched_dirs, list) else []
+            )
             msg = f"No log files found for job {job_id}\n"
             msg += f"Searched in: {', '.join(searched_dirs_list)}\n"
             slurm_log_dir = log_info.get("slurm_log_dir")
@@ -887,6 +890,8 @@ class SSHSlurmClient:
 
         # Convert primary_log to string for type safety
         primary_log_str = str(primary_log) if primary_log else ""
+        # Quote the path to prevent shell metacharacter injection
+        quoted_log_path = shlex.quote(primary_log_str)
 
         if follow:
             # Real-time streaming mode (like tail -f)
@@ -895,7 +900,7 @@ class SSHSlurmClient:
             if last_n:
                 tail_cmd = f"tail -n {last_n} -f"
 
-            tail_cmd += f" {primary_log_str}"
+            tail_cmd += f" {quoted_log_path}"
 
             return {
                 "success": True,

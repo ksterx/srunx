@@ -431,7 +431,7 @@ class TestWorkflowRunner:
         assert len(results) == 1
         assert "test_job" in results
         assert results["test_job"] is job
-        mock_slurm.run.assert_called_once_with(job)
+        mock_slurm.run.assert_called_once_with(job, workflow_name="test")
 
     @patch("srunx.runner.Slurm")
     def test_run_workflow_with_dependencies(self, mock_slurm_class):
@@ -454,7 +454,7 @@ class TestWorkflowRunner:
         job2._status = JobStatus.PENDING
 
         # Set up mock to return completed jobs
-        def mock_run(job):
+        def mock_run(job, **kwargs):
             job.status = JobStatus.COMPLETED
             return job
 
@@ -781,7 +781,7 @@ class TestWorkflowExecutionControl:
         )
 
         # Set up mock to return completed jobs
-        def mock_run(job):
+        def mock_run(job, **kwargs):
             job.status = JobStatus.COMPLETED
             return job
 
@@ -825,7 +825,7 @@ class TestWorkflowExecutionControl:
             job._status = JobStatus.PENDING
 
         # Set up mock to return completed jobs
-        def mock_run(job):
+        def mock_run(job, **kwargs):
             job.status = JobStatus.COMPLETED
             return job
 

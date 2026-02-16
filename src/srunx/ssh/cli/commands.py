@@ -288,13 +288,15 @@ def show_logs(
     ] = None,
     # Log options
     follow: Annotated[
-        bool, typer.Option("--follow", "-f", help="Stream logs in real-time (like tail -f)")
+        bool,
+        typer.Option("--follow", "-f", help="Stream logs in real-time (like tail -f)"),
     ] = False,
     last: Annotated[
         int | None, typer.Option("--last", "-n", help="Show only the last N lines")
     ] = None,
     job_name: Annotated[
-        str | None, typer.Option("--name", help="Job name for better log file detection")
+        str | None,
+        typer.Option("--name", help="Job name for better log file detection"),
     ] = None,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable verbose logging")
@@ -368,8 +370,15 @@ def show_logs(
 
                                 # Check if job finished
                                 job_status = client.get_job_status(job_id)
-                                if job_status in ["COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"]:
-                                    console.print(f"\n[yellow]Job {job_id} finished with status: {job_status}[/yellow]")
+                                if job_status in [
+                                    "COMPLETED",
+                                    "FAILED",
+                                    "CANCELLED",
+                                    "TIMEOUT",
+                                ]:
+                                    console.print(
+                                        f"\n[yellow]Job {job_id} finished with status: {job_status}[/yellow]"
+                                    )
                                     break
 
                                 time.sleep(0.1)
@@ -387,14 +396,23 @@ def show_logs(
                         last_n=last,
                     )
 
+                if not log_result["success"]:
+                    console.print(f"[red]{log_result['status_message']}[/red]")
+                    raise typer.Exit(1)
+
                 output = log_result["log_content"]
                 status_msg = log_result["status_message"]
 
                 if output and isinstance(output, str):
                     console.print(f"[cyan]{status_msg}[/cyan]\n")
                     # Try to syntax highlight if it looks like code/logs
-                    if any(keyword in output.lower() for keyword in ["error", "traceback", "exception", "failed"]):
-                        syntax = Syntax(output, "log", theme="monokai", line_numbers=False)
+                    if any(
+                        keyword in output.lower()
+                        for keyword in ["error", "traceback", "exception", "failed"]
+                    ):
+                        syntax = Syntax(
+                            output, "log", theme="monokai", line_numbers=False
+                        )
                         console.print(syntax)
                     else:
                         console.print(output)

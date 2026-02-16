@@ -97,9 +97,7 @@ class JobHistory:
         """
         with sqlite3.connect(self.db_path) as conn:
             try:
-                cursor = conn.execute(
-                    "SELECT MAX(version) FROM schema_version"
-                )
+                cursor = conn.execute("SELECT MAX(version) FROM schema_version")
                 result = cursor.fetchone()
                 version = result[0] if result and result[0] else 0
 
@@ -110,7 +108,9 @@ class JobHistory:
                         "SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'"
                     )
                     if cursor.fetchone():
-                        logger.info("Detected existing database without version, setting to v1")
+                        logger.info(
+                            "Detected existing database without version, setting to v1"
+                        )
                         self._set_version(1)
                         return 1
 
@@ -216,24 +216,19 @@ class JobHistory:
                         job.name,
                         command_str,
                         job.status.value if hasattr(job, "status") else "UNKNOWN",
-                        getattr(
-                            getattr(job, "resources", None), "nodes", None
-                        ) or None,
-                        getattr(
-                            getattr(job, "resources", None), "gpus_per_node", None
-                        ) or None,
-                        getattr(
-                            getattr(job, "resources", None), "cpus_per_task", None
-                        ) or None,
+                        getattr(getattr(job, "resources", None), "nodes", None) or None,
+                        getattr(getattr(job, "resources", None), "gpus_per_node", None)
+                        or None,
+                        getattr(getattr(job, "resources", None), "cpus_per_task", None)
+                        or None,
                         getattr(
                             getattr(job, "resources", None), "memory_per_node", None
-                        ) or None,
-                        getattr(
-                            getattr(job, "resources", None), "time_limit", None
-                        ) or None,
-                        getattr(
-                            getattr(job, "resources", None), "partition", None
-                        ) or None,
+                        )
+                        or None,
+                        getattr(getattr(job, "resources", None), "time_limit", None)
+                        or None,
+                        getattr(getattr(job, "resources", None), "partition", None)
+                        or None,
                         conda_env,
                         datetime.now().isoformat(),
                         workflow_name,
@@ -333,15 +328,14 @@ class JobHistory:
 
             if to_date:
                 if where_clause:
-                    where_clause += " AND submitted_at <= ?"
+                    where_clause += " AND submitted_at < ?"
                 else:
-                    where_clause += " WHERE submitted_at <= ?"
-                params.append(to_date)
+                    where_clause += " WHERE submitted_at < ?"
+                # Use next day to include the entire to_date day
+                params.append(to_date + "T23:59:59" if "T" not in to_date else to_date)
 
             # Total jobs
-            cursor = conn.execute(
-                f"SELECT COUNT(*) FROM jobs{where_clause}", params
-            )
+            cursor = conn.execute(f"SELECT COUNT(*) FROM jobs{where_clause}", params)
             total_jobs = cursor.fetchone()[0]
 
             # Jobs by status
@@ -352,21 +346,29 @@ class JobHistory:
             jobs_by_status = dict(cursor.fetchall())
 
             # Average duration
-            cursor = conn.execute(
-                f"SELECT AVG(duration_seconds) FROM jobs{where_clause} WHERE duration_seconds IS NOT NULL",
-                params,
-            )
+            duration_filter = " AND duration_seconds IS NOT NULL"
+            if where_clause:
+                duration_query = f"SELECT AVG(duration_seconds) FROM jobs{where_clause}{duration_filter}"
+            else:
+                duration_query = "SELECT AVG(duration_seconds) FROM jobs WHERE duration_seconds IS NOT NULL"
+            cursor = conn.execute(duration_query, params)
             avg_duration = cursor.fetchone()[0]
 
             # Total GPU hours (approximate)
-            cursor = conn.execute(
-                f"""
-                SELECT SUM(duration_seconds * gpus_per_node * nodes) / 3600.0
-                FROM jobs{where_clause}
-                WHERE duration_seconds IS NOT NULL AND gpus_per_node IS NOT NULL
-                """,
-                params,
+            gpu_filter = (
+                " AND duration_seconds IS NOT NULL AND gpus_per_node IS NOT NULL"
             )
+            if where_clause:
+                gpu_query = f"""
+                    SELECT SUM(duration_seconds * gpus_per_node * nodes) / 3600.0
+                    FROM jobs{where_clause}{gpu_filter}
+                """
+            else:
+                gpu_query = """
+                    SELECT SUM(duration_seconds * gpus_per_node * nodes) / 3600.0
+                    FROM jobs WHERE duration_seconds IS NOT NULL AND gpus_per_node IS NOT NULL
+                """
+            cursor = conn.execute(gpu_query, params)
             total_gpu_hours = cursor.fetchone()[0] or 0
 
             return {

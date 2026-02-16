@@ -30,14 +30,14 @@ cd {{ work_dir }}
 # Environment setup
 {{ environment_setup }}
 
-# Get worker addresses
-WORKER_HOSTS=$(scontrol show hostname $SLURM_JOB_NODELIST | awk '{print $1":12345"}' | paste -sd,)
+# Get worker addresses as JSON array
+WORKER_HOSTS=$(scontrol show hostname $SLURM_JOB_NODELIST | awk '{printf "%s\"%s:12345\"", (NR>1 ? ", " : ""), $1}')
 
 # TensorFlow distributed environment variables
 export TF_CONFIG=$(cat <<EOF
 {
   "cluster": {
-    "worker": ["$WORKER_HOSTS"]
+    "worker": [$WORKER_HOSTS]
   },
   "task": {
     "type": "worker",

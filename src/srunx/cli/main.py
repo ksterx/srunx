@@ -14,6 +14,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from srunx.callbacks import Callback, SlackCallback
+from srunx.cli.monitor import monitor_app
 from srunx.client import Slurm
 from srunx.config import (
     create_example_config,
@@ -116,6 +117,7 @@ template_app = typer.Typer(help="Job template management")
 
 app.add_typer(flow_app, name="flow")
 app.add_typer(config_app, name="config")
+app.add_typer(monitor_app, name="monitor")
 app.add_typer(ssh_app, name="ssh")
 app.add_typer(template_app, name="template")
 
@@ -435,17 +437,87 @@ def cancel(
         sys.exit(1)
 
 
+@app.command("resources")
+def resources(
+    partition: Annotated[
+        str | None,
+        typer.Option("--partition", "-p", help="SLURM partition to query"),
+    ] = None,
+    format: Annotated[
+        str,
+        typer.Option("--format", "-f", help="Output format: table or json"),
+    ] = "table",
+) -> None:
+    """Display current GPU resource availability.
+
+    Examples:
+        srunx resources
+        srunx resources --partition gpu
+        srunx resources --format json
+        srunx resources --partition gpu --format json
+    """
+    import json
+
+    from srunx.monitor.resource_monitor import ResourceMonitor
+
+    try:
+        monitor = ResourceMonitor(min_gpus=0, partition=partition)
+        snapshot = monitor.get_partition_resources()
+
+        if format == "json":
+            data = {
+                "partition": snapshot.partition,
+                "gpus_total": snapshot.total_gpus,
+                "gpus_in_use": snapshot.gpus_in_use,
+                "gpus_available": snapshot.gpus_available,
+                "jobs_running": snapshot.jobs_running,
+                "nodes_total": snapshot.nodes_total,
+                "nodes_idle": snapshot.nodes_idle,
+                "nodes_down": snapshot.nodes_down,
+            }
+            console = Console()
+            console.print(json.dumps(data, indent=2))
+            return
+
+        partition_name = snapshot.partition or "all partitions"
+        table = Table(title=f"GPU Resources - {partition_name}")
+
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", justify="right", style="green")
+
+        table.add_row("Total GPUs", str(snapshot.total_gpus))
+        table.add_row("GPUs in Use", str(snapshot.gpus_in_use))
+        table.add_row("GPUs Available", str(snapshot.gpus_available))
+        table.add_row("", "")
+        table.add_row("Running Jobs", str(snapshot.jobs_running))
+        table.add_row("", "")
+        table.add_row("Total Nodes", str(snapshot.nodes_total))
+        table.add_row("Idle Nodes", str(snapshot.nodes_idle))
+        table.add_row("Down Nodes", str(snapshot.nodes_down))
+
+        console = Console()
+        console.print(table)
+
+    except Exception as e:
+        logger.error(f"Error querying resources: {e}")
+        console = Console()
+        console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
+
+
 @app.command("logs")
 def logs(
     job_id: Annotated[int, typer.Argument(help="Job ID to show logs for")],
     follow: Annotated[
-        bool, typer.Option("--follow", "-f", help="Stream logs in real-time (like tail -f)")
+        bool,
+        typer.Option("--follow", "-f", help="Stream logs in real-time (like tail -f)"),
     ] = False,
     last: Annotated[
         int | None, typer.Option("--last", "-n", help="Show only the last N lines")
     ] = None,
     job_name: Annotated[
-        str | None, typer.Option("--name", help="Job name for better log file detection")
+        str | None,
+        typer.Option("--name", help="Job name for better log file detection"),
     ] = None,
 ) -> None:
     """Display job logs with optional real-time streaming."""
@@ -764,12 +836,8 @@ def template_show(
 @template_app.command("apply")
 def template_apply(
     name: Annotated[str, typer.Argument(help="Template name to apply")],
-    command: Annotated[
-        list[str], typer.Argument(help="Command to execute in the job")
-    ],
-    job_name: Annotated[
-        str, typer.Option("--job-name", help="Job name")
-    ] = "job",
+    command: Annotated[list[str], typer.Argument(help="Command to execute in the job")],
+    job_name: Annotated[str, typer.Option("--job-name", help="Job name")] = "job",
     # Resource options
     nodes: Annotated[int, typer.Option("-N", "--nodes", help="Number of nodes")] = 1,
     gpus_per_node: Annotated[
@@ -884,7 +952,9 @@ def template_apply(
 
 @app.command("history")
 def history(
-    limit: Annotated[int, typer.Option("--limit", "-n", help="Number of jobs to show")] = 50,
+    limit: Annotated[
+        int, typer.Option("--limit", "-n", help="Number of jobs to show")
+    ] = 50,
 ) -> None:
     """Show job execution history."""
     try:
@@ -921,6 +991,7 @@ def history(
             if submitted_at:
                 # Parse and format date
                 from datetime import datetime
+
                 dt = datetime.fromisoformat(submitted_at)
                 submitted_at = dt.strftime("%Y-%m-%d %H:%M")
 
@@ -962,8 +1033,8 @@ def report(
             console = Console()
             console.print(f"\n[bold cyan]Workflow Report: {workflow}[/bold cyan]")
             console.print(f"Total Executions: {stats['total_executions']}")
-            if stats['avg_duration_seconds']:
-                mins = int(stats['avg_duration_seconds'] / 60)
+            if stats["avg_duration_seconds"]:
+                mins = int(stats["avg_duration_seconds"] / 60)
                 console.print(f"Average Duration: {mins} minutes")
             console.print(f"First Execution: {stats['first_execution']}")
             console.print(f"Last Execution: {stats['last_execution']}\n")

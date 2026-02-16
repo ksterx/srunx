@@ -586,7 +586,7 @@ class WorkflowRunner:
             logger.info(f"⚡ {'SUBMITTED':<12} Job {job.name:<12}")
 
             try:
-                result = self.slurm.run(job)
+                result = self.slurm.run(job, workflow_name=self.workflow.name)
                 return result
             except Exception as e:
                 # Show SLURM logs when job fails

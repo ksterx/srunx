@@ -50,6 +50,7 @@ class Slurm:
         callbacks: Sequence[Callback] | None = None,
         verbose: bool = False,
         record_history: bool = True,
+        workflow_name: str | None = None,
     ) -> RunnableJobType:
         """Submit a job to SLURM.
 
@@ -59,6 +60,7 @@ class Slurm:
             callbacks: List of callbacks.
             verbose: Whether to print the rendered content.
             record_history: Whether to record job in history database.
+            workflow_name: Name of the workflow if part of a workflow.
 
         Returns:
             Job instance with updated job_id and status.
@@ -138,7 +140,7 @@ class Slurm:
                 from srunx.history import get_history
 
                 history = get_history()
-                history.record_job(job)
+                history.record_job(job, workflow_name=workflow_name)
             except Exception as e:
                 logger.warning(f"Failed to record job in history: {e}")
 
@@ -371,10 +373,15 @@ class Slurm:
         callbacks: Sequence[Callback] | None = None,
         poll_interval: int = 5,
         verbose: bool = False,
+        workflow_name: str | None = None,
     ) -> RunnableJobType:
         """Submit a job and wait for completion."""
         submitted_job = self.submit(
-            job, template_path=template_path, callbacks=callbacks, verbose=verbose
+            job,
+            template_path=template_path,
+            callbacks=callbacks,
+            verbose=verbose,
+            workflow_name=workflow_name,
         )
         monitored_job = self.monitor(
             submitted_job, poll_interval=poll_interval, callbacks=callbacks
@@ -614,9 +621,8 @@ class Slurm:
 
                 # Start streaming from current position
                 with open(log_file, encoding="utf-8") as f:
-                    # Move to end if not showing last_n lines
-                    if not last_n:
-                        f.seek(0, os.SEEK_END)
+                    # Always seek to end to avoid duplicating already-printed lines
+                    f.seek(0, os.SEEK_END)
 
                     while True:
                         line = f.readline()
