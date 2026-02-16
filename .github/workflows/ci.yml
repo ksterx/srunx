@@ -30,13 +30,13 @@ jobs:
         uv sync --dev
 
     - name: Run ruff check
-      run: uvx ruff check .
+      run: uv run ruff check .
 
     - name: Run ruff format check
-      run: uvx ruff format --check .
+      run: uv run ruff format --check .
 
     - name: Run mypy
-      run: uvx mypy .
+      run: uv run mypy .
 
     - name: Run unit tests
       run: |

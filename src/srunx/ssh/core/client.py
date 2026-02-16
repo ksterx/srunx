@@ -631,6 +631,32 @@ class SSHSlurmClient:
             self.logger.error(f"Failed to get job status for job {job_id}: {e}")
             return "ERROR"
 
+    @staticmethod
+    def _quote_shell_path(path: str) -> str:
+        """Quote a path for remote shell, handling ~ expansion.
+
+        shlex.quote prevents ~ expansion, so paths starting with ~/
+        are converted to use $HOME with double quotes instead.
+        """
+        if path.startswith("~/"):
+            # Double quotes allow $HOME expansion while preventing word splitting
+            suffix = path[2:]
+            return '"$HOME/' + suffix + '"'
+        return shlex.quote(path)
+
+    @staticmethod
+    def _sanitize_job_id(job_id: str) -> str:
+        """Sanitize a SLURM job ID, supporting array and step IDs.
+
+        Valid formats: 12345, 12345_4, 12345_[1-10], 12345.0
+        """
+        import re as _re
+
+        job_id_str = str(job_id)
+        if not _re.fullmatch(r"[0-9][0-9_.\[\]\-]*", job_id_str):
+            raise ValueError(f"Invalid SLURM job ID: {job_id_str!r}")
+        return job_id_str
+
     def get_job_output(
         self, job_id: str, job_name: str | None = None
     ) -> tuple[str, str]:
@@ -639,7 +665,7 @@ class SSHSlurmClient:
             # Sanitize inputs to prevent shell injection
             import re as _re
 
-            safe_job_id = str(int(job_id))
+            safe_job_id = self._sanitize_job_id(job_id)
             safe_job_name = None
             if job_name and _re.fullmatch(r"[\w\-\.]+", job_name):
                 safe_job_name = job_name
@@ -669,7 +695,7 @@ class SSHSlurmClient:
             found_files = []
 
             for log_dir in log_dirs:
-                quoted_dir = shlex.quote(log_dir)
+                quoted_dir = self._quote_shell_path(log_dir)
                 for pattern in patterns:
                     quoted_pattern = shlex.quote(pattern)
                     find_cmd = f"find {quoted_dir} -name {quoted_pattern} -type f 2>/dev/null | head -5"
@@ -713,16 +739,17 @@ class SSHSlurmClient:
                     f"No log files found for job {job_id} using common patterns"
                 )
 
-                # Try default patterns as fallback
-                default_patterns = [f"{job_name}_{job_id}.log", f"{job_id}.log"]
+                # Try default patterns as fallback using sanitized values
+                default_patterns = []
+                if safe_job_name:
+                    default_patterns.append(f"{safe_job_name}_{safe_job_id}.log")
+                default_patterns.append(f"{safe_job_id}.log")
                 for pattern in default_patterns:
+                    quoted_pattern = shlex.quote(pattern)
                     stdout_output, _, _ = self.execute_command(
-                        f"cat {pattern} 2>/dev/null || echo ''"
+                        f"cat {quoted_pattern} 2>/dev/null || echo ''"
                     )
-                    if "log" in pattern:
-                        output_content += stdout_output
-                    else:
-                        error_content += stdout_output
+                    output_content += stdout_output
 
             return output_content, error_content
 
@@ -736,8 +763,7 @@ class SSHSlurmClient:
         """Get detailed job output information including found log files"""
         try:
             # Sanitize inputs to prevent shell injection
-            # job_id should be numeric; reject anything else
-            safe_job_id = str(int(job_id))
+            safe_job_id = self._sanitize_job_id(job_id)
             safe_job_name = None
             if job_name:
                 # Only allow alphanumeric, underscore, hyphen, dot in job names
@@ -779,7 +805,7 @@ class SSHSlurmClient:
             error_content = ""
 
             for log_dir in log_dirs:
-                quoted_dir = shlex.quote(log_dir)
+                quoted_dir = self._quote_shell_path(log_dir)
                 for pattern in patterns:
                     quoted_pattern = shlex.quote(pattern)
                     find_cmd = f"find {quoted_dir} -name {quoted_pattern} -type f 2>/dev/null | head -5"
