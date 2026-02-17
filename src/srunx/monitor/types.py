@@ -1,12 +1,12 @@
 """Data models and types for SLURM monitoring."""
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field, computed_field
 
 
-class WatchMode(str, Enum):
+class WatchMode(StrEnum):
     """Monitoring mode enumeration."""
 
     UNTIL_CONDITION = "until"
@@ -14,9 +14,6 @@ class WatchMode(str, Enum):
 
     CONTINUOUS = "continuous"
     """Monitor indefinitely, notify on every state change"""
-
-    def __str__(self) -> str:
-        return self.value
 
 
 class MonitorConfig(BaseModel):

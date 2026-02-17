@@ -1,0 +1,59 @@
+#!/bin/bash
+#SBATCH --job-name={{ job_name }}
+#SBATCH --output={{ log_dir }}/{{ job_name }}_%j.log
+#SBATCH --error={{ log_dir }}/{{ job_name }}_%j.log
+#SBATCH --nodes={{ nodes }}
+#SBATCH --ntasks-per-node={{ ntasks_per_node }}
+#SBATCH --cpus-per-task={{ cpus_per_task }}
+{% if gpus_per_node > 0 %}
+#SBATCH --gres=gpu:{{ gpus_per_node }}
+{% endif %}
+{% if memory_per_node %}
+#SBATCH --mem={{ memory_per_node }}
+{% endif %}
+{% if time_limit %}
+#SBATCH --time={{ time_limit }}
+{% endif %}
+{% if partition %}
+#SBATCH --partition={{ partition }}
+{% endif %}
+{% if nodelist %}
+#SBATCH --nodelist={{ nodelist }}
+{% endif %}
+
+# PyTorch Distributed Data Parallel (DDP) Setup
+set -e
+
+# Change to working directory
+cd {{ work_dir }}
+
+# Environment setup
+{{ environment_setup }}
+
+# Get master node address
+export MASTER_ADDR=$(scontrol show hostname $SLURM_JOB_NODELIST | head -n 1)
+export MASTER_PORT=29500
+
+# PyTorch distributed environment variables
+export WORLD_SIZE=$SLURM_NTASKS
+export RANK=$SLURM_PROCID
+export LOCAL_RANK=$SLURM_LOCALID
+export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID
+
+# Logging
+echo "=== PyTorch DDP Job Configuration ==="
+echo "Job ID: $SLURM_JOB_ID"
+echo "Job Name: {{ job_name }}"
+echo "Nodes: {{ nodes }}"
+echo "Tasks per node: {{ ntasks_per_node }}"
+echo "GPUs per node: {{ gpus_per_node }}"
+echo "Master node: $MASTER_ADDR:$MASTER_PORT"
+echo "World size: $WORLD_SIZE"
+echo "Rank: $RANK"
+echo "Local rank: $LOCAL_RANK"
+echo "====================================="
+
+# Run the command
+{{ command }}
+
+echo "Job completed at $(date)"

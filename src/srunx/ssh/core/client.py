@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import shlex
 import time
 import uuid
 from dataclasses import dataclass
@@ -630,33 +631,61 @@ class SSHSlurmClient:
             self.logger.error(f"Failed to get job status for job {job_id}: {e}")
             return "ERROR"
 
+    @staticmethod
+    def _quote_shell_path(path: str) -> str:
+        """Quote a path for remote shell, handling ~ expansion.
+
+        shlex.quote prevents ~ expansion, so paths starting with ~/
+        are converted to use $HOME with double quotes instead.
+        """
+        if path.startswith("~/"):
+            # Double quotes allow $HOME expansion while preventing word splitting
+            suffix = path[2:]
+            return '"$HOME/' + suffix + '"'
+        return shlex.quote(path)
+
+    @staticmethod
+    def _sanitize_job_id(job_id: str) -> str:
+        """Sanitize a SLURM job ID, supporting array and step IDs.
+
+        Valid formats: 12345, 12345_4, 12345_[1-10], 12345.0
+        """
+        import re as _re
+
+        job_id_str = str(job_id)
+        if not _re.fullmatch(r"[0-9][0-9_.\[\]\-]*", job_id_str):
+            raise ValueError(f"Invalid SLURM job ID: {job_id_str!r}")
+        return job_id_str
+
     def get_job_output(
         self, job_id: str, job_name: str | None = None
     ) -> tuple[str, str]:
         """Get job output from SLURM log files, supporting various log file naming patterns"""
         try:
+            # Sanitize inputs to prevent shell injection
+            import re as _re
+
+            safe_job_id = self._sanitize_job_id(job_id)
+            safe_job_name = None
+            if job_name and _re.fullmatch(r"[\w\-\.]+", job_name):
+                safe_job_name = job_name
+
             # Try multiple common SLURM log file patterns
             potential_log_patterns = [
-                # Pattern from SBATCH directives: %x_%j.log (job_name_job_id.log)
-                f"{job_name}_{job_id}.log" if job_name else None,
-                # Common SLURM_LOG_DIR patterns
-                f"*_{job_id}.log",
-                # Default SLURM patterns
-                f"slurm-{job_id}.out",
-                f"slurm-{job_id}.err",
-                # Alternative patterns
-                f"job_{job_id}.log",
-                f"{job_id}.log",
-                f"*_{job_id}.out",
+                f"{safe_job_name}_{safe_job_id}.log" if safe_job_name else None,
+                f"*_{safe_job_id}.log",
+                f"slurm-{safe_job_id}.out",
+                f"slurm-{safe_job_id}.err",
+                f"job_{safe_job_id}.log",
+                f"{safe_job_id}.log",
+                f"*_{safe_job_id}.out",
             ]
 
-            # Remove None values
             patterns = [p for p in potential_log_patterns if p is not None]
 
-            # Common SLURM log directories to search
             log_dirs = [
                 os.environ.get("SLURM_LOG_DIR", "~/logs/slurm"),
-                "./",  # Current directory
+                "./",
                 "/tmp",
                 "/var/log/slurm",
             ]
@@ -666,9 +695,10 @@ class SSHSlurmClient:
             found_files = []
 
             for log_dir in log_dirs:
+                quoted_dir = self._quote_shell_path(log_dir)
                 for pattern in patterns:
-                    # Try to find log files with this pattern
-                    find_cmd = f"find {log_dir} -name '{pattern}' -type f 2>/dev/null | head -5"
+                    quoted_pattern = shlex.quote(pattern)
+                    find_cmd = f"find {quoted_dir} -name {quoted_pattern} -type f 2>/dev/null | head -5"
                     stdout, stderr, exit_code = self.execute_command(find_cmd)
 
                     if exit_code == 0 and stdout.strip():
@@ -680,12 +710,11 @@ class SSHSlurmClient:
                                     f"Found potential log file: {log_file.strip()}"
                                 )
 
-            # Read content from found log files
             if found_files:
-                # Use the first found file as primary output
                 primary_log = found_files[0]
+                quoted_log = shlex.quote(primary_log)
                 stdout_output, _, _ = self.execute_command(
-                    f"cat '{primary_log}' 2>/dev/null || echo 'Could not read log file'"
+                    f"cat {quoted_log} 2>/dev/null || echo 'Could not read log file'"
                 )
                 output_content = stdout_output
 
@@ -693,8 +722,9 @@ class SSHSlurmClient:
                 if len(found_files) > 1:
                     for log_file in found_files[1:]:
                         if "err" in log_file.lower() or "error" in log_file.lower():
+                            quoted_err_log = shlex.quote(log_file)
                             stderr_output, _, _ = self.execute_command(
-                                f"cat '{log_file}' 2>/dev/null || echo ''"
+                                f"cat {quoted_err_log} 2>/dev/null || echo ''"
                             )
                             error_content += stderr_output
 
@@ -709,16 +739,17 @@ class SSHSlurmClient:
                     f"No log files found for job {job_id} using common patterns"
                 )
 
-                # Try default patterns as fallback
-                default_patterns = [f"{job_name}_{job_id}.log", f"{job_id}.log"]
+                # Try default patterns as fallback using sanitized values
+                default_patterns = []
+                if safe_job_name:
+                    default_patterns.append(f"{safe_job_name}_{safe_job_id}.log")
+                default_patterns.append(f"{safe_job_id}.log")
                 for pattern in default_patterns:
+                    quoted_pattern = shlex.quote(pattern)
                     stdout_output, _, _ = self.execute_command(
-                        f"cat {pattern} 2>/dev/null || echo ''"
+                        f"cat {quoted_pattern} 2>/dev/null || echo ''"
                     )
-                    if "log" in pattern:
-                        output_content += stdout_output
-                    else:
-                        error_content += stdout_output
+                    output_content += stdout_output
 
             return output_content, error_content
 
@@ -731,19 +762,32 @@ class SSHSlurmClient:
     ) -> dict[str, str | list[str] | None]:
         """Get detailed job output information including found log files"""
         try:
+            # Sanitize inputs to prevent shell injection
+            safe_job_id = self._sanitize_job_id(job_id)
+            safe_job_name = None
+            if job_name:
+                # Only allow alphanumeric, underscore, hyphen, dot in job names
+                import re as _re
+
+                if _re.fullmatch(r"[\w\-\.]+", job_name):
+                    safe_job_name = job_name
+                else:
+                    self.logger.warning(
+                        f"Rejecting unsafe job_name for log search: {job_name!r}"
+                    )
+
             # Try multiple common SLURM log file patterns
             potential_log_patterns = [
                 # Pattern from SBATCH directives: %x_%j.log (job_name_job_id.log)
-                f"{job_name}_{job_id}.log" if job_name else None,
+                f"{safe_job_name}_{safe_job_id}.log" if safe_job_name else None,
                 # Common SLURM_LOG_DIR patterns
-                f"*_{job_id}.log",
+                f"*_{safe_job_id}.log",
                 # Default SLURM patterns
-                f"{job_name}_{job_id}.log",
-                f"{job_id}.log",
+                f"{safe_job_name}_{safe_job_id}.log" if safe_job_name else None,
+                f"{safe_job_id}.log",
                 # Alternative patterns
-                f"job_{job_id}.log",
-                f"{job_id}.log",
-                f"*_{job_id}.out",
+                f"job_{safe_job_id}.log",
+                f"*_{safe_job_id}.out",
             ]
 
             patterns = [p for p in potential_log_patterns if p is not None]
@@ -761,8 +805,10 @@ class SSHSlurmClient:
             error_content = ""
 
             for log_dir in log_dirs:
+                quoted_dir = self._quote_shell_path(log_dir)
                 for pattern in patterns:
-                    find_cmd = f"find {log_dir} -name '{pattern}' -type f 2>/dev/null | head -5"
+                    quoted_pattern = shlex.quote(pattern)
+                    find_cmd = f"find {quoted_dir} -name {quoted_pattern} -type f 2>/dev/null | head -5"
                     stdout, stderr, exit_code = self.execute_command(find_cmd)
 
                     if exit_code == 0 and stdout.strip():
@@ -774,16 +820,18 @@ class SSHSlurmClient:
             found_files = list(set(found_files))
             if found_files:
                 primary_log = found_files[0]
+                quoted_log = shlex.quote(primary_log)
                 stdout_output, _, _ = self.execute_command(
-                    f"cat '{primary_log}' 2>/dev/null || echo 'Could not read log file'"
+                    f"cat {quoted_log} 2>/dev/null || echo 'Could not read log file'"
                 )
                 output_content = stdout_output
 
                 if len(found_files) > 1:
                     for log_file in found_files[1:]:
                         if "err" in log_file.lower() or "error" in log_file.lower():
+                            quoted_err_log = shlex.quote(log_file)
                             stderr_output, _, _ = self.execute_command(
-                                f"cat '{log_file}' 2>/dev/null || echo ''"
+                                f"cat {quoted_err_log} 2>/dev/null || echo ''"
                             )
                             error_content += stderr_output
 
@@ -829,6 +877,111 @@ class SSHSlurmClient:
                 break
             time.sleep(poll_interval)
         return job
+
+    def tail_log(
+        self,
+        job_id: str,
+        job_name: str | None = None,
+        follow: bool = False,
+        last_n: int | None = None,
+        poll_interval: float = 1.0,
+    ) -> dict[str, str | bool | None]:
+        """Display job logs with optional real-time streaming via SSH.
+
+        Args:
+            job_id: SLURM job ID
+            job_name: Job name for better log file detection
+            follow: If True, continuously stream new log lines (like tail -f)
+            last_n: Show only the last N lines
+            poll_interval: Polling interval in seconds for follow mode
+
+        Returns:
+            Dictionary with log information:
+            - success: Whether log retrieval was successful
+            - log_content: Log content (empty in follow mode)
+            - tail_command: Command to execute for follow mode (None in static mode)
+            - status_message: Status or error message
+            - log_file: Path to the primary log file
+        """
+        # Find the log file
+        log_info = self.get_job_output_detailed(job_id, job_name)
+        primary_log = log_info.get("primary_log")
+        found_files = log_info.get("found_files", [])
+
+        if not found_files:
+            searched_dirs = log_info.get("searched_dirs", [])
+            searched_dirs_list = (
+                searched_dirs if isinstance(searched_dirs, list) else []
+            )
+            msg = f"No log files found for job {job_id}\n"
+            msg += f"Searched in: {', '.join(searched_dirs_list)}\n"
+            slurm_log_dir = log_info.get("slurm_log_dir")
+            if slurm_log_dir:
+                msg += f"SLURM_LOG_DIR: {slurm_log_dir}\n"
+            return {
+                "success": False,
+                "log_content": "",
+                "tail_command": None,
+                "status_message": msg,
+                "log_file": None,
+            }
+
+        if not primary_log:
+            return {
+                "success": False,
+                "log_content": "",
+                "tail_command": None,
+                "status_message": "Could not find primary log file",
+                "log_file": None,
+            }
+
+        # Convert primary_log to string for type safety
+        primary_log_str = str(primary_log) if primary_log else ""
+        # Quote the path to prevent shell metacharacter injection
+        quoted_log_path = shlex.quote(primary_log_str)
+
+        if follow:
+            # Real-time streaming mode (like tail -f)
+            # Build tail command
+            tail_cmd = "tail -f"
+            if last_n:
+                tail_cmd = f"tail -n {last_n} -f"
+
+            tail_cmd += f" {quoted_log_path}"
+
+            return {
+                "success": True,
+                "log_content": "",
+                "tail_command": tail_cmd,
+                "status_message": f"Streaming logs from {primary_log_str} (Ctrl+C to stop)...",
+                "log_file": primary_log_str,
+            }
+
+        else:
+            # Static display mode
+            output_raw = log_info.get("output", "")
+            output = str(output_raw) if output_raw else ""
+
+            if last_n and isinstance(output, str):
+                lines = output.split("\n")
+                output = "\n".join(lines[-last_n:])
+
+            if output:
+                return {
+                    "success": True,
+                    "log_content": output,
+                    "tail_command": None,
+                    "status_message": f"Log file: {primary_log_str}",
+                    "log_file": primary_log_str,
+                }
+            else:
+                return {
+                    "success": True,
+                    "log_content": "",
+                    "tail_command": None,
+                    "status_message": "Log file is empty",
+                    "log_file": primary_log_str,
+                }
 
     def _write_remote_file(self, remote_path: str, content: str) -> None:
         if not self.sftp_client:

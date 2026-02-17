@@ -49,6 +49,8 @@ class Slurm:
         template_path: str | None = None,
         callbacks: Sequence[Callback] | None = None,
         verbose: bool = False,
+        record_history: bool = True,
+        workflow_name: str | None = None,
     ) -> RunnableJobType:
         """Submit a job to SLURM.
 
@@ -57,6 +59,8 @@ class Slurm:
             template_path: Optional template path (uses default if not provided).
             callbacks: List of callbacks.
             verbose: Whether to print the rendered content.
+            record_history: Whether to record job in history database.
+            workflow_name: Name of the workflow if part of a workflow.
 
         Returns:
             Job instance with updated job_id and status.
@@ -129,6 +133,16 @@ class Slurm:
         job.status = JobStatus.PENDING
 
         logger.debug(f"Successfully submitted job '{job.name}' with ID {job_id}")
+
+        # Record in history database
+        if record_history:
+            try:
+                from srunx.history import get_history
+
+                history = get_history()
+                history.record_job(job, workflow_name=workflow_name)
+            except Exception as e:
+                logger.warning(f"Failed to record job in history: {e}")
 
         all_callbacks = self.callbacks[:]
         if callbacks:
@@ -289,10 +303,32 @@ class Slurm:
             match job.status:
                 case JobStatus.COMPLETED:
                     logger.info(job_status_msg(job))
+                    # Update history
+                    try:
+                        from srunx.history import get_history
+
+                        history = get_history()
+                        if job.job_id:
+                            history.update_job_completion(
+                                job.job_id, JobStatus.COMPLETED
+                            )
+                    except Exception as e:
+                        logger.warning(f"Failed to update job history: {e}")
+
                     for callback in all_callbacks:
                         callback.on_job_completed(job)
                     return job
                 case JobStatus.FAILED:
+                    # Update history
+                    try:
+                        from srunx.history import get_history
+
+                        history = get_history()
+                        if job.job_id:
+                            history.update_job_completion(job.job_id, JobStatus.FAILED)
+                    except Exception as e:
+                        logger.warning(f"Failed to update job history: {e}")
+
                     err_msg = job_status_msg(job) + "\n"
                     if isinstance(job, Job):
                         log_file = Path(job.log_dir) / f"{job.name}_{job.job_id}.log"
@@ -306,6 +342,16 @@ class Slurm:
                         callback.on_job_failed(job)
                     raise RuntimeError(err_msg)
                 case JobStatus.CANCELLED | JobStatus.TIMEOUT:
+                    # Update history
+                    try:
+                        from srunx.history import get_history
+
+                        history = get_history()
+                        if job.job_id:
+                            history.update_job_completion(job.job_id, job.status)
+                    except Exception as e:
+                        logger.warning(f"Failed to update job history: {e}")
+
                     err_msg = job_status_msg(job) + "\n"
                     if isinstance(job, Job):
                         log_file = Path(job.log_dir) / f"{job.name}_{job.job_id}.log"
@@ -327,10 +373,15 @@ class Slurm:
         callbacks: Sequence[Callback] | None = None,
         poll_interval: int = 5,
         verbose: bool = False,
+        workflow_name: str | None = None,
     ) -> RunnableJobType:
         """Submit a job and wait for completion."""
         submitted_job = self.submit(
-            job, template_path=template_path, callbacks=callbacks, verbose=verbose
+            job,
+            template_path=template_path,
+            callbacks=callbacks,
+            verbose=verbose,
+            workflow_name=workflow_name,
         )
         monitored_job = self.monitor(
             submitted_job, poll_interval=poll_interval, callbacks=callbacks
@@ -426,13 +477,14 @@ class Slurm:
         return output_content, error_content
 
     def get_job_output_detailed(
-        self, job_id: int | str, job_name: str | None = None
+        self, job_id: int | str, job_name: str | None = None, skip_content: bool = False
     ) -> dict[str, str | list[str] | None]:
         """Get detailed job output information including found log files.
 
         Args:
             job_id: SLURM job ID
             job_name: Job name for better log file detection
+            skip_content: If True, only find log files without reading content
 
         Returns:
             Dictionary with detailed log information
@@ -483,21 +535,23 @@ class Slurm:
 
         if found_files:
             primary_log = found_files[0]
-            try:
-                with open(primary_log, encoding="utf-8") as f:
-                    output_content = f.read()
-            except (OSError, UnicodeDecodeError) as e:
-                logger.warning(f"Failed to read log file {primary_log}: {e}")
-                output_content = f"Could not read log file {primary_log}: {e}"
 
-            # Look for separate error files
-            for log_file in found_files:
-                if "err" in Path(log_file).name.lower():
-                    try:
-                        with open(log_file, encoding="utf-8") as f:
-                            error_content += f.read()
-                    except (OSError, UnicodeDecodeError) as e:
-                        logger.warning(f"Failed to read error file {log_file}: {e}")
+            if not skip_content:
+                try:
+                    with open(primary_log, encoding="utf-8") as f:
+                        output_content = f.read()
+                except (OSError, UnicodeDecodeError) as e:
+                    logger.warning(f"Failed to read log file {primary_log}: {e}")
+                    output_content = f"Could not read log file {primary_log}: {e}"
+
+                # Look for separate error files
+                for log_file in found_files:
+                    if "err" in Path(log_file).name.lower():
+                        try:
+                            with open(log_file, encoding="utf-8") as f:
+                                error_content += f.read()
+                        except (OSError, UnicodeDecodeError) as e:
+                            logger.warning(f"Failed to read error file {log_file}: {e}")
 
         return {
             "found_files": found_files,
@@ -507,6 +561,118 @@ class Slurm:
             "slurm_log_dir": os.environ.get("SLURM_LOG_DIR"),
             "searched_dirs": [d for d in log_dirs if d],
         }
+
+    def tail_log(
+        self,
+        job_id: int | str,
+        job_name: str | None = None,
+        follow: bool = False,
+        last_n: int | None = None,
+        poll_interval: float = 1.0,
+    ) -> None:
+        """Display job logs with optional real-time streaming.
+
+        Args:
+            job_id: SLURM job ID
+            job_name: Job name for better log file detection
+            follow: If True, continuously stream new log lines (like tail -f)
+            last_n: Show only the last N lines
+            poll_interval: Polling interval in seconds for follow mode
+        """
+        from collections import deque
+
+        from rich.console import Console
+
+        console = Console()
+        job_id_str = str(job_id)
+
+        # Skip reading full content when we only need file paths
+        skip_content = follow or (last_n is not None)
+        log_info = self.get_job_output_detailed(
+            job_id, job_name, skip_content=skip_content
+        )
+        primary_log = log_info.get("primary_log")
+        found_files = log_info.get("found_files", [])
+
+        if not found_files:
+            console.print(f"[red]❌ No log files found for job {job_id_str}[/red]")
+            searched_dirs = log_info.get("searched_dirs", [])
+            if searched_dirs:
+                console.print(
+                    f"[yellow]📁 Searched in: {', '.join(searched_dirs)}[/yellow]"
+                )
+            slurm_log_dir = log_info.get("slurm_log_dir")
+            if slurm_log_dir:
+                console.print(f"[yellow]💡 SLURM_LOG_DIR: {slurm_log_dir}[/yellow]")
+            return
+
+        if not primary_log:
+            console.print("[red]❌ Could not find primary log file[/red]")
+            return
+
+        log_file = Path(str(primary_log))
+        console.print(f"[cyan]📄 Log file: {log_file}[/cyan]")
+
+        try:
+            if follow:
+                # Real-time streaming mode (like tail -f)
+                console.print(
+                    "[yellow]📡 Streaming logs (Ctrl+C to stop)...[/yellow]\n"
+                )
+
+                # If last_n is specified, show last N lines first
+                if last_n:
+                    with open(log_file, encoding="utf-8") as f:
+                        tail_lines = deque(f, maxlen=last_n)
+                        for line in tail_lines:
+                            console.print(line, end="")
+
+                # Start streaming from current position
+                with open(log_file, encoding="utf-8") as f:
+                    # Always seek to end to avoid duplicating already-printed lines
+                    f.seek(0, os.SEEK_END)
+
+                    while True:
+                        line = f.readline()
+                        if line:
+                            console.print(line, end="")
+                        else:
+                            # Check if job is still running
+                            job = self.retrieve(int(job_id))
+                            if job.status.value in [
+                                "COMPLETED",
+                                "FAILED",
+                                "CANCELLED",
+                                "TIMEOUT",
+                            ]:
+                                console.print(
+                                    f"\n[yellow]Job {job_id} finished with status: {job.status.value}[/yellow]"
+                                )
+                                break
+                            time.sleep(poll_interval)
+            else:
+                # Static display mode
+                if last_n:
+                    # Read only last N lines efficiently using deque
+                    with open(log_file, encoding="utf-8") as f:
+                        tail_lines = deque(f, maxlen=last_n)
+                    output = "".join(tail_lines)
+                else:
+                    output = str(log_info.get("output", ""))
+
+                if output:
+                    console.print(output)
+                else:
+                    console.print("[yellow]Log file is empty[/yellow]")
+
+        except FileNotFoundError:
+            console.print(f"[red]❌ Log file not found: {log_file}[/red]")
+        except PermissionError:
+            console.print(f"[red]❌ Permission denied: {log_file}[/red]")
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Streaming stopped by user[/yellow]")
+        except Exception as e:
+            console.print(f"[red]❌ Error reading log file: {e}[/red]")
 
     def _get_job_gpu_count(self, job_id: int) -> int | None:
         """
