@@ -655,7 +655,7 @@ class SSHSlurmClient:
             local_path = self._detect_project_root()
 
         if remote_path is None:
-            remote_path = RsyncClient.get_default_remote_path()
+            remote_path = RsyncClient.get_default_remote_path(local_path)
 
         result = self._rsync_client.push(
             local_path,

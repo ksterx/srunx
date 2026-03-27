@@ -60,7 +60,8 @@ class RsyncClient:
         ssh_config_path: str | None = None,
         exclude_patterns: list[str] | None = None,
     ) -> None:
-        if shutil.which("rsync") is None:
+        rsync_path = shutil.which("rsync")
+        if rsync_path is None:
             raise RuntimeError(
                 "rsync is not installed or not found in PATH. "
                 "Please install rsync before using RsyncClient."
@@ -73,6 +74,11 @@ class RsyncClient:
         self.proxy_jump = proxy_jump
         self.ssh_config_path = ssh_config_path
 
+        # Detect rsync capabilities
+        self._supports_protect_args = False
+        self._supports_mkpath = False
+        self._detect_rsync_capabilities(rsync_path)
+
         # Merge caller-supplied excludes with defaults (no duplicates)
         self.exclude_patterns = list(self.DEFAULT_EXCLUDES)
         if exclude_patterns:
@@ -81,6 +87,20 @@ class RsyncClient:
                 if pattern not in seen:
                     self.exclude_patterns.append(pattern)
                     seen.add(pattern)
+
+    def _detect_rsync_capabilities(self, rsync_path: str) -> None:
+        """Detect which flags the installed rsync binary supports."""
+        try:
+            result = subprocess.run(
+                [rsync_path, "--help"],
+                capture_output=True,
+                text=True,
+            )
+            help_text = result.stdout + result.stderr
+            self._supports_protect_args = "--protect-args" in help_text
+            self._supports_mkpath = "--mkpath" in help_text
+        except (OSError, subprocess.SubprocessError):
+            pass
 
     # ------------------------------------------------------------------
     # Public API
@@ -109,7 +129,7 @@ class RsyncClient:
             RsyncResult with returncode, stdout, and stderr.
         """
         if remote_path is None:
-            remote_path = self.get_default_remote_path()
+            remote_path = self.get_default_remote_path(local_path)
 
         local = Path(local_path)
         src = str(local)
@@ -119,6 +139,10 @@ class RsyncClient:
             src += "/"
 
         dst = self._format_remote(remote_path)
+
+        # Ensure remote directory exists when --mkpath is unavailable
+        if not self._supports_mkpath and not dry_run:
+            self._ensure_remote_dir(remote_path)
 
         excludes = self._merge_excludes(exclude_patterns)
         cmd = self._build_rsync_cmd(
@@ -188,7 +212,12 @@ class RsyncClient:
         excludes: list[str],
     ) -> list[str]:
         """Build the full rsync command."""
-        cmd: list[str] = ["rsync", "-az", "--protect-args", "--mkpath"]
+        cmd: list[str] = ["rsync", "-az"]
+
+        if self._supports_protect_args:
+            cmd.append("--protect-args")
+        if self._supports_mkpath:
+            cmd.append("--mkpath")
 
         ssh_cmd = self._build_ssh_cmd()
         cmd.extend(["-e", shlex.join(ssh_cmd)])
@@ -201,7 +230,7 @@ class RsyncClient:
         for pattern in excludes:
             cmd.extend(["--exclude", pattern])
 
-        cmd.extend([src, dst])
+        cmd.extend(["--", src, dst])
         return cmd
 
     def _run_rsync(self, cmd: list[str]) -> RsyncResult:
@@ -221,6 +250,17 @@ class RsyncClient:
             stderr=proc.stderr,
         )
 
+    def _ensure_remote_dir(self, remote_path: str) -> None:
+        """Create the remote directory via ssh mkdir -p (fallback for rsync without --mkpath)."""
+        ssh_cmd = self._build_ssh_cmd()
+        mkdir_cmd = [
+            *ssh_cmd,
+            f"{self.username}@{self.hostname}",
+            f"mkdir -p {remote_path}",
+        ]
+        logger.debug("Ensuring remote dir: {}", shlex.join(mkdir_cmd))
+        subprocess.run(mkdir_cmd, capture_output=True, text=True)  # noqa: S603
+
     def _merge_excludes(self, extra: list[str] | None) -> list[str]:
         """Merge per-call exclude patterns with instance patterns."""
         if not extra:
@@ -234,25 +274,31 @@ class RsyncClient:
         return merged
 
     @staticmethod
-    def get_default_remote_path() -> str:
+    def get_default_remote_path(local_path: str | Path | None = None) -> str:
         """Derive a default remote workspace path from the git repo or cwd.
+
+        Args:
+            local_path: Optional local directory to derive the project name
+                from. If None, uses the current working directory.
 
         Returns:
             A path like ``~/.config/srunx/workspace/<project_name>/``.
         """
+        cwd = str(Path(local_path)) if local_path else None
         try:
             result = subprocess.run(  # noqa: S603, S607
                 ["git", "rev-parse", "--show-toplevel"],
                 capture_output=True,
                 text=True,
+                cwd=cwd,
             )
             if result.returncode == 0:
                 basename = Path(result.stdout.strip()).name
             else:
-                basename = Path.cwd().name
+                basename = Path(cwd).name if cwd else Path.cwd().name
         except FileNotFoundError:
             # git not installed
-            basename = Path.cwd().name
+            basename = Path(cwd).name if cwd else Path.cwd().name
 
         return f"~/.config/srunx/workspace/{basename}/"
 

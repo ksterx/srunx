@@ -9,6 +9,22 @@ import pytest
 
 from srunx.sync.rsync import RsyncClient, RsyncResult
 
+# GNU rsync --help output stub that includes --protect-args and --mkpath
+_GNU_RSYNC_HELP = "--protect-args --mkpath"
+
+
+def _make_rsync_client(**kwargs: object) -> RsyncClient:
+    """Create an RsyncClient with mocked binary detection (GNU rsync features)."""
+    with (
+        patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync"),
+        patch(
+            "srunx.sync.rsync.subprocess.run",
+            return_value=MagicMock(stdout=_GNU_RSYNC_HELP, stderr=""),
+        ),
+    ):
+        return RsyncClient(**kwargs)  # type: ignore[arg-type]
+
+
 # ---------------------------------------------------------------------------
 # RsyncResult
 # ---------------------------------------------------------------------------
@@ -41,9 +57,8 @@ class TestRsyncClientInit:
         with pytest.raises(RuntimeError, match="rsync is not installed"):
             RsyncClient(hostname="host", username="user")
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_stores_params(self, mock_which: MagicMock):
-        client = RsyncClient(
+    def test_stores_params(self):
+        client = _make_rsync_client(
             hostname="h",
             username="u",
             port=2222,
@@ -58,21 +73,36 @@ class TestRsyncClientInit:
         assert client.proxy_jump == "jump"
         assert client.ssh_config_path == "/etc/ssh/config"
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_default_excludes(self, mock_which: MagicMock):
-        client = RsyncClient(hostname="h", username="u")
+    def test_default_excludes(self):
+        client = _make_rsync_client(hostname="h", username="u")
         assert ".git/" in client.exclude_patterns
         assert "__pycache__/" in client.exclude_patterns
         assert ".venv/" in client.exclude_patterns
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_custom_excludes_merged(self, mock_which: MagicMock):
-        client = RsyncClient(
+    def test_custom_excludes_merged(self):
+        client = _make_rsync_client(
             hostname="h", username="u", exclude_patterns=["data/", ".git/"]
         )
         assert "data/" in client.exclude_patterns
         # .git/ should not be duplicated
         assert client.exclude_patterns.count(".git/") == 1
+
+    def test_detects_gnu_rsync_capabilities(self):
+        client = _make_rsync_client(hostname="h", username="u")
+        assert client._supports_protect_args is True
+        assert client._supports_mkpath is True
+
+    @patch(
+        "srunx.sync.rsync.subprocess.run",
+        return_value=MagicMock(stdout="", stderr="openrsync: protocol version 29"),
+    )
+    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
+    def test_detects_openrsync_no_capabilities(
+        self, mock_which: MagicMock, mock_run: MagicMock
+    ):
+        client = RsyncClient(hostname="h", username="u")
+        assert client._supports_protect_args is False
+        assert client._supports_mkpath is False
 
 
 # ---------------------------------------------------------------------------
@@ -81,58 +111,52 @@ class TestRsyncClientInit:
 
 
 class TestBuildSshCmd:
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_default_port(self, mock_which: MagicMock):
-        client = RsyncClient(hostname="h", username="u")
+    def test_default_port(self):
+        client = _make_rsync_client(hostname="h", username="u")
         cmd = client._build_ssh_cmd()
         assert cmd[0] == "ssh"
         assert "-p" not in cmd  # port 22 is default, not added
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_custom_port(self, mock_which: MagicMock):
-        client = RsyncClient(hostname="h", username="u", port=2222)
+    def test_custom_port(self):
+        client = _make_rsync_client(hostname="h", username="u", port=2222)
         cmd = client._build_ssh_cmd()
         idx = cmd.index("-p")
         assert cmd[idx + 1] == "2222"
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_key_filename(self, mock_which: MagicMock):
-        client = RsyncClient(hostname="h", username="u", key_filename="~/.ssh/mykey")
+    def test_key_filename(self):
+        client = _make_rsync_client(
+            hostname="h", username="u", key_filename="~/.ssh/mykey"
+        )
         cmd = client._build_ssh_cmd()
         idx = cmd.index("-i")
         assert "mykey" in cmd[idx + 1]  # expanduser applied
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_proxy_jump(self, mock_which: MagicMock):
-        client = RsyncClient(hostname="h", username="u", proxy_jump="jumphost")
+    def test_proxy_jump(self):
+        client = _make_rsync_client(hostname="h", username="u", proxy_jump="jumphost")
         cmd = client._build_ssh_cmd()
         idx = cmd.index("-J")
         assert cmd[idx + 1] == "jumphost"
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_ssh_config(self, mock_which: MagicMock):
-        client = RsyncClient(
+    def test_ssh_config(self):
+        client = _make_rsync_client(
             hostname="h", username="u", ssh_config_path="/my/ssh/config"
         )
         cmd = client._build_ssh_cmd()
         idx = cmd.index("-F")
         assert cmd[idx + 1] == "/my/ssh/config"
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_strict_host_key_checking(self, mock_which: MagicMock):
-        client = RsyncClient(hostname="h", username="u")
+    def test_strict_host_key_checking(self):
+        client = _make_rsync_client(hostname="h", username="u")
         cmd = client._build_ssh_cmd()
         assert "StrictHostKeyChecking=accept-new" in cmd
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_batch_mode(self, mock_which: MagicMock):
-        client = RsyncClient(hostname="h", username="u")
+    def test_batch_mode(self):
+        client = _make_rsync_client(hostname="h", username="u")
         cmd = client._build_ssh_cmd()
         assert "BatchMode=yes" in cmd
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_all_options_combined(self, mock_which: MagicMock):
-        client = RsyncClient(
+    def test_all_options_combined(self):
+        client = _make_rsync_client(
             hostname="h",
             username="u",
             port=2222,
@@ -153,9 +177,8 @@ class TestBuildSshCmd:
 
 
 class TestBuildRsyncCmd:
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_basic_cmd(self, mock_which: MagicMock):
-        client = RsyncClient(hostname="h", username="u")
+    def test_basic_cmd(self):
+        client = _make_rsync_client(hostname="h", username="u")
         cmd = client._build_rsync_cmd(
             "src/", "u@h:dst/", delete=False, dry_run=False, excludes=[]
         )
@@ -163,40 +186,54 @@ class TestBuildRsyncCmd:
         assert "-az" in cmd
         assert "--protect-args" in cmd
         assert "-e" in cmd
-        assert cmd[-2] == "src/"
-        assert cmd[-1] == "u@h:dst/"
+        # -- separator before src/dst
+        assert "--" in cmd
+        sep_idx = cmd.index("--")
+        assert cmd[sep_idx + 1] == "src/"
+        assert cmd[sep_idx + 2] == "u@h:dst/"
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_delete_flag(self, mock_which: MagicMock):
-        client = RsyncClient(hostname="h", username="u")
+    def test_delete_flag(self):
+        client = _make_rsync_client(hostname="h", username="u")
         cmd = client._build_rsync_cmd("s", "d", delete=True, dry_run=False, excludes=[])
         assert "--delete" in cmd
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_no_delete_flag(self, mock_which: MagicMock):
-        client = RsyncClient(hostname="h", username="u")
+    def test_no_delete_flag(self):
+        client = _make_rsync_client(hostname="h", username="u")
         cmd = client._build_rsync_cmd(
             "s", "d", delete=False, dry_run=False, excludes=[]
         )
         assert "--delete" not in cmd
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_dry_run_flag(self, mock_which: MagicMock):
-        client = RsyncClient(hostname="h", username="u")
+    def test_dry_run_flag(self):
+        client = _make_rsync_client(hostname="h", username="u")
         cmd = client._build_rsync_cmd("s", "d", delete=False, dry_run=True, excludes=[])
         assert "-n" in cmd
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_exclude_patterns(self, mock_which: MagicMock):
-        client = RsyncClient(hostname="h", username="u")
+    def test_exclude_patterns(self):
+        client = _make_rsync_client(hostname="h", username="u")
         cmd = client._build_rsync_cmd(
             "s", "d", delete=False, dry_run=False, excludes=[".git/", "*.pyc"]
         )
-        # Check --exclude pairs
         exclude_indices = [i for i, v in enumerate(cmd) if v == "--exclude"]
         assert len(exclude_indices) == 2
         assert cmd[exclude_indices[0] + 1] == ".git/"
         assert cmd[exclude_indices[1] + 1] == "*.pyc"
+
+    def test_no_protect_args_on_openrsync(self):
+        """openrsync doesn't support --protect-args or --mkpath."""
+        with (
+            patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync"),
+            patch(
+                "srunx.sync.rsync.subprocess.run",
+                return_value=MagicMock(stdout="", stderr="openrsync"),
+            ),
+        ):
+            client = RsyncClient(hostname="h", username="u")
+        cmd = client._build_rsync_cmd(
+            "s", "d", delete=False, dry_run=False, excludes=[]
+        )
+        assert "--protect-args" not in cmd
+        assert "--mkpath" not in cmd
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +254,6 @@ class TestGetDefaultRemotePath:
     def test_not_git_repo(self, mock_run: MagicMock):
         mock_run.return_value = MagicMock(returncode=128, stdout="")
         path = RsyncClient.get_default_remote_path()
-        # Falls back to cwd name
         assert path.startswith("~/.config/srunx/workspace/")
         assert path.endswith("/")
 
@@ -227,6 +263,16 @@ class TestGetDefaultRemotePath:
         assert path.startswith("~/.config/srunx/workspace/")
         assert path.endswith("/")
 
+    @patch("srunx.sync.rsync.subprocess.run")
+    def test_uses_local_path_for_git_detection(self, mock_run: MagicMock):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="/other/project/otherrepo\n"
+        )
+        path = RsyncClient.get_default_remote_path("/other/project/otherrepo")
+        assert path == "~/.config/srunx/workspace/otherrepo/"
+        # Verify cwd was passed to subprocess
+        assert mock_run.call_args[1]["cwd"] == "/other/project/otherrepo"
+
 
 # ---------------------------------------------------------------------------
 # _format_remote
@@ -234,17 +280,16 @@ class TestGetDefaultRemotePath:
 
 
 class TestFormatRemote:
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_format(self, mock_which: MagicMock):
-        client = RsyncClient(hostname="server.example.com", username="researcher")
+    def test_format(self):
+        client = _make_rsync_client(
+            hostname="server.example.com", username="researcher"
+        )
         result = client._format_remote("~/.config/srunx/workspace/proj/")
         assert result == "researcher@server.example.com:~/.config/srunx/workspace/proj/"
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_tilde_not_quoted(self, mock_which: MagicMock):
-        client = RsyncClient(hostname="h", username="u")
+    def test_tilde_not_quoted(self):
+        client = _make_rsync_client(hostname="h", username="u")
         result = client._format_remote("~/path")
-        # Tilde should appear literally, not escaped/quoted
         assert "~" in result
         assert "'" not in result
         assert '"' not in result
@@ -256,162 +301,122 @@ class TestFormatRemote:
 
 
 class TestPush:
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    @patch("srunx.sync.rsync.subprocess.run")
-    def test_push_directory(
-        self, mock_run: MagicMock, mock_which: MagicMock, tmp_path: Path
-    ):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        client = RsyncClient(hostname="h", username="u")
+    def test_push_directory(self, tmp_path: Path):
+        client = _make_rsync_client(hostname="h", username="u")
 
-        result = client.push(tmp_path, "~/.config/srunx/workspace/test/")
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = client.push(tmp_path, "~/.config/srunx/workspace/test/")
+
         assert result.success
-
         call_args = mock_run.call_args[0][0]
-        # Source should have trailing slash for directory
-        assert call_args[-2].endswith("/")
-        # Destination should be formatted as user@host:path
-        assert call_args[-1] == "u@h:~/.config/srunx/workspace/test/"
-        # Default delete=True
+        sep_idx = call_args.index("--")
+        assert call_args[sep_idx + 1].endswith("/")
+        assert call_args[sep_idx + 2] == "u@h:~/.config/srunx/workspace/test/"
         assert "--delete" in call_args
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    @patch("srunx.sync.rsync.subprocess.run")
-    def test_push_file(
-        self, mock_run: MagicMock, mock_which: MagicMock, tmp_path: Path
-    ):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        client = RsyncClient(hostname="h", username="u")
-
+    def test_push_file(self, tmp_path: Path):
+        client = _make_rsync_client(hostname="h", username="u")
         test_file = tmp_path / "script.py"
         test_file.write_text("print('hello')")
 
-        result = client.push(test_file, "~/.config/srunx/workspace/test/script.py")
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = client.push(test_file, "~/.config/srunx/workspace/test/script.py")
+
         assert result.success
-
         call_args = mock_run.call_args[0][0]
-        # File source should NOT have trailing slash
-        assert not call_args[-2].endswith("/")
+        sep_idx = call_args.index("--")
+        assert not call_args[sep_idx + 1].endswith("/")
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    @patch("srunx.sync.rsync.subprocess.run")
-    @patch(
-        "srunx.sync.rsync.RsyncClient.get_default_remote_path",
-        return_value="~/.config/srunx/workspace/myrepo/",
-    )
-    def test_push_default_remote_path(
-        self,
-        mock_path: MagicMock,
-        mock_run: MagicMock,
-        mock_which: MagicMock,
-        tmp_path: Path,
-    ):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        client = RsyncClient(hostname="h", username="u")
+    def test_push_default_remote_path(self, tmp_path: Path):
+        client = _make_rsync_client(hostname="h", username="u")
 
-        client.push(tmp_path)
+        with (
+            patch("srunx.sync.rsync.subprocess.run") as mock_run,
+            patch(
+                "srunx.sync.rsync.RsyncClient.get_default_remote_path",
+                return_value="~/.config/srunx/workspace/myrepo/",
+            ),
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push(tmp_path)
 
         call_args = mock_run.call_args[0][0]
         assert "~/.config/srunx/workspace/myrepo/" in call_args[-1]
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    @patch("srunx.sync.rsync.subprocess.run")
-    def test_push_no_delete(
-        self, mock_run: MagicMock, mock_which: MagicMock, tmp_path: Path
-    ):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        client = RsyncClient(hostname="h", username="u")
+    def test_push_no_delete(self, tmp_path: Path):
+        client = _make_rsync_client(hostname="h", username="u")
 
-        client.push(tmp_path, "~/dst/", delete=False)
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push(tmp_path, "~/dst/", delete=False)
 
-        call_args = mock_run.call_args[0][0]
-        assert "--delete" not in call_args
+        assert "--delete" not in mock_run.call_args[0][0]
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    @patch("srunx.sync.rsync.subprocess.run")
-    def test_push_dry_run(
-        self, mock_run: MagicMock, mock_which: MagicMock, tmp_path: Path
-    ):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        client = RsyncClient(hostname="h", username="u")
+    def test_push_dry_run(self, tmp_path: Path):
+        client = _make_rsync_client(hostname="h", username="u")
 
-        client.push(tmp_path, "~/dst/", dry_run=True)
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push(tmp_path, "~/dst/", dry_run=True)
 
-        call_args = mock_run.call_args[0][0]
-        assert "-n" in call_args
+        assert "-n" in mock_run.call_args[0][0]
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    @patch("srunx.sync.rsync.subprocess.run")
-    def test_push_failure(
-        self, mock_run: MagicMock, mock_which: MagicMock, tmp_path: Path
-    ):
-        mock_run.return_value = MagicMock(
-            returncode=12, stdout="", stderr="connection refused"
-        )
-        client = RsyncClient(hostname="h", username="u")
+    def test_push_failure(self, tmp_path: Path):
+        client = _make_rsync_client(hostname="h", username="u")
 
-        result = client.push(tmp_path, "~/dst/")
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=12, stdout="", stderr="connection refused"
+            )
+            result = client.push(tmp_path, "~/dst/")
+
         assert not result.success
         assert result.returncode == 12
 
 
 class TestPull:
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    @patch("srunx.sync.rsync.subprocess.run")
-    def test_pull_basic(
-        self, mock_run: MagicMock, mock_which: MagicMock, tmp_path: Path
-    ):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        client = RsyncClient(hostname="h", username="u")
+    def test_pull_basic(self, tmp_path: Path):
+        client = _make_rsync_client(hostname="h", username="u")
 
-        result = client.pull("~/remote/results/", tmp_path)
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = client.pull("~/remote/results/", tmp_path)
+
         assert result.success
-
         call_args = mock_run.call_args[0][0]
-        # Source is remote
-        assert call_args[-2] == "u@h:~/remote/results/"
-        # Destination is local
-        assert call_args[-1] == str(tmp_path)
-        # Default delete=False for pull
+        sep_idx = call_args.index("--")
+        assert call_args[sep_idx + 1] == "u@h:~/remote/results/"
+        assert call_args[sep_idx + 2] == str(tmp_path)
         assert "--delete" not in call_args
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    @patch("srunx.sync.rsync.subprocess.run")
-    def test_pull_with_delete(
-        self, mock_run: MagicMock, mock_which: MagicMock, tmp_path: Path
-    ):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        client = RsyncClient(hostname="h", username="u")
+    def test_pull_with_delete(self, tmp_path: Path):
+        client = _make_rsync_client(hostname="h", username="u")
 
-        client.pull("~/remote/", tmp_path, delete=True)
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.pull("~/remote/", tmp_path, delete=True)
 
-        call_args = mock_run.call_args[0][0]
-        assert "--delete" in call_args
+        assert "--delete" in mock_run.call_args[0][0]
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    @patch("srunx.sync.rsync.subprocess.run")
-    def test_pull_dry_run(
-        self, mock_run: MagicMock, mock_which: MagicMock, tmp_path: Path
-    ):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        client = RsyncClient(hostname="h", username="u")
+    def test_pull_dry_run(self, tmp_path: Path):
+        client = _make_rsync_client(hostname="h", username="u")
 
-        client.pull("~/remote/", tmp_path, dry_run=True)
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.pull("~/remote/", tmp_path, dry_run=True)
 
-        call_args = mock_run.call_args[0][0]
-        assert "-n" in call_args
+        assert "-n" in mock_run.call_args[0][0]
 
 
 class TestPushWithExcludePatterns:
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    @patch("srunx.sync.rsync.subprocess.run")
-    def test_push_per_call_excludes(
-        self, mock_run: MagicMock, mock_which: MagicMock, tmp_path: Path
-    ):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        client = RsyncClient(hostname="h", username="u")
+    def test_push_per_call_excludes(self, tmp_path: Path):
+        client = _make_rsync_client(hostname="h", username="u")
 
-        client.push(tmp_path, "~/dst/", exclude_patterns=["data/", "*.log"])
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push(tmp_path, "~/dst/", exclude_patterns=["data/", "*.log"])
 
         call_args = mock_run.call_args[0][0]
         exclude_values = [
@@ -419,18 +424,14 @@ class TestPushWithExcludePatterns:
         ]
         assert "data/" in exclude_values
         assert "*.log" in exclude_values
-        # Default excludes should also be present
         assert ".git/" in exclude_values
 
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    @patch("srunx.sync.rsync.subprocess.run")
-    def test_pull_per_call_excludes(
-        self, mock_run: MagicMock, mock_which: MagicMock, tmp_path: Path
-    ):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        client = RsyncClient(hostname="h", username="u")
+    def test_pull_per_call_excludes(self, tmp_path: Path):
+        client = _make_rsync_client(hostname="h", username="u")
 
-        client.pull("~/remote/", tmp_path, exclude_patterns=["artifacts/"])
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.pull("~/remote/", tmp_path, exclude_patterns=["artifacts/"])
 
         call_args = mock_run.call_args[0][0]
         exclude_values = [
@@ -441,13 +442,34 @@ class TestPushWithExcludePatterns:
 
 
 class TestMkpath:
-    @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
-    def test_mkpath_in_rsync_cmd(self, mock_which: MagicMock):
-        client = RsyncClient(hostname="h", username="u")
+    def test_mkpath_in_rsync_cmd_when_supported(self):
+        client = _make_rsync_client(hostname="h", username="u")
         cmd = client._build_rsync_cmd(
             "s", "d", delete=False, dry_run=False, excludes=[]
         )
         assert "--mkpath" in cmd
+
+    def test_no_mkpath_falls_back_to_ssh_mkdir(self, tmp_path: Path):
+        """When rsync lacks --mkpath, push() calls _ensure_remote_dir via ssh."""
+        with (
+            patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync"),
+            patch(
+                "srunx.sync.rsync.subprocess.run",
+                return_value=MagicMock(stdout="", stderr="openrsync"),
+            ),
+        ):
+            client = RsyncClient(hostname="h", username="u")
+
+        assert not client._supports_mkpath
+
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push(tmp_path, "~/dst/")
+
+        # First call is _ensure_remote_dir (ssh mkdir -p), second is rsync
+        assert mock_run.call_count == 2
+        mkdir_cmd = mock_run.call_args_list[0][0][0]
+        assert "mkdir" in " ".join(mkdir_cmd)
 
 
 # ---------------------------------------------------------------------------
@@ -457,13 +479,18 @@ class TestMkpath:
 
 class TestSyncProject:
     @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
+    @patch("srunx.sync.rsync.subprocess.run")
     @patch("srunx.ssh.core.client.subprocess.run")
     def test_sync_project_returns_remote_path(
-        self, mock_git_run: MagicMock, mock_which: MagicMock
+        self,
+        mock_client_run: MagicMock,
+        mock_rsync_run: MagicMock,
+        mock_which: MagicMock,
     ):
         from srunx.ssh.core.client import SSHSlurmClient
 
-        mock_git_run.return_value = MagicMock(
+        mock_rsync_run.return_value = MagicMock(stdout=_GNU_RSYNC_HELP, stderr="")
+        mock_client_run.return_value = MagicMock(
             returncode=0, stdout="/home/user/myproject\n"
         )
 
@@ -492,13 +519,18 @@ class TestSyncProject:
             client.sync_project()
 
     @patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync")
+    @patch("srunx.sync.rsync.subprocess.run")
     @patch("srunx.ssh.core.client.subprocess.run")
     def test_sync_project_rsync_failure_raises(
-        self, mock_git_run: MagicMock, mock_which: MagicMock
+        self,
+        mock_client_run: MagicMock,
+        mock_rsync_run: MagicMock,
+        mock_which: MagicMock,
     ):
         from srunx.ssh.core.client import SSHSlurmClient
 
-        mock_git_run.return_value = MagicMock(
+        mock_rsync_run.return_value = MagicMock(stdout=_GNU_RSYNC_HELP, stderr="")
+        mock_client_run.return_value = MagicMock(
             returncode=0, stdout="/home/user/myproject\n"
         )
 
