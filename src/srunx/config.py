@@ -165,7 +165,13 @@ def load_config_from_env() -> dict[str, Any]:
         environment["venv"] = venv
 
     if container := os.getenv("SRUNX_DEFAULT_CONTAINER"):
-        environment["container"]["image"] = container
+        environment["container"] = {"image": container}
+
+    if container_runtime := os.getenv("SRUNX_DEFAULT_CONTAINER_RUNTIME"):
+        # Only override runtime on an existing container config —
+        # runtime alone (without image) is not a valid container.
+        if "container" in environment:
+            environment["container"]["runtime"] = container_runtime
 
     if environment:
         config["environment"] = environment
@@ -236,6 +242,10 @@ def create_example_config() -> str:
         },
         "environment": {
             "conda": "ml_env",
+            "container": {
+                "image": "nvcr.io/nvidia/pytorch:24.01-py3",
+                "runtime": "pyxis",
+            },
             "env_vars": {"CUDA_VISIBLE_DEVICES": "0", "OMP_NUM_THREADS": "8"},
         },
         "log_dir": "slurm_logs",

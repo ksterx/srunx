@@ -54,6 +54,10 @@ echo "Local rank: $LOCAL_RANK"
 echo "====================================="
 
 # Run the command
+{% if launch_prefix -%}
+{{ launch_prefix }} {{ command }}
+{% else -%}
 {{ command }}
+{% endif -%}
 
 echo "Job completed at $(date)"

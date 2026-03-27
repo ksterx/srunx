@@ -62,7 +62,7 @@ class TestSlurm:
             if "sbatch" in args[0]:
                 # Return submit response
                 mock_result = Mock()
-                mock_result.stdout = "Submitted batch job 12345"
+                mock_result.stdout = "12345\n"
                 return mock_result
             elif "sacct" in args[0]:
                 # Return status query response
@@ -95,7 +95,7 @@ class TestSlurm:
         def mock_run_side_effect(*args, **kwargs):
             if "sbatch" in args[0]:
                 mock_result = Mock()
-                mock_result.stdout = "Submitted batch job 12345"
+                mock_result.stdout = "12345\n"
                 return mock_result
             elif "sacct" in args[0]:
                 mock_result = Mock()
@@ -123,7 +123,7 @@ class TestSlurm:
         def mock_run_side_effect(*args, **kwargs):
             if "sbatch" in args[0]:
                 mock_result = Mock()
-                mock_result.stdout = "Submitted batch job 12345"
+                mock_result.stdout = "12345\n"
                 return mock_result
             elif "sacct" in args[0]:
                 mock_result = Mock()
@@ -147,7 +147,7 @@ class TestSlurm:
             call for call in mock_run.call_args_list if "sbatch" in call[0][0]
         ]
         assert len(sbatch_calls) >= 1
-        assert sbatch_calls[0][0][0] == ["sbatch", "/tmp/shell_job.slurm"]
+        assert sbatch_calls[0][0][0] == ["sbatch", "--parsable", "/tmp/shell_job.slurm"]
 
     @patch("time.sleep")
     @patch("subprocess.run")
@@ -161,7 +161,7 @@ class TestSlurm:
         def mock_run_side_effect(*args, **kwargs):
             if "sbatch" in args[0]:
                 mock_result = Mock()
-                mock_result.stdout = "Submitted batch job 12345"
+                mock_result.stdout = "12345\n"
                 return mock_result
             elif "sacct" in args[0]:
                 mock_result = Mock()
@@ -171,11 +171,10 @@ class TestSlurm:
 
         mock_run.side_effect = mock_run_side_effect
 
-        # Modify job to use container
-        from srunx.models import ContainerResource
-
-        sample_job.environment = JobEnvironment(
-            container=ContainerResource(image="/path/to/image.sqsh")
+        # Modify job to use container (use model_validate to avoid Pydantic
+        # class identity issues when tests run together)
+        sample_job.environment = JobEnvironment.model_validate(
+            {"container": {"image": "/path/to/image.sqsh"}}
         )
 
         client = Slurm()

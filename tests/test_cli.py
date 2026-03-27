@@ -251,3 +251,213 @@ class TestTyperCLI:
         result = self.runner.invoke(app, ["cancel"])
         assert result.exit_code == 2  # Typer error exit code
         assert "Missing argument" in result.stderr
+
+
+class TestParseContainerArgs:
+    """Test _parse_container_args() function (T6.3)."""
+
+    def test_parse_simple_image(self):
+        """Test parsing a simple image path."""
+        from srunx.cli.main import _parse_container_args
+
+        result = _parse_container_args("pytorch/pytorch:latest")
+        assert result is not None
+        assert result.image == "pytorch/pytorch:latest"
+        assert result.runtime == "pyxis"  # default
+
+    def test_parse_none_returns_none(self):
+        """Test parsing None returns None."""
+        from srunx.cli.main import _parse_container_args
+
+        result = _parse_container_args(None)
+        assert result is None
+
+    def test_parse_empty_string_returns_none(self):
+        """Test parsing empty string returns None."""
+        from srunx.cli.main import _parse_container_args
+
+        result = _parse_container_args("")
+        assert result is None
+
+    def test_parse_runtime_apptainer(self):
+        """Test parsing with runtime=apptainer."""
+        from srunx.cli.main import _parse_container_args
+
+        result = _parse_container_args("image=test.sif,runtime=apptainer,nv=true")
+        assert result is not None
+        assert result.image == "test.sif"
+        assert result.runtime == "apptainer"
+        assert result.nv is True
+
+    def test_parse_bind_alias(self):
+        """Test parsing with bind= alias for mounts."""
+        from srunx.cli.main import _parse_container_args
+
+        result = _parse_container_args(
+            "image=test.sif,bind=/data:/data;/scratch:/scratch,runtime=apptainer"
+        )
+        assert result is not None
+        assert result.mounts == ["/data:/data", "/scratch:/scratch"]
+
+    def test_parse_mounts_key(self):
+        """Test parsing with mounts= key."""
+        from srunx.cli.main import _parse_container_args
+
+        result = _parse_container_args(
+            "image=test.sif,mounts=/data:/data;/scratch:/scratch"
+        )
+        assert result is not None
+        assert result.mounts == ["/data:/data", "/scratch:/scratch"]
+
+    def test_parse_apptainer_options(self):
+        """Test parsing all Apptainer-specific options."""
+        from srunx.cli.main import _parse_container_args
+
+        result = _parse_container_args(
+            "image=test.sif,runtime=apptainer,nv=true,rocm=true,"
+            "cleanenv=true,fakeroot=true,writable_tmpfs=true,"
+            "overlay=/overlay.img"
+        )
+        assert result is not None
+        assert result.runtime == "apptainer"
+        assert result.nv is True
+        assert result.rocm is True
+        assert result.cleanenv is True
+        assert result.fakeroot is True
+        assert result.writable_tmpfs is True
+        assert result.overlay == "/overlay.img"
+
+    def test_parse_env_in_container_args(self):
+        """Test parsing env key=value pairs in container args."""
+        from srunx.cli.main import _parse_container_args
+
+        result = _parse_container_args(
+            "image=test.sif,runtime=apptainer,env=KEY1=VAL1;KEY2=VAL2"
+        )
+        assert result is not None
+        assert result.env == {"KEY1": "VAL1", "KEY2": "VAL2"}
+
+    def test_parse_workdir(self):
+        """Test parsing workdir."""
+        from srunx.cli.main import _parse_container_args
+
+        result = _parse_container_args("image=test.sif,workdir=/workspace")
+        assert result is not None
+        assert result.workdir == "/workspace"
+
+    def test_parse_bare_runtime_only(self):
+        """Test parsing a bare runtime=apptainer without image."""
+        from srunx.cli.main import _parse_container_args
+
+        result = _parse_container_args("runtime=apptainer")
+        assert result is not None
+        assert result.runtime == "apptainer"
+        assert result.image is None
+
+
+class TestTemplateApplyCLI:
+    """Test template_apply CLI options (T6.3)."""
+
+    def setup_method(self):
+        """Setup test environment."""
+        self.runner = CliRunner()
+
+    def test_template_apply_help_has_container_options(self):
+        """Test that template apply help shows --container and --container-runtime."""
+        result = self.runner.invoke(app, ["template", "apply", "--help"])
+        assert result.exit_code == 0
+        clean_output = strip_ansi_codes(result.stdout)
+        assert "--container" in clean_output
+        assert "--container-runtime" in clean_output
+        assert "--no-container" in clean_output
+
+    def test_submit_help_has_container_runtime_option(self):
+        """Test that submit help shows --container-runtime."""
+        result = self.runner.invoke(app, ["submit", "--help"])
+        assert result.exit_code == 0
+        clean_output = strip_ansi_codes(result.stdout)
+        assert "--container-runtime" in clean_output
+        assert "--no-container" in clean_output
+
+
+class TestNoContainerFlag:
+    """Test --no-container flag suppresses config defaults (T6.7, AC-15)."""
+
+    def setup_method(self):
+        """Setup test environment."""
+        self.runner = CliRunner()
+
+    @patch("srunx.cli.main.Slurm")
+    @patch("srunx.cli.main.get_config")
+    def test_no_container_suppresses_config_default_on_submit(
+        self, mock_get_config, mock_slurm_class
+    ):
+        """Test --no-container on submit suppresses config default container."""
+        from srunx.config import SrunxConfig
+
+        # Config has a default container (use model_validate to avoid Pydantic
+        # class identity issues when tests run together)
+        mock_config = SrunxConfig.model_validate(
+            {
+                "environment": {
+                    "container": {"image": "default-image:latest", "runtime": "pyxis"}
+                }
+            }
+        )
+        mock_get_config.return_value = mock_config
+
+        # Mock Slurm client
+        mock_slurm = Mock()
+        mock_job = Mock()
+        mock_job.job_id = 99999
+        mock_job.name = "test"
+        mock_job.command = ["echo", "hello"]
+        mock_slurm.submit.return_value = mock_job
+        mock_slurm_class.return_value = mock_slurm
+
+        result = self.runner.invoke(app, ["submit", "echo", "hello", "--no-container"])
+
+        assert result.exit_code == 0
+        # Verify the submitted job has no container
+        submitted_job = mock_slurm.submit.call_args[0][0]
+        assert submitted_job.environment.container is None
+
+    @patch("srunx.cli.main.Slurm")
+    @patch("srunx.cli.main.get_config")
+    def test_container_runtime_override_on_submit(
+        self, mock_get_config, mock_slurm_class
+    ):
+        """Test --container-runtime without --container overrides config default (T6.9)."""
+        from srunx.config import SrunxConfig
+
+        # Config has a default pyxis container (use model_validate to avoid Pydantic
+        # class identity issues when tests run together)
+        mock_config = SrunxConfig.model_validate(
+            {
+                "environment": {
+                    "container": {"image": "default-image:latest", "runtime": "pyxis"}
+                }
+            }
+        )
+        mock_get_config.return_value = mock_config
+
+        # Mock Slurm client
+        mock_slurm = Mock()
+        mock_job = Mock()
+        mock_job.job_id = 99999
+        mock_job.name = "test"
+        mock_job.command = ["echo", "hello"]
+        mock_slurm.submit.return_value = mock_job
+        mock_slurm_class.return_value = mock_slurm
+
+        result = self.runner.invoke(
+            app,
+            ["submit", "echo", "hello", "--container-runtime", "apptainer"],
+        )
+
+        assert result.exit_code == 0
+        submitted_job = mock_slurm.submit.call_args[0][0]
+        assert submitted_job.environment.container is not None
+        assert submitted_job.environment.container.runtime == "apptainer"
+        # Image should be preserved from config default
+        assert submitted_job.environment.container.image == "default-image:latest"

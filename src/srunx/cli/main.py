@@ -136,39 +136,89 @@ def _parse_env_vars(env_var_list: list[str] | None) -> dict[str, str]:
     return env_vars
 
 
+def _parse_bool(value: str) -> bool:
+    """Parse a boolean string value."""
+    return value.lower() in ("true", "1", "yes")
+
+
 def _parse_container_args(container_arg: str | None) -> ContainerResource | None:
-    """Parse container argument into ContainerResource."""
+    """Parse container argument into ContainerResource.
+
+    Supports simple image path or key=value pairs separated by commas:
+      image=<path>, mounts=<m1>;<m2>, bind=<m1>;<m2> (alias for mounts),
+      workdir=<path>, runtime=<name>, nv=true, rocm=true, cleanenv=true,
+      fakeroot=true, writable_tmpfs=true, overlay=<path>,
+      env=KEY1=VAL1;KEY2=VAL2
+    """
     if not container_arg:
         return None
 
-    # Simple case: just image path
+    # Simple case: just image path (no commas, no braces, no key=value)
     if not container_arg.startswith("{") and "," not in container_arg:
-        return ContainerResource(image=container_arg)
+        # Check if it looks like a bare key=value (e.g. "runtime=apptainer")
+        if "=" in container_arg:
+            first_key = container_arg.split("=", 1)[0]
+            known_keys = {
+                "image",
+                "mounts",
+                "bind",
+                "workdir",
+                "runtime",
+                "nv",
+                "rocm",
+                "cleanenv",
+                "fakeroot",
+                "writable_tmpfs",
+                "overlay",
+                "env",
+            }
+            if first_key not in known_keys:
+                return ContainerResource(image=container_arg)
+        else:
+            return ContainerResource(image=container_arg)
 
     # Complex case: parse key=value pairs
-    container_data: dict[str, str | list[str]] = {}
-    if container_arg.startswith("{") and container_arg.endswith("}"):
-        container_arg = container_arg[1:-1]
+    kwargs: dict[str, Any] = {}
+    raw = container_arg
+    if raw.startswith("{") and raw.endswith("}"):
+        raw = raw[1:-1]
 
-    for pair in container_arg.split(","):
-        if "=" in pair:
-            key, value = pair.strip().split("=", 1)
-            if key == "image":
-                container_data["image"] = value
-            elif key == "mounts":
-                container_data["mounts"] = value.split(";")
-            elif key == "workdir":
-                container_data["workdir"] = value
+    for pair in raw.split(","):
+        if "=" not in pair:
+            continue
+        key, value = pair.strip().split("=", 1)
 
-    if container_data:
-        image = container_data.get("image")
-        mounts = container_data.get("mounts", [])
-        workdir = container_data.get("workdir")
-        return ContainerResource(
-            image=image if isinstance(image, str) else None,
-            mounts=mounts if isinstance(mounts, list) else [],
-            workdir=workdir if isinstance(workdir, str) else None,
-        )
+        match key:
+            case "image":
+                kwargs["image"] = value
+            case "mounts" | "bind":
+                kwargs["mounts"] = value.split(";")
+            case "workdir":
+                kwargs["workdir"] = value
+            case "runtime":
+                kwargs["runtime"] = value
+            case "nv":
+                kwargs["nv"] = _parse_bool(value)
+            case "rocm":
+                kwargs["rocm"] = _parse_bool(value)
+            case "cleanenv":
+                kwargs["cleanenv"] = _parse_bool(value)
+            case "fakeroot":
+                kwargs["fakeroot"] = _parse_bool(value)
+            case "writable_tmpfs":
+                kwargs["writable_tmpfs"] = _parse_bool(value)
+            case "overlay":
+                kwargs["overlay"] = value
+            case "env":
+                env_dict: dict[str, str] = {}
+                for env_pair in value.split(";"):
+                    if "=" in env_pair:
+                        ek, ev = env_pair.split("=", 1)
+                        env_dict[ek] = ev
+                kwargs["env"] = env_dict
+
+    if kwargs:
+        return ContainerResource(**kwargs)
     else:
         return ContainerResource(image=container_arg)
 
@@ -229,6 +279,20 @@ def submit(
     container: Annotated[
         str | None, typer.Option("--container", help="Container image or config")
     ] = None,
+    container_runtime: Annotated[
+        str | None,
+        typer.Option(
+            "--container-runtime",
+            help="Container runtime: pyxis, apptainer, or singularity",
+        ),
+    ] = None,
+    no_container: Annotated[
+        bool,
+        typer.Option(
+            "--no-container",
+            help="Suppress config-default container injection",
+        ),
+    ] = False,
     env: Annotated[
         list[str] | None,
         typer.Option("--env", help="Environment variables (KEY=VALUE)"),
@@ -281,8 +345,38 @@ def submit(
         env_config["conda"] = conda
     if venv is not None:
         env_config["venv"] = venv
-    if container is not None:
-        env_config["container"] = _parse_container_args(container)
+
+    # Resolve container: --no-container suppresses config defaults
+    if no_container:
+        env_config["container"] = None
+    elif container is not None:
+        parsed = _parse_container_args(container)
+        if parsed is not None:
+            if container_runtime is not None:
+                # Explicit --container-runtime overrides
+                parsed = parsed.model_copy(update={"runtime": container_runtime})
+            elif parsed.runtime == "pyxis":
+                # No explicit runtime in --container or --container-runtime:
+                # apply config default runtime if available (REQ-9 resolution order)
+                default_container = config.environment.container
+                if (
+                    default_container is not None
+                    and default_container.runtime != "pyxis"
+                ):
+                    parsed = parsed.model_copy(
+                        update={"runtime": default_container.runtime}
+                    )
+        env_config["container"] = parsed
+    elif container_runtime is not None:
+        # No explicit --container, but --container-runtime was given.
+        # Override runtime on config-default container if one exists (must have image).
+        default_container = config.environment.container
+        if default_container is not None and default_container.image:
+            container_dict = default_container.model_dump()
+            container_dict["runtime"] = container_runtime
+            env_config["container"] = container_dict
+        # If no default container with image, --container-runtime alone is a no-op
+        # (runtime without image is not actionable)
 
     environment = JobEnvironment.model_validate(env_config)
 
@@ -922,6 +1016,23 @@ def template_apply(
     venv: Annotated[
         str | None, typer.Option("--venv", help="Virtual environment path")
     ] = None,
+    container: Annotated[
+        str | None, typer.Option("--container", help="Container image or config")
+    ] = None,
+    container_runtime: Annotated[
+        str | None,
+        typer.Option(
+            "--container-runtime",
+            help="Container runtime: pyxis, apptainer, or singularity",
+        ),
+    ] = None,
+    no_container: Annotated[
+        bool,
+        typer.Option(
+            "--no-container",
+            help="Suppress config-default container injection",
+        ),
+    ] = False,
     # Job options
     wait: Annotated[
         bool, typer.Option("--wait", help="Wait for job completion")
@@ -951,6 +1062,34 @@ def template_apply(
             env_config["conda"] = conda
         if venv:
             env_config["venv"] = venv
+
+        # Resolve container
+        if no_container:
+            env_config["container"] = None
+        elif container is not None:
+            parsed = _parse_container_args(container)
+            if parsed is not None:
+                if container_runtime is not None:
+                    parsed = parsed.model_copy(update={"runtime": container_runtime})
+                elif parsed.runtime == "pyxis":
+                    # Apply config default runtime (REQ-9 resolution order)
+                    ta_config = get_config()
+                    default_container = ta_config.environment.container
+                    if (
+                        default_container is not None
+                        and default_container.runtime != "pyxis"
+                    ):
+                        parsed = parsed.model_copy(
+                            update={"runtime": default_container.runtime}
+                        )
+            env_config["container"] = parsed
+        elif container_runtime is not None:
+            ta_config = get_config()
+            default_container = ta_config.environment.container
+            if default_container is not None and default_container.image:
+                container_dict = default_container.model_dump()
+                container_dict["runtime"] = container_runtime
+                env_config["container"] = container_dict
 
         environment = JobEnvironment.model_validate(env_config)
 

@@ -372,6 +372,195 @@ class TestConfigurationIntegration:
         assert config.log_dir == "slurm_logs"
 
 
+class TestContainerRenderIntegration:
+    """Integration tests for render_job_script with container runtimes (T6.4)."""
+
+    def _get_template(self, name: str) -> str:
+        """Get a template path by name."""
+        return str(files("srunx.templates").joinpath(f"{name}.slurm.jinja"))
+
+    def test_advanced_pyxis_output(self):
+        """Test advanced template + Pyxis output contains --container-image, --container-mounts (AC-4)."""
+        container = ContainerResource.model_validate(
+            {
+                "runtime": "pyxis",
+                "image": "pytorch/pytorch:latest",
+                "mounts": ["/data:/workspace/data", "/models:/workspace/models"],
+                "workdir": "/workspace",
+            }
+        )
+        job = Job(
+            name="pyxis_job",
+            command=["python", "inference.py"],
+            environment=JobEnvironment(container=container),
+            resources=JobResource(gpus_per_node=1),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = render_job_script(
+                template_path=self._get_template("advanced"),
+                job=job,
+                output_dir=temp_dir,
+            )
+            with open(script_path) as f:
+                content = f.read()
+
+            assert "--container-image pytorch/pytorch:latest" in content
+            assert (
+                "--container-mounts /data:/workspace/data,/models:/workspace/models"
+                in content
+            )
+            assert "--container-workdir /workspace" in content
+            assert "CONTAINER_ARGS" in content
+            assert "srun" in content
+
+    def test_advanced_apptainer_output(self):
+        """Test advanced template + Apptainer output contains apptainer exec --nv --bind (AC-1, AC-2, AC-3)."""
+        container = ContainerResource.model_validate(
+            {
+                "runtime": "apptainer",
+                "image": "test.sif",
+                "nv": True,
+                "mounts": ["/data:/data"],
+            }
+        )
+        job = Job(
+            name="apptainer_job",
+            command=["python", "train.py"],
+            environment=JobEnvironment(container=container),
+            resources=JobResource(gpus_per_node=1),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = render_job_script(
+                template_path=self._get_template("advanced"),
+                job=job,
+                output_dir=temp_dir,
+            )
+            with open(script_path) as f:
+                content = f.read()
+
+            assert "apptainer exec" in content
+            assert "--nv" in content
+            assert "--bind /data:/data" in content
+            assert "test.sif" in content
+            assert "srun" in content
+
+    def test_base_apptainer_output(self):
+        """Test base template + Apptainer output contains apptainer exec (AC-7)."""
+        container = ContainerResource.model_validate(
+            {
+                "runtime": "apptainer",
+                "image": "test.sif",
+            }
+        )
+        job = Job(
+            name="base_apptainer_job",
+            command=["python", "script.py"],
+            environment=JobEnvironment(container=container),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = render_job_script(
+                template_path=self._get_template("base"),
+                job=job,
+                output_dir=temp_dir,
+            )
+            with open(script_path) as f:
+                content = f.read()
+
+            assert "apptainer exec" in content
+            assert "test.sif" in content
+            assert "srun" in content
+
+    def test_pytorch_ddp_apptainer_output(self):
+        """Test pytorch_ddp template + Apptainer output contains apptainer exec as launch_prefix (AC-7)."""
+        container = ContainerResource.model_validate(
+            {
+                "runtime": "apptainer",
+                "image": "test.sif",
+                "nv": True,
+            }
+        )
+        job = Job(
+            name="ddp_apptainer_job",
+            command=["python", "train.py"],
+            environment=JobEnvironment(container=container),
+            resources=JobResource(gpus_per_node=4, ntasks_per_node=4),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = render_job_script(
+                template_path=self._get_template("pytorch_ddp"),
+                job=job,
+                output_dir=temp_dir,
+            )
+            with open(script_path) as f:
+                content = f.read()
+
+            assert "apptainer exec" in content
+            assert "--nv" in content
+            assert "test.sif" in content
+            # pytorch_ddp uses launch_prefix directly, not srun
+            assert "apptainer exec --nv test.sif python train.py" in content
+
+    def test_conda_container_coexistence(self):
+        """Test conda + container coexistence: both conda activate AND container in output (AC-14)."""
+        container = ContainerResource.model_validate(
+            {
+                "runtime": "apptainer",
+                "image": "test.sif",
+                "nv": True,
+            }
+        )
+        job = Job(
+            name="conda_container_job",
+            command=["python", "train.py"],
+            environment=JobEnvironment(
+                conda="ml_env",
+                container=container,
+            ),
+            resources=JobResource(gpus_per_node=1),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = render_job_script(
+                template_path=self._get_template("advanced"),
+                job=job,
+                output_dir=temp_dir,
+            )
+            with open(script_path) as f:
+                content = f.read()
+
+            # Both conda AND container should be present
+            assert "conda activate ml_env" in content
+            assert "apptainer exec" in content
+            assert "--nv" in content
+            assert "test.sif" in content
+
+    def test_advanced_pyxis_no_container(self):
+        """Test advanced template without container has plain srun."""
+        job = Job(
+            name="no_container_job",
+            command=["python", "train.py"],
+            environment=JobEnvironment(conda="ml_env"),
+            resources=JobResource(gpus_per_node=1),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = render_job_script(
+                template_path=self._get_template("advanced"),
+                job=job,
+                output_dir=temp_dir,
+            )
+            with open(script_path) as f:
+                content = f.read()
+
+            assert "srun python train.py" in content
+            assert "CONTAINER_ARGS" not in content
+            assert "apptainer exec" not in content
+
+
 class TestEndToEndScenarios:
     """Test complete end-to-end usage scenarios."""
 
