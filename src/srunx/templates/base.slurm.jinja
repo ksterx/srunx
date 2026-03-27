@@ -29,4 +29,8 @@ cd {{ work_dir }}
 {% endif -%}
 
 # Execute command
+{% if srun_args or launch_prefix -%}
+srun {{ ([srun_args, launch_prefix, command] | select | join(' ')) }}
+{% else -%}
 srun {{ command }}
+{% endif -%}

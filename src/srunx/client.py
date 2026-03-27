@@ -77,8 +77,8 @@ class Slurm:
                 script_path = render_job_script(template, job, temp_dir, verbose)
                 logger.debug(f"Generated SLURM script at: {script_path}")
 
-                # Submit job with sbatch
-                sbatch_cmd = ["sbatch", script_path]
+                # Submit job with sbatch --parsable for reliable job ID extraction
+                sbatch_cmd = ["sbatch", "--parsable", script_path]
                 if job.environment.container:
                     logger.debug(f"Using container: {job.environment.container}")
 
@@ -106,7 +106,7 @@ class Slurm:
                 )
                 try:
                     result = subprocess.run(
-                        ["sbatch", script_path],
+                        ["sbatch", "--parsable", script_path],
                         capture_output=True,
                         text=True,
                         check=True,
@@ -128,7 +128,8 @@ class Slurm:
                 f"Failed to submit job '{job.name}': No result from subprocess"
             )
 
-        job_id = int(result.stdout.split()[-1])
+        # --parsable outputs "job_id" or "job_id;cluster_name"
+        job_id = int(result.stdout.strip().split(";")[0])
         job.job_id = job_id
         job.status = JobStatus.PENDING
 

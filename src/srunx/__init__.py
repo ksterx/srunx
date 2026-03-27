@@ -7,6 +7,13 @@ __description__ = "Python library for SLURM workload manager integration"
 # Main public API
 from .callbacks import Callback, SlackCallback
 from .client import Slurm, cancel_job, retrieve_job, submit_job
+from .containers import (
+    ApptainerRuntime,
+    ContainerRuntime,
+    LaunchSpec,
+    PyxisRuntime,
+    get_runtime,
+)
 from .logging import (
     configure_cli_logging,
     configure_logging,
@@ -15,6 +22,7 @@ from .logging import (
 )
 from .models import (
     BaseJob,
+    ContainerResource,
     Job,
     JobEnvironment,
     JobResource,
@@ -37,8 +45,15 @@ __all__ = [
     # Callbacks
     "Callback",
     "SlackCallback",
+    # Containers
+    "ContainerRuntime",
+    "LaunchSpec",
+    "PyxisRuntime",
+    "ApptainerRuntime",
+    "get_runtime",
     # Models
     "BaseJob",
+    "ContainerResource",
     "Job",
     "ShellJob",
     "JobResource",

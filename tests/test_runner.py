@@ -937,6 +937,82 @@ class TestWorkflowExecutionControl:
         assert job.retry_delay == 30
         assert job.retry_count == 0
 
+    def test_parse_job_with_apptainer_container(self):
+        """Test parsing job with environment.container.runtime: apptainer (T6.8, AC-6)."""
+        job_data = {
+            "name": "apptainer_job",
+            "command": ["python", "train.py"],
+            "environment": {
+                "container": {
+                    "runtime": "apptainer",
+                    "image": "test.sif",
+                    "nv": True,
+                    "mounts": ["/data:/data"],
+                },
+            },
+        }
+        job = WorkflowRunner.parse_job(job_data)
+        assert isinstance(job, Job)
+        assert job.name == "apptainer_job"
+        assert job.environment.container is not None
+        assert job.environment.container.runtime == "apptainer"
+        assert job.environment.container.image == "test.sif"
+        assert job.environment.container.nv is True
+        assert job.environment.container.mounts == ["/data:/data"]
+
+    def test_parse_job_with_singularity_container(self):
+        """Test parsing job with singularity runtime."""
+        job_data = {
+            "name": "singularity_job",
+            "command": ["python", "train.py"],
+            "environment": {
+                "container": {
+                    "runtime": "singularity",
+                    "image": "test.sif",
+                },
+            },
+        }
+        job = WorkflowRunner.parse_job(job_data)
+        assert isinstance(job, Job)
+        assert job.environment.container is not None
+        assert job.environment.container.runtime == "singularity"
+
+    def test_parse_job_with_pyxis_container(self):
+        """Test parsing job with pyxis runtime (default)."""
+        job_data = {
+            "name": "pyxis_job",
+            "command": ["python", "train.py"],
+            "environment": {
+                "container": {
+                    "image": "pytorch/pytorch:latest",
+                    "mounts": ["/data:/workspace/data"],
+                },
+            },
+        }
+        job = WorkflowRunner.parse_job(job_data)
+        assert isinstance(job, Job)
+        assert job.environment.container is not None
+        assert job.environment.container.runtime == "pyxis"
+
+    def test_parse_job_with_conda_and_container(self):
+        """Test parsing job with both conda and container."""
+        job_data = {
+            "name": "hybrid_job",
+            "command": ["python", "train.py"],
+            "environment": {
+                "conda": "ml_env",
+                "container": {
+                    "runtime": "apptainer",
+                    "image": "test.sif",
+                },
+            },
+        }
+        job = WorkflowRunner.parse_job(job_data)
+        assert isinstance(job, Job)
+        assert job.environment.conda == "ml_env"
+        assert job.environment.container is not None
+        assert job.environment.container.runtime == "apptainer"
+
 
 class TestJobDependency:
     """Test JobDependency class."""

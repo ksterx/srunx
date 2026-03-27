@@ -5,7 +5,7 @@ import subprocess
 import time
 from enum import Enum
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
 import jinja2
 from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
@@ -244,12 +244,57 @@ class JobResource(BaseModel):
 class ContainerResource(BaseModel):
     """Container resource allocation requirements.
 
-    Ref: https://github.com/NVIDIA/pyxis/blob/526f46bce2d1a51b2caab65096f6a1ab4272aaa6/README.md?plain=1#L53
+    Supports Pyxis (--container-* srun flags) and Apptainer/Singularity
+    (apptainer exec command wrapping) runtimes.
+
+    Ref (Pyxis): https://github.com/NVIDIA/pyxis/blob/526f46bce2d1a51b2caab65096f6a1ab4272aaa6/README.md?plain=1#L53
     """
 
+    runtime: Literal["pyxis", "apptainer", "singularity"] = Field(
+        default="pyxis", description="Container runtime backend"
+    )
     image: str | None = Field(default=None, description="Container image")
     mounts: list[str] = Field(default_factory=list, description="Container mounts")
     workdir: str | None = Field(default=None, description="Container work directory")
+    # Apptainer-specific fields
+    nv: bool = Field(default=False, description="NVIDIA GPU passthrough (--nv)")
+    rocm: bool = Field(default=False, description="AMD GPU passthrough (--rocm)")
+    cleanenv: bool = Field(default=False, description="Clean environment (--cleanenv)")
+    fakeroot: bool = Field(default=False, description="Fake root (--fakeroot)")
+    writable_tmpfs: bool = Field(
+        default=False, description="Writable tmpfs overlay (--writable-tmpfs)"
+    )
+    overlay: str | None = Field(
+        default=None, description="Overlay image path (--overlay)"
+    )
+    env: dict[str, str] = Field(
+        default_factory=dict, description="Environment variables (--env KEY=VAL)"
+    )
+
+    @model_validator(mode="after")
+    def validate_runtime_fields(self) -> Self:
+        """Ensure Apptainer-only fields are not set for Pyxis runtime."""
+        if self.runtime == "pyxis":
+            apptainer_fields: dict[str, object] = {
+                "nv": self.nv,
+                "rocm": self.rocm,
+                "cleanenv": self.cleanenv,
+                "fakeroot": self.fakeroot,
+                "writable_tmpfs": self.writable_tmpfs,
+                "overlay": self.overlay,
+                "env": self.env,
+            }
+            set_fields = [
+                k
+                for k, v in apptainer_fields.items()
+                if v is not False and v is not None and v != {}
+            ]
+            if set_fields:
+                raise ValueError(
+                    f"Fields {set_fields} are only valid for apptainer/singularity "
+                    f"runtime, not '{self.runtime}'"
+                )
+        return self
 
 
 class JobEnvironment(BaseModel):
@@ -270,14 +315,10 @@ class JobEnvironment(BaseModel):
 
     @model_validator(mode="after")
     def validate_environment(self) -> Self:
-        envs = [self.conda, self.venv, self.container]
+        envs = [self.conda, self.venv]
         non_none_count = sum(x is not None for x in envs)
-        if non_none_count == 0:
-            logger.info("No virtual environment is set.")
-        elif non_none_count > 1:
-            raise ValueError(
-                "Only one virtual environment (conda, venv, or container) can be specified"
-            )
+        if non_none_count > 1:
+            raise ValueError("Only one of conda or venv can be specified")
         return self
 
 
@@ -742,12 +783,17 @@ def render_job_script(
     command_str = (
         job.command if isinstance(job.command, str) else " ".join(job.command or [])
     )
+    environment_setup, srun_args, launch_prefix = _build_environment_setup(
+        job.environment
+    )
     template_vars = {
         "job_name": job.name,
         "command": command_str,
         "log_dir": job.log_dir,
         "work_dir": job.work_dir,
-        "environment_setup": _build_environment_setup(job.environment),
+        "environment_setup": environment_setup,
+        "srun_args": srun_args,
+        "launch_prefix": launch_prefix,
         "container": job.environment.container,
         **job.resources.model_dump(),
     }
@@ -761,15 +807,27 @@ def render_job_script(
     )
 
 
-def _build_environment_setup(environment: JobEnvironment) -> str:
-    """Build environment setup script."""
-    setup_lines = []
+def _build_environment_setup(
+    environment: JobEnvironment,
+) -> tuple[str, str, str]:
+    """Build environment setup script.
 
-    # Set environment variables
+    Returns:
+        A 3-tuple of (env_setup_lines, srun_args, launch_prefix).
+        - env_setup_lines: Shell setup including env vars, conda/venv activation,
+          and container prelude (if any).
+        - srun_args: Flags passed to srun (Pyxis uses this).
+        - launch_prefix: Command wrapper (Apptainer uses this).
+    """
+    from srunx.containers import get_runtime
+
+    setup_lines: list[str] = []
+
+    # 1. Environment variables
     for key, value in environment.env_vars.items():
         setup_lines.append(f"export {key}={value}")
 
-    # Activate environments
+    # 2. Conda/venv activation (independent of container)
     if environment.conda:
         home_dir = Path.home()
         setup_lines.extend(
@@ -781,27 +839,21 @@ def _build_environment_setup(environment: JobEnvironment) -> str:
         )
     elif environment.venv:
         setup_lines.append(f"source {environment.venv}/bin/activate")
-    elif environment.container:
-        container_args = []
-        if environment.container.image:
-            container_args.append(f"--container-image {environment.container.image}")
-        if environment.container.mounts:
-            container_args.append(
-                f"--container-mounts {','.join(environment.container.mounts)}"
-            )
-        if environment.container.workdir:
-            container_args.append(
-                f"--container-workdir {environment.container.workdir}"
-            )
-        setup_lines.extend(
-            [
-                "declare -a CONTAINER_ARGS=(",
-                *container_args,
-                ")",
-            ]
-        )
 
-    return "\n".join(setup_lines)
+    # 3. Container setup (independent of conda/venv)
+    # Only process container if it has an image — a runtime-only container
+    # (no image) is not actionable and would generate broken commands.
+    srun_args = ""
+    launch_prefix = ""
+    if environment.container and environment.container.image:
+        runtime = get_runtime(environment.container.runtime)
+        spec = runtime.build_launch_spec(environment.container)
+        if spec.prelude:
+            setup_lines.append(spec.prelude)
+        srun_args = spec.srun_args
+        launch_prefix = spec.launch_prefix
+
+    return "\n".join(setup_lines), srun_args, launch_prefix
 
 
 def render_shell_job_script(

@@ -134,6 +134,146 @@ class TestJobEnvironment:
         assert env.env_vars["TEST"] == "value"
 
 
+class TestContainerResource:
+    """Test ContainerResource model updates (T6.2)."""
+
+    def test_default_runtime_is_pyxis(self):
+        """Test that the default runtime is 'pyxis'."""
+        container = ContainerResource.model_validate({"image": "test:latest"})
+        assert container.runtime == "pyxis"
+
+    def test_pyxis_with_nv_raises_validation_error(self):
+        """Test that pyxis + nv=true raises ValidationError (AC-13)."""
+        with pytest.raises(ValidationError, match="only valid for apptainer"):
+            ContainerResource.model_validate(
+                {"runtime": "pyxis", "image": "test:latest", "nv": True}
+            )
+
+    def test_pyxis_with_rocm_raises_validation_error(self):
+        """Test that pyxis + rocm=true raises ValidationError."""
+        with pytest.raises(ValidationError, match="only valid for apptainer"):
+            ContainerResource.model_validate(
+                {"runtime": "pyxis", "image": "test:latest", "rocm": True}
+            )
+
+    def test_pyxis_with_cleanenv_raises_validation_error(self):
+        """Test that pyxis + cleanenv=true raises ValidationError."""
+        with pytest.raises(ValidationError, match="only valid for apptainer"):
+            ContainerResource.model_validate(
+                {"runtime": "pyxis", "image": "test:latest", "cleanenv": True}
+            )
+
+    def test_pyxis_with_fakeroot_raises_validation_error(self):
+        """Test that pyxis + fakeroot=true raises ValidationError."""
+        with pytest.raises(ValidationError, match="only valid for apptainer"):
+            ContainerResource.model_validate(
+                {"runtime": "pyxis", "image": "test:latest", "fakeroot": True}
+            )
+
+    def test_pyxis_with_writable_tmpfs_raises_validation_error(self):
+        """Test that pyxis + writable_tmpfs=true raises ValidationError."""
+        with pytest.raises(ValidationError, match="only valid for apptainer"):
+            ContainerResource.model_validate(
+                {"runtime": "pyxis", "image": "test:latest", "writable_tmpfs": True}
+            )
+
+    def test_pyxis_with_overlay_raises_validation_error(self):
+        """Test that pyxis + overlay raises ValidationError."""
+        with pytest.raises(ValidationError, match="only valid for apptainer"):
+            ContainerResource.model_validate(
+                {
+                    "runtime": "pyxis",
+                    "image": "test:latest",
+                    "overlay": "/path/to/overlay.img",
+                }
+            )
+
+    def test_pyxis_with_env_raises_validation_error(self):
+        """Test that pyxis + env raises ValidationError."""
+        with pytest.raises(ValidationError, match="only valid for apptainer"):
+            ContainerResource.model_validate(
+                {"runtime": "pyxis", "image": "test:latest", "env": {"K": "V"}}
+            )
+
+    def test_apptainer_runtime_accepts_all_fields(self):
+        """Test that apptainer runtime accepts all Apptainer-specific fields."""
+        container = ContainerResource.model_validate(
+            {
+                "runtime": "apptainer",
+                "image": "test.sif",
+                "nv": True,
+                "rocm": True,
+                "cleanenv": True,
+                "fakeroot": True,
+                "writable_tmpfs": True,
+                "overlay": "/overlay.img",
+                "env": {"CUDA_VISIBLE_DEVICES": "0"},
+                "mounts": ["/data:/data"],
+                "workdir": "/workspace",
+            }
+        )
+        assert container.runtime == "apptainer"
+        assert container.nv is True
+        assert container.rocm is True
+        assert container.cleanenv is True
+        assert container.fakeroot is True
+        assert container.writable_tmpfs is True
+        assert container.overlay == "/overlay.img"
+        assert container.env == {"CUDA_VISIBLE_DEVICES": "0"}
+
+    def test_singularity_runtime_accepts_apptainer_fields(self):
+        """Test that singularity runtime accepts Apptainer-specific fields."""
+        container = ContainerResource.model_validate(
+            {
+                "runtime": "singularity",
+                "image": "test.sif",
+                "nv": True,
+                "cleanenv": True,
+            }
+        )
+        assert container.runtime == "singularity"
+        assert container.nv is True
+
+    def test_container_with_conda_coexistence(self):
+        """Test that container + conda coexistence works (AC-14 partial)."""
+        env = JobEnvironment.model_validate(
+            {
+                "conda": "ml_env",
+                "container": {
+                    "runtime": "apptainer",
+                    "image": "test.sif",
+                    "nv": True,
+                },
+            }
+        )
+        assert env.conda == "ml_env"
+        assert env.container is not None
+        assert env.container.runtime == "apptainer"
+        assert env.container.image == "test.sif"
+
+    def test_container_with_venv_coexistence(self):
+        """Test that container + venv coexistence works."""
+        env = JobEnvironment.model_validate(
+            {
+                "venv": "/path/to/venv",
+                "container": {"runtime": "pyxis", "image": "test:latest"},
+            }
+        )
+        assert env.venv == "/path/to/venv"
+        assert env.container is not None
+        assert env.container.runtime == "pyxis"
+
+    def test_pyxis_with_defaults_only(self):
+        """Test PyxisRuntime with only default values does not raise."""
+        container = ContainerResource.model_validate(
+            {"runtime": "pyxis", "image": "test:latest"}
+        )
+        assert container.nv is False
+        assert container.rocm is False
+        assert container.env == {}
+        assert container.overlay is None
+
+
 class TestBaseJob:
     """Test BaseJob model."""
 

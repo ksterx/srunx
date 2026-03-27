@@ -36,8 +36,8 @@ export WORLD_SIZE=${SLURM_NTASKS:-1}
 {% endif -%}
 
 # Execute command
-{% if container -%}
-srun "${CONTAINER_ARGS[@]}" {{ command }}
+{% if srun_args or launch_prefix -%}
+srun {{ ([srun_args, launch_prefix, command] | select | join(' ')) }}
 {% else -%}
 srun {{ command }}
 {% endif -%}

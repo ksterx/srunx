@@ -294,3 +294,79 @@ class TestFullConfigLoading:
                     assert config.environment.conda == "env_ml"
                     # File values should be preserved
                     assert config.log_dir == "file_logs"
+
+
+class TestContainerEnvConfig:
+    """Test container-related environment variable configuration (T6.6)."""
+
+    def test_srunx_default_container_no_key_error(self):
+        """Test SRUNX_DEFAULT_CONTAINER env var works without KeyError (AC-9)."""
+        with patch.dict(
+            os.environ,
+            {"SRUNX_DEFAULT_CONTAINER": "nvcr.io/nvidia/pytorch:24.01-py3"},
+        ):
+            result = load_config_from_env()
+
+            assert "environment" in result
+            assert "container" in result["environment"]
+            assert (
+                result["environment"]["container"]["image"]
+                == "nvcr.io/nvidia/pytorch:24.01-py3"
+            )
+
+    def test_srunx_default_container_runtime_alone_is_noop(self):
+        """Test SRUNX_DEFAULT_CONTAINER_RUNTIME alone does not create a container."""
+        with patch.dict(
+            os.environ,
+            {"SRUNX_DEFAULT_CONTAINER_RUNTIME": "apptainer"},
+        ):
+            result = load_config_from_env()
+
+            # Runtime alone should not create a container entry
+            # (runtime without image is not actionable)
+            env = result.get("environment", {})
+            assert "container" not in env
+
+    def test_srunx_default_container_and_runtime_together(self):
+        """Test SRUNX_DEFAULT_CONTAINER and SRUNX_DEFAULT_CONTAINER_RUNTIME together."""
+        with patch.dict(
+            os.environ,
+            {
+                "SRUNX_DEFAULT_CONTAINER": "test.sif",
+                "SRUNX_DEFAULT_CONTAINER_RUNTIME": "apptainer",
+            },
+        ):
+            result = load_config_from_env()
+
+            assert result["environment"]["container"]["image"] == "test.sif"
+            assert result["environment"]["container"]["runtime"] == "apptainer"
+
+    def test_srunx_default_container_runtime_with_image_loads_config(self):
+        """Test SRUNX_DEFAULT_CONTAINER_RUNTIME with SRUNX_DEFAULT_CONTAINER is picked up by load_config()."""
+        with patch("srunx.config.get_config_paths") as mock_paths:
+            mock_paths.return_value = []
+            with patch.dict(
+                os.environ,
+                {
+                    "SRUNX_DEFAULT_CONTAINER": "test.sif",
+                    "SRUNX_DEFAULT_CONTAINER_RUNTIME": "singularity",
+                },
+            ):
+                config = load_config()
+
+                assert config.environment.container is not None
+                assert config.environment.container.image == "test.sif"
+                assert config.environment.container.runtime == "singularity"
+
+    def test_srunx_default_container_loads_config(self):
+        """Test SRUNX_DEFAULT_CONTAINER is picked up by load_config()."""
+        with patch("srunx.config.get_config_paths") as mock_paths:
+            mock_paths.return_value = []
+            with patch.dict(
+                os.environ,
+                {"SRUNX_DEFAULT_CONTAINER": "my-image:latest"},
+            ):
+                config = load_config()
+
+                assert config.environment.container is not None
+                assert config.environment.container.image == "my-image:latest"
