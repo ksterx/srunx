@@ -8,7 +8,7 @@ Features
 
 * **Simple Job Submission**: Submit jobs with intuitive command-line interface
 * **Resource Management**: Fine-grained control over compute resources
-* **Environment Support**: Conda, virtual environments, and Singularity containers
+* **Environment Support**: Conda, virtual environments, and containers (Apptainer/Singularity, Pyxis)
 * **Workflow Orchestration**: YAML-based workflow definition with dependency management
 * **Monitoring and Callbacks**: Real-time job monitoring with notification support
 * **Template System**: Flexible SLURM script generation with Jinja2 templates
@@ -21,6 +21,12 @@ Submit a simple job:
 .. code-block:: bash
 
    srunx submit python train.py --gpus-per-node 2 --conda ml_env
+
+Submit with an Apptainer container:
+
+.. code-block:: bash
+
+   srunx submit python train.py --container "runtime=apptainer,image=pytorch.sif,nv=true"
 
 Define a workflow:
 

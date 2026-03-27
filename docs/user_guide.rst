@@ -31,11 +31,122 @@ srunx provides fine-grained control over resource allocation:
 Environment Management
 ~~~~~~~~~~~~~~~~~~~~~~
 
-srunx supports three environment types:
+srunx supports conda and virtual environment activation:
 
-1. **Conda**: ``--conda env_name``
-2. **Virtual Environment**: ``--venv /path/to/venv``
-3. **Singularity**: ``--container /path/to/container.sqsh``
+- **Conda**: ``--conda env_name``
+- **Virtual Environment**: ``--venv /path/to/venv``
+
+Only one of conda or venv can be specified per job.
+
+Container Runtimes
+~~~~~~~~~~~~~~~~~~
+
+srunx supports multiple container runtimes for job execution. Containers are orthogonal to conda/venv — they can be used together.
+
+**Pyxis (NVIDIA Enroot)** — default runtime, uses ``srun --container-*`` flags:
+
+.. code-block:: bash
+
+   srunx submit python train.py --container /path/to/image.sqsh
+
+**Apptainer** — wraps the command with ``apptainer exec``:
+
+.. code-block:: bash
+
+   srunx submit python train.py \
+     --container "runtime=apptainer,image=/path/to/image.sif,nv=true"
+
+**Singularity** — same as Apptainer with ``singularity`` binary:
+
+.. code-block:: bash
+
+   srunx submit python train.py \
+     --container "runtime=singularity,image=/path/to/image.sif,nv=true"
+
+The runtime can also be specified with a separate flag:
+
+.. code-block:: bash
+
+   srunx submit python train.py \
+     --container /path/to/image.sif \
+     --container-runtime apptainer
+
+Container Options
+^^^^^^^^^^^^^^^^^
+
+The ``--container`` flag accepts a key=value format for detailed configuration:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 15 65
+
+   * - Key
+     - Runtime
+     - Description
+   * - ``image``
+     - All
+     - Container image path (SIF, sqsh, or Docker URI)
+   * - ``runtime``
+     - All
+     - ``pyxis`` (default), ``apptainer``, or ``singularity``
+   * - ``mounts`` / ``bind``
+     - All
+     - Bind mounts (semicolon-separated, e.g. ``/data:/data;/scratch:/scratch``)
+   * - ``workdir``
+     - All
+     - Working directory inside container
+   * - ``nv``
+     - Apptainer
+     - NVIDIA GPU passthrough (``true``/``false``)
+   * - ``rocm``
+     - Apptainer
+     - AMD GPU passthrough (``true``/``false``)
+   * - ``cleanenv``
+     - Apptainer
+     - Start with clean environment (``true``/``false``)
+   * - ``fakeroot``
+     - Apptainer
+     - Run as fake root (``true``/``false``)
+   * - ``writable_tmpfs``
+     - Apptainer
+     - Writable tmpfs overlay (``true``/``false``)
+   * - ``overlay``
+     - Apptainer
+     - Overlay image path
+   * - ``env``
+     - Apptainer
+     - Container environment variables (``KEY1=VAL1;KEY2=VAL2``)
+
+Example with multiple options:
+
+.. code-block:: bash
+
+   srunx submit python train.py --container \
+     "runtime=apptainer,image=pytorch.sif,nv=true,bind=/data:/data;/models:/models,cleanenv=true"
+
+Container + Conda/Venv
+^^^^^^^^^^^^^^^^^^^^^^
+
+Containers can be combined with conda or venv. The environment activation runs on the host before the containerized command:
+
+.. code-block:: bash
+
+   srunx submit python train.py \
+     --container "runtime=apptainer,image=pytorch.sif,nv=true,bind=/opt/conda:/opt/conda" \
+     --conda ml_env
+
+.. note::
+
+   When using ``cleanenv=true`` with Apptainer, host environment variables (including those set by conda/venv activation) are stripped. Pass needed variables explicitly via ``env=`` or ensure the relevant paths are bind-mounted.
+
+Suppressing Default Containers
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+If a default container is configured (via ``SRUNX_DEFAULT_CONTAINER`` or config file), you can suppress it for individual jobs:
+
+.. code-block:: bash
+
+   srunx submit python train.py --no-container
 
 Command Line Interface
 ----------------------
@@ -197,12 +308,12 @@ Use srunx from Python code:
 .. code-block:: python
 
    from srunx.client import Slurm
-   from srunx.models import Job, JobResource, JobEnvironment
+   from srunx.models import Job, JobResource, JobEnvironment, ContainerResource
 
    # Create client
    client = Slurm()
 
-   # Define job
+   # Define job with conda
    job = Job(
        name="my_job",
        command=["python", "script.py"],
@@ -215,12 +326,25 @@ Use srunx from Python code:
        environment=JobEnvironment(conda="ml_env")
    )
 
-   # Submit job
-   job_id = client.submit(job)
+   # Define job with Apptainer container
+   container_job = Job(
+       name="container_job",
+       command=["python", "train.py"],
+       resources=JobResource(gpus_per_node=2),
+       environment=JobEnvironment(
+           container=ContainerResource(
+               runtime="apptainer",
+               image="/path/to/pytorch.sif",
+               nv=True,
+               mounts=["/data:/data"],
+           )
+       )
+   )
 
-   # Monitor job
-   status = client.retrieve(job_id)
-   print(f"Job {job_id} status: {status.state}")
+   # Submit and monitor
+   result = client.submit(job)
+   status = client.retrieve(result.job_id)
+   print(f"Job {result.job_id} status: {status}")
 
 Best Practices
 --------------
@@ -238,6 +362,8 @@ Environment Management
 1. **Use environment isolation**: Conda, venv, or containers
 2. **Pin dependencies**: Ensure reproducibility
 3. **Test environments**: Validate before large runs
+4. **Prefer Apptainer for reproducibility**: SIF files are immutable and portable across clusters
+5. **Combine containers with conda**: Use containers for system-level dependencies and conda for Python packages
 
 Workflow Design
 ~~~~~~~~~~~~~~~
@@ -245,6 +371,43 @@ Workflow Design
 1. **Break down jobs**: Smaller, focused jobs are easier to debug
 2. **Use dependencies wisely**: Minimize blocking dependencies
 3. **Handle failures**: Design for partial workflow recovery
+
+Configuration
+-------------
+
+Container Defaults
+~~~~~~~~~~~~~~~~~~
+
+Set default container settings via environment variables:
+
+.. code-block:: bash
+
+   # Default container image
+   export SRUNX_DEFAULT_CONTAINER=/path/to/default.sif
+
+   # Default container runtime (pyxis, apptainer, singularity)
+   export SRUNX_DEFAULT_CONTAINER_RUNTIME=apptainer
+
+Or in a config file (``~/.config/srunx/config.json``):
+
+.. code-block:: json
+
+   {
+     "environment": {
+       "container": {
+         "runtime": "apptainer",
+         "image": "/shared/containers/pytorch.sif"
+       }
+     }
+   }
+
+The runtime resolution order (highest priority first):
+
+1. Explicit ``--container-runtime`` CLI flag
+2. ``runtime=`` key in ``--container`` value
+3. ``SRUNX_DEFAULT_CONTAINER_RUNTIME`` environment variable
+4. Config file setting
+5. ``pyxis`` (default fallback)
 
 Troubleshooting
 ---------------
@@ -266,6 +429,13 @@ Common Issues
   - Ensure conda/venv paths are correct
   - Check environment activation
   - Verify package availability
+
+**Container errors**
+  - Verify the image path exists and is accessible from compute nodes
+  - For Apptainer, ensure ``--nv`` is set when using GPUs
+  - Check bind mount paths exist on both host and container
+  - If using ``--cleanenv``, pass required environment variables via ``env=``
+  - Apptainer-specific flags (``nv``, ``rocm``, etc.) raise an error if used with ``runtime=pyxis``
 
 Debug Mode
 ~~~~~~~~~~

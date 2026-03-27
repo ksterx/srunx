@@ -45,11 +45,32 @@ Each task supports the following configuration options:
 
    - name: my_task
      command: ["python", "train.py", "--epochs", "100"]
+     # Environment activation (pick one)
      conda: ml_environment
      # OR
      venv: /path/to/virtualenv
-     # OR
-     container: /path/to/container.sqsh
+
+   # Container (can be combined with conda/venv)
+   - name: containerized_task
+     command: ["python", "train.py"]
+     environment:
+       conda: ml_env
+       container:
+         runtime: apptainer        # or pyxis, singularity
+         image: /path/to/image.sif
+         nv: true                  # NVIDIA GPU passthrough
+         mounts:
+           - /data:/data
+           - /models:/models
+
+   # Simple Pyxis container (default runtime)
+   - name: pyxis_task
+     command: ["python", "inference.py"]
+     environment:
+       container:
+         image: nvcr.io/nvidia/pytorch:24.01-py3
+         mounts:
+           - /data:/workspace/data
 
 **Resource Allocation**
 

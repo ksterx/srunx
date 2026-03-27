@@ -103,12 +103,39 @@ Python Virtual Environment
 
    srunx submit python script.py --venv /path/to/venv
 
-Singularity Container
-~~~~~~~~~~~~~~~~~~~~~
+Container (Pyxis)
+~~~~~~~~~~~~~~~~~
 
 .. code-block:: bash
 
    srunx submit python script.py --container /path/to/container.sqsh
+
+Apptainer / Singularity Container
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: bash
+
+   srunx submit python script.py \
+     --container "runtime=apptainer,image=/path/to/image.sif,nv=true"
+
+Or specify the runtime separately:
+
+.. code-block:: bash
+
+   srunx submit python script.py \
+     --container /path/to/image.sif \
+     --container-runtime apptainer
+
+Conda Inside a Container
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Containers can be combined with conda or venv:
+
+.. code-block:: bash
+
+   srunx submit python script.py \
+     --container "runtime=apptainer,image=pytorch.sif,nv=true,bind=/data:/data" \
+     --conda ml_env
 
 Next Steps
 ----------
