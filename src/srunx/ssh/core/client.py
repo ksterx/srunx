@@ -2,12 +2,15 @@ import logging
 import os
 import re
 import shlex
+import subprocess
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 import paramiko  # type: ignore
+
+from srunx.sync import RsyncClient
 
 from .proxy_client import ProxySSHClient, create_proxy_aware_connection
 
@@ -54,7 +57,22 @@ class SSHSlurmClient:
             None  # Cache for SLURM environment variables
         )
         self.custom_env_vars = env_vars or {}  # Custom environment variables to pass
-        self.verbose = verbose  # Control detailed logging  # Control detailed logging
+        self.verbose = verbose
+
+        # RsyncClient for project sync (key-based auth only)
+        self._rsync_client: RsyncClient | None = None
+        if self.key_filename:
+            try:
+                self._rsync_client = RsyncClient(
+                    hostname=self.hostname,
+                    username=self.username,
+                    port=self.port,
+                    key_filename=self.key_filename,
+                    proxy_jump=self.proxy_jump,
+                    ssh_config_path=self.ssh_config_path,
+                )
+            except RuntimeError:
+                self.logger.warning("rsync not available; sync_project() disabled")
 
     def connect(self) -> bool:
         try:
@@ -600,6 +618,77 @@ class SSHSlurmClient:
         """Cleanup temporary files for a job if it was a local script"""
         if job.is_local_script and job.script_path and job._cleanup:
             self.cleanup_file(job.script_path)
+
+    def sync_project(
+        self,
+        local_path: str | None = None,
+        remote_path: str | None = None,
+        *,
+        delete: bool = True,
+        dry_run: bool = False,
+        exclude_patterns: list[str] | None = None,
+    ) -> str:
+        """Sync the local project directory to the remote workspace via rsync.
+
+        Args:
+            local_path: Local project root to sync. If None, uses git toplevel
+                or cwd.
+            remote_path: Remote destination. If None, uses the default
+                ``~/.config/srunx/workspace/{repo_name}/``.
+            delete: Remove remote files not present locally (default True).
+            dry_run: Preview what would be transferred without syncing.
+            exclude_patterns: Additional exclude patterns for this sync.
+
+        Returns:
+            The remote project path (for use with ``sbatch --chdir``).
+
+        Raises:
+            RuntimeError: If rsync is not available or key-based auth is not
+                configured.
+        """
+        if self._rsync_client is None:
+            raise RuntimeError(
+                "sync_project() requires key-based SSH auth and rsync installed locally"
+            )
+
+        if local_path is None:
+            local_path = self._detect_project_root()
+
+        if remote_path is None:
+            remote_path = RsyncClient.get_default_remote_path(local_path)
+
+        result = self._rsync_client.push(
+            local_path,
+            remote_path,
+            delete=delete,
+            dry_run=dry_run,
+            exclude_patterns=exclude_patterns,
+        )
+
+        if not result.success:
+            raise RuntimeError(
+                f"rsync failed (exit {result.returncode}): {result.stderr}"
+            )
+
+        if self.verbose:
+            self.logger.info(f"Project synced to {self.hostname}:{remote_path}")
+
+        return remote_path
+
+    @staticmethod
+    def _detect_project_root() -> str:
+        """Detect the project root directory via git or fallback to cwd."""
+        try:
+            result = subprocess.run(  # noqa: S603, S607
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except FileNotFoundError:
+            pass
+        return str(Path.cwd())
 
     def get_job_status(self, job_id: str) -> str:
         """Get job status using SLURM commands"""

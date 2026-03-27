@@ -11,6 +11,7 @@ Features
 * **Environment Support**: Conda, virtual environments, and Singularity containers
 * **Workflow Orchestration**: YAML-based workflow definition with dependency management
 * **Monitoring and Callbacks**: Real-time job monitoring with notification support
+* **Project Sync**: rsync-based project directory synchronization to remote SLURM servers
 * **Template System**: Flexible SLURM script generation with Jinja2 templates
 
 Quick Example
@@ -44,19 +45,31 @@ Define a workflow:
 
 .. toctree::
    :maxdepth: 2
-   :caption: User Guide:
+   :caption: Tutorials
 
-   installation
-   quickstart
-   user_guide
-   workflows
-   monitoring
+   tutorials/installation
+   tutorials/quickstart
 
 .. toctree::
    :maxdepth: 2
-   :caption: Reference:
+   :caption: How-to Guides
 
-   api
+   how-to/user_guide
+   how-to/workflows
+   how-to/monitoring
+   how-to/sync
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Reference
+
+   reference/api
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Explanation
+
+   explanation/architecture
 
 Indices and tables
 ==================
