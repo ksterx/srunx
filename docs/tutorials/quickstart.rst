@@ -140,6 +140,6 @@ Containers can be combined with conda or venv:
 Next Steps
 ----------
 
-- Read the :doc:`user_guide` for detailed usage instructions
-- Check the :doc:`api` for programmatic usage
-- Explore :doc:`workflows` for complex job orchestration
+- Read the :doc:`/how-to/user_guide` for detailed usage instructions
+- Check the :doc:`/reference/api` for programmatic usage
+- Explore :doc:`/how-to/workflows` for complex job orchestration
