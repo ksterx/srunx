@@ -207,13 +207,22 @@ async def sync_mount(body: SyncRequest) -> dict[str, str]:
     try:
         from srunx.sync.rsync import RsyncClient
 
-        rsync = RsyncClient(
-            hostname=profile.hostname,
-            username=profile.username,
-            key_filename=profile.key_filename,
-            port=profile.port,
-            proxy_jump=profile.proxy_jump,
-        )
+        # When ssh_host is set, delegate to ~/.ssh/config for all
+        # connection params (user, key, proxy, port).
+        if profile.ssh_host:
+            rsync = RsyncClient(
+                hostname=profile.ssh_host,
+                username="",
+                ssh_config_path=str(Path.home() / ".ssh" / "config"),
+            )
+        else:
+            rsync = RsyncClient(
+                hostname=profile.hostname,
+                username=profile.username,
+                key_filename=profile.key_filename,
+                port=profile.port,
+                proxy_jump=profile.proxy_jump,
+            )
     except RuntimeError as exc:
         # rsync binary not found on the local machine
         raise HTTPException(status_code=503, detail=str(exc)) from exc

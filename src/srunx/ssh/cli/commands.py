@@ -658,13 +658,22 @@ def sync_mount(
             console.print("  [yellow]Dry run — no files will be transferred[/yellow]")
         console.print()
 
-        rsync = RsyncClient(
-            hostname=profile.hostname,
-            username=profile.username,
-            key_filename=profile.key_filename,
-            port=profile.port,
-            proxy_jump=profile.proxy_jump,
-        )
+        # When ssh_host is set, delegate to ~/.ssh/config for all
+        # connection params (user, key, proxy, port).
+        if profile.ssh_host:
+            rsync = RsyncClient(
+                hostname=profile.ssh_host,
+                username="",
+                ssh_config_path=str(Path.home() / ".ssh" / "config"),
+            )
+        else:
+            rsync = RsyncClient(
+                hostname=profile.hostname,
+                username=profile.username,
+                key_filename=profile.key_filename,
+                port=profile.port,
+                proxy_jump=profile.proxy_jump,
+            )
 
         result = rsync.push(mount.local, mount.remote, dry_run=dry_run)
 
