@@ -555,6 +555,134 @@ def test_connection(
         raise typer.Exit(1) from e
 
 
+@ssh_app.command("sync")
+def sync_mount(
+    profile_name: Annotated[
+        str | None,
+        typer.Argument(help="SSH profile name (auto-detected if omitted)"),
+    ] = None,
+    mount_name: Annotated[
+        str | None,
+        typer.Argument(help="Mount name (auto-detected from cwd if omitted)"),
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", "-n", help="Preview without syncing")
+    ] = False,
+    config: Annotated[
+        str | None,
+        typer.Option(
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
+        ),
+    ] = None,
+):
+    """Sync a mount's local directory to the remote via rsync.
+
+    With no arguments, auto-detects the profile and mount from the current
+    working directory. Works even when inside a subdirectory of the mount.
+
+    Examples:
+      srunx ssh sync                          # auto-detect from cwd
+      srunx ssh sync pyxis ml-project         # explicit profile and mount
+      srunx ssh sync pyxis ml-project --dry-run
+    """
+    from srunx.ssh.core.config import MountConfig
+    from srunx.sync.rsync import RsyncClient
+
+    try:
+        config_manager = ConfigManager(config)
+
+        # Resolve profile
+        if profile_name is None:
+            profile_name = config_manager.get_current_profile_name()
+            if not profile_name:
+                console.print(
+                    "[red]Error: No current SSH profile set. "
+                    "Specify a profile or run 'srunx ssh profile set <name>'.[/red]"
+                )
+                raise typer.Exit(1)
+
+        profile = config_manager.get_profile(profile_name)
+        if not profile:
+            console.print(f"[red]Error: Profile '{profile_name}' not found[/red]")
+            raise typer.Exit(1)
+
+        if not profile.mounts:
+            console.print(
+                f"[red]Error: Profile '{profile_name}' has no mounts configured. "
+                f"Add one with: srunx ssh profile mount add {profile_name} <name> "
+                f"--local <path> --remote <path>[/red]"
+            )
+            raise typer.Exit(1)
+
+        # Resolve mount
+        mount: MountConfig | None = None
+        if mount_name is not None:
+            for m in profile.mounts:
+                if m.name == mount_name:
+                    mount = m
+                    break
+            if mount is None:
+                console.print(
+                    f"[red]Error: Mount '{mount_name}' not found in profile '{profile_name}'[/red]"
+                )
+                raise typer.Exit(1)
+        else:
+            # Auto-detect from cwd
+            cwd = Path.cwd().resolve()
+            for m in profile.mounts:
+                mount_root = Path(m.local).resolve()
+                try:
+                    if cwd == mount_root or cwd.is_relative_to(mount_root):
+                        mount = m
+                        break
+                except ValueError:
+                    continue
+
+            if mount is None:
+                console.print(
+                    "[red]Error: Current directory is not under any configured mount.[/red]"
+                )
+                console.print("\nConfigured mounts:")
+                for m in profile.mounts:
+                    console.print(f"  {m.name}: {m.local}")
+                console.print(f"\nCurrent directory: {cwd}")
+                raise typer.Exit(1)
+
+        # Sync
+        action = "Previewing" if dry_run else "Syncing"
+        console.print(f"[bold]{action}[/bold] mount [cyan]{mount.name}[/cyan]")
+        console.print(f"  Local:  {mount.local}")
+        console.print(f"  Remote: {mount.remote}")
+        console.print(f"  Profile: {profile_name}")
+        if dry_run:
+            console.print("  [yellow]Dry run — no files will be transferred[/yellow]")
+        console.print()
+
+        rsync = RsyncClient(
+            hostname=profile.hostname,
+            username=profile.username,
+            key_filename=profile.key_filename,
+            port=profile.port,
+            proxy_jump=profile.proxy_jump,
+        )
+
+        result = rsync.push(mount.local, mount.remote, dry_run=dry_run)
+
+        if result.returncode == 0:
+            if dry_run:
+                console.print(result.stdout or "[dim]No changes needed[/dim]")
+            console.print(f"\n[green]Sync complete: {mount.name}[/green]")
+        else:
+            console.print(f"[red]rsync failed (exit code {result.returncode}):[/red]")
+            if result.stderr:
+                console.print(f"[red]{result.stderr}[/red]")
+            raise typer.Exit(1)
+
+    except RuntimeError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from e
+
+
 @ssh_app.callback(invoke_without_command=True)
 def ssh_main(ctx: typer.Context):
     """
