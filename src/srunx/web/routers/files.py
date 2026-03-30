@@ -36,6 +36,7 @@ class FileEntry(BaseModel):
     type: Literal["file", "directory", "symlink"]
     size: int | None = None
     accessible: bool | None = None
+    target_kind: Literal["file", "directory"] | None = None
 
 
 class BrowseResponse(BaseModel):
@@ -104,13 +105,20 @@ def _list_entries(target: Path, mount_root: Path) -> list[FileEntry]:
 
         try:
             if entry.is_symlink():
+                target_kind: Literal["file", "directory"] | None = None
                 try:
                     resolved = entry.resolve()
                     accessible = resolved.is_relative_to(mount_root)
+                    target_kind = "directory" if resolved.is_dir() else "file"
                 except (OSError, ValueError):
                     accessible = False
                 entries.append(
-                    FileEntry(name=entry.name, type="symlink", accessible=accessible)
+                    FileEntry(
+                        name=entry.name,
+                        type="symlink",
+                        accessible=accessible,
+                        target_kind=target_kind,
+                    )
                 )
             elif entry.is_dir():
                 entries.append(FileEntry(name=entry.name, type="directory"))

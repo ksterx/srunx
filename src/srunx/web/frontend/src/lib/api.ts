@@ -10,6 +10,23 @@ import type {
   WorkflowCreateRequest,
 } from "./types.ts";
 
+/* ── Helpers ─────────────────────────────────── */
+
+type ValidationItem = { loc?: string[]; msg?: string };
+
+/** Extract a human-readable message from a FastAPI error response body. */
+function extractDetail(body: { detail?: unknown }, fallback: string): string {
+  const detail = body.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const msgs = (detail as ValidationItem[]).map((e) =>
+      e.loc && e.msg ? `${e.loc.join(".")}: ${e.msg}` : JSON.stringify(e),
+    );
+    return msgs.join("; ");
+  }
+  return fallback;
+}
+
 /* ── Jobs ─────────────────────────────────────── */
 
 export const jobs = {
@@ -26,10 +43,10 @@ export const jobs = {
   },
 
   cancel: async (jobId: number): Promise<void> => {
-    const res = await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+    const res = await fetch(`/api/jobs/${jobId}`, { method: "DELETE" });
     if (!res.ok) {
       const err = await res.json();
-      throw new Error(err.detail || "Failed to cancel job");
+      throw new Error(extractDetail(err, "Failed to cancel job"));
     }
   },
 
@@ -59,11 +76,11 @@ export const workflows = {
     const res = await fetch("/api/workflows/upload", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: yamlContent, filename }),
+      body: JSON.stringify({ yaml: yamlContent, filename }),
     });
     if (!res.ok) {
       const err = await res.json();
-      throw new Error(err.detail || "Failed to upload workflow");
+      throw new Error(extractDetail(err, "Failed to upload workflow"));
     }
     return res.json();
   },
@@ -76,7 +93,7 @@ export const workflows = {
     });
     if (!res.ok) {
       const err = await res.json();
-      throw new Error(err.detail || "Failed to create workflow");
+      throw new Error(extractDetail(err, "Failed to create workflow"));
     }
     return res.json();
   },
@@ -117,7 +134,7 @@ export const files = {
     const res = await fetch(`/api/files/browse?${params}`);
     if (!res.ok) {
       const err = await res.json();
-      throw new Error(err.detail || "Failed to browse files");
+      throw new Error(extractDetail(err, "Failed to browse files"));
     }
     return res.json();
   },
@@ -130,7 +147,7 @@ export const files = {
     });
     if (!res.ok) {
       const err = await res.json();
-      throw new Error(err.detail || "Sync failed");
+      throw new Error(extractDetail(err, "Sync failed"));
     }
     return res.json();
   },

@@ -253,10 +253,15 @@ class RsyncClient:
     def _ensure_remote_dir(self, remote_path: str) -> None:
         """Create the remote directory via ssh mkdir -p (fallback for rsync without --mkpath)."""
         ssh_cmd = self._build_ssh_cmd()
+        if self.username:
+            dest = f"{self.username}@{self.hostname}"
+        else:
+            dest = self.hostname
+        quoted_path = shlex.quote(remote_path.rstrip("/"))
         mkdir_cmd = [
             *ssh_cmd,
-            f"{self.username}@{self.hostname}",
-            f"mkdir -p {remote_path}",
+            dest,
+            f"mkdir -p {quoted_path}",
         ]
         logger.debug("Ensuring remote dir: {}", shlex.join(mkdir_cmd))
         subprocess.run(mkdir_cmd, capture_output=True, text=True)  # noqa: S603

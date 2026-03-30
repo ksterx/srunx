@@ -134,6 +134,7 @@ export type FileEntry = {
   type: FileEntryType;
   size?: number;
   accessible?: boolean; // for symlinks
+  target_kind?: "file" | "directory"; // for symlinks
 };
 
 export type BrowseResult = {

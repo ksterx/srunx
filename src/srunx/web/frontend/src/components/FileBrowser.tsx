@@ -173,17 +173,29 @@ function DirectoryTree({
         const isExpanded = expandedDirs.has(fullPath);
         const isDir = entry.type === "directory";
         const isSymlink = entry.type === "symlink";
+        const isSymlinkDir =
+          isSymlink &&
+          entry.accessible !== false &&
+          entry.target_kind === "directory";
+        const isExpandable = isDir || isSymlinkDir;
         const isInaccessible = isSymlink && entry.accessible === false;
         const isLoading = loadingDir === fullPath;
 
+        const effectiveKind: "file" | "directory" = isDir
+          ? "directory"
+          : isSymlinkDir
+            ? "directory"
+            : "file";
         const isSelected = selectedEntry?.remotePath === remotePath;
         const isSelectable =
           !isInaccessible &&
-          (selectMode === "file" ? !isDir : isDir || isSymlink);
+          (selectMode === "file"
+            ? effectiveKind === "file"
+            : effectiveKind === "directory");
 
         function handleClick() {
           if (isInaccessible) return;
-          if (isDir) {
+          if (isExpandable) {
             onToggleDir(fullPath);
             if (selectMode === "directory") {
               onSelectEntry({
@@ -235,7 +247,7 @@ function DirectoryTree({
                 }
               }}
             >
-              {isDir && (
+              {isExpandable && (
                 <span
                   style={{
                     display: "flex",
@@ -259,7 +271,7 @@ function DirectoryTree({
                   )}
                 </span>
               )}
-              {!isDir && <span style={{ width: 14, flexShrink: 0 }} />}
+              {!isExpandable && <span style={{ width: 14, flexShrink: 0 }} />}
               {isDir ? (
                 <Folder
                   size={14}
@@ -287,7 +299,7 @@ function DirectoryTree({
               </span>
             </div>
 
-            {isDir && isExpanded && expandedDirs.has(fullPath) && (
+            {isExpandable && isExpanded && expandedDirs.has(fullPath) && (
               <DirectoryTree
                 entries={expandedDirs.get(fullPath) ?? []}
                 depth={depth + 1}

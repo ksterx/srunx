@@ -133,9 +133,15 @@ export function JobPropertyPanel({
     if (browserTarget === "command") {
       // Insert path relative to work_dir if possible, else absolute
       let insertPath = remotePath;
-      if (job.work_dir && remotePath.startsWith(job.work_dir)) {
-        const rel = remotePath.slice(job.work_dir.length);
-        insertPath = rel.startsWith("/") ? rel.slice(1) : rel;
+      if (job.work_dir) {
+        const workDirPrefix = job.work_dir.endsWith("/")
+          ? job.work_dir
+          : job.work_dir + "/";
+        if (remotePath.startsWith(workDirPrefix)) {
+          insertPath = remotePath.slice(workDirPrefix.length);
+        } else if (remotePath === job.work_dir) {
+          insertPath = ".";
+        }
       }
       const current = job.command.trim();
       const newCommand = current ? `${current} ${insertPath}` : insertPath;
@@ -157,8 +163,6 @@ export function JobPropertyPanel({
     } else {
       onUpdate({
         container: { runtime: "pyxis", image: "", mounts: "", workdir: "" },
-        conda: null,
-        venv: null,
       });
     }
   }
@@ -495,9 +499,9 @@ export function JobPropertyPanel({
             value={job.conda ?? ""}
             onChange={(e) => handleCondaChange(e.target.value)}
             placeholder="my_env"
-            disabled={job.venv !== null || hasContainer}
+            disabled={job.venv !== null}
             style={
-              job.venv !== null || hasContainer
+              job.venv !== null
                 ? { opacity: 0.4, cursor: "not-allowed" }
                 : undefined
             }
@@ -512,9 +516,9 @@ export function JobPropertyPanel({
             value={job.venv ?? ""}
             onChange={(e) => handleVenvChange(e.target.value)}
             placeholder="/path/to/venv"
-            disabled={job.conda !== null || hasContainer}
+            disabled={job.conda !== null}
             style={
-              job.conda !== null || hasContainer
+              job.conda !== null
                 ? { opacity: 0.4, cursor: "not-allowed" }
                 : undefined
             }
