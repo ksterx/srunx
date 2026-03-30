@@ -35,6 +35,39 @@ repos:
         args: [requirements-dev.in, -o, requirements-dev.txt]
         files: ^requirements-dev\\.(in|txt)$
 
+  # Backend tests (web module)
+  - repo: local
+    hooks:
+      - id: pytest-web
+        name: pytest (web)
+        entry: uv run pytest tests/web/ -q --no-header --tb=line
+        language: system
+        pass_filenames: false
+        files: ^(src/srunx/web/|tests/web/)
+        types: [python]
+
+  # Frontend TypeScript check
+  - repo: local
+    hooks:
+      - id: tsc-web
+        name: tsc (frontend)
+        entry: bash -c 'cd src/srunx/web/frontend && npx tsc --noEmit'
+        language: system
+        pass_filenames: false
+        files: ^src/srunx/web/frontend/src/
+        types_or: [ts, tsx]
+
+  # Frontend E2E tests (on staged frontend changes)
+  - repo: local
+    hooks:
+      - id: e2e-web
+        name: playwright e2e (frontend)
+        entry: bash -c 'cd src/srunx/web/frontend && npx vite build --logLevel error && npx playwright test --reporter=line'
+        language: system
+        pass_filenames: false
+        files: ^src/srunx/web/frontend/
+        stages: [pre-push]
+
   # MyPy
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.18.2
@@ -52,3 +85,5 @@ repos:
           - slack-sdk>=3.35.0
           - typer>=0.17.3
           - apscheduler>=3.10.0
+          - fastapi>=0.115.0
+          - anyio>=4.0.0
