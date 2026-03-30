@@ -207,6 +207,62 @@ A typical workflow combines sync with job submission:
            "./outputs/",
        )
 
+Mount Points
+------------
+
+Mount points provide named local-to-remote path mappings, stored in your SSH
+profile. They are used by the Web UI's file browser and can also serve as
+a structured way to manage project sync targets.
+
+**Add a mount:**
+
+.. code-block:: bash
+
+   srunx ssh profile mount add myserver ml-project \
+       --local ~/projects/ml-project \
+       --remote /home/researcher/projects/ml-project
+
+**List mounts for a profile:**
+
+.. code-block:: bash
+
+   srunx ssh profile mount list myserver
+
+**Remove a mount:**
+
+.. code-block:: bash
+
+   srunx ssh profile mount remove myserver ml-project
+
+Mount configuration is stored in ``~/.config/srunx/config.json`` alongside
+the SSH profile:
+
+.. code-block:: json
+
+   {
+     "profiles": {
+       "myserver": {
+         "hostname": "dgx.example.com",
+         "mounts": [
+           {
+             "name": "ml-project",
+             "local": "/home/user/projects/ml-project",
+             "remote": "/home/researcher/projects/ml-project"
+           }
+         ]
+       }
+     }
+   }
+
+.. note::
+
+   The ``local`` path is automatically expanded (``~`` resolved) and must
+   exist on the local filesystem. The ``remote`` path must be absolute.
+
+Mounts integrate with the Web UI's DAG builder: when you click the file
+browser icon on a path field, the configured mounts appear as browsable
+project roots. See :doc:`/how-to/webui` for details.
+
 API Summary
 -----------
 
