@@ -62,15 +62,23 @@ Web UI Architecture
 The Web UI adds a third execution path: a browser-based interface that runs
 locally and connects to SLURM clusters via SSH.
 
-.. code-block:: text
+.. mermaid::
 
-   Local Machine                      DGX / SLURM Server
-   ┌────────────────────┐   SSH     ┌──────────────────┐
-   │ Browser :8000      │           │                  │
-   │   ↓                │           │ squeue/sinfo     │
-   │ FastAPI (srunx-web)│───SSH───→ │ sbatch/scancel   │
-   │ SlurmSSHAdapter    │           │ sacct            │
-   └────────────────────┘           └──────────────────┘
+   flowchart LR
+     subgraph local["Local Machine"]
+       Browser["Browser :8000"]
+       FastAPI["FastAPI\n(srunx-web)"]
+       Adapter["SlurmSSHAdapter"]
+       Browser --> FastAPI --> Adapter
+     end
+     subgraph remote["DGX / SLURM Server"]
+       squeue["squeue / sinfo"]
+       sbatch["sbatch / scancel"]
+       sacct["sacct"]
+     end
+     Adapter -- SSH --> squeue
+     Adapter -- SSH --> sbatch
+     Adapter -- SSH --> sacct
 
 **Key design decisions:**
 
