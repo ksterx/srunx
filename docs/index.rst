@@ -13,6 +13,7 @@ Features
 * **Monitoring and Callbacks**: Real-time job monitoring with notification support
 * **Project Sync**: rsync-based project directory synchronization to remote SLURM servers
 * **Template System**: Flexible SLURM script generation with Jinja2 templates
+* **Web UI**: Browser-based dashboard for job management, resource monitoring, and workflow DAG visualization
 
 Quick Example
 -------------
@@ -55,6 +56,7 @@ Define a workflow:
 
    tutorials/installation
    tutorials/quickstart
+   tutorials/webui
 
 .. toctree::
    :maxdepth: 2
@@ -64,12 +66,14 @@ Define a workflow:
    how-to/workflows
    how-to/monitoring
    how-to/sync
+   how-to/webui
 
 .. toctree::
    :maxdepth: 2
    :caption: Reference
 
    reference/api
+   reference/webui-api
 
 .. toctree::
    :maxdepth: 2
