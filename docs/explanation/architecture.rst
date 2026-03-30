@@ -108,6 +108,95 @@ Frontend architecture
    data fetching with automatic polling. React Flow provides DAG
    visualization for workflow dependencies.
 
+DAG Builder Architecture
+------------------------
+
+The DAG builder is an interactive workflow editor that lets users construct
+SLURM pipelines visually instead of writing YAML by hand.
+
+ReactFlow canvas and state management
+   The builder page renders a ReactFlow canvas where each job is a custom
+   node (``BuilderJobNode``) with source and target handles for edge
+   connections. The ``useWorkflowBuilder`` hook encapsulates all builder
+   state: a ReactFlow node array, an edge array, and a ``Map<string, BuilderJob>``
+   ref for O(1) job lookups. Node positions, edge connections, and job
+   property edits all flow through this single hook, keeping the page
+   component thin.
+
+Job property panel
+   Clicking a node opens the ``JobPropertyPanel`` sidebar, which exposes
+   every field from the ``BuilderJob`` type: name, command, resources
+   (nodes, GPUs, memory, time limit, partition), environment (conda, venv,
+   container, env vars), working directory, log directory, and retry
+   settings. Changes propagate immediately to the ReactFlow node data,
+   updating the canvas in real time.
+
+Client-side validation
+   Before saving, ``useWorkflowBuilder.validate()`` checks four rules:
+   every job must have a non-empty name, every job must have a non-empty
+   command, job names must be unique, and the graph must be acyclic
+   (detected via DFS with an explicit recursion-stack set). Validation
+   errors are displayed in a banner above the canvas.
+
+Serialization and persistence
+   ``useWorkflowBuilder.serialize()`` converts the ReactFlow graph into a
+   ``WorkflowCreateRequest`` payload: job names, commands (split on
+   whitespace), ``depends_on`` lists (derived from incoming edges, with
+   optional dependency type prefixes like ``afternotok:preprocess``),
+   resources, and environment settings. The payload is POSTed to
+   ``/api/workflows/create``, which validates it again server-side using
+   Pydantic models and ``Workflow.validate()``, serializes it to YAML, and
+   writes it to the workflow directory on disk.
+
+.. mermaid::
+
+   flowchart TD
+     subgraph frontend["Frontend (React)"]
+       Canvas["ReactFlow Canvas"]
+       Hook["useWorkflowBuilder\n(nodes, edges, jobMap)"]
+       Panel["JobPropertyPanel"]
+       Canvas -- node click --> Panel
+       Panel -- updateJob --> Hook
+       Canvas -- onConnect --> Hook
+       Hook -- nodes/edges --> Canvas
+     end
+     subgraph save["Save Flow"]
+       Validate["Client-side\nvalidation"]
+       Serialize["serialize()\n→ WorkflowCreateRequest"]
+       API["POST /api/workflows/create"]
+       ServerValidate["Server-side validation\n(Pydantic + cycle detection)"]
+       YAML["Serialize to YAML"]
+       Disk["Write to disk"]
+       Validate --> Serialize --> API --> ServerValidate --> YAML --> Disk
+     end
+     Hook -- Save Workflow --> Validate
+
+Mount-based path resolution
+   The file browser bridges local development directories and remote SLURM
+   paths. Mount points are stored in the SSH profile configuration and define
+   a ``local`` path (on the developer's machine) and a ``remote`` path (on the
+   SLURM cluster). When the user browses files, the backend reads the local
+   filesystem under the mount root and returns entries with their computed
+   remote paths. The frontend never sees local filesystem paths.
+
+   The translation is straightforward: for a mount with
+   ``local=/home/user/project`` and ``remote=/scratch/user/project``, a file
+   at ``local + /src/train.py`` maps to ``remote + /src/train.py``. The
+   ``rsync`` sync operation pushes local contents to the remote side so that
+   selected paths are valid when the workflow executes.
+
+Security model
+   The file browser enforces strict containment:
+
+   * **Path traversal prevention** — The resolved path must be relative to
+     the mount root. Attempts to escape via ``../`` return ``403 Forbidden``.
+   * **Symlink containment** — Symlinks are resolved and checked against
+     the mount boundary. Links pointing outside are marked
+     ``accessible: false`` and cannot be followed in the browser.
+   * **Local path isolation** — The API response includes only the remote
+     prefix, mount name, and entry metadata. Local filesystem paths are
+     never sent to the frontend.
+
 Configuration Hierarchy
 -----------------------
 
