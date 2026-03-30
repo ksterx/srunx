@@ -3,7 +3,23 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+class MountConfig(BaseModel):
+    """Local-to-remote path mapping for a project directory."""
+
+    name: str
+    local: str  # local path, e.g. "~/projects/ml-project"
+    remote: str  # remote path, e.g. "/home/user/projects/ml-project"
+
+    @model_validator(mode="after")
+    def expand_and_validate_paths(self) -> "MountConfig":
+        """Expand ~ in local path. Remote must be absolute."""
+        self.local = str(Path(self.local).expanduser().resolve())
+        if not self.remote.startswith("/"):
+            raise ValueError(f"Mount remote path must be absolute: {self.remote}")
+        return self
 
 
 class ServerProfile(BaseModel):
@@ -20,6 +36,9 @@ class ServerProfile(BaseModel):
     )
     env_vars: dict[str, str] | None = Field(
         None, description="The environment variables for this profile"
+    )
+    mounts: list[MountConfig] = Field(
+        default=[], description="Local-to-remote path mappings for project directories"
     )
 
 
@@ -145,4 +164,27 @@ class ConfigManager:
                 del env_vars[key]
                 self.save_config()
                 return True
+        return False
+
+    def add_profile_mount(self, profile_name: str, mount: MountConfig) -> bool:
+        """Add a mount to a profile."""
+        if profile_name in self.config_data.get("profiles", {}):
+            profile_data = self.config_data["profiles"][profile_name]
+            if "mounts" not in profile_data:
+                profile_data["mounts"] = []
+            profile_data["mounts"].append(mount.model_dump())
+            self.save_config()
+            return True
+        return False
+
+    def remove_profile_mount(self, profile_name: str, mount_name: str) -> bool:
+        """Remove a mount from a profile by name."""
+        if profile_name in self.config_data.get("profiles", {}):
+            profile_data = self.config_data["profiles"][profile_name]
+            mounts = profile_data.get("mounts", [])
+            for i, m in enumerate(mounts):
+                if m.get("name") == mount_name:
+                    mounts.pop(i)
+                    self.save_config()
+                    return True
         return False

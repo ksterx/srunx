@@ -229,3 +229,112 @@ class TestWorkflowsRouter:
         resp = client.get("/api/workflows/runs")
         assert resp.status_code == 200
         assert resp.json() == []
+
+    # ── POST /api/workflows/create ───────────────────
+
+    def test_create_workflow_success(self, client: TestClient) -> None:
+        payload = {
+            "name": "my-pipeline",
+            "jobs": [
+                {
+                    "name": "preprocess",
+                    "command": ["python", "preprocess.py"],
+                },
+                {
+                    "name": "train",
+                    "command": ["python", "train.py"],
+                    "depends_on": ["preprocess"],
+                    "resources": {"gpus_per_node": 2},
+                    "environment": {"conda": "ml"},
+                },
+            ],
+        }
+        resp = client.post("/api/workflows/create", json=payload)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "my-pipeline"
+        assert len(data["jobs"]) == 2
+        assert data["jobs"][0]["name"] == "preprocess"
+        assert data["jobs"][1]["name"] == "train"
+        assert data["jobs"][1]["depends_on"] == ["preprocess"]
+
+    def test_create_workflow_conflict(self, client: TestClient) -> None:
+        payload = {
+            "name": "dup-wf",
+            "jobs": [{"name": "a", "command": ["echo", "hi"]}],
+        }
+        resp1 = client.post("/api/workflows/create", json=payload)
+        assert resp1.status_code == 200
+
+        resp2 = client.post("/api/workflows/create", json=payload)
+        assert resp2.status_code == 409
+
+    def test_create_workflow_reserved_name(self, client: TestClient) -> None:
+        payload = {
+            "name": "new",
+            "jobs": [{"name": "a", "command": ["echo", "hi"]}],
+        }
+        resp = client.post("/api/workflows/create", json=payload)
+        assert resp.status_code == 422
+        assert "reserved" in resp.json()["detail"]
+
+    def test_create_workflow_bad_name(self, client: TestClient) -> None:
+        payload = {
+            "name": "bad name!",
+            "jobs": [{"name": "a", "command": ["echo", "hi"]}],
+        }
+        resp = client.post("/api/workflows/create", json=payload)
+        assert resp.status_code == 422
+
+    def test_create_workflow_cycle_detected(self, client: TestClient) -> None:
+        payload = {
+            "name": "cyclic",
+            "jobs": [
+                {"name": "a", "command": ["echo", "a"], "depends_on": ["b"]},
+                {"name": "b", "command": ["echo", "b"], "depends_on": ["a"]},
+            ],
+        }
+        resp = client.post("/api/workflows/create", json=payload)
+        assert resp.status_code == 422, (
+            f"Expected 422, got {resp.status_code}: {resp.text}"
+        )
+
+    def test_create_workflow_unknown_dependency(self, client: TestClient) -> None:
+        payload = {
+            "name": "bad-dep",
+            "jobs": [
+                {
+                    "name": "a",
+                    "command": ["echo", "hi"],
+                    "depends_on": ["nonexistent"],
+                },
+            ],
+        }
+        resp = client.post("/api/workflows/create", json=payload)
+        assert resp.status_code == 422
+
+    def test_create_workflow_persists_yaml(self, client: TestClient) -> None:
+        """Verify the YAML file is written and can be re-loaded."""
+        payload = {
+            "name": "persist-test",
+            "jobs": [{"name": "step1", "command": ["bash", "-c", "echo ok"]}],
+        }
+        resp = client.post("/api/workflows/create", json=payload)
+        assert resp.status_code == 200
+
+        # The workflow should now appear in the list
+        list_resp = client.get("/api/workflows")
+        names = [w["name"] for w in list_resp.json()]
+        assert "persist-test" in names
+
+    def test_create_workflow_retrievable_by_name(self, client: TestClient) -> None:
+        payload = {
+            "name": "fetch-me",
+            "jobs": [{"name": "only", "command": ["true"]}],
+        }
+        resp = client.post("/api/workflows/create", json=payload)
+        assert resp.status_code == 200
+
+        get_resp = client.get("/api/workflows/fetch-me")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["name"] == "fetch-me"

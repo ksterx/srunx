@@ -8,9 +8,12 @@ from pathlib import Path
 from typing import Any
 
 import anyio
+import yaml
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from srunx.exceptions import WorkflowValidationError
+from srunx.models import Job, JobEnvironment, JobResource, ShellJob, Workflow
 from srunx.runner import WorkflowRunner
 
 from ..config import get_web_config
@@ -19,6 +22,115 @@ from ..state import run_registry
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
 _SAFE_NAME = re.compile(r"^[\w\-]+$")
+_RESERVED_NAMES = frozenset({"new"})
+
+
+# ── Request models ───────────────────────────────────
+
+
+class WorkflowJobInput(BaseModel):
+    name: str
+    command: list[str]
+    depends_on: list[str] = []
+    resources: dict[str, Any] | None = None
+    environment: dict[str, Any] | None = None
+    work_dir: str | None = None
+    log_dir: str | None = None
+    retry: int | None = None
+    retry_delay: int | None = None
+
+
+class WorkflowCreateRequest(BaseModel):
+    name: str = Field(..., pattern=r"^[\w\-]+$")
+    jobs: list[WorkflowJobInput]
+
+
+# ── Shared helpers ───────────────────────────────────
+
+
+def _validate_and_build_workflow(data: dict[str, Any]) -> Workflow:
+    """Construct and validate a Workflow from a plain dict.
+
+    Builds Job instances with JobResource / JobEnvironment, then runs
+    cycle-detection via ``Workflow.validate()``.  Raises on any
+    Pydantic or workflow-level validation failure.
+    """
+    name: str = data["name"]
+    jobs_data: list[dict[str, Any]] = data.get("jobs", [])
+
+    jobs: list[Job | ShellJob] = []
+    for jd in jobs_data:
+        resource = JobResource.model_validate(jd.get("resources") or {})
+        environment = JobEnvironment.model_validate(jd.get("environment") or {})
+        job_kwargs: dict[str, Any] = {
+            "name": jd["name"],
+            "command": jd["command"],
+            "depends_on": jd.get("depends_on", []),
+            "resources": resource,
+            "environment": environment,
+        }
+        # Always pass work_dir and log_dir explicitly to prevent Job's
+        # default_factory from calling os.getcwd() (wrong for the web server)
+        # or defaulting to "logs" (meaningless on a remote SLURM host).
+        # Empty strings are falsy and skipped by _workflow_to_yaml and
+        # the SLURM template (#SBATCH --chdir is only emitted when truthy).
+        job_kwargs["work_dir"] = jd.get("work_dir") or ""
+        job_kwargs["log_dir"] = jd.get("log_dir") or ""
+        if jd.get("retry") is not None:
+            job_kwargs["retry"] = jd["retry"]
+        if jd.get("retry_delay") is not None:
+            job_kwargs["retry_delay"] = jd["retry_delay"]
+        job = Job(**job_kwargs)
+        jobs.append(job)
+
+    workflow = Workflow(name=name, jobs=jobs)
+    workflow.validate()
+    return workflow
+
+
+def _workflow_to_yaml(name: str, jobs_data: list[dict[str, Any]]) -> str:
+    """Serialize a workflow to YAML compatible with ``WorkflowRunner.from_yaml``.
+
+    Only includes non-default / non-None resource and environment fields so
+    the resulting file stays clean.
+    """
+    serialized_jobs: list[dict[str, Any]] = []
+    for jd in jobs_data:
+        entry: dict[str, Any] = {
+            "name": jd["name"],
+            "command": jd["command"],
+        }
+
+        depends = jd.get("depends_on", [])
+        if depends:
+            entry["depends_on"] = depends
+
+        # Resources — only include non-None values
+        raw_res = jd.get("resources") or {}
+        resources = {k: v for k, v in raw_res.items() if v is not None}
+        if resources:
+            entry["resources"] = resources
+
+        # Environment — only include non-None values
+        raw_env = jd.get("environment") or {}
+        environment = {k: v for k, v in raw_env.items() if v is not None}
+        if environment:
+            entry["environment"] = environment
+
+        # Job-level optional fields
+        if jd.get("work_dir"):
+            entry["work_dir"] = jd["work_dir"]
+        if jd.get("log_dir"):
+            entry["log_dir"] = jd["log_dir"]
+        if jd.get("retry") is not None:
+            entry["retry"] = jd["retry"]
+        if jd.get("retry_delay") is not None:
+            entry["retry_delay"] = jd["retry_delay"]
+
+        serialized_jobs.append(entry)
+
+    doc: dict[str, Any] = {"name": name, "jobs": serialized_jobs}
+    return yaml.dump(doc, default_flow_style=False, sort_keys=False)
 
 
 def _workflow_dir() -> Path:
@@ -157,6 +269,65 @@ async def upload_workflow(body: dict[str, str]) -> dict[str, Any]:
     except Exception as e:
         dest.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail=str(e)) from e
+
+
+@router.post("/create")
+async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
+    """Create a new workflow from a structured JSON payload.
+
+    Validates all jobs via Pydantic model construction, checks for
+    dependency cycles, serializes to YAML, and persists to disk.
+    """
+    name = body.name
+
+    # Reserved name guard
+    if name in _RESERVED_NAMES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Workflow name '{name}' is reserved",
+        )
+
+    # Check for existing workflow with the same name
+    d = _workflow_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    for ext in (".yaml", ".yml"):
+        if (d / f"{name}{ext}").exists():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Workflow '{name}' already exists",
+            )
+
+    # Build the raw dict list from the request for validation + serialization
+    jobs_raw: list[dict[str, Any]] = [
+        j.model_dump(exclude_none=True) for j in body.jobs
+    ]
+
+    data: dict[str, Any] = {"name": name, "jobs": jobs_raw}
+
+    # Validate by constructing domain models (synchronous — CPU-only, no I/O)
+    try:
+        _validate_and_build_workflow(data)
+    except WorkflowValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        from pydantic import ValidationError as _VE
+
+        if isinstance(exc, _VE):
+            errors = [
+                {"loc": list(e["loc"]), "msg": e["msg"], "type": e["type"]}
+                for e in exc.errors()
+            ]
+            raise HTTPException(status_code=422, detail=errors) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Serialize and write to disk
+    yaml_content = _workflow_to_yaml(name, jobs_raw)
+    dest = d / f"{name}.yaml"
+    await anyio.to_thread.run_sync(lambda: dest.write_text(yaml_content))
+
+    # Re-load via WorkflowRunner to return the canonical serialized form
+    runner = await anyio.to_thread.run_sync(lambda: WorkflowRunner.from_yaml(dest))
+    return _serialize_workflow(runner)
 
 
 @router.post("/{name}/run")

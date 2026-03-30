@@ -791,6 +791,68 @@ def list_env_vars(
     list_env_vars_impl(profile_name, config)
 
 
+# Mount management for profiles
+profile_mount_app = typer.Typer(
+    name="mount",
+    help="Manage local-to-remote path mounts for profiles",
+)
+profile_app.add_typer(profile_mount_app, name="mount")
+
+
+@profile_mount_app.command("add")
+def mount_add(
+    profile_name: Annotated[str, typer.Argument(help="Profile name")],
+    name: Annotated[str, typer.Argument(help="Mount name (e.g. 'ml-project')")],
+    local: Annotated[str, typer.Option("--local", help="Local directory path")],
+    remote: Annotated[
+        str, typer.Option("--remote", help="Remote directory path (absolute)")
+    ],
+    config: Annotated[
+        str | None,
+        typer.Option(
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
+        ),
+    ] = None,
+) -> None:
+    """Add a path mount to a profile."""
+    from .profile_impl import add_mount_impl
+
+    add_mount_impl(profile_name, name, local, remote, config)
+
+
+@profile_mount_app.command("list")
+def mount_list(
+    profile_name: Annotated[str, typer.Argument(help="Profile name")],
+    config: Annotated[
+        str | None,
+        typer.Option(
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
+        ),
+    ] = None,
+) -> None:
+    """List all mounts for a profile."""
+    from .profile_impl import list_mounts_impl
+
+    list_mounts_impl(profile_name, config)
+
+
+@profile_mount_app.command("remove")
+def mount_remove(
+    profile_name: Annotated[str, typer.Argument(help="Profile name")],
+    name: Annotated[str, typer.Argument(help="Mount name to remove")],
+    config: Annotated[
+        str | None,
+        typer.Option(
+            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
+        ),
+    ] = None,
+) -> None:
+    """Remove a mount from a profile."""
+    from .profile_impl import remove_mount_impl
+
+    remove_mount_impl(profile_name, name, config)
+
+
 def _determine_connection_params(
     host: str | None,
     profile: str | None,

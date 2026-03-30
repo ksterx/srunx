@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import get_web_config
 from .deps import set_adapter
-from .routers import history, jobs, resources, workflows
+from .routers import files, history, jobs, resources, workflows
 from .ssh_adapter import SlurmSSHAdapter
 
 _FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
@@ -104,6 +104,7 @@ def create_app() -> FastAPI:
     app.include_router(workflows.router)
     app.include_router(resources.router)
     app.include_router(history.router)
+    app.include_router(files.router)
 
     # Serve frontend static files (production) with SPA fallback
     if _FRONTEND_DIST.exists():

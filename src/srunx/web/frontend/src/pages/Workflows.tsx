@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
-import { GitFork, Play, Eye, Upload } from "lucide-react";
+import { GitFork, Play, Eye, Upload, Plus } from "lucide-react";
 import { useApi } from "../hooks/use-api.ts";
 import { workflows as workflowsApi } from "../lib/api.ts";
 import type { Workflow } from "../lib/types.ts";
@@ -57,13 +57,19 @@ export function Workflows() {
             e.target.value = "";
           }}
         />
-        <button
-          className="btn btn-primary"
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <Upload size={14} />
-          Upload YAML
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Link to="/workflows/new" className="btn btn-primary">
+            <Plus size={14} />
+            New Workflow
+          </Link>
+          <button
+            className="btn btn-ghost"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <Upload size={14} />
+            Upload YAML
+          </button>
+        </div>
       </motion.div>
 
       {(error || uploadError) && (

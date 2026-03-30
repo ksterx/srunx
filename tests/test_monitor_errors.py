@@ -191,6 +191,10 @@ class TestResourceMonitorErrorRecovery:
         callback = MagicMock()
         monitor.callbacks = [callback]
 
+        # Pre-set _was_available so the first call does NOT trigger
+        # an initialization-induced transition (None -> opposite).
+        monitor._was_available = False
+
         # Should not crash when notifying with failed resource query
         monitor._notify_callbacks("state_changed")
 
