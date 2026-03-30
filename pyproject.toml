@@ -17,8 +17,16 @@ dependencies = [
     "apscheduler>=3.10.0",
 ]
 
+[project.optional-dependencies]
+web = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "anyio>=4.0.0",
+]
+
 [project.scripts]
 srunx = "srunx.cli.main:main"
+srunx-web = "srunx.web.app:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -89,6 +97,9 @@ exclude_lines = [
 [tool.ruff.lint]
 select = ["I", "E", "F", "B", "C", "UP"]
 ignore = ["E501", "C901", "F841", "B017"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/srunx/web/routers/*.py" = ["B008"]  # Depends() in function defaults is standard FastAPI
 
 [tool.mypy]
 python_version = "3.13"

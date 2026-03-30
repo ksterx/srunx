@@ -465,5 +465,9 @@ $RECYCLE.BIN/
 .coverage
 coverage.xml
 docs/generated/
+
+# Playwright
+test-results/
+playwright-report/
 public/*
 !public/slack_screenshot.png
