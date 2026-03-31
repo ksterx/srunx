@@ -505,3 +505,128 @@ def list_env_vars_impl(profile_name: str, config: str | None = None):
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1) from e
+
+
+def add_mount_impl(
+    profile_name: str,
+    name: str,
+    local: str,
+    remote: str,
+    config: str | None = None,
+) -> None:
+    """Implementation for adding a mount to a profile."""
+    from ..core.config import MountConfig
+
+    try:
+        config_manager = ConfigManager(config)
+
+        # Check if profile exists
+        profile = config_manager.get_profile(profile_name)
+        if not profile:
+            console.print(f"[red]Error: Profile '{profile_name}' not found[/red]")
+            raise typer.Exit(1)
+
+        # Check if mount name already exists
+        for mount in profile.mounts:
+            if mount.name == name:
+                console.print(
+                    f"[red]Error: Mount '{name}' already exists for profile '{profile_name}'[/red]"
+                )
+                raise typer.Exit(1)
+
+        # Create MountConfig (triggers path validation)
+        mount = MountConfig(name=name, local=local, remote=remote)
+
+        # Add mount to profile
+        success = config_manager.add_profile_mount(profile_name, mount)
+
+        if success:
+            console.print(
+                f"[green]Mount '{name}' added to profile '{profile_name}'[/green]"
+            )
+            console.print(f"[dim]  Local:  {mount.local}[/dim]")
+            console.print(f"[dim]  Remote: {mount.remote}[/dim]")
+        else:
+            console.print(
+                f"[red]Failed to add mount '{name}' to profile '{profile_name}'[/red]"
+            )
+            raise typer.Exit(1)
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from e
+
+
+def list_mounts_impl(profile_name: str, config: str | None = None) -> None:
+    """Implementation for listing mounts for a profile."""
+    try:
+        config_manager = ConfigManager(config)
+
+        # Check if profile exists
+        profile = config_manager.get_profile(profile_name)
+        if not profile:
+            console.print(f"[red]Error: Profile '{profile_name}' not found[/red]")
+            raise typer.Exit(1)
+
+        if not profile.mounts:
+            console.print("[dim]No mounts configured[/dim]")
+            console.print("[dim]Use 'srunx ssh profile mount add' to add mounts[/dim]")
+            return
+
+        # Create table
+        table = Table(title=f"Mounts for Profile '{profile_name}'")
+        table.add_column("Name", style="cyan", no_wrap=True)
+        table.add_column("Local", style="green")
+        table.add_column("Remote", style="magenta")
+
+        for mount in profile.mounts:
+            table.add_row(mount.name, mount.local, mount.remote)
+
+        console.print(table)
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from e
+
+
+def remove_mount_impl(profile_name: str, name: str, config: str | None = None) -> None:
+    """Implementation for removing a mount from a profile."""
+    try:
+        config_manager = ConfigManager(config)
+
+        # Check if profile exists
+        profile = config_manager.get_profile(profile_name)
+        if not profile:
+            console.print(f"[red]Error: Profile '{profile_name}' not found[/red]")
+            raise typer.Exit(1)
+
+        # Check if mount exists
+        mount_exists = any(m.name == name for m in profile.mounts)
+        if not mount_exists:
+            console.print(
+                f"[red]Error: Mount '{name}' not found for profile '{profile_name}'[/red]"
+            )
+            raise typer.Exit(1)
+
+        # Remove mount
+        success = config_manager.remove_profile_mount(profile_name, name)
+
+        if success:
+            console.print(
+                f"[green]Mount '{name}' removed from profile '{profile_name}'[/green]"
+            )
+        else:
+            console.print(
+                f"[red]Failed to remove mount '{name}' from profile '{profile_name}'[/red]"
+            )
+            raise typer.Exit(1)
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from e

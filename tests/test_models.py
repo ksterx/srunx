@@ -620,6 +620,53 @@ class TestRenderJobScript:
         assert "python test.py" in content
         assert "conda activate test_env" in content
 
+    def test_render_advanced_template_empty_log_dir(self, temp_dir):
+        """Empty log_dir should produce relative paths, not /%x_%j.log."""
+        template_path = (
+            Path(__file__).resolve().parent.parent
+            / "src"
+            / "srunx"
+            / "templates"
+            / "advanced.slurm.jinja"
+        )
+        job = Job(
+            name="test_job",
+            command=["python", "train.py"],
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        # Should NOT start with / (root directory)
+        for line in content.splitlines():
+            if "--output=" in line:
+                path_part = line.split("--output=")[1]
+                assert not path_part.startswith("/"), (
+                    f"Empty log_dir produced absolute path: {path_part}"
+                )
+                break
+        else:
+            pytest.fail("No --output line found in rendered script")
+
+    def test_render_advanced_template_with_log_dir(self, temp_dir):
+        """Non-empty log_dir should be used as prefix."""
+        template_path = (
+            Path(__file__).resolve().parent.parent
+            / "src"
+            / "srunx"
+            / "templates"
+            / "advanced.slurm.jinja"
+        )
+        job = Job(
+            name="test_job",
+            command=["python", "train.py"],
+            log_dir="/data/logs",
+            work_dir="",
+        )
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        assert "#SBATCH --output=/data/logs/%x_%j.log" in content
+
     def test_render_job_script_nonexistent_template(self, sample_job, temp_dir):
         """Test render_job_script with nonexistent template."""
         with pytest.raises(FileNotFoundError):

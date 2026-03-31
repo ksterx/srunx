@@ -41,6 +41,7 @@ class WorkflowRunner:
         workflow: Workflow,
         callbacks: Sequence[Callback] | None = None,
         args: dict[str, Any] | None = None,
+        default_project: str | None = None,
     ) -> None:
         """Initialize workflow runner.
 
@@ -48,11 +49,13 @@ class WorkflowRunner:
             workflow: Workflow to execute.
             callbacks: List of callbacks for job notifications.
             args: Template variables from the YAML args section.
+            default_project: Default project (mount name) for file syncing.
         """
         self.workflow = workflow
         self.slurm = Slurm(callbacks=callbacks)
         self.callbacks = callbacks or []
         self.args = args or {}
+        self.default_project = default_project
 
     @classmethod
     def from_yaml(
@@ -85,6 +88,7 @@ class WorkflowRunner:
 
         name = data.get("name", "unnamed")
         args = data.get("args", {})
+        default_project = data.get("default_project")
         jobs_data = data.get("jobs", [])
 
         # If single_job is specified, filter jobs_data to only include that job
@@ -106,7 +110,10 @@ class WorkflowRunner:
             job = cls.parse_job(job_data)
             jobs.append(job)
         return cls(
-            workflow=Workflow(name=name, jobs=jobs), callbacks=callbacks, args=args
+            workflow=Workflow(name=name, jobs=jobs),
+            callbacks=callbacks,
+            args=args,
+            default_project=default_project,
         )
 
     @staticmethod

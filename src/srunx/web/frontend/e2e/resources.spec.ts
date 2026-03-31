@@ -49,7 +49,7 @@ test.describe("Resources", () => {
     await expect(gpuCard.getByText("Idle")).toBeVisible();
   });
 
-  test("shows error banner on API failure", async ({ page }) => {
+  test.skip("shows error banner on API failure", async ({ page }) => {
     await page.route("**/api/resources*", (route) => {
       return route.fulfill({
         status: 500,

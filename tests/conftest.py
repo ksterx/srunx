@@ -133,28 +133,11 @@ def reset_config():
 
         mock_run.side_effect = mock_subprocess
 
-        # Prevent status changes during tests by mocking refresh method
-        # Only mock for dependency-sensitive tests, not for refresh tests
-        import inspect
-
-        frame = inspect.currentframe()
-        test_name = ""
-        try:
-            # Try to find the test function name
-            while frame:
-                if "test_" in frame.f_code.co_name:
-                    test_name = frame.f_code.co_name
-                    break
-                frame = frame.f_back
-        except Exception:
-            pass
-
-        # Don't mock refresh for refresh-specific tests
-        if "refresh" not in test_name.lower():
-            with patch.object(srunx.models.BaseJob, "refresh") as mock_refresh:
-                mock_refresh.return_value = None
-                yield
-        else:
+        # Mock BaseJob.refresh to prevent real sacct calls and keep
+        # _status unchanged (the mocked subprocess.run above would reset
+        # every job to PENDING, breaking tests that set custom statuses).
+        with patch.object(srunx.models.BaseJob, "refresh") as mock_refresh:
+            mock_refresh.return_value = None
             yield
 
     # Restore original environment values

@@ -118,6 +118,78 @@ Example workflow YAML:
        command: ["python", "evaluate.py"]
        depends_on: [train]
 
+Step 7: Build a Workflow Visually
+----------------------------------
+
+The DAG builder lets you create workflows interactively instead of writing YAML by hand.
+
+1. Navigate to **Workflows** and click **New Workflow**
+2. Enter a workflow name in the toolbar (e.g., ``ml-pipeline``)
+3. Click **Add Job** to create your first node. It appears on the canvas as ``job_1``
+4. Click the node to open the property panel on the right. Set:
+
+   * **Name**: ``preprocess``
+   * **Command**: ``python preprocess.py``
+
+5. Click **Add Job** again. In the property panel, set:
+
+   * **Name**: ``train``
+   * **Command**: ``python train.py --epochs 100``
+   * **GPUs per Node**: ``4``
+   * **Time Limit**: ``4:00:00``
+
+6. Drag from the **bottom handle** of ``preprocess`` to the **top handle** of ``train`` to create a dependency edge
+7. (Optional) Click the edge to open the dependency type selector and choose between ``afterok``, ``after``, ``afterany``, or ``afternotok``
+8. Click **Save Workflow** in the toolbar. The workflow is validated, saved as YAML, and you are redirected to the DAG view
+
+.. note::
+
+   The builder validates your workflow before saving: every job must have a name and command, job names must be unique, and the dependency graph must be acyclic.
+
+Step 8: Set Up Mount Points
+-----------------------------
+
+Mount points let the file browser in the DAG builder map between local directories and remote paths on the SLURM cluster.
+
+1. Add a mount to your SSH profile:
+
+   .. code-block:: bash
+
+      srunx ssh profile mount add myserver ml-project \
+          --local ~/projects/ml-project \
+          --remote /home/researcher/ml-project
+
+2. Verify the mount was created:
+
+   .. code-block:: bash
+
+      srunx ssh profile mount list myserver
+
+3. In the DAG builder, click a job node to open the property panel
+4. Click the **folder icon** next to the Command, Work Dir, or Log Dir field
+5. The file browser opens showing your configured mounts. Select a mount, browse the project tree, and click **Select**
+6. The selected local path is translated to the corresponding remote path and inserted into the field
+
+.. note::
+
+   Click **Sync Now** in the file browser to push local files to the remote server via rsync before running a workflow.
+
+Step 9: Run a Workflow
+-----------------------
+
+Once you have a saved workflow, you can execute it directly from the Web UI.
+
+1. Navigate to **Workflows** and click a workflow card to open the detail page
+2. Click **Run Workflow** in the toolbar
+3. The system automatically identifies which mounts need syncing based on each job's work directory, and pushes local files to the remote cluster via rsync
+4. Jobs are submitted to SLURM in topological order. Dependencies between jobs are translated into SLURM ``--dependency`` flags, so the scheduler handles sequencing natively
+5. Watch job statuses update in the DAG view as SLURM processes the pipeline: ``PENDING`` then ``RUNNING`` then ``COMPLETED`` (or ``FAILED``). The view polls every 10 seconds
+6. Click a completed (or running) job node to view details including the SLURM job ID. Click **View Logs** to see stdout and stderr output
+
+.. note::
+
+   If a mount sync fails, the run is aborted before any jobs are submitted. Fix the sync issue (check SSH connectivity and rsync availability) and try again.
+
 Next Steps
 ----------
 

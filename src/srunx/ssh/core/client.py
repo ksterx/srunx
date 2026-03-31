@@ -498,7 +498,10 @@ class SSHSlurmClient:
             self.logger.warning(f"SLURM verification error: {e}")
 
     def submit_sbatch_job(
-        self, script_content: str, job_name: str | None = None
+        self,
+        script_content: str,
+        job_name: str | None = None,
+        dependency: str | None = None,
     ) -> SlurmJob | None:
         """Submit an sbatch job with script content"""
         try:
@@ -521,6 +524,10 @@ class SSHSlurmClient:
             if job_name:
                 safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", job_name)
                 cmd += f" --job-name={safe_name}"
+            if dependency:
+                if not re.fullmatch(r"[a-z]+:\d+(,[a-z]+:\d+)*", dependency):
+                    raise ValueError(f"Invalid dependency format: {dependency!r}")
+                cmd += f" --dependency={dependency}"
             cmd += f" {remote_script_path}"
 
             stdout, stderr, exit_code = self._execute_slurm_command(cmd)
@@ -747,11 +754,25 @@ class SSHSlurmClient:
         return job_id_str
 
     def get_job_output(
-        self, job_id: str, job_name: str | None = None
-    ) -> tuple[str, str]:
-        """Get job output from SLURM log files, supporting various log file naming patterns"""
+        self,
+        job_id: str,
+        job_name: str | None = None,
+        stdout_offset: int = 0,
+        stderr_offset: int = 0,
+    ) -> tuple[str, str, int, int]:
+        """Get job output from SLURM log files.
+
+        First tries ``scontrol show job`` to discover the actual StdOut/StdErr
+        paths configured for the job.  Falls back to pattern-based search if
+        scontrol doesn't return usable paths.
+
+        When *stdout_offset* / *stderr_offset* are non-zero, only the bytes
+        **after** that position are returned (tail-like incremental reads).
+
+        Returns:
+            ``(stdout, stderr, new_stdout_offset, new_stderr_offset)``
+        """
         try:
-            # Sanitize inputs to prevent shell injection
             import re as _re
 
             safe_job_id = self._sanitize_job_id(job_id)
@@ -759,92 +780,164 @@ class SSHSlurmClient:
             if job_name and _re.fullmatch(r"[\w\-\.]+", job_name):
                 safe_job_name = job_name
 
-            # Try multiple common SLURM log file patterns
-            potential_log_patterns = [
-                f"{safe_job_name}_{safe_job_id}.log" if safe_job_name else None,
-                f"*_{safe_job_id}.log",
-                f"slurm-{safe_job_id}.out",
-                f"slurm-{safe_job_id}.err",
-                f"job_{safe_job_id}.log",
-                f"{safe_job_id}.log",
-                f"*_{safe_job_id}.out",
-            ]
-
-            patterns = [p for p in potential_log_patterns if p is not None]
-
-            log_dirs = [
-                os.environ.get("SLURM_LOG_DIR", "~/logs/slurm"),
-                "./",
-                "/tmp",
-                "/var/log/slurm",
-            ]
-
             output_content = ""
             error_content = ""
-            found_files = []
+            new_stdout_offset = stdout_offset
+            new_stderr_offset = stderr_offset
 
-            for log_dir in log_dirs:
-                quoted_dir = self._quote_shell_path(log_dir)
-                for pattern in patterns:
-                    quoted_pattern = shlex.quote(pattern)
-                    find_cmd = f"find {quoted_dir} -name {quoted_pattern} -type f 2>/dev/null | head -5"
-                    stdout, stderr, exit_code = self.execute_command(find_cmd)
+            # ── 1. Try scontrol to get actual log paths ──────────────
+            stdout_path, stderr_path = self._get_log_paths_from_scontrol(safe_job_id)
 
-                    if exit_code == 0 and stdout.strip():
-                        log_files = stdout.strip().split("\n")
-                        for log_file in log_files:
-                            if log_file.strip():
-                                found_files.append(log_file.strip())
-                                self.logger.debug(
-                                    f"Found potential log file: {log_file.strip()}"
-                                )
-
-            if found_files:
-                primary_log = found_files[0]
-                quoted_log = shlex.quote(primary_log)
-                stdout_output, _, _ = self.execute_command(
-                    f"cat {quoted_log} 2>/dev/null || echo 'Could not read log file'"
-                )
-                output_content = stdout_output
-
-                # If there are separate error files or multiple files, try to distinguish
-                if len(found_files) > 1:
-                    for log_file in found_files[1:]:
-                        if "err" in log_file.lower() or "error" in log_file.lower():
-                            quoted_err_log = shlex.quote(log_file)
-                            stderr_output, _, _ = self.execute_command(
-                                f"cat {quoted_err_log} 2>/dev/null || echo ''"
-                            )
-                            error_content += stderr_output
-
-                if self.verbose:
-                    self.logger.info(
-                        f"Found {len(found_files)} log file(s) for job {job_id}"
-                    )
-                    self.logger.debug(f"Primary log file: {primary_log}")
-            else:
-                # Fallback to default SLURM patterns in current directory
-                self.logger.warning(
-                    f"No log files found for job {job_id} using common patterns"
+            if stdout_path:
+                output_content, new_stdout_offset = self._read_file_from_offset(
+                    stdout_path, stdout_offset
                 )
 
-                # Try default patterns as fallback using sanitized values
-                default_patterns = []
-                if safe_job_name:
-                    default_patterns.append(f"{safe_job_name}_{safe_job_id}.log")
-                default_patterns.append(f"{safe_job_id}.log")
-                for pattern in default_patterns:
-                    quoted_pattern = shlex.quote(pattern)
-                    stdout_output, _, _ = self.execute_command(
-                        f"cat {quoted_pattern} 2>/dev/null || echo ''"
-                    )
-                    output_content += stdout_output
+            if stderr_path and stderr_path != stdout_path:
+                error_content, new_stderr_offset = self._read_file_from_offset(
+                    stderr_path, stderr_offset
+                )
 
-            return output_content, error_content
+            if output_content or error_content:
+                return (
+                    output_content,
+                    error_content,
+                    new_stdout_offset,
+                    new_stderr_offset,
+                )
+
+            # ── 2. Fallback: pattern-based file search (full read) ───
+            out, err = self._get_job_output_by_pattern(safe_job_id, safe_job_name)
+            return out, err, len(out.encode()), len(err.encode())
 
         except Exception as e:
             self.logger.error(f"Failed to get job output for {job_id}: {e}")
-            return "", ""
+            return "", "", stdout_offset, stderr_offset
+
+    def _read_file_from_offset(self, path: str, offset: int) -> tuple[str, int]:
+        """Read a remote file from a byte offset. Returns (content, new_offset)."""
+        quoted = shlex.quote(path)
+        if offset > 0:
+            # tail -c +N reads from byte N (1-indexed)
+            out, _, rc = self.execute_command(
+                f"tail -c +{offset + 1} {quoted} 2>/dev/null"
+            )
+        else:
+            out, _, rc = self.execute_command(f"cat {quoted} 2>/dev/null")
+        if rc != 0:
+            return "", offset
+
+        # Get current file size for next offset
+        size_out, _, src = self.execute_command(f"wc -c < {quoted} 2>/dev/null")
+        if src == 0 and size_out.strip().isdigit():
+            new_offset = int(size_out.strip())
+        else:
+            new_offset = offset + len(out.encode())
+        return out, new_offset
+
+    def _get_log_paths_from_scontrol(
+        self, job_id: str
+    ) -> tuple[str | None, str | None]:
+        """Query ``scontrol show job`` for StdOut / StdErr paths."""
+        quoted_id = shlex.quote(job_id)
+        stdout, _, rc = self.execute_command(
+            f"scontrol show job {quoted_id} 2>/dev/null"
+        )
+        if rc != 0 or not stdout.strip():
+            return None, None
+
+        stdout_path: str | None = None
+        stderr_path: str | None = None
+        for line in stdout.splitlines():
+            for token in line.split():
+                if token.startswith("StdOut="):
+                    stdout_path = token.split("=", 1)[1]
+                elif token.startswith("StdErr="):
+                    stderr_path = token.split("=", 1)[1]
+        return stdout_path, stderr_path
+
+    def _get_job_output_by_pattern(
+        self, safe_job_id: str, safe_job_name: str | None
+    ) -> tuple[str, str]:
+        """Search common directories for SLURM log files by naming patterns."""
+        potential_log_patterns = [
+            f"{safe_job_name}_{safe_job_id}.log" if safe_job_name else None,
+            f"*_{safe_job_id}.log",
+            f"slurm-{safe_job_id}.out",
+            f"slurm-{safe_job_id}.err",
+            f"job_{safe_job_id}.log",
+            f"{safe_job_id}.log",
+            f"*_{safe_job_id}.out",
+        ]
+
+        patterns = [p for p in potential_log_patterns if p is not None]
+
+        log_dirs = [
+            os.environ.get("SLURM_LOG_DIR", "~/logs/slurm"),
+            "./",
+            "/tmp",
+            "/var/log/slurm",
+        ]
+
+        output_content = ""
+        error_content = ""
+        found_files: list[str] = []
+
+        for log_dir in log_dirs:
+            quoted_dir = self._quote_shell_path(log_dir)
+            for pattern in patterns:
+                quoted_pattern = shlex.quote(pattern)
+                find_cmd = f"find {quoted_dir} -name {quoted_pattern} -type f 2>/dev/null | head -5"
+                stdout, stderr, exit_code = self.execute_command(find_cmd)
+
+                if exit_code == 0 and stdout.strip():
+                    log_files = stdout.strip().split("\n")
+                    for log_file in log_files:
+                        if log_file.strip():
+                            found_files.append(log_file.strip())
+                            self.logger.debug(
+                                f"Found potential log file: {log_file.strip()}"
+                            )
+
+        if found_files:
+            primary_log = found_files[0]
+            quoted_log = shlex.quote(primary_log)
+            stdout_output, _, _ = self.execute_command(
+                f"cat {quoted_log} 2>/dev/null || echo 'Could not read log file'"
+            )
+            output_content = stdout_output
+
+            if len(found_files) > 1:
+                for log_file in found_files[1:]:
+                    if "err" in log_file.lower() or "error" in log_file.lower():
+                        quoted_err_log = shlex.quote(log_file)
+                        stderr_output, _, _ = self.execute_command(
+                            f"cat {quoted_err_log} 2>/dev/null || echo ''"
+                        )
+                        error_content += stderr_output
+
+            if self.verbose:
+                self.logger.info(
+                    f"Found {len(found_files)} log file(s) for job {safe_job_id}"
+                )
+                self.logger.debug(f"Primary log file: {primary_log}")
+        else:
+            self.logger.warning(
+                f"No log files found for job {safe_job_id} using common patterns"
+            )
+
+            default_patterns: list[str] = []
+            if safe_job_name:
+                default_patterns.append(f"{safe_job_name}_{safe_job_id}.log")
+            default_patterns.append(f"{safe_job_id}.log")
+            for pattern in default_patterns:
+                quoted_pattern = shlex.quote(pattern)
+                stdout_output, _, _ = self.execute_command(
+                    f"cat {quoted_pattern} 2>/dev/null || echo ''"
+                )
+                output_content += stdout_output
+
+        return output_content, error_content
 
     def get_job_output_detailed(
         self, job_id: str, job_name: str | None = None

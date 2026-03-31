@@ -253,10 +253,15 @@ class RsyncClient:
     def _ensure_remote_dir(self, remote_path: str) -> None:
         """Create the remote directory via ssh mkdir -p (fallback for rsync without --mkpath)."""
         ssh_cmd = self._build_ssh_cmd()
+        if self.username:
+            dest = f"{self.username}@{self.hostname}"
+        else:
+            dest = self.hostname
+        quoted_path = shlex.quote(remote_path.rstrip("/"))
         mkdir_cmd = [
             *ssh_cmd,
-            f"{self.username}@{self.hostname}",
-            f"mkdir -p {remote_path}",
+            dest,
+            f"mkdir -p {quoted_path}",
         ]
         logger.debug("Ensuring remote dir: {}", shlex.join(mkdir_cmd))
         subprocess.run(mkdir_cmd, capture_output=True, text=True)  # noqa: S603
@@ -303,9 +308,15 @@ class RsyncClient:
         return f"~/.config/srunx/workspace/{basename}/"
 
     def _format_remote(self, path: str) -> str:
-        """Format a remote path as ``user@host:path``.
+        """Format a remote path as ``user@host:path`` or ``host:path``.
+
+        When *username* is empty (e.g. SSH config host alias), the
+        ``user@`` prefix is omitted so that rsync delegates to the
+        SSH config for user resolution.
 
         Tilde (``~``) is left unquoted so the remote shell can expand it.
         ``--protect-args`` handles any special characters in the path.
         """
-        return f"{self.username}@{self.hostname}:{path}"
+        if self.username:
+            return f"{self.username}@{self.hostname}:{path}"
+        return f"{self.hostname}:{path}"

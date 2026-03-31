@@ -604,7 +604,7 @@ class Workflow:
         """Get a job by name."""
         for job in self.jobs:
             if job.name == name:
-                return job.refresh()
+                return job
         return None
 
     def get_dependencies(self, job_name: str) -> list[str]:

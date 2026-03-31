@@ -81,17 +81,37 @@ async def cancel_job(
 @router.get("/{job_id}/logs")
 async def get_job_logs(
     job_id: int,
+    stdout_offset: int = 0,
+    stderr_offset: int = 0,
     adapter: SlurmSSHAdapter = Depends(get_adapter),
-) -> dict[str, str]:
-    """Get stdout/stderr log contents for a job via SSH."""
+) -> dict[str, str | int]:
+    """Get stdout/stderr log contents for a job via SSH.
+
+    Pass ``stdout_offset`` / ``stderr_offset`` (byte positions) to
+    receive only the **new** content since the last read.
+    """
     if job_id <= 0:
         raise HTTPException(status_code=400, detail="Invalid job ID")
     try:
-        stdout, stderr = await anyio.to_thread.run_sync(
-            lambda: adapter.get_job_output(job_id)
+        (
+            stdout,
+            stderr,
+            new_stdout_offset,
+            new_stderr_offset,
+        ) = await anyio.to_thread.run_sync(
+            lambda: adapter.get_job_output(
+                job_id,
+                stdout_offset=stdout_offset,
+                stderr_offset=stderr_offset,
+            )
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
-    return {"stdout": stdout, "stderr": stderr}
+    return {
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_offset": new_stdout_offset,
+        "stderr_offset": new_stderr_offset,
+    }

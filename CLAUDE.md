@@ -35,6 +35,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run srunx ssh <script>` - Submit script to remote SLURM server via SSH
 - `uv run srunx ssh profile list` - List SSH connection profiles
 - `uv run srunx ssh profile add <name>` - Add SSH connection profile
+- `uv run srunx ssh profile mount add <profile> <name> --local <path> --remote <path>` - Add mount point
+- `uv run srunx ssh profile mount list <profile>` - List mount points
+- `uv run srunx ssh profile mount remove <profile> <name>` - Remove mount point
+- `uv run srunx ssh sync` - Sync current directory's mount (auto-detect profile and mount from cwd)
+- `uv run srunx ssh sync <profile> <name>` - Sync a specific mount
+- `uv run srunx ssh sync --dry-run` - Preview sync without transferring
 
 #### Workflows
 - `uv run srunx flow run <yaml_file>` - Execute workflow from YAML

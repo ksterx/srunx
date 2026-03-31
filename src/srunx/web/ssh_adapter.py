@@ -243,10 +243,15 @@ class SlurmSSHAdapter:
         _run_slurm_cmd(self, f"scancel {job_id}")
 
     def submit_job(
-        self, script_content: str, job_name: str | None = None
+        self,
+        script_content: str,
+        job_name: str | None = None,
+        dependency: str | None = None,
     ) -> dict[str, Any]:
         """Submit a job via sbatch. Returns job info dict."""
-        result = self._client.submit_sbatch_job(script_content, job_name=job_name)
+        result = self._client.submit_sbatch_job(
+            script_content, job_name=job_name, dependency=dependency
+        )
         if result is None:
             raise RuntimeError("sbatch submission failed")
         return {
@@ -259,10 +264,22 @@ class SlurmSSHAdapter:
         }
 
     def get_job_output(
-        self, job_id: int, job_name: str | None = None
-    ) -> tuple[str, str]:
-        """Get job stdout/stderr log contents from remote."""
-        return self._client.get_job_output(str(job_id), job_name=job_name)
+        self,
+        job_id: int,
+        job_name: str | None = None,
+        stdout_offset: int = 0,
+        stderr_offset: int = 0,
+    ) -> tuple[str, str, int, int]:
+        """Get job stdout/stderr log contents from remote.
+
+        Returns ``(stdout, stderr, new_stdout_offset, new_stderr_offset)``.
+        """
+        return self._client.get_job_output(
+            str(job_id),
+            job_name=job_name,
+            stdout_offset=stdout_offset,
+            stderr_offset=stderr_offset,
+        )
 
     def get_job_status(self, job_id: int) -> str:
         """Get job status string."""

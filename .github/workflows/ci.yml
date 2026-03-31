@@ -27,7 +27,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        uv sync --dev
+        uv sync --dev --extra web
 
     - name: Run ruff check
       run: uv run ruff check .
@@ -49,6 +49,9 @@ jobs:
         echo "Running client tests (may have isolation issues)..."
         uv run pytest tests/test_client.py -v || echo "Client tests completed with some expected isolation issues"
 
+    - name: Run web router tests
+      run: uv run pytest tests/web/ -v
+
     - name: Run integration tests
       run: |
         echo "Running integration tests (may have isolation issues)..."
@@ -59,7 +62,7 @@ jobs:
       run: |
         echo "Generating test coverage report..."
         # Run coverage on stable modules only
-        uv run pytest tests/test_models.py tests/test_config.py tests/test_cli.py tests/test_callbacks.py tests/test_utils.py --cov=srunx --cov-report=xml --cov-report=term --tb=no -q
+        uv run pytest tests/test_models.py tests/test_config.py tests/test_cli.py tests/test_callbacks.py tests/test_utils.py tests/web/ --cov=srunx --cov-report=xml --cov-report=term --tb=no -q
       continue-on-error: true
 
     - name: Upload coverage to Codecov
@@ -69,3 +72,44 @@ jobs:
         file: ./coverage.xml
         token: ${{ secrets.CODECOV_TOKEN }}
         fail_ci_if_error: false
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/srunx/web/frontend
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+        cache: "npm"
+        cache-dependency-path: src/srunx/web/frontend/package-lock.json
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: TypeScript type check
+      run: npx tsc --noEmit
+
+    - name: Build frontend
+      run: npm run build
+
+    - name: Install Playwright browsers
+      run: npx playwright install --with-deps chromium
+
+    - name: Run E2E tests
+      run: npx playwright test --reporter=list
+      env:
+        CI: true
+
+    - name: Upload Playwright report
+      uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: playwright-report
+        path: src/srunx/web/frontend/playwright-report/
+        retention-days: 7

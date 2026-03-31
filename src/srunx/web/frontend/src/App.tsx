@@ -5,6 +5,7 @@ import { Dashboard } from "./pages/Dashboard.tsx";
 import { Jobs } from "./pages/Jobs.tsx";
 import { Workflows } from "./pages/Workflows.tsx";
 import { WorkflowDetail } from "./pages/WorkflowDetail.tsx";
+import { WorkflowBuilder } from "./pages/WorkflowBuilder.tsx";
 import { Resources } from "./pages/Resources.tsx";
 import { LogViewer } from "./pages/LogViewer.tsx";
 
@@ -17,6 +18,8 @@ export function App() {
           <Route path="jobs" element={<Jobs />} />
           <Route path="jobs/:jobId/logs" element={<LogViewer />} />
           <Route path="workflows" element={<Workflows />} />
+          <Route path="workflows/new" element={<WorkflowBuilder />} />
+          <Route path="workflows/:name/edit" element={<WorkflowBuilder />} />
           <Route path="workflows/:name" element={<WorkflowDetail />} />
           <Route path="resources" element={<Resources />} />
         </Route>

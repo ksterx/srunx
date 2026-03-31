@@ -55,6 +55,15 @@ export async function setupMockRoutes(page: Page) {
   });
 
   /* ── Workflows ─────────────────────────────── */
+  await page.route("**/api/workflows/runs/*/cancel", (route) => {
+    if (route.request().method() === "POST") {
+      return route.fulfill({
+        json: { status: "cancelled", run_id: "run-001" },
+      });
+    }
+    return route.continue();
+  });
+
   await page.route("**/api/workflows/runs*", (route) => {
     return route.fulfill({ json: [] });
   });
@@ -65,6 +74,32 @@ export async function setupMockRoutes(page: Page) {
 
   await page.route("**/api/workflows/upload", (route) => {
     return route.fulfill({ json: MOCK_WORKFLOWS[0] });
+  });
+
+  await page.route("**/api/workflows/create", (route) => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON();
+      const name = body?.name ?? "test-workflow";
+      return route.fulfill({
+        json: {
+          name,
+          jobs: (body?.jobs ?? []).map(
+            (j: {
+              name: string;
+              command: string[];
+              depends_on?: string[];
+            }) => ({
+              name: j.name,
+              status: "UNKNOWN",
+              depends_on: j.depends_on ?? [],
+              command: j.command,
+              resources: {},
+            }),
+          ),
+        },
+      });
+    }
+    return route.continue();
   });
 
   await page.route("**/api/workflows/**/run", (route) => {
@@ -85,15 +120,28 @@ export async function setupMockRoutes(page: Page) {
 
   await page.route("**/api/workflows/*", (route) => {
     const url = route.request().url();
-    const name = decodeURIComponent(url.split("/api/workflows/")[1]);
-    const wf = MOCK_WORKFLOWS.find((w) => w.name === name);
+    const segment = decodeURIComponent(url.split("/api/workflows/")[1]);
+
+    /* Let create endpoint through to its own mock */
+    if (segment === "create" && route.request().method() === "POST") {
+      return route.fallback();
+    }
+
+    /* DELETE /api/workflows/:name */
+    if (route.request().method() === "DELETE") {
+      return route.fulfill({
+        json: { status: "deleted", name: segment },
+      });
+    }
+
+    const wf = MOCK_WORKFLOWS.find((w) => w.name === segment);
     if (wf) {
       return route.fulfill({ json: wf });
     }
     return route.fulfill({
       status: 404,
       json: {
-        detail: `Workflow ${name} not found`,
+        detail: `Workflow ${segment} not found`,
         code: "workflow_not_found",
       },
     });
