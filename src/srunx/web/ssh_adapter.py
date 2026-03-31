@@ -243,10 +243,15 @@ class SlurmSSHAdapter:
         _run_slurm_cmd(self, f"scancel {job_id}")
 
     def submit_job(
-        self, script_content: str, job_name: str | None = None
+        self,
+        script_content: str,
+        job_name: str | None = None,
+        dependency: str | None = None,
     ) -> dict[str, Any]:
         """Submit a job via sbatch. Returns job info dict."""
-        result = self._client.submit_sbatch_job(script_content, job_name=job_name)
+        result = self._client.submit_sbatch_job(
+            script_content, job_name=job_name, dependency=dependency
+        )
         if result is None:
             raise RuntimeError("sbatch submission failed")
         return {

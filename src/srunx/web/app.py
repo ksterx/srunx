@@ -72,8 +72,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "SRUNX_SSH_HOSTNAME + SRUNX_SSH_USERNAME to connect to a SLURM cluster."
         )
 
+    import anyio
+
     try:
-        yield
+        async with anyio.create_task_group() as tg:
+            app.state.task_group = tg
+            yield
+            tg.cancel_scope.cancel()
     finally:
         if adapter:
             _logger.info("Closing SSH connection...")

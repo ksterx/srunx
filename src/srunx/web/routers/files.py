@@ -210,36 +210,13 @@ async def sync_mount(body: SyncRequest) -> dict[str, str]:
     if profile is None:
         raise HTTPException(status_code=503, detail="No SSH profile configured")
 
-    mount_config = _find_mount(profile, body.mount)
-
     try:
-        from srunx.sync.rsync import RsyncClient
+        from ..sync_utils import sync_mount_by_name
 
-        # When ssh_host is set, delegate to ~/.ssh/config for all
-        # connection params (user, key, proxy, port).
-        if profile.ssh_host:
-            rsync = RsyncClient(
-                hostname=profile.ssh_host,
-                username="",
-                ssh_config_path=str(Path.home() / ".ssh" / "config"),
-            )
-        else:
-            rsync = RsyncClient(
-                hostname=profile.hostname,
-                username=profile.username,
-                key_filename=profile.key_filename,
-                port=profile.port,
-                proxy_jump=profile.proxy_jump,
-            )
+        await anyio.to_thread.run_sync(lambda: sync_mount_by_name(profile, body.mount))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
-        # rsync binary not found on the local machine
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-    result = await anyio.to_thread.run_sync(
-        lambda: rsync.push(mount_config.local, mount_config.remote)
-    )
-
-    if result.returncode != 0:
-        raise HTTPException(502, f"rsync failed: {result.stderr}")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return {"status": "synced", "mount": body.mount}

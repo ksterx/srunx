@@ -1,17 +1,52 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { ArrowLeft, Play, RefreshCw, List } from "lucide-react";
 import { useApi } from "../hooks/use-api.ts";
 import { workflows as workflowsApi } from "../lib/api.ts";
-import type { RunnableJob } from "../lib/types.ts";
+import type {
+  JobStatus,
+  RunnableJob,
+  WorkflowRun,
+  WorkflowRunStatus,
+} from "../lib/types.ts";
 import { DAGView } from "../components/DAGView.tsx";
 import { StatusBadge } from "../components/StatusBadge.tsx";
+
+const TERMINAL_STATUSES: ReadonlySet<WorkflowRunStatus> = new Set([
+  "completed",
+  "failed",
+  "cancelled",
+]);
+
+const RUN_STATUS_COLORS: Record<WorkflowRunStatus, string> = {
+  syncing: "var(--st-pending)",
+  submitting: "var(--st-pending)",
+  running: "var(--st-running)",
+  completed: "var(--st-completed)",
+  failed: "var(--st-failed)",
+  cancelled: "var(--text-muted)",
+};
+
+const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
+  syncing: "Syncing...",
+  submitting: "Submitting...",
+  running: "Running",
+  completed: "Completed",
+  failed: "Failed",
+  cancelled: "Cancelled",
+};
 
 export function WorkflowDetail() {
   const { name } = useParams<{ name: string }>();
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
   const [view, setView] = useState<"dag" | "list">("dag");
+
+  /* ── Run state ──────────────────────────────── */
+  const [runData, setRunData] = useState<WorkflowRun | null>(null);
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   if (!name) {
     return (
@@ -29,7 +64,82 @@ export function WorkflowDetail() {
     error,
   } = useApi(() => workflowsApi.get(name), [name], { pollInterval: 10000 });
 
-  const liveJobs: RunnableJob[] = workflow?.jobs ?? [];
+  /* ── Stop polling on unmount ──────────────── */
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  /* ── Poll run status when runData is set ──── */
+  useEffect(() => {
+    if (!runData) return;
+    if (TERMINAL_STATUSES.has(runData.status)) {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+      return;
+    }
+
+    // Start polling if not already
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const updated = await workflowsApi.getRun(runData.id);
+        setRunData(updated);
+        if (TERMINAL_STATUSES.has(updated.status)) {
+          if (pollRef.current) {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+          }
+        }
+      } catch {
+        // Ignore transient fetch errors during polling
+      }
+    }, 5000);
+
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [runData?.id, runData?.status]);
+
+  /* ── Run handler ──────────────────────────── */
+  const handleRun = useCallback(async () => {
+    if (!name || running) return;
+    setRunError(null);
+    setRunning(true);
+    try {
+      const run = await workflowsApi.run(name);
+      setRunData(run);
+    } catch (err) {
+      setRunError(
+        err instanceof Error ? err.message : "Failed to run workflow",
+      );
+    } finally {
+      setRunning(false);
+    }
+  }, [name, running]);
+
+  /* ── Merge run status into jobs ───────────── */
+  const liveJobs: RunnableJob[] = useMemo(() => {
+    if (!workflow) return [];
+    return workflow.jobs.map((job) => {
+      const runStatus = runData?.job_statuses[job.name] as
+        | JobStatus
+        | undefined;
+      const runJobId = runData?.job_ids[job.name];
+      return {
+        ...job,
+        status: runStatus ?? job.status,
+        job_id: runJobId ? Number(runJobId) : job.job_id,
+      };
+    });
+  }, [workflow, runData]);
+
   const selected = liveJobs.find((j) => j.name === selectedJob);
 
   if (loading) {
@@ -161,12 +271,60 @@ export function WorkflowDetail() {
             ))}
           </div>
 
-          <button className="btn btn-primary">
+          {/* Run status badge */}
+          {runData && (
+            <span
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: "0.7rem",
+                padding: "3px 10px",
+                borderRadius: 4,
+                color: RUN_STATUS_COLORS[runData.status],
+                background: "var(--bg-overlay)",
+                border: `1px solid ${RUN_STATUS_COLORS[runData.status]}`,
+                textTransform: "uppercase",
+                letterSpacing: "0.04em",
+              }}
+            >
+              {RUN_STATUS_LABELS[runData.status]}
+            </span>
+          )}
+
+          <button
+            className="btn btn-primary"
+            onClick={handleRun}
+            disabled={
+              running || (!!runData && !TERMINAL_STATUSES.has(runData.status))
+            }
+            style={{
+              opacity:
+                running || (runData && !TERMINAL_STATUSES.has(runData.status))
+                  ? 0.6
+                  : 1,
+            }}
+          >
             <Play size={14} />
-            Run Workflow
+            {running ? "Starting..." : "Run Workflow"}
           </button>
         </div>
       </motion.div>
+
+      {/* Run error */}
+      {runError && (
+        <div
+          style={{
+            padding: "var(--sp-3) var(--sp-5)",
+            background: "var(--st-failed-dim)",
+            border: "1px solid rgba(244,63,94,0.3)",
+            borderRadius: "var(--radius-md)",
+            color: "var(--st-failed)",
+            fontFamily: "var(--font-mono)",
+            fontSize: "0.8rem",
+          }}
+        >
+          {runError}
+        </div>
+      )}
 
       {/* Main content */}
       <div

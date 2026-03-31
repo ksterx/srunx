@@ -498,7 +498,10 @@ class SSHSlurmClient:
             self.logger.warning(f"SLURM verification error: {e}")
 
     def submit_sbatch_job(
-        self, script_content: str, job_name: str | None = None
+        self,
+        script_content: str,
+        job_name: str | None = None,
+        dependency: str | None = None,
     ) -> SlurmJob | None:
         """Submit an sbatch job with script content"""
         try:
@@ -521,6 +524,8 @@ class SSHSlurmClient:
             if job_name:
                 safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", job_name)
                 cmd += f" --job-name={safe_name}"
+            if dependency:
+                cmd += f" --dependency={dependency}"
             cmd += f" {remote_script_path}"
 
             stdout, stderr, exit_code = self._execute_slurm_command(cmd)

@@ -53,6 +53,28 @@ export type RunnableJob = CommandJob | ShellJob;
 export type Workflow = {
   name: string;
   jobs: RunnableJob[];
+  default_project?: string | null;
+};
+
+/* ── Workflow run ─────────────────────────────── */
+
+export type WorkflowRunStatus =
+  | "syncing"
+  | "submitting"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type WorkflowRun = {
+  id: string;
+  workflow_name: string;
+  started_at: string;
+  completed_at: string | null;
+  status: WorkflowRunStatus;
+  job_ids: Record<string, string>;
+  job_statuses: Record<string, string>;
+  error: string | null;
 };
 
 /* ── Resource snapshot ────────────────────────── */
@@ -150,6 +172,7 @@ export type SyncResult = {
 
 export type WorkflowCreateRequest = {
   name: string;
+  default_project?: string | null;
   jobs: Array<{
     name: string;
     command: string[];

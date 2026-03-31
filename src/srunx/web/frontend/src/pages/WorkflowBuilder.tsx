@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   ReactFlow,
@@ -16,8 +16,8 @@ import { motion } from "framer-motion";
 import { ArrowLeft, Plus, Save } from "lucide-react";
 import { useWorkflowBuilder } from "../hooks/use-workflow-builder.ts";
 import { JobPropertyPanel } from "../components/JobPropertyPanel.tsx";
-import { workflows as workflowsApi } from "../lib/api.ts";
-import type { BuilderJob, DependencyType } from "../lib/types.ts";
+import { workflows as workflowsApi, files as filesApi } from "../lib/api.ts";
+import type { BuilderJob, DependencyType, Mount } from "../lib/types.ts";
 
 /* ── Dependency type options ──────────────────── */
 
@@ -330,10 +330,23 @@ export function WorkflowBuilder() {
   } = useWorkflowBuilder();
 
   const [workflowName, setWorkflowName] = useState("");
+  const [defaultProject, setDefaultProject] = useState<string | null>(null);
+  const [mounts, setMounts] = useState<Mount[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<SelectedEdge | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  /* ── Load available mounts ─────────────────── */
+
+  useEffect(() => {
+    filesApi
+      .mounts()
+      .then(setMounts)
+      .catch(() => {
+        /* mounts are optional; ignore errors */
+      });
+  }, []);
 
   const nodeTypes = useMemo(() => ({ builderNode: BuilderJobNode }), []);
 
@@ -387,6 +400,14 @@ export function WorkflowBuilder() {
     [deleteSelected],
   );
 
+  /* ── Default work_dir from selected mount ── */
+
+  const defaultWorkDir = useMemo(() => {
+    if (!defaultProject) return null;
+    const mount = mounts.find((m) => m.name === defaultProject);
+    return mount?.remote ?? null;
+  }, [defaultProject, mounts]);
+
   /* ── Save workflow ────────────────────────── */
 
   const handleSave = useCallback(async () => {
@@ -413,7 +434,7 @@ export function WorkflowBuilder() {
     // Serialize and submit
     setSaving(true);
     try {
-      const request = serialize(trimmedName);
+      const request = serialize(trimmedName, defaultProject);
       await workflowsApi.create(request);
       navigate(`/workflows/${encodeURIComponent(trimmedName)}`);
     } catch (err) {
@@ -425,7 +446,7 @@ export function WorkflowBuilder() {
     } finally {
       setSaving(false);
     }
-  }, [workflowName, validate, serialize, navigate]);
+  }, [workflowName, defaultProject, validate, serialize, navigate]);
 
   /* ── Edge dep type for selector ───────────── */
 
@@ -481,9 +502,35 @@ export function WorkflowBuilder() {
           }}
         />
 
+        {mounts.length > 0 && (
+          <select
+            className="input"
+            value={defaultProject ?? ""}
+            onChange={(e) => setDefaultProject(e.target.value || null)}
+            style={{
+              width: 180,
+              fontFamily: "var(--font-mono)",
+              fontSize: "0.8rem",
+              color: defaultProject
+                ? "var(--text-primary)"
+                : "var(--text-muted)",
+            }}
+          >
+            <option value="">No default project</option>
+            {mounts.map((m) => (
+              <option key={m.name} value={m.name}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+        )}
+
         <div style={{ flex: 1 }} />
 
-        <button className="btn btn-ghost" onClick={addJob}>
+        <button
+          className="btn btn-ghost"
+          onClick={() => addJob(defaultWorkDir)}
+        >
           <Plus size={14} />
           Add Job
         </button>

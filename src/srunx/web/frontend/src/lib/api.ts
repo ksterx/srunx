@@ -8,6 +8,7 @@ import type {
   SyncResult,
   Workflow,
   WorkflowCreateRequest,
+  WorkflowRun,
 } from "./types.ts";
 
 /* ── Helpers ─────────────────────────────────── */
@@ -94,6 +95,29 @@ export const workflows = {
     if (!res.ok) {
       const err = await res.json();
       throw new Error(extractDetail(err, "Failed to create workflow"));
+    }
+    return res.json();
+  },
+
+  run: async (name: string): Promise<WorkflowRun> => {
+    const res = await fetch(
+      `/api/workflows/${encodeURIComponent(name)}/run`,
+      { method: "POST" },
+    );
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(extractDetail(err, "Failed to run workflow"));
+    }
+    return res.json();
+  },
+
+  getRun: async (runId: string): Promise<WorkflowRun> => {
+    const res = await fetch(
+      `/api/workflows/runs/${encodeURIComponent(runId)}`,
+    );
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(extractDetail(err, "Failed to fetch run"));
     }
     return res.json();
   },

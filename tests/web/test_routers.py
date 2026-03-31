@@ -76,11 +76,17 @@ def client(  # type: ignore[misc]
     cfg.workflow_dir = tmp_path / "workflows"
     config_mod._config = cfg
 
+    # Clear run registry to avoid cross-test state leakage
+    from srunx.web.state import run_registry
+
+    run_registry._runs.clear()
+
     app = create_app()
     app.dependency_overrides[get_adapter] = lambda: mock_adapter
     yield TestClient(app, raise_server_exceptions=False)
 
     config_mod._config = original
+    run_registry._runs.clear()
 
 
 # ── Jobs Router ───────────────────────────────────
@@ -338,3 +344,105 @@ class TestWorkflowsRouter:
         get_resp = client.get("/api/workflows/fetch-me")
         assert get_resp.status_code == 200
         assert get_resp.json()["name"] == "fetch-me"
+
+    # ── GET /api/workflows/runs/{run_id} ────────────
+
+    def test_get_run_not_found(self, client: TestClient) -> None:
+        resp = client.get("/api/workflows/runs/nonexistent-id")
+        assert resp.status_code == 404
+
+    def test_get_run_returns_created_run(self, client: TestClient) -> None:
+        """Create a run via the registry, then fetch it by ID."""
+        from srunx.web.state import run_registry
+
+        run = run_registry.create("test-wf")
+        resp = client.get(f"/api/workflows/runs/{run.id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == run.id
+        assert data["workflow_name"] == "test-wf"
+
+    # ── POST /api/workflows/{name}/run ──────────────
+
+    def test_run_workflow_success(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """Run a workflow end-to-end: create, then run with mocked adapter."""
+        # Create the workflow first
+        create_payload = {
+            "name": "run-test",
+            "jobs": [
+                {"name": "step1", "command": ["echo", "a"]},
+                {
+                    "name": "step2",
+                    "command": ["echo", "b"],
+                    "depends_on": ["step1"],
+                },
+            ],
+        }
+        resp = client.post("/api/workflows/create", json=create_payload)
+        assert resp.status_code == 200
+
+        # Mock submit_job to return incrementing job IDs
+        call_count = 0
+
+        def mock_submit(script_content, job_name=None, dependency=None):
+            nonlocal call_count
+            call_count += 1
+            return {
+                "name": job_name or "job",
+                "job_id": 10000 + call_count,
+                "status": "PENDING",
+                "depends_on": [],
+                "command": [],
+                "resources": {},
+            }
+
+        mock_adapter.submit_job.side_effect = mock_submit
+
+        # Run the workflow
+        resp = client.post("/api/workflows/run-test/run")
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["workflow_name"] == "run-test"
+        assert data["status"] == "running"
+        assert "10001" in data["job_ids"].values()
+        assert "10002" in data["job_ids"].values()
+
+        # Verify topological order: step1 submitted without deps, step2 with deps
+        calls = mock_adapter.submit_job.call_args_list
+        assert len(calls) == 2
+        # First call should have no dependency
+        assert (
+            calls[0].kwargs.get("dependency") is None
+            or calls[0][1].get("dependency") is None
+        )
+        # Second call should have afterok dependency on step1's job_id
+        second_call_kwargs = calls[1].kwargs if calls[1].kwargs else {}
+        dep = second_call_kwargs.get("dependency", "")
+        assert "afterok:10001" in dep
+
+    def test_run_workflow_not_found(self, client: TestClient) -> None:
+        resp = client.post("/api/workflows/nonexistent-wf/run")
+        assert resp.status_code == 404
+
+    def test_run_workflow_invalid_name(self, client: TestClient) -> None:
+        resp = client.post("/api/workflows/bad name!/run")
+        assert resp.status_code == 422
+
+    def test_run_workflow_submit_failure(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """If sbatch fails, the run should be marked as failed."""
+        create_payload = {
+            "name": "fail-run",
+            "jobs": [{"name": "boom", "command": ["echo", "fail"]}],
+        }
+        resp = client.post("/api/workflows/create", json=create_payload)
+        assert resp.status_code == 200
+
+        mock_adapter.submit_job.side_effect = RuntimeError("sbatch error")
+
+        resp = client.post("/api/workflows/fail-run/run")
+        assert resp.status_code == 502
+        assert "sbatch" in resp.json()["detail"]

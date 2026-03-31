@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import tempfile
 from pathlib import Path
@@ -9,15 +10,25 @@ from typing import Any
 
 import anyio
 import yaml
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from srunx.exceptions import WorkflowValidationError
-from srunx.models import Job, JobEnvironment, JobResource, ShellJob, Workflow
+from srunx.models import (
+    Job,
+    JobEnvironment,
+    JobResource,
+    ShellJob,
+    Workflow,
+)
 from srunx.runner import WorkflowRunner
 
 from ..config import get_web_config
+from ..deps import get_adapter
+from ..ssh_adapter import SlurmSSHAdapter
 from ..state import run_registry
+
+_logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
@@ -43,6 +54,7 @@ class WorkflowJobInput(BaseModel):
 class WorkflowCreateRequest(BaseModel):
     name: str = Field(..., pattern=r"^[\w\-]+$")
     jobs: list[WorkflowJobInput]
+    default_project: str | None = None
 
 
 # ── Shared helpers ───────────────────────────────────
@@ -88,7 +100,11 @@ def _validate_and_build_workflow(data: dict[str, Any]) -> Workflow:
     return workflow
 
 
-def _workflow_to_yaml(name: str, jobs_data: list[dict[str, Any]]) -> str:
+def _workflow_to_yaml(
+    name: str,
+    jobs_data: list[dict[str, Any]],
+    default_project: str | None = None,
+) -> str:
     """Serialize a workflow to YAML compatible with ``WorkflowRunner.from_yaml``.
 
     Only includes non-default / non-None resource and environment fields so
@@ -129,7 +145,10 @@ def _workflow_to_yaml(name: str, jobs_data: list[dict[str, Any]]) -> str:
 
         serialized_jobs.append(entry)
 
-    doc: dict[str, Any] = {"name": name, "jobs": serialized_jobs}
+    doc: dict[str, Any] = {"name": name}
+    if default_project:
+        doc["default_project"] = default_project
+    doc["jobs"] = serialized_jobs
     return yaml.dump(doc, default_flow_style=False, sort_keys=False)
 
 
@@ -181,7 +200,10 @@ def _serialize_workflow(runner: WorkflowRunner) -> dict[str, Any]:
             d["command"] = []
             d["resources"] = {}
         jobs.append(d)
-    return {"name": wf.name, "jobs": jobs}
+    result: dict[str, Any] = {"name": wf.name, "jobs": jobs}
+    if runner.default_project:
+        result["default_project"] = runner.default_project
+    return result
 
 
 @router.get("")
@@ -206,6 +228,15 @@ async def list_workflows() -> list[dict[str, Any]]:
 async def list_runs(name: str | None = None) -> list[dict[str, Any]]:
     runs = run_registry.list_runs(name)
     return [r.model_dump() for r in runs]
+
+
+@router.get("/runs/{run_id}")
+async def get_run(run_id: str) -> dict[str, Any]:
+    """Get the status and details of a single workflow run."""
+    run = run_registry.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    return run.model_dump()
 
 
 @router.post("/validate")
@@ -321,7 +352,9 @@ async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Serialize and write to disk
-    yaml_content = _workflow_to_yaml(name, jobs_raw)
+    yaml_content = _workflow_to_yaml(
+        name, jobs_raw, default_project=body.default_project
+    )
     dest = d / f"{name}.yaml"
     await anyio.to_thread.run_sync(lambda: dest.write_text(yaml_content))
 
@@ -330,20 +363,206 @@ async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
     return _serialize_workflow(runner)
 
 
-@router.post("/{name}/run")
-async def run_workflow(name: str) -> dict[str, Any]:
-    """Start a workflow run.
+async def _monitor_run(
+    run_id: str, job_ids: dict[str, str], adapter: SlurmSSHAdapter
+) -> None:
+    """Background task: poll SLURM job statuses and update run registry."""
+    terminal = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"}
+    while True:
+        all_terminal = True
+        for job_name, job_id in job_ids.items():
+            try:
+                status = await anyio.to_thread.run_sync(
+                    lambda jid=job_id: adapter.get_job_status(int(jid))  # type: ignore[misc]
+                )
+                run_registry.update_job_status(run_id, job_name, status)
+                if status not in terminal:
+                    all_terminal = False
+            except Exception:
+                all_terminal = False  # keep polling on transient errors
 
-    NOTE: Full workflow execution via SSH is not yet supported.
-    This creates a run record for tracking purposes.
-    Actual execution should be done via `srunx flow run` on the remote.
-    """
+        if all_terminal:
+            run = run_registry.get(run_id)
+            if run is not None:
+                statuses = set(run.job_statuses.values())
+                if statuses <= {"COMPLETED"}:
+                    run_registry.complete_run(run_id, "completed")
+                else:
+                    run_registry.complete_run(run_id, "failed")
+            break
+
+        await anyio.sleep(10)
+
+
+@router.post("/{name}/run", status_code=202)
+async def run_workflow(
+    name: str,
+    request: Request,
+    adapter: SlurmSSHAdapter = Depends(get_adapter),
+) -> dict[str, Any]:
+    """Run a workflow: sync mounts, submit jobs with SLURM dependencies."""
+    from collections import deque
+
+    from srunx.models import render_job_script
+
+    from ..sync_utils import resolve_mounts_for_workflow, sync_mount_by_name
+
     if not _SAFE_NAME.match(name):
         raise HTTPException(status_code=422, detail="Invalid workflow name")
-    _find_yaml(name)  # validate exists
 
+    yaml_path = _find_yaml(name)
+
+    # Load workflow
+    runner = await anyio.to_thread.run_sync(lambda: WorkflowRunner.from_yaml(yaml_path))
+    workflow = runner.workflow
+
+    # Create run record
     run = run_registry.create(name)
-    return run.model_dump()
+    run_id = run.id
+    run_registry.update_status(run_id, "syncing")
+
+    # ── Sync mounts ─────────────────────────────────────────────────
+    def _get_current_profile():
+        from srunx.ssh.core.config import ConfigManager
+
+        config = get_web_config()
+        cm = ConfigManager()
+        profile_name = config.ssh_profile
+        if not profile_name:
+            profile_name = cm.get_current_profile_name()
+        if not profile_name:
+            return None
+        return cm.get_profile(profile_name)
+
+    profile = await anyio.to_thread.run_sync(_get_current_profile)
+
+    if profile is not None:
+        # Build raw jobs data from the loaded workflow for mount resolution
+        jobs_raw: list[dict[str, Any]] = []
+        for job in workflow.jobs:
+            jd: dict[str, Any] = {"name": job.name}
+            if hasattr(job, "work_dir"):
+                jd["work_dir"] = getattr(job, "work_dir", "")
+            jobs_raw.append(jd)
+
+        mount_names = resolve_mounts_for_workflow(
+            profile, jobs_raw, default_project=runner.default_project
+        )
+        for mount_name in mount_names:
+            try:
+                await anyio.to_thread.run_sync(
+                    lambda mn=mount_name: sync_mount_by_name(profile, mn)  # type: ignore[misc]
+                )
+            except Exception as exc:
+                run_registry.fail_run(
+                    run_id, f"Sync failed for mount '{mount_name}': {exc}"
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Mount sync failed for '{mount_name}': {exc}",
+                ) from exc
+
+    # ── Render SLURM scripts ────────────────────────────────────────
+    run_registry.update_status(run_id, "submitting")
+
+    template_path = (
+        Path(__file__).resolve().parent.parent.parent
+        / "templates"
+        / "advanced.slurm.jinja"
+    )
+
+    # Only render Job instances (not ShellJob)
+    job_map: dict[str, Job | ShellJob] = {job.name: job for job in workflow.jobs}
+
+    def _render_all_scripts() -> dict[str, str]:
+        scripts: dict[str, str] = {}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for job in workflow.jobs:
+                if isinstance(job, Job):
+                    rendered_path = render_job_script(
+                        template_path, job, output_dir=tmpdir
+                    )
+                    scripts[job.name] = Path(rendered_path).read_text()
+                else:
+                    # ShellJob: read the script directly
+                    scripts[job.name] = Path(job.script_path).read_text()  # type: ignore[union-attr]
+        return scripts
+
+    try:
+        scripts = await anyio.to_thread.run_sync(_render_all_scripts)
+    except Exception as exc:
+        run_registry.fail_run(run_id, f"Script rendering failed: {exc}")
+        raise HTTPException(
+            status_code=500, detail=f"Script rendering failed: {exc}"
+        ) from exc
+
+    # ── Topological submit (BFS) ────────────────────────────────────
+    dependents: dict[str, list[str]] = {job.name: [] for job in workflow.jobs}
+    in_degree: dict[str, int] = {
+        job.name: len(job.parsed_dependencies) for job in workflow.jobs
+    }
+
+    for job in workflow.jobs:
+        for dep in job.parsed_dependencies:
+            dependents[dep.job_name].append(job.name)
+
+    queue: deque[str] = deque(
+        job.name for job in workflow.jobs if in_degree[job.name] == 0
+    )
+    submitted: dict[str, str] = {}  # job_name -> slurm_job_id
+
+    while queue:
+        current_name = queue.popleft()
+        current_job = job_map[current_name]
+
+        # Build dependency flag from parent SLURM IDs
+        dep_parts: list[str] = []
+        for dep in current_job.parsed_dependencies:
+            parent_id = submitted[dep.job_name]
+            dep_parts.append(f"{dep.dep_type}:{parent_id}")
+        dependency = ",".join(dep_parts) if dep_parts else None
+
+        try:
+            result = await anyio.to_thread.run_sync(
+                lambda s=scripts[current_name], n=current_name, d=dependency: (  # type: ignore[misc]
+                    adapter.submit_job(s, job_name=n, dependency=d)
+                )
+            )
+            job_id_str = str(result["job_id"])
+            submitted[current_name] = job_id_str
+        except Exception as exc:
+            run_registry.set_job_ids(run_id, submitted)
+            run_registry.fail_run(
+                run_id,
+                f"Submission failed for job '{current_name}': {exc}",
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"sbatch failed for '{current_name}': {exc}",
+            ) from exc
+
+        # Enqueue dependents whose in-degree reaches 0
+        for dep_name in dependents[current_name]:
+            in_degree[dep_name] -= 1
+            if in_degree[dep_name] == 0:
+                queue.append(dep_name)
+
+    # ── Finalize and start monitor ──────────────────────────────────
+    run_registry.set_job_ids(run_id, submitted)
+    run_registry.update_status(run_id, "running")
+
+    # Initialize job statuses to PENDING
+    for jname in submitted:
+        run_registry.update_job_status(run_id, jname, "PENDING")
+
+    # Start background monitor (task_group may not exist in test environments)
+    tg = getattr(request.app.state, "task_group", None)
+    if tg is not None:
+        tg.start_soon(_monitor_run, run_id, submitted, adapter)
+
+    # Re-fetch the run to return the latest state
+    final_run = run_registry.get(run_id)
+    return final_run.model_dump() if final_run else {"id": run_id, "status": "running"}
 
 
 @router.get("/{name}")

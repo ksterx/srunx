@@ -114,24 +114,31 @@ export function useWorkflowBuilder() {
 
   /* ── Job management ────────────────────────────── */
 
-  const addJob = useCallback(() => {
-    counterRef.current += 1;
-    const id = crypto.randomUUID();
-    const name = `job_${counterRef.current}`;
-    const job = makeDefaultJob(id, name);
+  const addJob = useCallback(
+    (defaultWorkDir?: string | null) => {
+      counterRef.current += 1;
+      const id = crypto.randomUUID();
+      const name = `job_${counterRef.current}`;
+      const job = makeDefaultJob(id, name);
 
-    jobMapRef.current.set(id, job);
+      if (defaultWorkDir) {
+        job.work_dir = defaultWorkDir;
+      }
 
-    const position = computeNewNodePosition(nodes);
-    const newNode: Node = {
-      id,
-      type: BUILDER_NODE_TYPE,
-      position,
-      data: { job },
-    };
+      jobMapRef.current.set(id, job);
 
-    setNodes((prev) => [...prev, newNode]);
-  }, [nodes, setNodes]);
+      const position = computeNewNodePosition(nodes);
+      const newNode: Node = {
+        id,
+        type: BUILDER_NODE_TYPE,
+        position,
+        data: { job },
+      };
+
+      setNodes((prev) => [...prev, newNode]);
+    },
+    [nodes, setNodes],
+  );
 
   const updateJob = useCallback(
     (id: string, updates: Partial<BuilderJob>) => {
@@ -257,7 +264,10 @@ export function useWorkflowBuilder() {
   /* ── Serialization ─────────────────────────────── */
 
   const serialize = useCallback(
-    (workflowName: string): WorkflowCreateRequest => {
+    (
+      workflowName: string,
+      defaultProject?: string | null,
+    ): WorkflowCreateRequest => {
       const jobEntries = nodes.map((node) => {
         const job = jobMapRef.current.get(node.id);
         if (!job) {
@@ -341,10 +351,14 @@ export function useWorkflowBuilder() {
         return entry;
       });
 
-      return {
+      const request: WorkflowCreateRequest = {
         name: workflowName,
         jobs: jobEntries,
       };
+      if (defaultProject) {
+        request.default_project = defaultProject;
+      }
+      return request;
     },
     [nodes, edges],
   );
