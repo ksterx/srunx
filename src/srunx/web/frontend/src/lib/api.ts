@@ -60,6 +60,26 @@ export const jobs = {
     }
   },
 
+  submit: async (
+    scriptContent: string,
+    jobName: string,
+  ): Promise<{ name: string; job_id: number | null; status: string }> => {
+    const res = await fetch("/api/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: jobName,
+        script_content: scriptContent,
+        job_name: jobName,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(extractDetail(err, "Failed to submit job"));
+    }
+    return res.json();
+  },
+
   logs: async (
     jobId: number,
     offsets?: { stdout_offset?: number; stderr_offset?: number },
@@ -239,6 +259,19 @@ export const files = {
       const err = await res.json();
       throw new Error(extractDetail(err, "Failed to remove mount"));
     }
+  },
+
+  read: async (
+    mount: string,
+    path: string,
+  ): Promise<{ content: string; path: string; mount: string }> => {
+    const params = new URLSearchParams({ mount, path });
+    const res = await fetch(`/api/files/read?${params}`);
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(extractDetail(err, "Failed to read file"));
+    }
+    return res.json();
   },
 };
 
