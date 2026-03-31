@@ -178,6 +178,104 @@ export type MountConfig = {
   remote: string;
 };
 
+/* ── Config types ────────────────────────────── */
+
+export type ContainerConfig = {
+  image: string;
+  runtime?: string;
+  mounts?: string[];
+  workdir?: string;
+};
+
+export type ResourceDefaultsConfig = {
+  nodes: number;
+  gpus_per_node: number;
+  ntasks_per_node: number;
+  cpus_per_task: number;
+  memory_per_node: string | null;
+  time_limit: string | null;
+  nodelist: string | null;
+  partition: string | null;
+};
+
+export type EnvironmentDefaultsConfig = {
+  conda: string | null;
+  venv: string | null;
+  container: ContainerConfig | null;
+  env_vars: Record<string, string>;
+};
+
+export type SrunxConfig = {
+  resources: ResourceDefaultsConfig;
+  environment: EnvironmentDefaultsConfig;
+  notifications: NotificationConfig;
+  log_dir: string;
+  work_dir: string | null;
+};
+
+export type NotificationConfig = {
+  slack_webhook_url: string | null;
+};
+
+export type ConfigPathInfo = {
+  path: string;
+  exists: boolean;
+  source: string;
+};
+
+/* ── SSH Profile types ──────────────────────── */
+
+export type SSHMountConfig = {
+  name: string;
+  local: string;
+  remote: string;
+};
+
+export type SSHProfile = {
+  hostname: string;
+  username: string;
+  key_filename: string;
+  port: number;
+  description: string | null;
+  ssh_host: string | null;
+  proxy_jump: string | null;
+  env_vars: Record<string, string> | null;
+  mounts: SSHMountConfig[];
+};
+
+export type SSHProfilesResponse = {
+  current: string | null;
+  profiles: Record<string, SSHProfile>;
+};
+
+/* ── Environment variable info ──────────────── */
+
+export type EnvVarInfo = {
+  name: string;
+  value: string;
+  description: string;
+};
+
+/* ── Project config (mount-based) ────────────── */
+
+export type ProjectInfo = {
+  mount_name: string;
+  local_path: string;
+  remote_path: string;
+  config_exists: boolean;
+  config_path: string;
+};
+
+export type ProjectConfigResponse = {
+  mount_name: string;
+  local_path: string;
+  config_path: string;
+  exists: boolean;
+  config: SrunxConfig | null;
+};
+
+/* ── Workflow create request ─────────────────── */
+
 export type WorkflowCreateRequest = {
   name: string;
   default_project?: string | null;

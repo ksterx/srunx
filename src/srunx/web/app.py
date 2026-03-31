@@ -105,6 +105,9 @@ def create_app() -> FastAPI:
     )
 
     # REST routers
+    from .routers import config as config_router
+
+    app.include_router(config_router.router)
     app.include_router(jobs.router)
     app.include_router(workflows.router)
     app.include_router(resources.router)

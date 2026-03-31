@@ -4,6 +4,7 @@ import {
   Layers,
   GitFork,
   Cpu,
+  Settings,
   Terminal,
   ChevronLeft,
   ChevronRight,
@@ -22,6 +23,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/jobs", icon: <Layers size={18} />, label: "Jobs" },
   { to: "/workflows", icon: <GitFork size={18} />, label: "Workflows" },
   { to: "/resources", icon: <Cpu size={18} />, label: "Resources" },
+  { to: "/settings", icon: <Settings size={18} />, label: "Settings" },
 ];
 
 export function Sidebar() {
