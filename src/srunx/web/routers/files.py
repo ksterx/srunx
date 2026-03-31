@@ -266,6 +266,44 @@ async def browse_files(mount: str, path: str = "") -> BrowseResponse:
     )
 
 
+@router.get("/read")
+async def read_file(mount: str, path: str) -> dict[str, str]:
+    """Read file contents from a mount's local root.
+
+    Security: resolved path must stay within the mount boundary.
+    Only reads text files up to 1 MB.
+    """
+    if not path:
+        raise HTTPException(status_code=400, detail="path is required")
+
+    profile = await anyio.to_thread.run_sync(_get_current_profile)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="No SSH profile configured")
+
+    mount_config = _find_mount(profile, mount)
+
+    mount_root = Path(mount_config.local)
+    target = (mount_root / path).resolve()
+
+    if not target.is_relative_to(mount_root):
+        raise HTTPException(status_code=403, detail="Path outside mount boundary")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+
+    max_size = 1 * 1024 * 1024  # 1 MB
+    stat = target.stat()
+    if stat.st_size > max_size:
+        raise HTTPException(status_code=413, detail="File too large (max 1 MB)")
+
+    def _read() -> str:
+        return target.read_text(errors="replace")
+
+    content = await anyio.to_thread.run_sync(_read)
+    return {"content": content, "path": path, "mount": mount}
+
+
 @router.post("/sync")
 async def sync_mount(body: SyncRequest) -> dict[str, str]:
     """Sync a mount's local directory to the remote via rsync.

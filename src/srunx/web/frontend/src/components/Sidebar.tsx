@@ -7,6 +7,7 @@ import {
   Terminal,
   ChevronLeft,
   ChevronRight,
+  FolderTree,
 } from "lucide-react";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -24,7 +25,12 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/resources", icon: <Cpu size={18} />, label: "Resources" },
 ];
 
-export function Sidebar() {
+type SidebarProps = {
+  explorerOpen: boolean;
+  onToggleExplorer: () => void;
+};
+
+export function Sidebar({ explorerOpen, onToggleExplorer }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
@@ -102,6 +108,67 @@ export function Sidebar() {
           gap: 2,
         }}
       >
+        {/* Explorer toggle */}
+        <button
+          onClick={onToggleExplorer}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: collapsed ? "10px 0" : "10px 12px",
+            justifyContent: collapsed ? "center" : "flex-start",
+            borderRadius: 6,
+            textDecoration: "none",
+            fontSize: "0.875rem",
+            fontWeight: 500,
+            fontFamily: "var(--font-body)",
+            color: explorerOpen
+              ? "var(--text-primary)"
+              : "var(--text-secondary)",
+            background: explorerOpen ? "var(--accent-dim)" : "transparent",
+            borderLeft: explorerOpen
+              ? "2px solid var(--accent)"
+              : "2px solid transparent",
+            border: "none",
+            cursor: "pointer",
+            transition: "all 150ms cubic-bezier(0.16,1,0.3,1)",
+            width: "100%",
+          }}
+          onMouseEnter={(e) => {
+            if (!explorerOpen)
+              e.currentTarget.style.background = "var(--bg-hover)";
+          }}
+          onMouseLeave={(e) => {
+            if (!explorerOpen) e.currentTarget.style.background = "transparent";
+          }}
+        >
+          <span style={{ flexShrink: 0, display: "flex" }}>
+            <FolderTree size={18} />
+          </span>
+          <AnimatePresence>
+            {!collapsed && (
+              <motion.span
+                initial={{ opacity: 0, width: 0 }}
+                animate={{ opacity: 1, width: "auto" }}
+                exit={{ opacity: 0, width: 0 }}
+                transition={{ duration: 0.15 }}
+                style={{ whiteSpace: "nowrap", overflow: "hidden" }}
+              >
+                Explorer
+              </motion.span>
+            )}
+          </AnimatePresence>
+        </button>
+
+        {/* Separator */}
+        <div
+          style={{
+            height: 1,
+            background: "var(--border-ghost)",
+            margin: "4px 12px",
+          }}
+        />
+
         {NAV_ITEMS.map((item) => (
           <NavLink
             key={item.to}
