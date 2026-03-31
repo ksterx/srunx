@@ -51,23 +51,10 @@ class BrowseResponse(BaseModel):
 
 
 def _get_current_profile():
-    """Get the current SSH profile from web config or ConfigManager.
+    """Get the current SSH profile from web config or ConfigManager."""
+    from ..sync_utils import get_current_profile
 
-    Returns the ServerProfile, or None if no profile is configured.
-    """
-    from srunx.ssh.core.config import ConfigManager
-
-    config = get_web_config()
-    cm = ConfigManager()
-
-    profile_name = config.ssh_profile
-    if not profile_name:
-        profile_name = cm.get_current_profile_name()
-
-    if not profile_name:
-        return None
-
-    return cm.get_profile(profile_name)
+    return get_current_profile()
 
 
 def _find_mount(profile, mount_name: str):
