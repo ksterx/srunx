@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { ArrowLeft, Download } from "lucide-react";
@@ -29,18 +29,50 @@ export function LogViewer() {
 
   const [activeTab, setActiveTab] = useState<"stdout" | "stderr">("stdout");
 
-  /* Poll logs — more frequently when job is running */
+  /* ── Incremental (offset-based) log polling ───── */
   const isRunning = job?.status === "RUNNING";
-  const { data: logData } = useApi(() => jobsApi.logs(id), [id], {
-    pollInterval: isRunning ? 3000 : undefined,
-  });
+  const [stdoutLines, setStdoutLines] = useState<string[]>([]);
+  const [stderrLines, setStderrLines] = useState<string[]>([]);
+  const offsetRef = useRef({ stdout: 0, stderr: 0 });
+  const mountedRef = useRef(true);
 
-  const stdoutLines = logData
-    ? logData.stdout.split("\n").filter(Boolean).slice(-MAX_LOG_LINES)
-    : [];
-  const stderrLines = logData
-    ? logData.stderr.split("\n").filter(Boolean).slice(-MAX_LOG_LINES)
-    : [];
+  const fetchLogs = useCallback(async () => {
+    try {
+      const data = await jobsApi.logs(id, {
+        stdout_offset: offsetRef.current.stdout,
+        stderr_offset: offsetRef.current.stderr,
+      });
+      if (!mountedRef.current) return;
+
+      if (data.stdout) {
+        const newLines = data.stdout.split("\n").filter(Boolean);
+        setStdoutLines((prev) => [...prev, ...newLines].slice(-MAX_LOG_LINES));
+      }
+      if (data.stderr) {
+        const newLines = data.stderr.split("\n").filter(Boolean);
+        setStderrLines((prev) => [...prev, ...newLines].slice(-MAX_LOG_LINES));
+      }
+      offsetRef.current.stdout = data.stdout_offset;
+      offsetRef.current.stderr = data.stderr_offset;
+    } catch {
+      // Ignore transient errors during polling
+    }
+  }, [id]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    // Initial full fetch
+    fetchLogs();
+    return () => {
+      mountedRef.current = false;
+    };
+  }, [fetchLogs]);
+
+  useEffect(() => {
+    if (!isRunning) return;
+    const timer = setInterval(fetchLogs, 3000);
+    return () => clearInterval(timer);
+  }, [isRunning, fetchLogs]);
 
   if (jobError) {
     return (

@@ -49,7 +49,7 @@ def mock_adapter() -> MagicMock:
     adapter.list_jobs.return_value = MOCK_JOBS
     adapter.get_job.return_value = MOCK_JOBS[0]
     adapter.cancel_job.return_value = None
-    adapter.get_job_output.return_value = ("stdout content", "stderr content")
+    adapter.get_job_output.return_value = ("stdout content", "stderr content", 14, 14)
     adapter.get_resources.return_value = MOCK_RESOURCES
     adapter.submit_job.return_value = {
         "name": "new-job",
@@ -130,6 +130,22 @@ class TestJobsRouter:
         data = resp.json()
         assert data["stdout"] == "stdout content"
         assert data["stderr"] == "stderr content"
+        assert data["stdout_offset"] == 14
+        assert data["stderr_offset"] == 14
+
+    def test_get_logs_with_offset(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        mock_adapter.get_job_output.return_value = ("new line\n", "", 24, 14)
+        resp = client.get("/api/jobs/10001/logs?stdout_offset=14&stderr_offset=14")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["stdout"] == "new line\n"
+        assert data["stderr"] == ""
+        assert data["stdout_offset"] == 24
+        mock_adapter.get_job_output.assert_called_once_with(
+            10001, stdout_offset=14, stderr_offset=14
+        )
 
     def test_get_logs_not_found(
         self, client: TestClient, mock_adapter: MagicMock

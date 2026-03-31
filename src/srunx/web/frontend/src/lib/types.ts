@@ -102,6 +102,8 @@ export type HistoryStats = {
 export type LogData = {
   stdout: string;
   stderr: string;
+  stdout_offset: number;
+  stderr_offset: number;
 };
 
 /* ── Builder-specific types for DAG construction ─ */

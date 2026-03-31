@@ -19,8 +19,13 @@
 {% if partition -%}
 #SBATCH --partition={{ partition }}
 {% endif -%}
+{% if log_dir -%}
 #SBATCH --output={{ log_dir }}/%x_%j.log
 #SBATCH --error={{ log_dir }}/%x_%j.log
+{% else -%}
+#SBATCH --output=%x_%j.log
+#SBATCH --error=%x_%j.log
+{% endif -%}
 {% if work_dir -%}
 #SBATCH --chdir={{ work_dir }}
 {% endif -%}

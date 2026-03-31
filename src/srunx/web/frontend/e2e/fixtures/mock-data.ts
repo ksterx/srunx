@@ -168,4 +168,6 @@ export const MOCK_LOGS = {
   stdout:
     "Epoch 1/10: loss=0.85 acc=0.72\nEpoch 2/10: loss=0.63 acc=0.81\nEpoch 3/10: loss=0.45 acc=0.88",
   stderr: "WARNING: GPU memory usage high\nINFO: Checkpoint saved",
+  stdout_offset: 95,
+  stderr_offset: 49,
 };

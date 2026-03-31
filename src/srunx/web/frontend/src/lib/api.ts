@@ -52,8 +52,17 @@ export const jobs = {
     }
   },
 
-  logs: async (jobId: number): Promise<LogData> => {
-    const res = await fetch(`/api/jobs/${jobId}/logs`);
+  logs: async (
+    jobId: number,
+    offsets?: { stdout_offset?: number; stderr_offset?: number },
+  ): Promise<LogData> => {
+    const params = new URLSearchParams();
+    if (offsets?.stdout_offset)
+      params.set("stdout_offset", String(offsets.stdout_offset));
+    if (offsets?.stderr_offset)
+      params.set("stderr_offset", String(offsets.stderr_offset));
+    const qs = params.toString();
+    const res = await fetch(`/api/jobs/${jobId}/logs${qs ? `?${qs}` : ""}`);
     if (!res.ok) throw new Error(`Failed to fetch logs for job ${jobId}`);
     return res.json();
   },
