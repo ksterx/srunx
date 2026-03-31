@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
-import { GitFork, Play, Eye, Upload, Plus } from "lucide-react";
+import { GitFork, Pencil, Play, Eye, Upload, Plus, X } from "lucide-react";
 import { useApi } from "../hooks/use-api.ts";
 import { workflows as workflowsApi } from "../lib/api.ts";
 import type { Workflow } from "../lib/types.ts";
@@ -98,7 +98,21 @@ export function Workflows() {
       >
         {workflowList && workflowList.length > 0 ? (
           workflowList.map((wf, i) => (
-            <WorkflowCard key={wf.name} workflow={wf} index={i} />
+            <WorkflowCard
+              key={wf.name}
+              workflow={wf}
+              index={i}
+              onDelete={async () => {
+                try {
+                  await workflowsApi.delete(wf.name);
+                  refetch();
+                } catch (err) {
+                  setUploadError(
+                    err instanceof Error ? err.message : "Delete failed",
+                  );
+                }
+              }}
+            />
           ))
         ) : workflowList === null ? (
           /* Loading skeletons */
@@ -131,9 +145,10 @@ export function Workflows() {
 type WorkflowCardProps = {
   workflow: Workflow;
   index: number;
+  onDelete: () => void;
 };
 
-function WorkflowCard({ workflow, index }: WorkflowCardProps) {
+function WorkflowCard({ workflow, index, onDelete }: WorkflowCardProps) {
   const jobCount = workflow.jobs.length;
   const depCount = workflow.jobs.reduce(
     (sum, j) => sum + (j.depends_on?.length ?? 0),
@@ -185,7 +200,31 @@ function WorkflowCard({ workflow, index }: WorkflowCardProps) {
           >
             {workflow.name}
           </h3>
-          <GitFork size={16} color="var(--text-muted)" />
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <button
+              className="btn btn-ghost"
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                if (
+                  window.confirm(
+                    `Delete workflow "${workflow.name}"? This cannot be undone.`,
+                  )
+                ) {
+                  onDelete();
+                }
+              }}
+              style={{
+                padding: 4,
+                minWidth: "auto",
+                color: "var(--text-muted)",
+              }}
+              title="Delete workflow"
+            >
+              <X size={14} />
+            </button>
+            <GitFork size={16} color="var(--text-muted)" />
+          </div>
         </div>
 
         {/* Stats */}
@@ -285,6 +324,15 @@ function WorkflowCard({ workflow, index }: WorkflowCardProps) {
           >
             <Eye size={13} />
             View DAG
+          </Link>
+          <Link
+            to={`/workflows/${encodeURIComponent(workflow.name)}/edit`}
+            className="btn btn-ghost"
+            style={{ flex: 1, justifyContent: "center" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Pencil size={13} />
+            Edit
           </Link>
           <button
             className="btn btn-primary"

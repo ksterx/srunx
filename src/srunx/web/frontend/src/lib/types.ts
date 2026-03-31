@@ -170,6 +170,12 @@ export type SyncResult = {
   mount: string;
 };
 
+export type MountConfig = {
+  name: string;
+  local: string;
+  remote: string;
+};
+
 export type WorkflowCreateRequest = {
   name: string;
   default_project?: string | null;

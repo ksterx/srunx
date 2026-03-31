@@ -13,6 +13,8 @@ import {
 import type {
   BuilderJob,
   DependencyType,
+  RunnableJob,
+  Workflow,
   WorkflowCreateRequest,
 } from "../lib/types.ts";
 
@@ -98,6 +100,84 @@ function hasCycle(nodeIds: string[], edges: Edge[]): boolean {
     if (!visited.has(id) && dfs(id)) return true;
   }
   return false;
+}
+
+/* ── Workflow → Builder conversion ──────────────── */
+
+function workflowJobToBuilderJob(job: RunnableJob, id: string): BuilderJob {
+  return {
+    id,
+    name: job.name,
+    command: "command" in job ? job.command.join(" ") : job.script_path,
+    nodes: job.resources?.nodes ?? null,
+    gpus_per_node: job.resources?.gpus_per_node ?? null,
+    ntasks_per_node: null,
+    cpus_per_task: null,
+    memory_per_node: job.resources?.memory_per_node ?? null,
+    time_limit: job.resources?.time_limit ?? null,
+    partition: job.resources?.partition ?? null,
+    nodelist: null,
+    conda: job.environment?.conda ?? null,
+    venv: job.environment?.venv ?? null,
+    container: null,
+    env_vars: "",
+    work_dir: null,
+    log_dir: null,
+    retry: null,
+    retry_delay: null,
+  };
+}
+
+/**
+ * Compute BFS-layered positions for loaded workflow jobs.
+ * Returns a map from job name to {x, y} position.
+ */
+function computeLayeredPositions(
+  jobs: RunnableJob[],
+): Map<string, { x: number; y: number }> {
+  const positions = new Map<string, { x: number; y: number }>();
+
+  // BFS layer assignment
+  const layers = new Map<string, number>();
+  const roots = jobs.filter((j) => !j.depends_on || j.depends_on.length === 0);
+  const queue = roots.map((j) => ({ name: j.name, layer: 0 }));
+
+  while (queue.length > 0) {
+    const { name, layer } = queue.shift()!;
+    const existing = layers.get(name);
+    if (existing !== undefined && existing >= layer) continue;
+    layers.set(name, layer);
+
+    for (const job of jobs) {
+      if (job.depends_on?.some((d) => d === name || d.includes(`:${name}`))) {
+        queue.push({ name: job.name, layer: layer + 1 });
+      }
+    }
+  }
+
+  // Assign missing jobs to layer 0
+  for (const job of jobs) {
+    if (!layers.has(job.name)) layers.set(job.name, 0);
+  }
+
+  // Group by layer
+  const layerGroups = new Map<number, string[]>();
+  for (const [name, layer] of layers) {
+    const group = layerGroups.get(layer) ?? [];
+    group.push(name);
+    layerGroups.set(layer, group);
+  }
+
+  for (const [layer, names] of layerGroups) {
+    names.forEach((name, i) => {
+      positions.set(name, {
+        x: INITIAL_X + i * NODE_SPACING_X,
+        y: INITIAL_Y + layer * NODE_SPACING_Y,
+      });
+    });
+  }
+
+  return positions;
 }
 
 /* ── Hook ────────────────────────────────────────── */
@@ -363,6 +443,87 @@ export function useWorkflowBuilder() {
     [nodes, edges],
   );
 
+  /* ── Load existing workflow for editing ─────────── */
+
+  const loadWorkflow = useCallback(
+    (workflow: Workflow) => {
+      // Clear existing state
+      jobMapRef.current.clear();
+
+      // Build name→id mapping so we can wire up edges by job name
+      const nameToId = new Map<string, string>();
+      const positions = computeLayeredPositions(workflow.jobs);
+
+      const newNodes: Node[] = [];
+      let maxCounter = 0;
+
+      for (const runnableJob of workflow.jobs) {
+        const id = crypto.randomUUID();
+        nameToId.set(runnableJob.name, id);
+
+        const builderJob = workflowJobToBuilderJob(runnableJob, id);
+        jobMapRef.current.set(id, builderJob);
+
+        const pos = positions.get(runnableJob.name) ?? {
+          x: INITIAL_X,
+          y: INITIAL_Y,
+        };
+
+        newNodes.push({
+          id,
+          type: BUILDER_NODE_TYPE,
+          position: pos,
+          data: { job: builderJob },
+        });
+
+        maxCounter += 1;
+      }
+
+      counterRef.current = maxCounter;
+
+      // Build edges from depends_on
+      const newEdges: Edge[] = [];
+      for (const runnableJob of workflow.jobs) {
+        if (!runnableJob.depends_on) continue;
+        const targetId = nameToId.get(runnableJob.name);
+        if (!targetId) continue;
+
+        for (const dep of runnableJob.depends_on) {
+          // Parse "afternotok:jobname" or plain "jobname" (defaults to afterok)
+          let depType: DependencyType = "afterok";
+          let depName = dep;
+          if (dep.includes(":")) {
+            const colonIdx = dep.indexOf(":");
+            const prefix = dep.slice(0, colonIdx);
+            if (
+              prefix === "afterok" ||
+              prefix === "after" ||
+              prefix === "afterany" ||
+              prefix === "afternotok"
+            ) {
+              depType = prefix as DependencyType;
+              depName = dep.slice(colonIdx + 1);
+            }
+          }
+
+          const sourceId = nameToId.get(depName);
+          if (!sourceId) continue;
+
+          newEdges.push({
+            id: `e-${sourceId}-${targetId}`,
+            source: sourceId,
+            target: targetId,
+            data: { depType },
+          });
+        }
+      }
+
+      setNodes(newNodes);
+      setEdges(newEdges);
+    },
+    [setNodes, setEdges],
+  );
+
   return {
     // ReactFlow state
     nodes,
@@ -388,5 +549,8 @@ export function useWorkflowBuilder() {
 
     // Serialization
     serialize,
+
+    // Load existing workflow
+    loadWorkflow,
   };
 }

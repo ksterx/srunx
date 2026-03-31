@@ -446,3 +446,69 @@ class TestWorkflowsRouter:
         resp = client.post("/api/workflows/fail-run/run")
         assert resp.status_code == 502
         assert "sbatch" in resp.json()["detail"]
+
+    # ── DELETE /api/workflows/{name} ───────────────
+
+    def test_delete_workflow(self, client: TestClient) -> None:
+        """Create a workflow then delete it."""
+        payload = {
+            "name": "to-delete",
+            "jobs": [{"name": "a", "command": ["echo", "hi"]}],
+        }
+        resp = client.post("/api/workflows/create", json=payload)
+        assert resp.status_code == 200
+
+        resp = client.delete("/api/workflows/to-delete")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "deleted"
+        assert data["name"] == "to-delete"
+
+        # Confirm it's gone
+        resp = client.get("/api/workflows/to-delete")
+        assert resp.status_code == 404
+
+    def test_delete_workflow_not_found(self, client: TestClient) -> None:
+        resp = client.delete("/api/workflows/nonexistent")
+        assert resp.status_code == 404
+
+    def test_delete_workflow_invalid_name(self, client: TestClient) -> None:
+        resp = client.delete("/api/workflows/bad name!")
+        assert resp.status_code == 422
+
+    # ── POST /api/workflows/runs/{run_id}/cancel ───
+
+    def test_cancel_run(self, client: TestClient, mock_adapter: MagicMock) -> None:
+        """Create a run via registry, then cancel it."""
+        from srunx.web.state import run_registry
+
+        run = run_registry.create("cancel-test")
+        run_registry.set_job_ids(run.id, {"step1": "10001", "step2": "10002"})
+        run_registry.update_status(run.id, "running")
+
+        resp = client.post(f"/api/workflows/runs/{run.id}/cancel")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "cancelled"
+        assert data["run_id"] == run.id
+
+        # Verify adapter.cancel_job was called for each job
+        assert mock_adapter.cancel_job.call_count == 2
+
+        # Verify the run is marked cancelled
+        updated = run_registry.get(run.id)
+        assert updated is not None
+        assert updated.status == "cancelled"
+
+    def test_cancel_run_not_found(self, client: TestClient) -> None:
+        resp = client.post("/api/workflows/runs/nonexistent/cancel")
+        assert resp.status_code == 404
+
+    def test_cancel_run_already_terminal(self, client: TestClient) -> None:
+        from srunx.web.state import run_registry
+
+        run = run_registry.create("done-test")
+        run_registry.complete_run(run.id, "completed")
+
+        resp = client.post(f"/api/workflows/runs/{run.id}/cancel")
+        assert resp.status_code == 422

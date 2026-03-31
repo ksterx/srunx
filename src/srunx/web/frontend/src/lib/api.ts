@@ -4,6 +4,7 @@ import type {
   HistoryStats,
   LogData,
   Mount,
+  MountConfig,
   ResourceSnapshot,
   SyncResult,
   Workflow,
@@ -121,6 +122,28 @@ export const workflows = {
     }
     return res.json();
   },
+
+  delete: async (name: string): Promise<void> => {
+    const res = await fetch(
+      `/api/workflows/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(extractDetail(err, "Failed to delete workflow"));
+    }
+  },
+
+  cancelRun: async (runId: string): Promise<void> => {
+    const res = await fetch(
+      `/api/workflows/runs/${encodeURIComponent(runId)}/cancel`,
+      { method: "POST" },
+    );
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(extractDetail(err, "Failed to cancel run"));
+    }
+  },
 };
 
 /* ── Resources ────────────────────────────────── */
@@ -174,5 +197,34 @@ export const files = {
       throw new Error(extractDetail(err, "Sync failed"));
     }
     return res.json();
+  },
+
+  mountsConfig: async (): Promise<MountConfig[]> => {
+    const res = await fetch("/api/files/mounts/config");
+    if (!res.ok) throw new Error("Failed to fetch mount configuration");
+    return res.json();
+  },
+
+  addMount: async (mount: MountConfig): Promise<MountConfig> => {
+    const res = await fetch("/api/files/mounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(mount),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(extractDetail(err, "Failed to add mount"));
+    }
+    return res.json();
+  },
+
+  removeMount: async (name: string): Promise<void> => {
+    const res = await fetch(`/api/files/mounts/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(extractDetail(err, "Failed to remove mount"));
+    }
   },
 };

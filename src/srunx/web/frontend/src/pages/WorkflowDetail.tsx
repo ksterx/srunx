@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, Play, RefreshCw, List } from "lucide-react";
+import {
+  ArrowLeft,
+  Pencil,
+  Play,
+  RefreshCw,
+  List,
+  Trash2,
+  XCircle,
+} from "lucide-react";
 import { useApi } from "../hooks/use-api.ts";
 import { workflows as workflowsApi } from "../lib/api.ts";
 import type {
@@ -39,6 +47,7 @@ const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
 
 export function WorkflowDetail() {
   const { name } = useParams<{ name: string }>();
+  const navigate = useNavigate();
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
   const [view, setView] = useState<"dag" | "list">("dag");
 
@@ -123,6 +132,32 @@ export function WorkflowDetail() {
       setRunning(false);
     }
   }, [name, running]);
+
+  /* ── Delete handler ────────────────────────── */
+  const handleDelete = useCallback(async () => {
+    if (!name) return;
+    if (!window.confirm(`Delete workflow "${name}"? This cannot be undone.`))
+      return;
+    try {
+      await workflowsApi.delete(name);
+      navigate("/workflows");
+    } catch (err) {
+      setRunError(
+        err instanceof Error ? err.message : "Failed to delete workflow",
+      );
+    }
+  }, [name, navigate]);
+
+  /* ── Cancel handler ────────────────────────── */
+  const handleCancel = useCallback(async () => {
+    if (!runData) return;
+    try {
+      await workflowsApi.cancelRun(runData.id);
+      setRunData((prev) => (prev ? { ...prev, status: "cancelled" } : null));
+    } catch (err) {
+      setRunError(err instanceof Error ? err.message : "Failed to cancel run");
+    }
+  }, [runData]);
 
   /* ── Merge run status into jobs ───────────── */
   const liveJobs: RunnableJob[] = useMemo(() => {
@@ -271,6 +306,15 @@ export function WorkflowDetail() {
             ))}
           </div>
 
+          <Link
+            to={`/workflows/${encodeURIComponent(name)}/edit`}
+            className="btn btn-ghost"
+            title="Edit workflow"
+          >
+            <Pencil size={14} />
+            Edit
+          </Link>
+
           {/* Run status badge */}
           {runData && (
             <span
@@ -305,6 +349,22 @@ export function WorkflowDetail() {
           >
             <Play size={14} />
             {running ? "Starting..." : "Run Workflow"}
+          </button>
+
+          {/* Cancel button — visible only when a run is active */}
+          {runData && !TERMINAL_STATUSES.has(runData.status) && (
+            <button className="btn btn-danger" onClick={handleCancel}>
+              <XCircle size={14} />
+              Cancel
+            </button>
+          )}
+
+          <button
+            className="btn btn-danger"
+            onClick={handleDelete}
+            title="Delete workflow"
+          >
+            <Trash2 size={14} />
           </button>
         </div>
       </motion.div>
@@ -576,15 +636,19 @@ export function WorkflowDetail() {
               )}
 
               {/* Actions */}
-              {selected.job_id && (
-                <Link
-                  to={`/jobs/${selected.job_id}/logs`}
-                  className="btn btn-ghost"
-                  style={{ justifyContent: "center", marginTop: 8 }}
-                >
-                  View Logs
-                </Link>
-              )}
+              {(() => {
+                const jobId =
+                  runData?.job_ids[selected.name] ?? selected.job_id;
+                return jobId ? (
+                  <Link
+                    to={`/jobs/${jobId}/logs`}
+                    className="btn btn-ghost"
+                    style={{ justifyContent: "center", marginTop: 8 }}
+                  >
+                    View Logs
+                  </Link>
+                ) : null;
+              })()}
             </div>
           </motion.div>
         )}

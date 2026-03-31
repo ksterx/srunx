@@ -239,6 +239,34 @@ async def get_run(run_id: str) -> dict[str, Any]:
     return run.model_dump()
 
 
+@router.post("/runs/{run_id}/cancel")
+async def cancel_run(
+    run_id: str,
+    adapter: SlurmSSHAdapter = Depends(get_adapter),
+) -> dict[str, Any]:
+    """Cancel all jobs in a running workflow."""
+    run = run_registry.get(run_id)
+    if run is None:
+        raise HTTPException(404, f"Run '{run_id}' not found")
+    if run.status in ("completed", "failed", "cancelled"):
+        raise HTTPException(422, f"Run is already {run.status}")
+    errors: list[str] = []
+    for job_name, job_id in run.job_ids.items():
+        try:
+            await anyio.to_thread.run_sync(
+                lambda jid=job_id: adapter.cancel_job(int(jid))  # type: ignore[misc]
+            )
+        except Exception as e:
+            errors.append(f"{job_name}: {e}")
+
+    run_registry.complete_run(run_id, "cancelled")
+
+    result: dict[str, Any] = {"status": "cancelled", "run_id": run_id}
+    if errors:
+        result["warnings"] = errors
+    return result
+
+
 @router.post("/validate")
 async def validate_workflow(body: dict[str, str]) -> dict[str, Any]:
     yaml_content = body.get("yaml", "")
@@ -589,6 +617,16 @@ async def run_workflow(
     # Re-fetch the run to return the latest state
     final_run = run_registry.get(run_id)
     return final_run.model_dump() if final_run else {"id": run_id, "status": "running"}
+
+
+@router.delete("/{name}")
+async def delete_workflow(name: str) -> dict[str, str]:
+    """Delete a workflow YAML file."""
+    if not _SAFE_NAME.match(name):
+        raise HTTPException(status_code=422, detail="Invalid workflow name")
+    yaml_path = _find_yaml(name)  # raises 404 if not found
+    await anyio.to_thread.run_sync(lambda: yaml_path.unlink())
+    return {"status": "deleted", "name": name}
 
 
 @router.get("/{name}")

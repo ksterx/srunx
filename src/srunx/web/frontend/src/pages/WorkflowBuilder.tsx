@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ReactFlow,
   Background,
@@ -13,9 +13,10 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { motion } from "framer-motion";
-import { ArrowLeft, Plus, Save } from "lucide-react";
+import { ArrowLeft, Plus, Save, Settings } from "lucide-react";
 import { useWorkflowBuilder } from "../hooks/use-workflow-builder.ts";
 import { JobPropertyPanel } from "../components/JobPropertyPanel.tsx";
+import { MountSettings } from "../components/MountSettings.tsx";
 import { workflows as workflowsApi, files as filesApi } from "../lib/api.ts";
 import type { BuilderJob, DependencyType, Mount } from "../lib/types.ts";
 
@@ -311,6 +312,8 @@ const WORKFLOW_NAME_RE = /^[\w-]+$/;
 /* ── WorkflowBuilder page ───────────────────── */
 
 export function WorkflowBuilder() {
+  const { name: editName } = useParams<{ name?: string }>();
+  const isEditMode = editName !== undefined;
   const navigate = useNavigate();
 
   const {
@@ -327,15 +330,19 @@ export function WorkflowBuilder() {
     errors,
     validate,
     serialize,
+    loadWorkflow,
   } = useWorkflowBuilder();
 
   const [workflowName, setWorkflowName] = useState("");
+  const [originalName, setOriginalName] = useState<string | null>(null);
   const [defaultProject, setDefaultProject] = useState<string | null>(null);
   const [mounts, setMounts] = useState<Mount[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<SelectedEdge | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [loadingWorkflow, setLoadingWorkflow] = useState(isEditMode);
+  const [showMountSettings, setShowMountSettings] = useState(false);
 
   /* ── Load available mounts ─────────────────── */
 
@@ -347,6 +354,39 @@ export function WorkflowBuilder() {
         /* mounts are optional; ignore errors */
       });
   }, []);
+
+  /* ── Load existing workflow in edit mode ────── */
+
+  useEffect(() => {
+    if (!editName) return;
+    const nameToLoad = editName;
+    let cancelled = false;
+
+    async function fetchWorkflow() {
+      try {
+        const workflow = await workflowsApi.get(nameToLoad);
+        if (cancelled) return;
+        setWorkflowName(workflow.name);
+        setOriginalName(workflow.name);
+        setDefaultProject(workflow.default_project ?? null);
+        loadWorkflow(workflow);
+      } catch (err) {
+        if (cancelled) return;
+        setSaveError(
+          err instanceof Error
+            ? err.message
+            : `Failed to load workflow "${nameToLoad}"`,
+        );
+      } finally {
+        if (!cancelled) setLoadingWorkflow(false);
+      }
+    }
+
+    fetchWorkflow();
+    return () => {
+      cancelled = true;
+    };
+  }, [editName, loadWorkflow]);
 
   const nodeTypes = useMemo(() => ({ builderNode: BuilderJobNode }), []);
 
@@ -400,6 +440,19 @@ export function WorkflowBuilder() {
     [deleteSelected],
   );
 
+  /* ── Mount settings close handler ──────────── */
+
+  const handleMountSettingsClose = useCallback(() => {
+    setShowMountSettings(false);
+    // Refresh mounts list after settings change
+    filesApi
+      .mounts()
+      .then(setMounts)
+      .catch(() => {
+        /* ignore */
+      });
+  }, []);
+
   /* ── Default work_dir from selected mount ── */
 
   const defaultWorkDir = useMemo(() => {
@@ -435,18 +488,46 @@ export function WorkflowBuilder() {
     setSaving(true);
     try {
       const request = serialize(trimmedName, defaultProject);
-      await workflowsApi.create(request);
+
+      if (isEditMode && originalName) {
+        // Edit mode: delete the old workflow first, then create the new one.
+        // If the name changed, we create first (to fail early on conflict),
+        // then delete the old one.
+        if (trimmedName !== originalName) {
+          await workflowsApi.create(request);
+          try {
+            await workflowsApi.delete(originalName);
+          } catch {
+            // Old workflow deletion failed, but new one was created -- acceptable
+          }
+        } else {
+          // Same name: delete old, then create new
+          await workflowsApi.delete(originalName);
+          await workflowsApi.create(request);
+        }
+      } else {
+        await workflowsApi.create(request);
+      }
+
       navigate(`/workflows/${encodeURIComponent(trimmedName)}`);
     } catch (err) {
       if (err instanceof Error) {
         setSaveError(err.message);
       } else {
-        setSaveError("Failed to create workflow");
+        setSaveError("Failed to save workflow");
       }
     } finally {
       setSaving(false);
     }
-  }, [workflowName, defaultProject, validate, serialize, navigate]);
+  }, [
+    workflowName,
+    defaultProject,
+    validate,
+    serialize,
+    navigate,
+    isEditMode,
+    originalName,
+  ]);
 
   /* ── Edge dep type for selector ───────────── */
 
@@ -459,6 +540,17 @@ export function WorkflowBuilder() {
   /* ── All errors (validation + save) ───────── */
 
   const allErrors = saveError ? [saveError, ...errors] : errors;
+
+  if (loadingWorkflow) {
+    return (
+      <div style={{ padding: 48, textAlign: "center" }}>
+        <div
+          className="skeleton"
+          style={{ width: 200, height: 24, margin: "0 auto" }}
+        />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -525,6 +617,15 @@ export function WorkflowBuilder() {
           </select>
         )}
 
+        <button
+          className="btn btn-ghost"
+          onClick={() => setShowMountSettings(true)}
+          title="Manage mounts"
+          style={{ padding: "6px 8px" }}
+        >
+          <Settings size={16} />
+        </button>
+
         <div style={{ flex: 1 }} />
 
         <button
@@ -542,7 +643,11 @@ export function WorkflowBuilder() {
           style={{ opacity: saving ? 0.6 : 1 }}
         >
           <Save size={14} />
-          {saving ? "Saving..." : "Save Workflow"}
+          {saving
+            ? "Saving..."
+            : isEditMode
+              ? "Update Workflow"
+              : "Save Workflow"}
         </button>
       </div>
 
@@ -622,6 +727,11 @@ export function WorkflowBuilder() {
           onSelect={(depType) => updateEdgeType(selectedEdge.id, depType)}
           onClose={() => setSelectedEdge(null)}
         />
+      )}
+
+      {/* ── Mount settings modal ───────────────── */}
+      {showMountSettings && (
+        <MountSettings onClose={handleMountSettingsClose} />
       )}
     </div>
   );

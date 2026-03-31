@@ -55,6 +55,15 @@ export async function setupMockRoutes(page: Page) {
   });
 
   /* ── Workflows ─────────────────────────────── */
+  await page.route("**/api/workflows/runs/*/cancel", (route) => {
+    if (route.request().method() === "POST") {
+      return route.fulfill({
+        json: { status: "cancelled", run_id: "run-001" },
+      });
+    }
+    return route.continue();
+  });
+
   await page.route("**/api/workflows/runs*", (route) => {
     return route.fulfill({ json: [] });
   });
@@ -116,6 +125,13 @@ export async function setupMockRoutes(page: Page) {
     /* Let create endpoint through to its own mock */
     if (segment === "create" && route.request().method() === "POST") {
       return route.fallback();
+    }
+
+    /* DELETE /api/workflows/:name */
+    if (route.request().method() === "DELETE") {
+      return route.fulfill({
+        json: { status: "deleted", name: segment },
+      });
     }
 
     const wf = MOCK_WORKFLOWS.find((w) => w.name === segment);
