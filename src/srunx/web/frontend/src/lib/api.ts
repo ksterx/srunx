@@ -64,6 +64,7 @@ export const jobs = {
     scriptContent: string,
     jobName: string,
     mountName?: string,
+    notifySlack?: boolean,
   ): Promise<{ name: string; job_id: number | null; status: string }> => {
     const res = await fetch("/api/jobs", {
       method: "POST",
@@ -73,6 +74,7 @@ export const jobs = {
         script_content: scriptContent,
         job_name: jobName,
         mount_name: mountName,
+        notify_slack: notifySlack ?? false,
       }),
     });
     if (!res.ok) {

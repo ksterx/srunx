@@ -75,9 +75,24 @@ class ConfigManager:
             self.save_config()
 
     def save_config(self) -> None:
+        """Save SSH profile data, preserving non-SSH keys (e.g. SrunxConfig)."""
         try:
+            # Load existing data to preserve SrunxConfig keys
+            existing: dict[str, Any] = {}
+            if self.config_path.exists():
+                try:
+                    with open(self.config_path) as f:
+                        content = f.read().strip()
+                        if content:
+                            existing = json.loads(content)
+                except (OSError, json.JSONDecodeError):
+                    pass
+
+            # Merge: SSH keys overwrite, other keys preserved
+            existing.update(self.config_data)
+
             with open(self.config_path, "w") as f:
-                json.dump(self.config_data, f, indent=2)
+                json.dump(existing, f, indent=2)
         except OSError as e:
             raise RuntimeError(
                 f"Failed to save config to {self.config_path}: {e}"
