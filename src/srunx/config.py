@@ -220,7 +220,11 @@ def load_config() -> SrunxConfig:
 
 
 def save_user_config(config: SrunxConfig) -> None:
-    """Save configuration to user config file."""
+    """Save configuration to user config file.
+
+    Merges SrunxConfig fields into the existing file so that
+    SSH profile data (managed by ConfigManager) is preserved.
+    """
     config_paths = get_config_paths()
     # Use the user-wide config path (second in the list)
     user_config_path = config_paths[1]
@@ -228,10 +232,24 @@ def save_user_config(config: SrunxConfig) -> None:
     # Create directory if it doesn't exist
     user_config_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Load existing data to preserve non-SrunxConfig keys (e.g. SSH profiles)
+    existing: dict[str, Any] = {}
+    if user_config_path.exists():
+        try:
+            with open(user_config_path, encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    existing = json.loads(content)
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # Merge: SrunxConfig fields overwrite, other keys preserved
+    existing.update(config.model_dump(exclude_unset=True))
+
     # Save config
     try:
         with open(user_config_path, "w", encoding="utf-8") as f:
-            json.dump(config.model_dump(exclude_unset=True), f, indent=2)
+            json.dump(existing, f, indent=2)
         logger.info(f"Configuration saved to {user_config_path}")
     except OSError as e:
         logger.error(f"Failed to save config to {user_config_path}: {e}")

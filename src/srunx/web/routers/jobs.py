@@ -21,6 +21,7 @@ class JobSubmitRequest(BaseModel):
     script_content: str
     job_name: str | None = None
     mount_name: str | None = None
+    notify_slack: bool = False
 
 
 @router.post("", status_code=201)
@@ -59,13 +60,35 @@ async def submit_job(
             ) from exc
 
     try:
-        return await anyio.to_thread.run_sync(
+        result = await anyio.to_thread.run_sync(
             lambda: adapter.submit_job(
                 req.script_content, job_name=req.job_name or req.name
             )
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"sbatch failed: {e}") from e
+
+    # Send Slack notification if requested
+    if req.notify_slack and result.get("job_id"):
+        try:
+            from srunx.callbacks import SlackCallback
+            from srunx.config import get_config
+            from srunx.models import Job
+
+            cfg = get_config()
+            webhook_url = cfg.notifications.slack_webhook_url
+            if webhook_url:
+                job = Job(
+                    name=req.job_name or req.name,
+                    job_id=result["job_id"],
+                    command=[],
+                )
+                slack = SlackCallback(webhook_url=webhook_url)
+                await anyio.to_thread.run_sync(lambda: slack.on_job_submitted(job))
+        except Exception:
+            _logger.warning("Failed to send Slack notification", exc_info=True)
+
+    return result
 
 
 @router.get("")

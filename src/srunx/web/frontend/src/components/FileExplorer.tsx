@@ -14,8 +14,11 @@ import {
   Loader2,
   Check,
   AlertTriangle,
+  Bell,
+  BellOff,
+  Code,
 } from "lucide-react";
-import { files, jobs } from "../lib/api.ts";
+import { config, files, jobs } from "../lib/api.ts";
 import type { Mount, FileEntry, FileEntryType } from "../lib/types.ts";
 
 /* ── Helpers ────────────────────────────────── */
@@ -184,12 +187,47 @@ function SubmitDialog({
   const [result, setResult] = useState<{ job_id: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Slack notification toggle
+  const [notifySlack, setNotifySlack] = useState(false);
+  const [slackAvailable, setSlackAvailable] = useState(false);
+
+  // Script preview
+  const [preview, setPreview] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  // Check if Slack webhook is configured
+  useEffect(() => {
+    config
+      .get()
+      .then((c) => {
+        const hasWebhook = !!c.notifications?.slack_webhook_url;
+        setSlackAvailable(hasWebhook);
+        setNotifySlack(hasWebhook);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Load script preview on toggle
+  useEffect(() => {
+    if (previewOpen && preview === null && !previewLoading) {
+      setPreviewLoading(true);
+      files
+        .read(mountName, filePath)
+        .then(({ content }) => setPreview(content))
+        .catch(() => setPreview("Failed to load preview"))
+        .finally(() => setPreviewLoading(false));
+    }
+  }, [previewOpen, preview, previewLoading, mountName, filePath]);
+
   async function handleSubmit() {
     try {
       setSubmitting(true);
       setError(null);
-      const { content } = await files.read(mountName, filePath);
-      const res = await jobs.submit(content, jobName, mountName);
+      // Reuse cached preview if available, otherwise fetch
+      const content =
+        preview ?? (await files.read(mountName, filePath)).content;
+      const res = await jobs.submit(content, jobName, mountName, notifySlack);
       setResult(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Submission failed");
@@ -222,7 +260,7 @@ function SubmitDialog({
           borderRadius: "var(--radius-lg)",
           boxShadow: "var(--shadow-panel)",
           width: "100%",
-          maxWidth: 420,
+          maxWidth: 480,
           overflow: "hidden",
         }}
       >
@@ -272,6 +310,7 @@ function SubmitDialog({
             gap: "var(--sp-4)",
           }}
         >
+          {/* Script path */}
           <div>
             <label
               style={{
@@ -304,6 +343,65 @@ function SubmitDialog({
             </div>
           </div>
 
+          {/* Script preview (collapsible) */}
+          <div>
+            <button
+              onClick={() => setPreviewOpen((v) => !v)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: "none",
+                border: "none",
+                color: "var(--text-muted)",
+                cursor: "pointer",
+                padding: 0,
+                fontFamily: "var(--font-mono)",
+                fontSize: "0.7rem",
+                textTransform: "uppercase",
+                letterSpacing: "0.06em",
+              }}
+            >
+              {previewOpen ? (
+                <ChevronDown size={10} />
+              ) : (
+                <ChevronRight size={10} />
+              )}
+              <Code size={10} />
+              Preview
+            </button>
+            {previewOpen && (
+              <div
+                style={{
+                  marginTop: 6,
+                  maxHeight: 180,
+                  overflow: "auto",
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "0.7rem",
+                  lineHeight: 1.5,
+                  color: "var(--text-secondary)",
+                  padding: "var(--sp-2) var(--sp-3)",
+                  background: "var(--bg-base)",
+                  borderRadius: "var(--radius-md)",
+                  border: "1px solid var(--border-subtle)",
+                  whiteSpace: "pre",
+                  tabSize: 4,
+                }}
+              >
+                {previewLoading ? (
+                  <span
+                    style={{ color: "var(--text-muted)", fontStyle: "italic" }}
+                  >
+                    Loading...
+                  </span>
+                ) : (
+                  preview
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Job name */}
           <div>
             <label
               style={{
@@ -325,6 +423,80 @@ function SubmitDialog({
               onChange={(e) => setJobName(e.target.value)}
               disabled={submitting || !!result}
             />
+          </div>
+
+          {/* Slack notification toggle */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                cursor: slackAvailable ? "pointer" : "default",
+                opacity: slackAvailable ? 1 : 0.4,
+              }}
+              title={
+                slackAvailable
+                  ? "Send Slack notification on submission"
+                  : "Configure Slack webhook in Settings > Notifications"
+              }
+            >
+              <input
+                type="checkbox"
+                checked={notifySlack}
+                onChange={(e) => setNotifySlack(e.target.checked)}
+                disabled={!slackAvailable || submitting || !!result}
+                style={{ accentColor: "var(--st-running)", margin: 0 }}
+              />
+              {notifySlack ? (
+                <Bell size={13} style={{ color: "var(--st-running)" }} />
+              ) : (
+                <BellOff size={13} style={{ color: "var(--text-muted)" }} />
+              )}
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "0.75rem",
+                  color: slackAvailable
+                    ? "var(--text-secondary)"
+                    : "var(--text-muted)",
+                }}
+              >
+                Slack notification
+              </span>
+            </label>
+            {!slackAvailable && (
+              <a
+                href="/settings"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose();
+                }}
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "0.65rem",
+                  color: "var(--st-running)",
+                  textDecoration: "none",
+                  opacity: 0.8,
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.textDecoration = "underline";
+                  e.currentTarget.style.opacity = "1";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.textDecoration = "none";
+                  e.currentTarget.style.opacity = "0.8";
+                }}
+              >
+                Settings で設定
+              </a>
+            )}
           </div>
 
           {error && (
@@ -422,6 +594,7 @@ type TreeNodeProps = {
     fullPath: string,
     entry: FileEntry,
   ) => void;
+  onSubmit: (fullPath: string, entry: FileEntry) => void;
 };
 
 function TreeNode({
@@ -433,6 +606,7 @@ function TreeNode({
   onToggleDir,
   loadingDir,
   onContextMenu,
+  onSubmit,
 }: TreeNodeProps) {
   const fullPath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
   const isDir = entry.type === "directory";
@@ -529,12 +703,36 @@ function TreeNode({
           {entry.name}
         </span>
 
-        {/* Sbatch indicator */}
+        {/* Sbatch submit button */}
         {isSbatchFile(entry.name) && (
-          <Play
-            size={10}
-            style={{ color: "var(--st-running)", opacity: 0.5, flexShrink: 0 }}
-          />
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onSubmit(fullPath, entry);
+            }}
+            title="Submit as sbatch"
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--st-running)",
+              cursor: "pointer",
+              padding: 2,
+              borderRadius: "var(--radius-sm)",
+              display: "flex",
+              alignItems: "center",
+              flexShrink: 0,
+              opacity: 0.6,
+              transition: "opacity var(--duration-fast) var(--ease-out)",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.opacity = "1";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.opacity = "0.6";
+            }}
+          >
+            <Play size={10} />
+          </button>
         )}
       </div>
 
@@ -549,6 +747,7 @@ function TreeNode({
           onToggleDir={onToggleDir}
           loadingDir={loadingDir}
           onContextMenu={onContextMenu}
+          onSubmit={onSubmit}
         />
       )}
     </div>
@@ -568,6 +767,7 @@ type TreeChildrenProps = {
     fullPath: string,
     entry: FileEntry,
   ) => void;
+  onSubmit: (fullPath: string, entry: FileEntry) => void;
 };
 
 function TreeChildren({
@@ -579,6 +779,7 @@ function TreeChildren({
   onToggleDir,
   loadingDir,
   onContextMenu,
+  onSubmit,
 }: TreeChildrenProps) {
   const sorted = [...entries].sort((a, b) => {
     if (a.type === "directory" && b.type !== "directory") return -1;
@@ -599,6 +800,7 @@ function TreeChildren({
           onToggleDir={onToggleDir}
           loadingDir={loadingDir}
           onContextMenu={onContextMenu}
+          onSubmit={onSubmit}
         />
       ))}
     </>
@@ -624,6 +826,7 @@ type MountSectionProps = {
     entry: FileEntry,
     mountName: string,
   ) => void;
+  onSubmit: (fullPath: string, entry: FileEntry, mountName: string) => void;
 };
 
 function MountSection({
@@ -638,6 +841,7 @@ function MountSection({
   syncing,
   syncSuccess,
   onContextMenu,
+  onSubmit,
 }: MountSectionProps) {
   return (
     <div>
@@ -744,6 +948,7 @@ function MountSection({
               onContextMenu={(e, fp, entry) =>
                 onContextMenu(e, fp, entry, mount.name)
               }
+              onSubmit={(fp, entry) => onSubmit(fp, entry, mount.name)}
             />
           )}
         </div>
@@ -1048,6 +1253,13 @@ export function FileExplorer({ onClose }: FileExplorerProps) {
                 syncing={syncingMount === mount.name}
                 syncSuccess={syncSuccessMount === mount.name}
                 onContextMenu={handleContextMenu}
+                onSubmit={(fp, entry, mn) =>
+                  setSubmitTarget({
+                    filePath: fp,
+                    fileName: entry.name,
+                    mountName: mn,
+                  })
+                }
               />
             ))
           )}
