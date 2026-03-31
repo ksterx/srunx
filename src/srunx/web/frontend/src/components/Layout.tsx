@@ -1,7 +1,10 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar.tsx";
-import { FileExplorer } from "./FileExplorer.tsx";
+
+const FileExplorer = lazy(() =>
+  import("./FileExplorer.tsx").then((m) => ({ default: m.FileExplorer })),
+);
 
 export function Layout() {
   const [explorerOpen, setExplorerOpen] = useState(false);
@@ -14,7 +17,24 @@ export function Layout() {
         onNavigate={() => setExplorerOpen(false)}
       />
       {explorerOpen ? (
-        <FileExplorer />
+        <Suspense
+          fallback={
+            <div
+              style={{
+                flex: 1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "var(--text-muted)",
+                fontSize: "0.8rem",
+              }}
+            >
+              Loading Explorer...
+            </div>
+          }
+        >
+          <FileExplorer />
+        </Suspense>
       ) : (
         <main
           className="grid-bg"

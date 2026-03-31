@@ -46,7 +46,11 @@ hljs.registerLanguage("ini", ini);
 hljs.registerLanguage("dockerfile", dockerfile);
 
 function detectLanguage(filename: string): string | undefined {
-  const ext = filename.split(".").pop()?.toLowerCase();
+  const lower = filename.toLowerCase();
+  if (lower === "dockerfile" || lower.startsWith("dockerfile."))
+    return "dockerfile";
+  if (lower === "makefile") return "bash";
+  const ext = lower.split(".").pop();
   if (!ext) return undefined;
   const map: Record<string, string> = {
     py: "python",
@@ -1259,6 +1263,7 @@ export function FileExplorer() {
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
+  const fileRequestRef = useRef(0);
 
   // Context menu
   const [contextMenu, setContextMenu] = useState<{
@@ -1378,28 +1383,35 @@ export function FileExplorer() {
   /* File select handler */
   const handleFileSelect = useCallback(
     async (mountName: string, filePath: string, fileName: string) => {
+      // Allow re-click to retry on error
       if (
         selectedFile?.mount === mountName &&
-        selectedFile?.path === filePath
+        selectedFile?.path === filePath &&
+        !fileError
       ) {
         return;
       }
+      const requestId = ++fileRequestRef.current;
       setSelectedFile({ mount: mountName, path: filePath, name: fileName });
       setFileContent(null);
       setFileLoading(true);
       setFileError(null);
       try {
         const result = await files.read(mountName, filePath);
+        if (fileRequestRef.current !== requestId) return;
         setFileContent(result.content);
       } catch (err) {
+        if (fileRequestRef.current !== requestId) return;
         setFileError(
           err instanceof Error ? err.message : "Failed to read file",
         );
       } finally {
-        setFileLoading(false);
+        if (fileRequestRef.current === requestId) {
+          setFileLoading(false);
+        }
       }
     },
-    [selectedFile],
+    [selectedFile, fileError],
   );
 
   /* Context menu handler */
