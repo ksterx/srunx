@@ -30,9 +30,14 @@ const NAV_ITEMS: NavItem[] = [
 type SidebarProps = {
   explorerOpen: boolean;
   onToggleExplorer: () => void;
+  onNavigate: () => void;
 };
 
-export function Sidebar({ explorerOpen, onToggleExplorer }: SidebarProps) {
+export function Sidebar({
+  explorerOpen,
+  onToggleExplorer,
+  onNavigate,
+}: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
@@ -176,24 +181,28 @@ export function Sidebar({ explorerOpen, onToggleExplorer }: SidebarProps) {
             key={item.to}
             to={item.to}
             end={item.to === "/"}
-            style={({ isActive }) => ({
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-              padding: collapsed ? "10px 0" : "10px 12px",
-              justifyContent: collapsed ? "center" : "flex-start",
-              borderRadius: 6,
-              textDecoration: "none",
-              fontSize: "0.875rem",
-              fontWeight: 500,
-              fontFamily: "var(--font-body)",
-              color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
-              background: isActive ? "var(--accent-dim)" : "transparent",
-              borderLeft: isActive
-                ? "2px solid var(--accent)"
-                : "2px solid transparent",
-              transition: "all 150ms cubic-bezier(0.16,1,0.3,1)",
-            })}
+            onClick={onNavigate}
+            style={({ isActive }) => {
+              const active = isActive && !explorerOpen;
+              return {
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                padding: collapsed ? "10px 0" : "10px 12px",
+                justifyContent: collapsed ? "center" : "flex-start",
+                borderRadius: 6,
+                textDecoration: "none",
+                fontSize: "0.875rem",
+                fontWeight: 500,
+                fontFamily: "var(--font-body)",
+                color: active ? "var(--text-primary)" : "var(--text-secondary)",
+                background: active ? "var(--accent-dim)" : "transparent",
+                borderLeft: active
+                  ? "2px solid var(--accent)"
+                  : "2px solid transparent",
+                transition: "all 150ms cubic-bezier(0.16,1,0.3,1)",
+              };
+            }}
           >
             <span style={{ flexShrink: 0, display: "flex" }}>{item.icon}</span>
             <AnimatePresence>

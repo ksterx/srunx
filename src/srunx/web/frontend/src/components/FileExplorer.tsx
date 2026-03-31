@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Folder,
@@ -17,9 +17,60 @@ import {
   Bell,
   BellOff,
   Code,
+  FileText,
 } from "lucide-react";
+import hljs from "highlight.js/lib/core";
+import python from "highlight.js/lib/languages/python";
+import bash from "highlight.js/lib/languages/bash";
+import yaml from "highlight.js/lib/languages/yaml";
+import hljsJson from "highlight.js/lib/languages/json";
+import javascript from "highlight.js/lib/languages/javascript";
+import typescript from "highlight.js/lib/languages/typescript";
+import xml from "highlight.js/lib/languages/xml";
+import ini from "highlight.js/lib/languages/ini";
+import dockerfile from "highlight.js/lib/languages/dockerfile";
+import "highlight.js/styles/github-dark.css";
 import { config, files, jobs } from "../lib/api.ts";
 import type { Mount, FileEntry, FileEntryType } from "../lib/types.ts";
+
+/* ── highlight.js setup ────────────────────── */
+
+hljs.registerLanguage("python", python);
+hljs.registerLanguage("bash", bash);
+hljs.registerLanguage("yaml", yaml);
+hljs.registerLanguage("json", hljsJson);
+hljs.registerLanguage("javascript", javascript);
+hljs.registerLanguage("typescript", typescript);
+hljs.registerLanguage("xml", xml);
+hljs.registerLanguage("ini", ini);
+hljs.registerLanguage("dockerfile", dockerfile);
+
+function detectLanguage(filename: string): string | undefined {
+  const ext = filename.split(".").pop()?.toLowerCase();
+  if (!ext) return undefined;
+  const map: Record<string, string> = {
+    py: "python",
+    sh: "bash",
+    bash: "bash",
+    zsh: "bash",
+    slurm: "bash",
+    sbatch: "bash",
+    yaml: "yaml",
+    yml: "yaml",
+    json: "json",
+    js: "javascript",
+    jsx: "javascript",
+    ts: "typescript",
+    tsx: "typescript",
+    xml: "xml",
+    html: "xml",
+    ini: "ini",
+    toml: "ini",
+    cfg: "ini",
+    conf: "bash",
+  };
+  return map[ext];
+}
 
 /* ── Helpers ────────────────────────────────── */
 
@@ -579,6 +630,203 @@ function SubmitDialog({
   );
 }
 
+/* ── File Viewer ───────────────────────────── */
+
+type SelectedFile = { mount: string; path: string; name: string };
+
+type FileViewerProps = {
+  selectedFile: SelectedFile | null;
+  content: string | null;
+  loading: boolean;
+  error: string | null;
+};
+
+function FileViewer({
+  selectedFile,
+  content,
+  loading,
+  error,
+}: FileViewerProps) {
+  const codeRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (!codeRef.current || !content) return;
+    const lang = detectLanguage(selectedFile?.name ?? "");
+    if (lang) {
+      try {
+        codeRef.current.innerHTML = hljs.highlight(content, {
+          language: lang,
+        }).value;
+        return;
+      } catch {
+        /* fallback to plain text */
+      }
+    }
+    codeRef.current.textContent = content;
+  }, [content, selectedFile?.name]);
+
+  const lines = useMemo(() => (content ? content.split("\n") : []), [content]);
+
+  if (!selectedFile) {
+    return (
+      <div
+        style={{
+          flex: 1,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexDirection: "column",
+          gap: 12,
+          color: "var(--text-muted)",
+          fontSize: "0.8rem",
+          fontFamily: "var(--font-body)",
+        }}
+      >
+        <FileText size={32} strokeWidth={1} />
+        Select a file to view its contents
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div
+        style={{
+          flex: 1,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "var(--text-muted)",
+          gap: 8,
+        }}
+      >
+        <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
+        <span style={{ fontSize: "0.8rem" }}>Loading...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div
+        style={{
+          flex: 1,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "var(--st-failed)",
+          fontSize: "0.8rem",
+          gap: 8,
+        }}
+      >
+        <AlertTriangle size={14} />
+        {error}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+      }}
+    >
+      {/* File path bar */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "8px 16px",
+          borderBottom: "1px solid var(--border-ghost)",
+          fontSize: "0.75rem",
+          fontFamily: "var(--font-mono)",
+          color: "var(--text-secondary)",
+          background: "var(--bg-surface)",
+          flexShrink: 0,
+          minHeight: 40,
+        }}
+      >
+        <FileCode
+          size={13}
+          style={{ color: "var(--text-muted)", flexShrink: 0 }}
+        />
+        <span
+          style={{
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {selectedFile.mount}:{selectedFile.path}
+        </span>
+        <span
+          style={{
+            marginLeft: "auto",
+            color: "var(--text-muted)",
+            fontSize: "0.65rem",
+            flexShrink: 0,
+          }}
+        >
+          {lines.length} lines
+        </span>
+      </div>
+      {/* Code area */}
+      <div style={{ flex: 1, overflow: "auto" }}>
+        <div style={{ display: "flex", minHeight: "100%" }}>
+          {/* Line numbers */}
+          <div
+            style={{
+              padding: "12px 0",
+              textAlign: "right",
+              userSelect: "none",
+              flexShrink: 0,
+              borderRight: "1px solid var(--border-ghost)",
+            }}
+          >
+            {lines.map((_, i) => (
+              <div
+                key={i}
+                style={{
+                  padding: "0 12px 0 16px",
+                  fontSize: "0.75rem",
+                  fontFamily: "var(--font-mono)",
+                  lineHeight: "20px",
+                  height: 20,
+                  color: "var(--text-muted)",
+                }}
+              >
+                {i + 1}
+              </div>
+            ))}
+          </div>
+          {/* Code content */}
+          <pre
+            style={{
+              flex: 1,
+              margin: 0,
+              padding: "12px 16px",
+              fontSize: "0.75rem",
+              fontFamily: "var(--font-mono)",
+              lineHeight: "20px",
+              overflow: "visible",
+              background: "transparent",
+              color: "var(--text-primary)",
+            }}
+          >
+            <code ref={codeRef} style={{ lineHeight: "20px" }}>
+              {content}
+            </code>
+          </pre>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Tree Node ──────────────────────────────── */
 
 type TreeNodeProps = {
@@ -595,6 +843,8 @@ type TreeNodeProps = {
     entry: FileEntry,
   ) => void;
   onSubmit: (fullPath: string, entry: FileEntry) => void;
+  onFileSelect: (fullPath: string, entry: FileEntry) => void;
+  selectedPath: string | null;
 };
 
 function TreeNode({
@@ -607,6 +857,8 @@ function TreeNode({
   loadingDir,
   onContextMenu,
   onSubmit,
+  onFileSelect,
+  selectedPath,
 }: TreeNodeProps) {
   const fullPath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
   const isDir = entry.type === "directory";
@@ -619,10 +871,15 @@ function TreeNode({
   const isExpanded = expandedDirs.has(fullPath);
   const isInaccessible = isSymlink && entry.accessible === false;
   const isLoading = loadingDir === fullPath;
+  const isSelected = !isExpandable && selectedPath === fullPath;
 
   function handleClick() {
     if (isInaccessible) return;
-    if (isExpandable) onToggleDir(fullPath);
+    if (isExpandable) {
+      onToggleDir(fullPath);
+    } else {
+      onFileSelect(fullPath, entry);
+    }
   }
 
   return (
@@ -646,18 +903,25 @@ function TreeNode({
           fontSize: "0.75rem",
           cursor: isInaccessible ? "default" : "pointer",
           opacity: isInaccessible ? 0.35 : 1,
-          color: isSbatchFile(entry.name)
+          color: isSelected
             ? "var(--text-primary)"
-            : "var(--text-secondary)",
+            : isSbatchFile(entry.name)
+              ? "var(--text-primary)"
+              : "var(--text-secondary)",
+          background: isSelected ? "var(--accent-dim)" : "transparent",
           transition: "background var(--duration-fast) var(--ease-out)",
           userSelect: "none",
         }}
         onMouseEnter={(e) => {
           if (!isInaccessible)
-            e.currentTarget.style.background = "var(--bg-hover)";
+            e.currentTarget.style.background = isSelected
+              ? "var(--accent-dim)"
+              : "var(--bg-hover)";
         }}
         onMouseLeave={(e) => {
-          e.currentTarget.style.background = "transparent";
+          e.currentTarget.style.background = isSelected
+            ? "var(--accent-dim)"
+            : "transparent";
         }}
       >
         {/* Expand arrow */}
@@ -748,6 +1012,8 @@ function TreeNode({
           loadingDir={loadingDir}
           onContextMenu={onContextMenu}
           onSubmit={onSubmit}
+          onFileSelect={onFileSelect}
+          selectedPath={selectedPath}
         />
       )}
     </div>
@@ -768,6 +1034,8 @@ type TreeChildrenProps = {
     entry: FileEntry,
   ) => void;
   onSubmit: (fullPath: string, entry: FileEntry) => void;
+  onFileSelect: (fullPath: string, entry: FileEntry) => void;
+  selectedPath: string | null;
 };
 
 function TreeChildren({
@@ -780,6 +1048,8 @@ function TreeChildren({
   loadingDir,
   onContextMenu,
   onSubmit,
+  onFileSelect,
+  selectedPath,
 }: TreeChildrenProps) {
   const sorted = [...entries].sort((a, b) => {
     if (a.type === "directory" && b.type !== "directory") return -1;
@@ -801,6 +1071,8 @@ function TreeChildren({
           loadingDir={loadingDir}
           onContextMenu={onContextMenu}
           onSubmit={onSubmit}
+          onFileSelect={onFileSelect}
+          selectedPath={selectedPath}
         />
       ))}
     </>
@@ -827,6 +1099,8 @@ type MountSectionProps = {
     mountName: string,
   ) => void;
   onSubmit: (fullPath: string, entry: FileEntry, mountName: string) => void;
+  onFileSelect: (fullPath: string, entry: FileEntry, mountName: string) => void;
+  selectedFilePath: string | null;
 };
 
 function MountSection({
@@ -842,6 +1116,8 @@ function MountSection({
   syncSuccess,
   onContextMenu,
   onSubmit,
+  onFileSelect,
+  selectedFilePath,
 }: MountSectionProps) {
   return (
     <div>
@@ -949,6 +1225,8 @@ function MountSection({
                 onContextMenu(e, fp, entry, mount.name)
               }
               onSubmit={(fp, entry) => onSubmit(fp, entry, mount.name)}
+              onFileSelect={(fp, entry) => onFileSelect(fp, entry, mount.name)}
+              selectedPath={selectedFilePath}
             />
           )}
         </div>
@@ -959,11 +1237,7 @@ function MountSection({
 
 /* ── FileExplorer (main) ────────────────────── */
 
-type FileExplorerProps = {
-  onClose: () => void;
-};
-
-export function FileExplorer({ onClose }: FileExplorerProps) {
+export function FileExplorer() {
   const [mounts, setMounts] = useState<Mount[]>([]);
   const [openMounts, setOpenMounts] = useState<Set<string>>(new Set());
   const [mountEntries, setMountEntries] = useState<Map<string, FileEntry[]>>(
@@ -979,6 +1253,12 @@ export function FileExplorer({ onClose }: FileExplorerProps) {
   // Sync state per mount
   const [syncingMount, setSyncingMount] = useState<string | null>(null);
   const [syncSuccessMount, setSyncSuccessMount] = useState<string | null>(null);
+
+  // File viewer state
+  const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null);
+  const [fileContent, setFileContent] = useState<string | null>(null);
+  const [fileLoading, setFileLoading] = useState(false);
+  const [fileError, setFileError] = useState<string | null>(null);
 
   // Context menu
   const [contextMenu, setContextMenu] = useState<{
@@ -1095,6 +1375,33 @@ export function FileExplorer({ onClose }: FileExplorerProps) {
     }
   }
 
+  /* File select handler */
+  const handleFileSelect = useCallback(
+    async (mountName: string, filePath: string, fileName: string) => {
+      if (
+        selectedFile?.mount === mountName &&
+        selectedFile?.path === filePath
+      ) {
+        return;
+      }
+      setSelectedFile({ mount: mountName, path: filePath, name: fileName });
+      setFileContent(null);
+      setFileLoading(true);
+      setFileError(null);
+      try {
+        const result = await files.read(mountName, filePath);
+        setFileContent(result.content);
+      } catch (err) {
+        setFileError(
+          err instanceof Error ? err.message : "Failed to read file",
+        );
+      } finally {
+        setFileLoading(false);
+      }
+    },
+    [selectedFile],
+  );
+
   /* Context menu handler */
   function handleContextMenu(
     e: React.MouseEvent,
@@ -1127,157 +1434,159 @@ export function FileExplorer({ onClose }: FileExplorerProps) {
 
   return (
     <>
-      <motion.div
-        initial={{ width: 0, opacity: 0 }}
-        animate={{ width: 260, opacity: 1 }}
-        exit={{ width: 0, opacity: 0 }}
-        transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+      <div
         style={{
-          height: "100%",
-          background: "var(--bg-surface)",
-          borderRight: "1px solid var(--border-subtle)",
           display: "flex",
-          flexDirection: "column",
+          flex: 1,
+          height: "100%",
           overflow: "hidden",
-          flexShrink: 0,
         }}
       >
-        {/* Header */}
+        {/* Tree panel */}
         <div
           style={{
+            width: 260,
+            height: "100%",
+            background: "var(--bg-surface)",
+            borderRight: "1px solid var(--border-subtle)",
             display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            padding: "10px 12px",
-            borderBottom: "1px solid var(--border-ghost)",
-            minHeight: 40,
+            flexDirection: "column",
+            overflow: "hidden",
+            flexShrink: 0,
           }}
         >
-          <span
+          {/* Header */}
+          <div
             style={{
-              fontFamily: "var(--font-display)",
-              fontSize: "0.7rem",
-              fontWeight: 600,
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              color: "var(--text-secondary)",
-            }}
-          >
-            Explorer
-          </span>
-          <button
-            onClick={onClose}
-            style={{
-              background: "none",
-              border: "none",
-              color: "var(--text-muted)",
-              cursor: "pointer",
-              padding: 2,
-              borderRadius: "var(--radius-sm)",
               display: "flex",
+              alignItems: "center",
+              padding: "10px 12px",
+              borderBottom: "1px solid var(--border-ghost)",
+              minHeight: 40,
             }}
-            onMouseEnter={(e) =>
-              (e.currentTarget.style.color = "var(--text-secondary)")
-            }
-            onMouseLeave={(e) =>
-              (e.currentTarget.style.color = "var(--text-muted)")
-            }
           >
-            <X size={14} />
-          </button>
-        </div>
-
-        {/* Body */}
-        <div style={{ flex: 1, overflow: "auto" }}>
-          {loading ? (
-            <div
+            <span
               style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                padding: "var(--sp-8)",
-                color: "var(--text-muted)",
-                gap: 8,
-              }}
-            >
-              <Loader2
-                size={14}
-                style={{ animation: "spin 1s linear infinite" }}
-              />
-              <span style={{ fontSize: "0.75rem" }}>Loading...</span>
-            </div>
-          ) : error && mounts.length === 0 ? (
-            <div
-              style={{
-                padding: "var(--sp-4)",
-                color: "var(--st-failed)",
-                fontSize: "0.75rem",
-                textAlign: "center",
-              }}
-            >
-              {error}
-            </div>
-          ) : mounts.length === 0 ? (
-            <div
-              style={{
-                padding: "var(--sp-4)",
-                color: "var(--text-muted)",
-                fontSize: "0.75rem",
-                textAlign: "center",
-              }}
-            >
-              No mounts configured.
-              <br />
-              <span style={{ fontSize: "0.65rem" }}>
-                Add mounts via SSH profile settings.
-              </span>
-            </div>
-          ) : (
-            mounts.map((mount) => (
-              <MountSection
-                key={mount.name}
-                mount={mount}
-                isOpen={openMounts.has(mount.name)}
-                onToggle={() => handleToggleMount(mount.name)}
-                entries={mountEntries.get(mount.name) ?? []}
-                expandedDirs={getScopedExpandedDirs(mount.name)}
-                onToggleDir={(fullPath) =>
-                  handleToggleDir(mount.name, fullPath)
-                }
-                loadingDir={
-                  loadingDir?.startsWith(`${mount.name}:`)
-                    ? loadingDir.slice(mount.name.length + 1)
-                    : null
-                }
-                onSync={handleSync}
-                syncing={syncingMount === mount.name}
-                syncSuccess={syncSuccessMount === mount.name}
-                onContextMenu={handleContextMenu}
-                onSubmit={(fp, entry, mn) =>
-                  setSubmitTarget({
-                    filePath: fp,
-                    fileName: entry.name,
-                    mountName: mn,
-                  })
-                }
-              />
-            ))
-          )}
-
-          {error && mounts.length > 0 && (
-            <div
-              style={{
-                padding: "var(--sp-2) var(--sp-3)",
+                fontFamily: "var(--font-display)",
                 fontSize: "0.7rem",
-                color: "var(--st-failed)",
-                borderTop: "1px solid var(--border-ghost)",
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.08em",
+                color: "var(--text-secondary)",
               }}
             >
-              {error}
-            </div>
-          )}
+              Explorer
+            </span>
+          </div>
+
+          {/* Body */}
+          <div style={{ flex: 1, overflow: "auto" }}>
+            {loading ? (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "var(--sp-8)",
+                  color: "var(--text-muted)",
+                  gap: 8,
+                }}
+              >
+                <Loader2
+                  size={14}
+                  style={{ animation: "spin 1s linear infinite" }}
+                />
+                <span style={{ fontSize: "0.75rem" }}>Loading...</span>
+              </div>
+            ) : error && mounts.length === 0 ? (
+              <div
+                style={{
+                  padding: "var(--sp-4)",
+                  color: "var(--st-failed)",
+                  fontSize: "0.75rem",
+                  textAlign: "center",
+                }}
+              >
+                {error}
+              </div>
+            ) : mounts.length === 0 ? (
+              <div
+                style={{
+                  padding: "var(--sp-4)",
+                  color: "var(--text-muted)",
+                  fontSize: "0.75rem",
+                  textAlign: "center",
+                }}
+              >
+                No mounts configured.
+                <br />
+                <span style={{ fontSize: "0.65rem" }}>
+                  Add mounts via SSH profile settings.
+                </span>
+              </div>
+            ) : (
+              mounts.map((mount) => (
+                <MountSection
+                  key={mount.name}
+                  mount={mount}
+                  isOpen={openMounts.has(mount.name)}
+                  onToggle={() => handleToggleMount(mount.name)}
+                  entries={mountEntries.get(mount.name) ?? []}
+                  expandedDirs={getScopedExpandedDirs(mount.name)}
+                  onToggleDir={(fullPath) =>
+                    handleToggleDir(mount.name, fullPath)
+                  }
+                  loadingDir={
+                    loadingDir?.startsWith(`${mount.name}:`)
+                      ? loadingDir.slice(mount.name.length + 1)
+                      : null
+                  }
+                  onSync={handleSync}
+                  syncing={syncingMount === mount.name}
+                  syncSuccess={syncSuccessMount === mount.name}
+                  onContextMenu={handleContextMenu}
+                  onSubmit={(fp, entry, mn) =>
+                    setSubmitTarget({
+                      filePath: fp,
+                      fileName: entry.name,
+                      mountName: mn,
+                    })
+                  }
+                  onFileSelect={(fp, entry, mn) =>
+                    handleFileSelect(mn, fp, entry.name)
+                  }
+                  selectedFilePath={
+                    selectedFile?.mount === mount.name
+                      ? selectedFile.path
+                      : null
+                  }
+                />
+              ))
+            )}
+
+            {error && mounts.length > 0 && (
+              <div
+                style={{
+                  padding: "var(--sp-2) var(--sp-3)",
+                  fontSize: "0.7rem",
+                  color: "var(--st-failed)",
+                  borderTop: "1px solid var(--border-ghost)",
+                }}
+              >
+                {error}
+              </div>
+            )}
+          </div>
         </div>
-      </motion.div>
+
+        {/* File viewer */}
+        <FileViewer
+          selectedFile={selectedFile}
+          content={fileContent}
+          loading={fileLoading}
+          error={fileError}
+        />
+      </div>
 
       {/* Context menu */}
       {contextMenu && (
@@ -1313,6 +1622,10 @@ export function FileExplorer({ onClose }: FileExplorerProps) {
         @keyframes spin {
           from { transform: rotate(0deg); }
           to { transform: rotate(360deg); }
+        }
+        pre code.hljs {
+          background: transparent !important;
+          padding: 0 !important;
         }
       `}</style>
     </>

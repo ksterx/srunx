@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Outlet } from "react-router-dom";
-import { AnimatePresence } from "framer-motion";
 import { Sidebar } from "./Sidebar.tsx";
 import { FileExplorer } from "./FileExplorer.tsx";
 
@@ -12,23 +11,23 @@ export function Layout() {
       <Sidebar
         explorerOpen={explorerOpen}
         onToggleExplorer={() => setExplorerOpen((v) => !v)}
+        onNavigate={() => setExplorerOpen(false)}
       />
-      <AnimatePresence>
-        {explorerOpen && (
-          <FileExplorer onClose={() => setExplorerOpen(false)} />
-        )}
-      </AnimatePresence>
-      <main
-        className="grid-bg"
-        style={{
-          flex: 1,
-          overflow: "auto",
-          padding: "var(--sp-6)",
-          position: "relative",
-        }}
-      >
-        <Outlet />
-      </main>
+      {explorerOpen ? (
+        <FileExplorer />
+      ) : (
+        <main
+          className="grid-bg"
+          style={{
+            flex: 1,
+            overflow: "auto",
+            padding: "var(--sp-6)",
+            position: "relative",
+          }}
+        >
+          <Outlet />
+        </main>
+      )}
     </div>
   );
 }
