@@ -197,6 +197,73 @@ Security model
      prefix, mount name, and entry metadata. Local filesystem paths are
      never sent to the frontend.
 
+Workflow Execution Pipeline
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When the user clicks **Run Workflow**, the backend orchestrates a multi-phase
+pipeline that bridges the local development environment and the remote SLURM
+cluster.
+
+**Phase 1: Mount resolution and sync**
+
+The backend inspects each job's ``work_dir`` and matches it against the mount
+remote paths using longest-prefix matching. For example, if a job has
+``work_dir=/scratch/user/ml-project/experiments`` and a mount maps
+``/scratch/user/ml-project`` to ``~/projects/ml-project``, that mount is
+selected. If the workflow has a ``default_project`` field, that mount is
+included as well. Each matched mount is synced via rsync before any jobs are
+submitted, ensuring the remote cluster has the latest source files.
+
+**Phase 2: Script rendering**
+
+Each ``Job`` in the workflow is rendered through the ``advanced.slurm.jinja``
+template to produce a complete ``sbatch`` script. ``ShellJob`` instances use
+their script content directly. Rendering happens in a temporary directory and
+is purely CPU-bound (no network I/O).
+
+**Phase 3: Topological submission**
+
+Jobs are submitted in BFS topological order. For each job, the backend
+constructs a ``--dependency`` flag from the SLURM job IDs of its parent jobs,
+using the dependency type specified on each edge (``afterok``, ``after``,
+``afterany``, or ``afternotok``). This delegates scheduling entirely to SLURM:
+the backend does not wait between submissions.
+
+**Phase 4: Background monitoring**
+
+After all jobs are submitted, a background ``anyio`` task polls each job's
+status via ``sacct`` every 10 seconds. When all jobs reach a terminal state
+(``COMPLETED``, ``FAILED``, ``CANCELLED``, or ``TIMEOUT``), the run is marked
+accordingly. If the backend loses contact with SLURM for 30 consecutive
+polling failures (~5 minutes), the run is marked as failed.
+
+.. mermaid::
+
+   flowchart LR
+     subgraph phase1["1. Sync"]
+       Resolve["Resolve mounts\n(longest prefix)"]
+       Rsync["rsync to remote"]
+       Resolve --> Rsync
+     end
+     subgraph phase2["2. Render"]
+       Template["Jinja2 template\n→ sbatch script"]
+     end
+     subgraph phase3["3. Submit"]
+       Topo["BFS topological\nordering"]
+       Sbatch["sbatch\n--dependency=afterok:ID"]
+       Topo --> Sbatch
+     end
+     subgraph phase4["4. Monitor"]
+       Poll["Poll sacct\nevery 10s"]
+       Terminal["All terminal?\n→ mark run"]
+       Poll --> Terminal
+     end
+     phase1 --> phase2 --> phase3 --> phase4
+
+The entire pipeline is tracked by an in-memory ``RunRegistry`` that stores the
+run ID, status, per-job SLURM IDs, and per-job statuses. The frontend polls
+``GET /api/workflows/runs/{run_id}`` to reflect live progress in the DAG view.
+
 Configuration Hierarchy
 -----------------------
 

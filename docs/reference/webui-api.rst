@@ -173,12 +173,21 @@ Workflows
    * - POST
      - ``/api/workflows/create``
      - Create a workflow from structured JSON (DAG builder)
+   * - DELETE
+     - ``/api/workflows/{name}``
+     - Delete a workflow YAML file
    * - POST
      - ``/api/workflows/{name}/run``
-     - Start a workflow run (creates tracking record)
+     - Run a workflow (sync mounts, submit jobs, monitor)
    * - GET
      - ``/api/workflows/runs``
      - List workflow run records
+   * - GET
+     - ``/api/workflows/runs/{run_id}``
+     - Get run status with live job statuses
+   * - POST
+     - ``/api/workflows/runs/{run_id}/cancel``
+     - Cancel all jobs in a run
 
 POST /api/workflows/upload
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -306,6 +315,125 @@ Create a workflow from a structured JSON payload. Used by the DAG builder.
 * ``409`` — Workflow with the same name already exists
 * ``422`` — Validation error (invalid name, duplicate job names, dependency cycle, Pydantic validation failure)
 
+DELETE /api/workflows/{name}
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Delete a workflow YAML file from the workflow directory.
+
+**Path parameters:**
+
+* ``name`` — Workflow name (alphanumeric, hyphens, underscores)
+
+**Response (200):**
+
+.. code-block:: json
+
+   {"status": "deleted", "name": "ml-pipeline"}
+
+**Error responses:**
+
+* ``404`` — Workflow not found
+* ``422`` — Invalid workflow name
+
+POST /api/workflows/{name}/run
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Run a workflow end-to-end: identify and sync referenced mounts, render SLURM scripts, submit jobs in topological order with ``--dependency`` flags, and start a background monitor that polls ``sacct`` every 10 seconds.
+
+**Path parameters:**
+
+* ``name`` — Workflow name
+
+**Response (202):**
+
+.. code-block:: json
+
+   {
+     "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+     "workflow_name": "ml-pipeline",
+     "started_at": "2026-03-30T12:00:00+00:00",
+     "completed_at": null,
+     "status": "running",
+     "job_ids": {
+       "preprocess": "18500",
+       "train": "18501",
+       "evaluate": "18502"
+     },
+     "job_statuses": {
+       "preprocess": "PENDING",
+       "train": "PENDING",
+       "evaluate": "PENDING"
+     },
+     "error": null
+   }
+
+The ``status`` field transitions through: ``syncing``, ``submitting``, ``running``, then a terminal state (``completed``, ``failed``, or ``cancelled``).
+
+**Error responses:**
+
+* ``404`` — Workflow not found
+* ``422`` — Invalid workflow name
+* ``500`` — Script rendering failed
+* ``502`` — Mount sync failed or sbatch submission failed
+
+GET /api/workflows/runs/{run_id}
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Get the current status and job-level details for a single workflow run. Job statuses are updated by the background monitor every 10 seconds.
+
+**Path parameters:**
+
+* ``run_id`` — UUID of the run (returned by the ``POST /{name}/run`` endpoint)
+
+**Response (200):**
+
+.. code-block:: json
+
+   {
+     "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+     "workflow_name": "ml-pipeline",
+     "started_at": "2026-03-30T12:00:00+00:00",
+     "completed_at": null,
+     "status": "running",
+     "job_ids": {"preprocess": "18500", "train": "18501"},
+     "job_statuses": {"preprocess": "COMPLETED", "train": "RUNNING"},
+     "error": null
+   }
+
+**Error responses:**
+
+* ``404`` — Run not found
+
+POST /api/workflows/runs/{run_id}/cancel
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Cancel all SLURM jobs associated with a workflow run. Each submitted job is cancelled via ``scancel``. The run status is set to ``cancelled``.
+
+**Path parameters:**
+
+* ``run_id`` — UUID of the run
+
+**Response (200):**
+
+.. code-block:: json
+
+   {"status": "cancelled", "run_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"}
+
+If some jobs fail to cancel (e.g., already completed), the response includes a ``warnings`` array:
+
+.. code-block:: json
+
+   {
+     "status": "cancelled",
+     "run_id": "a1b2c3d4-...",
+     "warnings": ["evaluate: Job 18502 not found"]
+   }
+
+**Error responses:**
+
+* ``404`` — Run not found
+* ``422`` — Run is already in a terminal state (completed, failed, or cancelled)
+
 Files
 -----
 
@@ -318,7 +446,16 @@ Files
      - Description
    * - GET
      - ``/api/files/mounts``
-     - List configured mount points for the current SSH profile
+     - List configured mount points (name and remote only)
+   * - GET
+     - ``/api/files/mounts/config``
+     - List mounts with full details (name, local, remote)
+   * - POST
+     - ``/api/files/mounts``
+     - Add a mount to the current SSH profile
+   * - DELETE
+     - ``/api/files/mounts/{name}``
+     - Remove a mount from the current SSH profile
    * - GET
      - ``/api/files/browse``
      - Browse local filesystem under a mount's local root
@@ -343,6 +480,76 @@ Returns the list of mount points from the current SSH profile. Only mount names 
    ]
 
 Returns an empty list if no SSH profile is configured or the profile has no mounts.
+
+GET /api/files/mounts/config
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Returns all mounts with full details including local paths. Used by the mount management UI.
+
+**Response:**
+
+.. code-block:: json
+
+   [
+     {
+       "name": "ml-project",
+       "local": "/home/user/projects/ml-project",
+       "remote": "/home/researcher/ml-project"
+     }
+   ]
+
+Returns an empty list if no SSH profile is configured or the profile has no mounts.
+
+POST /api/files/mounts
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Add a new mount to the current SSH profile. The mount is persisted to the profile configuration file.
+
+**Request body:**
+
+.. code-block:: json
+
+   {
+     "name": "ml-project",
+     "local": "/home/user/projects/ml-project",
+     "remote": "/home/researcher/ml-project"
+   }
+
+**Response (200):**
+
+.. code-block:: json
+
+   {
+     "name": "ml-project",
+     "local": "/home/user/projects/ml-project",
+     "remote": "/home/researcher/ml-project"
+   }
+
+**Error responses:**
+
+* ``409`` — A mount with the same name already exists
+* ``422`` — Validation error (missing required fields or invalid values)
+* ``503`` — No SSH profile configured
+
+DELETE /api/files/mounts/{name}
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Remove a mount from the current SSH profile.
+
+**Path parameters:**
+
+* ``name`` — Mount name to remove
+
+**Response (200):**
+
+.. code-block:: json
+
+   {"status": "deleted", "name": "ml-project"}
+
+**Error responses:**
+
+* ``404`` — Mount not found
+* ``503`` — No SSH profile configured
 
 GET /api/files/browse
 ^^^^^^^^^^^^^^^^^^^^^
@@ -453,11 +660,12 @@ All errors follow this format:
 
 * ``400`` — Invalid input (e.g., negative job ID, path is not a directory)
 * ``403`` — Path outside mount boundary or permission denied
-* ``404`` — Resource not found (job, workflow, mount, directory)
-* ``409`` — Resource already exists (e.g., workflow with duplicate name)
+* ``404`` — Resource not found (job, workflow, mount, directory, run)
+* ``409`` — Resource already exists (e.g., workflow or mount with duplicate name)
 * ``413`` — YAML content too large
-* ``422`` — Validation error
-* ``502`` — SLURM command or rsync command failed
+* ``422`` — Validation error or invalid state transition (e.g., cancelling an already-terminal run)
+* ``500`` — Internal error (e.g., script rendering failure)
+* ``502`` — SLURM command, rsync command, or sbatch submission failed
 * ``503`` — SSH connection not configured or rsync not installed
 
 Configuration

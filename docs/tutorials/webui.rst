@@ -174,6 +174,22 @@ Mount points let the file browser in the DAG builder map between local directori
 
    Click **Sync Now** in the file browser to push local files to the remote server via rsync before running a workflow.
 
+Step 9: Run a Workflow
+-----------------------
+
+Once you have a saved workflow, you can execute it directly from the Web UI.
+
+1. Navigate to **Workflows** and click a workflow card to open the detail page
+2. Click **Run Workflow** in the toolbar
+3. The system automatically identifies which mounts need syncing based on each job's work directory, and pushes local files to the remote cluster via rsync
+4. Jobs are submitted to SLURM in topological order. Dependencies between jobs are translated into SLURM ``--dependency`` flags, so the scheduler handles sequencing natively
+5. Watch job statuses update in the DAG view as SLURM processes the pipeline: ``PENDING`` then ``RUNNING`` then ``COMPLETED`` (or ``FAILED``). The view polls every 10 seconds
+6. Click a completed (or running) job node to view details including the SLURM job ID. Click **View Logs** to see stdout and stderr output
+
+.. note::
+
+   If a mount sync fails, the run is aborted before any jobs are submitted. Fix the sync issue (check SSH connectivity and rsync availability) and try again.
+
 Next Steps
 ----------
 

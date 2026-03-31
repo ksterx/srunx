@@ -200,6 +200,75 @@ By default, edges use ``afterok`` (run only if the upstream job completes succes
 
 3. Click the desired type. The edge updates immediately
 
+Run a Workflow
+---------------
+
+1. Navigate to **Workflows** and click a workflow card to open the detail page
+2. Click **Run Workflow** in the toolbar
+3. The system identifies referenced mounts by matching each job's ``work_dir`` against mount remote paths (longest prefix match), then syncs them via rsync
+4. Jobs are submitted in dependency order. SLURM handles scheduling through ``--dependency`` flags (e.g., ``--dependency=afterok:12345``)
+5. Status updates appear in the DAG view every 10 seconds. Each node shows the current SLURM state (PENDING, RUNNING, COMPLETED, FAILED)
+
+.. note::
+
+   The run transitions through these phases: ``syncing`` (pushing files), ``submitting`` (sending sbatch commands), ``running`` (polling job statuses), then a terminal state (``completed``, ``failed``, or ``cancelled``).
+
+Cancel a Running Workflow
+--------------------------
+
+1. While a workflow is running, click **Cancel** in the toolbar on the workflow detail page
+2. All submitted SLURM jobs are cancelled via ``scancel``
+3. The run status changes to ``cancelled``
+
+.. warning::
+
+   Jobs that have already completed before the cancel request are not affected. Only PENDING and RUNNING jobs are cancelled.
+
+Edit an Existing Workflow
+--------------------------
+
+1. On the workflow detail page, click the **Edit** button (pencil icon) in the toolbar
+2. Alternatively, on the workflow list page, click **Edit** on a workflow card
+3. The DAG builder opens with all jobs and dependency edges pre-loaded on the canvas
+4. Modify job properties by clicking nodes, add or remove connections by dragging handles, or add new jobs with **Add Job**
+5. Click **Update Workflow** to validate and save the changes
+
+The update overwrites the existing YAML file on disk. The same validation rules apply: unique job names, non-empty commands, and an acyclic dependency graph.
+
+Delete a Workflow
+------------------
+
+1. On the workflow detail page, click the **delete** button (trash icon)
+2. Confirm in the dialog that appears
+3. The YAML file is removed from the workflow directory and you are redirected to the workflow list
+
+.. warning::
+
+   Deletion is permanent. There is no undo. Active runs for the deleted workflow are not affected (they continue to track job statuses in memory), but you will not be able to start new runs.
+
+Manage Mounts from the Web UI
+-------------------------------
+
+In addition to the CLI, mounts can be managed directly from the DAG builder.
+
+1. In the DAG builder, click the **gear icon** in the toolbar to open Mount Settings
+2. The modal shows all configured mounts with their name, local path, and remote path
+3. To add a new mount, fill in the name, local path, and remote path fields, then click **Add**
+4. To remove a mount, click the **trash icon** on the corresponding row
+5. Changes are saved immediately to the SSH profile configuration (``~/.config/srunx/config.json``)
+
+.. note::
+
+   Mounts added through the Web UI are identical to those added via ``srunx ssh profile mount add``. Both methods modify the same configuration file.
+
+View Job Logs from a Workflow Run
+----------------------------------
+
+1. During or after a workflow run, click a job node in the DAG view
+2. The sidebar shows job details including the SLURM job ID and current status
+3. Click **View Logs** to see stdout and stderr output
+4. For running jobs, log content is polled and refreshed automatically
+
 Run Without SSH (Frontend Only)
 --------------------------------
 
