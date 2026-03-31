@@ -7,6 +7,7 @@ import { Workflows } from "./pages/Workflows.tsx";
 import { WorkflowDetail } from "./pages/WorkflowDetail.tsx";
 import { WorkflowBuilder } from "./pages/WorkflowBuilder.tsx";
 import { Resources } from "./pages/Resources.tsx";
+import { Settings } from "./pages/Settings.tsx";
 import { LogViewer } from "./pages/LogViewer.tsx";
 
 export function App() {
@@ -22,6 +23,7 @@ export function App() {
           <Route path="workflows/:name/edit" element={<WorkflowBuilder />} />
           <Route path="workflows/:name" element={<WorkflowDetail />} />
           <Route path="resources" element={<Resources />} />
+          <Route path="settings" element={<Settings />} />
         </Route>
       </Routes>
     </ErrorBoundary>

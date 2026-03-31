@@ -49,11 +49,20 @@ class EnvironmentDefaults(BaseModel):
     )
 
 
+class NotificationConfig(BaseModel):
+    """Notification configuration."""
+
+    slack_webhook_url: str | None = Field(
+        default=None, description="Slack webhook URL for notifications"
+    )
+
+
 class SrunxConfig(BaseModel):
     """Main srunx configuration."""
 
     resources: ResourceDefaults = Field(default_factory=ResourceDefaults)
     environment: EnvironmentDefaults = Field(default_factory=EnvironmentDefaults)
+    notifications: NotificationConfig = Field(default_factory=NotificationConfig)
     log_dir: str = Field(default="logs", description="Default log directory")
     work_dir: str | None = Field(default=None, description="Default working directory")
 
@@ -226,6 +235,7 @@ def save_user_config(config: SrunxConfig) -> None:
         logger.info(f"Configuration saved to {user_config_path}")
     except OSError as e:
         logger.error(f"Failed to save config to {user_config_path}: {e}")
+        raise
 
 
 def create_example_config() -> str:
