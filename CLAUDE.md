@@ -32,7 +32,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run srunx resources --partition gpu --format json` - Show partition resources in JSON
 
 #### SSH Integration
-- `uv run srunx ssh <script>` - Submit script to remote SLURM server via SSH
+- `uv run srunx ssh submit <script>` - Submit script to remote SLURM server via SSH
 - `uv run srunx ssh profile list` - List SSH connection profiles
 - `uv run srunx ssh profile add <name>` - Add SSH connection profile
 - `uv run srunx ssh profile mount add <profile> <name> --local <path> --remote <path>` - Add mount point
@@ -83,7 +83,7 @@ uv run srunx resources --partition gpu
 ```
 
 #### SSH Integration
-- `uv run srunx ssh train.py --host dgx-server --job-name remote_training`
+- `uv run srunx ssh submit train.py --host dgx-server --job-name remote_training`
 - `uv run srunx ssh profile add myserver --hostname dgx.example.com --username researcher`
 
 #### Workflows
