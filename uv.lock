@@ -2227,7 +2227,6 @@ wheels = [
 
 [[package]]
 name = "srunx"
-version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "apscheduler" },

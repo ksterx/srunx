@@ -1,6 +1,6 @@
 [project]
 name = "srunx"
-version = "0.12.1"
+dynamic = ["version"]
 description = "Slurm job workflow management"
 readme = "README.md"
 authors = [{ name = "ksterx", email = "kostonerx@gmail.com" }]
@@ -29,7 +29,7 @@ srunx = "srunx.cli.main:main"
 srunx-web = "srunx.web.app:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
@@ -37,6 +37,12 @@ packages = ["src/srunx"]
 
 [tool.hatch.build.targets.wheel.sources]
 "src/srunx" = "srunx"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/srunx/_version.py"
 
 [dependency-groups]
 dev = [

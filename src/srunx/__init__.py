@@ -1,6 +1,9 @@
 """srunx - Python library for SLURM job management."""
 
-__version__ = "0.8.0"
+try:
+    from srunx._version import __version__
+except ImportError:
+    __version__ = "0.0.0+unknown"
 __author__ = "ksterx"
 __description__ = "Python library for SLURM workload manager integration"
 

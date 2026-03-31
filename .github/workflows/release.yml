@@ -1,15 +1,19 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
     - name: Install uv
       uses: astral-sh/setup-uv@v6
@@ -28,7 +32,7 @@ jobs:
         uv run pytest tests/test_models.py -v
         uv run pytest tests/test_config.py -v
         uv run pytest tests/test_cli.py -v
-        
+
     - name: Run integration tests
       run: |
         uv run pytest tests/test_integration.py tests/test_runner.py -v --tb=short
