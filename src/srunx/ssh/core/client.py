@@ -525,6 +525,8 @@ class SSHSlurmClient:
                 safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", job_name)
                 cmd += f" --job-name={safe_name}"
             if dependency:
+                if not re.fullmatch(r"[a-z]+:\d+(,[a-z]+:\d+)*", dependency):
+                    raise ValueError(f"Invalid dependency format: {dependency!r}")
                 cmd += f" --dependency={dependency}"
             cmd += f" {remote_script_path}"
 

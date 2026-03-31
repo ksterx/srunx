@@ -368,6 +368,9 @@ async def _monitor_run(
 ) -> None:
     """Background task: poll SLURM job statuses and update run registry."""
     terminal = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"}
+    consecutive_errors = 0
+    MAX_ERRORS = 30  # ~5 minutes at 10s interval
+
     while True:
         all_terminal = True
         for job_name, job_id in job_ids.items():
@@ -378,8 +381,17 @@ async def _monitor_run(
                 run_registry.update_job_status(run_id, job_name, status)
                 if status not in terminal:
                     all_terminal = False
+                consecutive_errors = 0  # reset on any success
             except Exception:
+                consecutive_errors += 1
                 all_terminal = False  # keep polling on transient errors
+
+        if consecutive_errors >= MAX_ERRORS:
+            run_registry.fail_run(
+                run_id,
+                "Lost connection to SLURM cluster after repeated failures",
+            )
+            break
 
         if all_terminal:
             run = run_registry.get(run_id)
@@ -485,7 +497,21 @@ async def run_workflow(
                     scripts[job.name] = Path(rendered_path).read_text()
                 else:
                     # ShellJob: read the script directly
-                    scripts[job.name] = Path(job.script_path).read_text()  # type: ignore[union-attr]
+                    # Validate script_path is within allowed boundaries
+                    script_path = Path(job.script_path).resolve()  # type: ignore[union-attr]
+                    allowed_roots = [_workflow_dir().resolve()]
+                    if profile:
+                        allowed_roots.extend(
+                            Path(m.local).resolve() for m in profile.mounts
+                        )
+                    if not any(
+                        script_path.is_relative_to(root) for root in allowed_roots
+                    ):
+                        raise HTTPException(
+                            403,
+                            f"Script path '{job.script_path}' is outside allowed directories",  # type: ignore[union-attr]
+                        )
+                    scripts[job.name] = script_path.read_text()
         return scripts
 
     try:

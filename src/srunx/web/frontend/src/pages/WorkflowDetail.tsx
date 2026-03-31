@@ -97,7 +97,7 @@ export function WorkflowDetail() {
       } catch {
         // Ignore transient fetch errors during polling
       }
-    }, 5000);
+    }, 10000);
 
     return () => {
       if (pollRef.current) {
