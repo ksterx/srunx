@@ -445,7 +445,11 @@ async def run_workflow(
 
     from srunx.models import render_job_script
 
-    from ..sync_utils import resolve_mounts_for_workflow, sync_mount_by_name
+    from ..sync_utils import (
+        get_current_profile,
+        resolve_mounts_for_workflow,
+        sync_mount_by_name,
+    )
 
     if not _SAFE_NAME.match(name):
         raise HTTPException(status_code=422, detail="Invalid workflow name")
@@ -462,19 +466,8 @@ async def run_workflow(
     run_registry.update_status(run_id, "syncing")
 
     # ── Sync mounts ─────────────────────────────────────────────────
-    def _get_current_profile():
-        from srunx.ssh.core.config import ConfigManager
 
-        config = get_web_config()
-        cm = ConfigManager()
-        profile_name = config.ssh_profile
-        if not profile_name:
-            profile_name = cm.get_current_profile_name()
-        if not profile_name:
-            return None
-        return cm.get_profile(profile_name)
-
-    profile = await anyio.to_thread.run_sync(_get_current_profile)
+    profile = await anyio.to_thread.run_sync(get_current_profile)
 
     if profile is not None:
         # Build raw jobs data from the loaded workflow for mount resolution

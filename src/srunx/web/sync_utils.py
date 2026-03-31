@@ -11,6 +11,31 @@ if TYPE_CHECKING:
 from srunx.sync.rsync import RsyncClient
 
 
+def get_current_profile() -> ServerProfile | None:
+    """Get the current SSH profile from web config or ConfigManager.
+
+    Checks ``SRUNX_SSH_PROFILE`` (via :func:`get_web_config`) first,
+    then falls back to :meth:`ConfigManager.get_current_profile_name`.
+
+    Returns ``None`` if no profile is configured.
+    """
+    from srunx.ssh.core.config import ConfigManager
+
+    from .config import get_web_config
+
+    config = get_web_config()
+    cm = ConfigManager()
+
+    profile_name = config.ssh_profile
+    if not profile_name:
+        profile_name = cm.get_current_profile_name()
+
+    if not profile_name:
+        return None
+
+    return cm.get_profile(profile_name)
+
+
 def build_rsync_client(profile: ServerProfile) -> RsyncClient:
     """Create RsyncClient from SSH profile, handling ssh_host vs hostname.
 

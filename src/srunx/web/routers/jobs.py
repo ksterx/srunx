@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import anyio
@@ -12,12 +13,14 @@ from ..deps import get_adapter
 from ..ssh_adapter import SlurmSSHAdapter
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+_logger = logging.getLogger(__name__)
 
 
 class JobSubmitRequest(BaseModel):
     name: str
     script_content: str
     job_name: str | None = None
+    mount_name: str | None = None
 
 
 @router.post("", status_code=201)
@@ -25,7 +28,36 @@ async def submit_job(
     req: JobSubmitRequest,
     adapter: SlurmSSHAdapter = Depends(get_adapter),
 ) -> dict[str, Any]:
-    """Submit a new job to SLURM via SSH."""
+    """Submit a new job to SLURM via SSH.
+
+    If *mount_name* is provided, the corresponding mount is synced
+    via rsync before submission.
+    """
+    # Sync mount before submission if requested
+    if req.mount_name:
+        from ..sync_utils import get_current_profile, sync_mount_by_name
+
+        mount_name = req.mount_name
+        profile = await anyio.to_thread.run_sync(get_current_profile)
+        if profile is None:
+            raise HTTPException(
+                status_code=503,
+                detail="No SSH profile configured; cannot sync mount",
+            )
+        try:
+            _logger.info("Syncing mount '%s' before job submission", mount_name)
+            await anyio.to_thread.run_sync(
+                lambda: sync_mount_by_name(profile, mount_name)
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=404, detail=f"Mount '{mount_name}' not found"
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Mount sync failed: {exc}"
+            ) from exc
+
     try:
         return await anyio.to_thread.run_sync(
             lambda: adapter.submit_job(

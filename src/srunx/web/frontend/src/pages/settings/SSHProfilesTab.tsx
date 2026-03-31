@@ -602,14 +602,19 @@ export function SSHProfilesTab() {
                       }}
                     />
                     <button
-                      className="btn btn-ghost"
+                      className="btn btn-primary"
                       onClick={() => handleAddMount(name)}
                       disabled={
                         !newMount.name || !newMount.local || !newMount.remote
                       }
-                      style={{ padding: "var(--sp-2)" }}
+                      style={{
+                        padding: "var(--sp-2) var(--sp-3)",
+                        fontSize: "0.75rem",
+                        gap: 4,
+                      }}
                     >
                       <Plus size={14} />
+                      Add
                     </button>
                   </div>
                 </div>

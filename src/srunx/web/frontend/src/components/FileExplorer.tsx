@@ -189,7 +189,7 @@ function SubmitDialog({
       setSubmitting(true);
       setError(null);
       const { content } = await files.read(mountName, filePath);
-      const res = await jobs.submit(content, jobName);
+      const res = await jobs.submit(content, jobName, mountName);
       setResult(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Submission failed");

@@ -63,6 +63,7 @@ export const jobs = {
   submit: async (
     scriptContent: string,
     jobName: string,
+    mountName?: string,
   ): Promise<{ name: string; job_id: number | null; status: string }> => {
     const res = await fetch("/api/jobs", {
       method: "POST",
@@ -71,6 +72,7 @@ export const jobs = {
         name: jobName,
         script_content: scriptContent,
         job_name: jobName,
+        mount_name: mountName,
       }),
     });
     if (!res.ok) {
