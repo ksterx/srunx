@@ -194,8 +194,8 @@ By default, edges use ``afterok`` (run only if the upstream job completes succes
 2. A popover appears with four options:
 
    * ``afterok`` — Run after successful completion (default)
-   * ``after`` — Run after the job finishes regardless of exit code
-   * ``afterany`` — Run after the job reaches any terminal state
+   * ``after`` — Run after the upstream job starts running
+   * ``afterany`` — Run after the upstream job ends regardless of status
    * ``afternotok`` — Run only if the upstream job fails
 
 3. Click the desired type. The edge updates immediately

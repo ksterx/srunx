@@ -45,10 +45,10 @@ Each task supports the following configuration options:
 
    - name: my_task
      command: ["python", "train.py", "--epochs", "100"]
-     # Environment activation (pick one)
-     conda: ml_environment
-     # OR
-     venv: /path/to/virtualenv
+     environment:
+       conda: ml_environment
+       # OR
+       # venv: /path/to/virtualenv
 
    # Container (can be combined with conda/venv)
    - name: containerized_task
@@ -78,12 +78,13 @@ Each task supports the following configuration options:
 
    - name: gpu_task
      command: ["python", "gpu_training.py"]
-     nodes: 2
-     tasks_per_node: 1
-     cpus_per_task: 8
-     gpus_per_node: 2
-     memory_per_node: "64GB"
-     time_limit: "12:00:00"
+     resources:
+       nodes: 2
+       ntasks_per_node: 1
+       cpus_per_task: 8
+       gpus_per_node: 2
+       memory_per_node: "64GB"
+       time_limit: "12:00:00"
 
 **Dependencies**
 
@@ -92,16 +93,6 @@ Each task supports the following configuration options:
    - name: dependent_task
      command: ["python", "process.py"]
      depends_on: [preprocess, download]
-     async: false  # Wait for dependencies (default)
-
-**Job Naming and Organization**
-
-.. code-block:: yaml
-
-   - name: organized_task
-     job_name: "custom_slurm_job_name"
-     partition: gpu
-     account: my_account
 
 Dependencies
 ------------
@@ -191,51 +182,58 @@ Machine Learning Pipeline
 .. code-block:: yaml
 
    name: ml_pipeline
-   description: "Complete machine learning training pipeline"
 
    jobs:
      - name: data_preprocessing
        command: ["python", "preprocess.py", "--input", "raw_data/"]
-       nodes: 1
-       cpus_per_task: 4
-       memory_per_node: "16GB"
-       time_limit: "2:00:00"
+       resources:
+         nodes: 1
+         cpus_per_task: 4
+         memory_per_node: "16GB"
+         time_limit: "2:00:00"
 
      - name: feature_selection
        command: ["python", "feature_selection.py"]
        depends_on: [data_preprocessing]
-       nodes: 1
-       cpus_per_task: 8
-       memory_per_node: "32GB"
+       resources:
+         nodes: 1
+         cpus_per_task: 8
+         memory_per_node: "32GB"
 
      - name: hyperparameter_tuning
        command: ["python", "hyperopt.py", "--trials", "100"]
        depends_on: [feature_selection]
-       nodes: 4
-       gpus_per_node: 1
-       conda: pytorch_env
-       time_limit: "8:00:00"
+       resources:
+         nodes: 4
+         gpus_per_node: 1
+         time_limit: "8:00:00"
+       environment:
+         conda: pytorch_env
 
      - name: final_training
        command: ["python", "train_final.py"]
        depends_on: [hyperparameter_tuning]
-       nodes: 2
-       gpus_per_node: 2
-       conda: pytorch_env
-       time_limit: "12:00:00"
+       resources:
+         nodes: 2
+         gpus_per_node: 2
+         time_limit: "12:00:00"
+       environment:
+         conda: pytorch_env
 
      - name: model_validation
        command: ["python", "validate.py"]
        depends_on: [final_training]
-       nodes: 1
-       gpus_per_node: 1
-       conda: pytorch_env
+       resources:
+         nodes: 1
+         gpus_per_node: 1
+       environment:
+         conda: pytorch_env
 
      - name: deployment_prep
        command: ["python", "prepare_deployment.py"]
        depends_on: [model_validation]
-       nodes: 1
-       async: true
+       resources:
+         nodes: 1
 
 Bioinformatics Pipeline
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -243,40 +241,45 @@ Bioinformatics Pipeline
 .. code-block:: yaml
 
    name: genomics_pipeline
-   description: "RNA-seq analysis pipeline"
 
    jobs:
      - name: quality_control
        command: ["fastqc", "*.fastq.gz"]
-       nodes: 1
-       cpus_per_task: 16
+       resources:
+         nodes: 1
+         cpus_per_task: 16
 
      - name: trimming
        command: ["trim_galore", "--paired", "sample_R1.fastq.gz", "sample_R2.fastq.gz"]
        depends_on: [quality_control]
-       nodes: 1
-       cpus_per_task: 8
+       resources:
+         nodes: 1
+         cpus_per_task: 8
 
      - name: alignment
        command: ["STAR", "--runThreadN", "32", "--genomeDir", "genome_index"]
        depends_on: [trimming]
-       nodes: 1
-       cpus_per_task: 32
-       memory_per_node: "64GB"
-       time_limit: "4:00:00"
+       resources:
+         nodes: 1
+         cpus_per_task: 32
+         memory_per_node: "64GB"
+         time_limit: "4:00:00"
 
      - name: quantification
        command: ["featureCounts", "-T", "16", "-a", "annotation.gtf"]
        depends_on: [alignment]
-       nodes: 1
-       cpus_per_task: 16
+       resources:
+         nodes: 1
+         cpus_per_task: 16
 
      - name: differential_expression
        command: ["Rscript", "deseq2_analysis.R"]
        depends_on: [quantification]
-       nodes: 1
-       cpus_per_task: 4
-       conda: r_env
+       resources:
+         nodes: 1
+         cpus_per_task: 4
+       environment:
+         conda: r_env
 
 Workflow Execution
 ------------------
@@ -328,15 +331,18 @@ When a job fails:
 Restart and Recovery
 ~~~~~~~~~~~~~~~~~~~~
 
-srunx supports workflow restart capabilities:
+srunx supports partial workflow execution:
 
 .. code-block:: bash
 
-   # Resume from a specific job
-   srunx flow run pipeline.yaml --start-from job_name
+   # Start execution from a specific job (skips dependencies before it)
+   srunx flow run pipeline.yaml --from job_name
 
-   # Skip completed jobs
-   srunx flow run pipeline.yaml --resume
+   # Stop execution at a specific job (inclusive)
+   srunx flow run pipeline.yaml --to job_name
+
+   # Execute only a single job (ignoring all dependencies)
+   srunx flow run pipeline.yaml --job job_name
 
 Best Practices
 --------------
@@ -368,44 +374,37 @@ Resource Planning
 Advanced Features
 -----------------
 
-Conditional Execution
-~~~~~~~~~~~~~~~~~~~~~
+Template Variables with ``args``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. code-block:: yaml
-
-   - name: conditional_job
-     command: ["python", "conditional.py"]
-     depends_on: [prerequisite]
-     condition: "file_exists('trigger.txt')"
-
-Parameter Substitution
-~~~~~~~~~~~~~~~~~~~~~~
+Workflows support Jinja2 template variables via the ``args`` section. Variables defined in ``args`` are substituted into job fields before parsing:
 
 .. code-block:: yaml
 
    name: parameterized_workflow
-   parameters:
+   args:
      dataset: "experiment_1"
      epochs: 100
+     model_type: resnet50
 
    jobs:
      - name: training
-       command: ["python", "train.py", "--dataset", "{{dataset}}", "--epochs", "{{epochs}}"]
+       command: ["python", "train.py", "--dataset", "{{dataset}}", "--epochs", "{{epochs}}", "--model", "{{model_type}}"]
 
-Workflow Templates
-~~~~~~~~~~~~~~~~~~
+     - name: evaluation
+       command: ["python", "evaluate.py", "--dataset", "{{dataset}}"]
+       depends_on: [training]
 
-Create reusable workflow templates:
+Shell Jobs
+~~~~~~~~~~~
+
+Instead of specifying a command, you can point to an existing shell script:
 
 .. code-block:: yaml
 
-   name: ml_template
-   template: true
-
    jobs:
-     - name: preprocess
-       command: ["python", "preprocess.py", "--input", "{{input_path}}"]
-
-     - name: train
-       command: ["python", "train.py", "--model", "{{model_type}}"]
-       depends_on: [preprocess]
+     - name: run_script
+       script_path: scripts/train.sh
+       script_vars:
+         EPOCHS: 100
+         LR: 0.001

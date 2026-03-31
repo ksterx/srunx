@@ -46,9 +46,10 @@ Define a workflow:
        depends_on: [preprocess]
        resources:
          gpus_per_node: 1
-         conda: ml_env
          memory_per_node: "32GB"
          time_limit: "8:00:00"
+       environment:
+         conda: ml_env
 
 .. toctree::
    :maxdepth: 2
@@ -67,6 +68,8 @@ Define a workflow:
    how-to/monitoring
    how-to/sync
    how-to/webui
+   how-to/settings
+   how-to/explorer
 
 .. toctree::
    :maxdepth: 2

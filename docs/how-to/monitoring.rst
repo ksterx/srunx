@@ -94,24 +94,10 @@ Resource Monitoring
 
 Monitor GPU resource availability on SLURM partitions with threshold-based waiting.
 
-Display Current Resources
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. code-block:: bash
-
-    # Display current resource availability
-    srunx monitor resources
-
-    # Display resources for specific partition
-    srunx monitor resources --partition gpu
-
-    # Show output in JSON format
-    srunx monitor resources --format json
-
 Wait for Resources
 ~~~~~~~~~~~~~~~~~~
 
-Block until sufficient GPU resources become available:
+The ``monitor resources`` command requires ``--min-gpus`` to specify a threshold:
 
 .. code-block:: bash
 
@@ -123,6 +109,10 @@ Block until sufficient GPU resources become available:
 
     # With timeout (default: no timeout)
     srunx monitor resources --min-gpus 4 --timeout 7200
+
+.. note::
+
+   To display current resources without waiting, use ``srunx resources`` instead (see :doc:`/how-to/user_guide`).
 
 Continuous Resource Monitoring
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -147,19 +137,17 @@ Resource Monitoring Options
    * - Option
      - Description
    * - ``--min-gpus N``
-     - Minimum GPUs required (required for waiting/continuous)
+     - Minimum GPUs required (required)
    * - ``--partition NAME``
      - Monitor specific partition (default: all partitions)
    * - ``--continuous``
      - Monitor continuously with state change notifications
    * - ``--interval SECONDS``
-     - Polling interval (default: 60s, minimum: 60s for resources)
+     - Polling interval (default: 60s, minimum: 1s; intervals below 5s trigger a warning)
    * - ``--timeout SECONDS``
      - Maximum monitoring duration
    * - ``--notify URL``
      - Slack webhook URL for notifications
-   * - ``--format FORMAT``
-     - Output format: table (default) or json
 
 Resource Information
 ~~~~~~~~~~~~~~~~~~~~
@@ -273,10 +261,12 @@ Report Options
      - Monitor specific partition
    * - ``--include SECTIONS``
      - Report sections: jobs, resources, user, running
-   * - ``--max-jobs N``
-     - Maximum jobs to list in running section (default: 10)
    * - ``--user USERNAME``
      - User for user-specific statistics (default: current user)
+   * - ``--timeframe SPEC``
+     - Timeframe for job aggregation (default: 24h)
+   * - ``--daemon / --no-daemon``
+     - Run as background daemon (default: daemon)
 
 Include Sections
 ~~~~~~~~~~~~~~~~
@@ -295,7 +285,7 @@ Customize report contents with ``--include``:
 
     # Only running jobs list
     srunx monitor cluster --schedule 30m --notify $WEBHOOK_URL \
-        --include running --max-jobs 20
+        --include running
 
 Available sections:
 
@@ -451,14 +441,14 @@ Configure monitoring behavior:
 
 Configuration parameters:
 
-- ``poll_interval`` - Seconds between polls (default: 60)
+- ``poll_interval`` - Seconds between polls (default: 60, minimum: 1)
 - ``timeout`` - Maximum monitoring duration in seconds (default: None)
 - ``mode`` - ``UNTIL_CONDITION`` or ``CONTINUOUS``
-- ``notify_on_change`` - Enable state change notifications (default: False)
+- ``notify_on_change`` - Enable state change notifications (default: True)
 
 .. note::
-   For resource monitoring, the minimum poll interval is 60 seconds to avoid
-   overloading SLURM. Intervals below 60s will trigger a warning.
+   Polling intervals below 5 seconds are considered aggressive and will trigger
+   a warning. Choose appropriate intervals based on cluster load.
 
 Best Practices
 --------------
@@ -467,8 +457,8 @@ Polling Intervals
 ~~~~~~~~~~~~~~~~~
 
 - **Job Monitoring**: 10-60 seconds for active monitoring
-- **Resource Monitoring**: 60+ seconds (minimum 60s enforced)
-- **Scheduled Reporting**: 30 minutes to 1 hour for regular updates
+- **Resource Monitoring**: 60+ seconds recommended (intervals below 5s trigger a warning)
+- **Scheduled Reporting**: 30 minutes to 1 hour for regular updates (minimum: 1 minute)
 
 Choose appropriate intervals based on:
 
@@ -610,5 +600,4 @@ Cluster Status Dashboard
     srunx monitor cluster \
         --schedule "*/15 * * * *" \
         --notify $SLACK_WEBHOOK \
-        --include jobs,resources,running \
-        --max-jobs 20
+        --include jobs,resources,running

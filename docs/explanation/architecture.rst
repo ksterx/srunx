@@ -17,7 +17,10 @@ srunx is organized as a modular Python library with clear separation of concerns
    ├── callbacks.py       # Notification system (Slack, etc.)
    ├── config.py          # Configuration management
    ├── exceptions.py      # Custom exceptions
+   ├── formatters.py      # Output formatting utilities
+   ├── history.py         # Job execution history tracking
    ├── logging.py         # Centralized logging (Loguru)
+   ├── template.py        # SLURM script template rendering
    ├── utils.py           # Utility functions
    ├── cli/               # Command-line interface (Typer)
    ├── monitor/           # Job and resource monitoring
@@ -263,6 +266,71 @@ polling failures (~5 minutes), the run is marked as failed.
 The entire pipeline is tracked by an in-memory ``RunRegistry`` that stores the
 run ID, status, per-job SLURM IDs, and per-job statuses. The frontend polls
 ``GET /api/workflows/runs/{run_id}`` to reflect live progress in the DAG view.
+
+Settings UI Architecture
+-------------------------
+
+The Settings page is a tab-based configuration interface that exposes the full
+srunx config surface through the Web UI.
+
+Stateless per-request reads
+   The ``ConfigManager`` is instantiated fresh on every API request, reading
+   config from disk each time. This avoids stale in-memory state when the user
+   modifies config files outside the Web UI (e.g. via CLI). The tradeoff is
+   slightly higher I/O per request, but SSH profile configs are small JSON
+   files and the overhead is negligible.
+
+Mount-based project model
+   Projects are not derived from the current working directory (which is
+   meaningless for a web server). Instead, each SSH profile mount defines a
+   project: the mount's ``local`` directory is scanned for ``.srunx.json``.
+   This makes project configuration remote-friendly — the same mount mapping
+   used for file browsing and rsync sync also drives per-project settings.
+
+Environment variable read-only design
+   The ``/api/config/env`` endpoint exposes active ``SRUNX_*`` variables for
+   inspection but does not allow modification. Environment variables are set
+   at server startup and cannot be safely mutated at runtime. The UI makes
+   this explicit by rendering the tab as read-only.
+
+File Explorer Architecture
+---------------------------
+
+The file explorer is a VS Code-style tree panel integrated into the Web UI
+sidebar for browsing project files and submitting scripts to SLURM.
+
+Lazy directory loading
+   The explorer does not fetch the entire file tree upfront. Each directory
+   is loaded on demand when the user clicks to expand it, calling
+   ``GET /api/files/browse?mount={name}&path={relative}`` per expansion.
+   This keeps initial load fast and avoids transferring large directory trees.
+
+Mount-scoped state isolation
+   Each mount maintains its own expanded-directory state in the frontend.
+   Internally, paths are tracked as ``{mountName}:{fullPath}`` to prevent
+   collisions between mounts that may have similarly-named subdirectories.
+   Syncing, refreshing, and expanding are all per-mount operations.
+
+Right-click submission flow
+   The context menu identifies submittable files by extension (``.sh``,
+   ``.slurm``, ``.sbatch``, ``.bash``). On submit, the frontend reads the
+   script content via ``GET /api/files/read`` and posts it to
+   ``POST /api/jobs`` with the script body and a user-editable job name.
+   This two-step flow lets the user preview the script before submission.
+
+Security model
+   The file explorer enforces the same containment rules as the DAG builder
+   file browser:
+
+   * **Path traversal prevention** — Resolved paths must stay within the
+     mount root. Attempts to escape via ``../`` return ``403 Forbidden``.
+   * **Symlink containment** — Symlinks are resolved and checked against
+     the mount boundary. Links outside are marked ``accessible: false``.
+   * **Local path isolation** — The browse and read APIs include only remote
+     prefixes and entry metadata. Local filesystem paths are not sent to the
+     frontend. Note that the config/project management APIs intentionally
+     expose local paths for administration purposes.
+   * **File size limit** — ``GET /api/files/read`` rejects files over 1 MB.
 
 Configuration Hierarchy
 -----------------------

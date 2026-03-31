@@ -107,12 +107,14 @@ Example workflow YAML:
    jobs:
      - name: preprocess
        command: ["python", "preprocess.py"]
-       nodes: 1
+       resources:
+         nodes: 1
 
      - name: train
        command: ["python", "train.py"]
        depends_on: [preprocess]
-       gpus_per_node: 4
+       resources:
+         gpus_per_node: 4
 
      - name: evaluate
        command: ["python", "evaluate.py"]
@@ -146,8 +148,47 @@ The DAG builder lets you create workflows interactively instead of writing YAML 
 
    The builder validates your workflow before saving: every job must have a name and command, job names must be unique, and the dependency graph must be acyclic.
 
-Step 8: Set Up Mount Points
------------------------------
+Step 8: Configure Settings
+----------------------------
+
+The Settings page lets you manage all srunx configuration from the browser.
+
+1. Click **Settings** (gear icon) in the sidebar
+2. On the **General** tab, review default resource allocation (nodes, GPUs, tasks per node, CPUs per task, memory, time limit, partition, nodelist), environment settings (conda, venv, environment variables), and general options (log directory, working directory)
+3. Click **Save** to persist changes
+
+4. Switch to the **SSH Profiles** tab to manage your connection profiles:
+
+   * Add new profiles with hostname, username, key file, and optional proxy jump
+   * Click **Activate** to switch the active profile
+   * Expand a profile to add or remove mount points
+
+5. On the **Notifications** tab, enter a Slack webhook URL to receive job notifications
+6. The **Environment** tab shows all active ``SRUNX_*`` variables (read-only)
+7. The **Project** tab lists projects from your mounts — initialize ``.srunx.json`` for per-project config overrides
+
+.. note::
+
+   See :doc:`/how-to/settings` for detailed recipes for each tab.
+
+Step 9: Browse Files with the Explorer
+-----------------------------------------
+
+The file explorer lets you browse project files and submit scripts directly to SLURM.
+
+1. Click the **Explorer** button (folder icon) at the top of the sidebar
+2. The explorer panel opens showing your configured mounts as tree roots
+3. Click a mount to expand it and browse the directory tree
+4. Right-click a shell script (``.sh``, ``.slurm``, ``.sbatch``, ``.bash``) and select **Submit as sbatch**
+5. Review the script content, edit the job name if needed, and click **Submit**
+6. Click the **Sync** button on a mount to push local files to the remote server via rsync
+
+.. note::
+
+   See :doc:`/how-to/explorer` for more details on file browsing and script submission.
+
+Step 10: Set Up Mount Points
+------------------------------
 
 Mount points let the file browser in the DAG builder map between local directories and remote paths on the SLURM cluster.
 
@@ -174,8 +215,8 @@ Mount points let the file browser in the DAG builder map between local directori
 
    Click **Sync Now** in the file browser to push local files to the remote server via rsync before running a workflow.
 
-Step 9: Run a Workflow
------------------------
+Step 11: Run a Workflow
+------------------------
 
 Once you have a saved workflow, you can execute it directly from the Web UI.
 

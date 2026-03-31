@@ -187,12 +187,17 @@ List all jobs:
 
    srunx list
 
-List with filters:
+List with GPU allocation info:
 
 .. code-block:: bash
 
-   srunx list --state RUNNING
-   srunx list --name training
+   srunx list --show-gpus
+
+List in JSON format:
+
+.. code-block:: bash
+
+   srunx list --format json
 
 Job Control
 ~~~~~~~~~~~
@@ -220,33 +225,34 @@ Workflows are defined in YAML format with jobs and dependencies:
 .. code-block:: yaml
 
    name: data_pipeline
-   description: "Complete data processing pipeline"
 
    jobs:
      - name: download_data
        command: ["python", "download.py"]
-       nodes: 1
-       memory_per_node: "8GB"
+       resources:
+         nodes: 1
+         memory_per_node: "8GB"
 
      - name: preprocess
        command: ["python", "preprocess.py", "--input", "data/raw"]
        depends_on: [download_data]
-       nodes: 1
-       cpus_per_task: 4
+       resources:
+         nodes: 1
+         cpus_per_task: 4
 
      - name: train_model
        command: ["python", "train.py"]
        depends_on: [preprocess]
-       nodes: 2
-       gpus_per_node: 1
-       conda: pytorch_env
-       time_limit: "12:00:00"
+       resources:
+         nodes: 2
+         gpus_per_node: 1
+         time_limit: "12:00:00"
+       environment:
+         conda: pytorch_env
 
      - name: evaluate
        command: ["python", "evaluate.py"]
        depends_on: [train_model]
-       nodes: 1
-       async: true
 
 Workflow Execution
 ~~~~~~~~~~~~~~~~~~
@@ -285,11 +291,11 @@ srunx supports job completion callbacks, including Slack notifications:
    callback = SlackCallback(webhook_url="https://hooks.slack.com/...")
    client = Slurm()
 
-   job = client.submit(
-       command=["python", "train.py"],
+   job = Job(
        name="training_job",
-       callback=callback
+       command=["python", "train.py"],
    )
+   result = client.submit(job, callbacks=[callback])
 
 Template Customization
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -447,8 +453,14 @@ Enable debug logging:
    export SRUNX_LOG_LEVEL=DEBUG
    srunx submit python script.py
 
-View generated SLURM scripts:
+Preview job submission (show summary without submitting):
 
 .. code-block:: bash
 
    srunx submit --dry-run python script.py
+
+View rendered SLURM scripts:
+
+.. code-block:: bash
+
+   srunx flow run pipeline.yaml --debug

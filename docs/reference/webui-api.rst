@@ -454,11 +454,14 @@ Files
      - ``/api/files/mounts``
      - Add a mount to the current SSH profile
    * - DELETE
-     - ``/api/files/mounts/{name}``
+     - ``/api/files/mounts/{mount_name}``
      - Remove a mount from the current SSH profile
    * - GET
      - ``/api/files/browse``
      - Browse local filesystem under a mount's local root
+   * - GET
+     - ``/api/files/read``
+     - Read text file contents from a mount
    * - POST
      - ``/api/files/sync``
      - Sync a mount's local directory to the remote via rsync
@@ -531,14 +534,14 @@ Add a new mount to the current SSH profile. The mount is persisted to the profil
 * ``422`` — Validation error (missing required fields or invalid values)
 * ``503`` — No SSH profile configured
 
-DELETE /api/files/mounts/{name}
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+DELETE /api/files/mounts/{mount_name}
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Remove a mount from the current SSH profile.
 
 **Path parameters:**
 
-* ``name`` — Mount name to remove
+* ``mount_name`` — Mount name to remove
 
 **Response (200):**
 
@@ -569,13 +572,13 @@ Browse directory contents under a mount's local root, returning entries with the
      "entries": [
        {"name": "train.py", "type": "file", "size": 2048},
        {"name": "data", "type": "directory", "size": null},
-       {"name": "latest", "type": "symlink", "size": null, "accessible": true}
+       {"name": "latest", "type": "symlink", "size": null, "accessible": true, "target_kind": "directory"}
      ],
      "remote_prefix": "/home/researcher/ml-project/src",
      "mount_name": "ml-project"
    }
 
-**Entry types:** ``file``, ``directory``, ``symlink``. Symlinks include an ``accessible`` field indicating whether the link target is within the mount boundary.
+**Entry types:** ``file``, ``directory``, ``symlink``. Symlinks include an ``accessible`` field indicating whether the link target is within the mount boundary, and a ``target_kind`` field (``"file"`` or ``"directory"``) indicating the type of the link target. Accessible symlinks to directories can be expanded in the file explorer.
 
 .. warning::
 
@@ -586,6 +589,33 @@ Browse directory contents under a mount's local root, returning entries with the
 * ``400`` — Path is not a directory
 * ``403`` — Path outside mount boundary or permission denied
 * ``404`` — Mount not found, directory not found, or no SSH profile configured
+
+GET /api/files/read
+^^^^^^^^^^^^^^^^^^^^
+
+Read text file contents from a mount's local root. Used by the file explorer to preview scripts before submission.
+
+**Query parameters:**
+
+* ``mount`` (required) — Mount name
+* ``path`` (required) — Relative path within the mount root
+
+**Response:**
+
+.. code-block:: json
+
+   {
+     "content": "#!/bin/bash\n#SBATCH --gpus=1\npython train.py",
+     "path": "scripts/train.sh",
+     "mount": "ml-project"
+   }
+
+**Error responses:**
+
+* ``400`` — ``path`` parameter missing or path is not a file
+* ``403`` — Path outside mount boundary
+* ``404`` — File not found or no SSH profile configured
+* ``413`` — File exceeds 1 MB size limit
 
 POST /api/files/sync
 ^^^^^^^^^^^^^^^^^^^^
@@ -607,8 +637,368 @@ Sync a mount's local directory to the remote server via rsync.
 **Error responses:**
 
 * ``404`` — Mount not found
-* ``502`` — rsync command failed
-* ``503`` — No SSH profile configured or rsync not installed
+* ``502`` — rsync command failed (includes missing rsync binary)
+* ``503`` — No SSH profile configured
+
+Config
+------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 10 30 60
+
+   * - Method
+     - Endpoint
+     - Description
+   * - GET
+     - ``/api/config``
+     - Get current merged configuration
+   * - PUT
+     - ``/api/config``
+     - Update user configuration
+   * - GET
+     - ``/api/config/paths``
+     - List config file paths with existence status
+   * - POST
+     - ``/api/config/reset``
+     - Reset user config to defaults
+   * - GET
+     - ``/api/config/ssh/profiles``
+     - List SSH profiles and current active profile
+   * - POST
+     - ``/api/config/ssh/profiles``
+     - Add a new SSH profile
+   * - PUT
+     - ``/api/config/ssh/profiles/{name}``
+     - Update an existing SSH profile
+   * - DELETE
+     - ``/api/config/ssh/profiles/{name}``
+     - Delete an SSH profile
+   * - POST
+     - ``/api/config/ssh/profiles/{name}/activate``
+     - Set profile as current active
+   * - POST
+     - ``/api/config/ssh/profiles/{name}/mounts``
+     - Add a mount to a profile
+   * - DELETE
+     - ``/api/config/ssh/profiles/{name}/mounts/{mount_name}``
+     - Remove a mount from a profile
+   * - GET
+     - ``/api/config/env``
+     - List active SRUNX_* environment variables
+   * - GET
+     - ``/api/config/projects``
+     - List projects from current profile's mounts
+   * - GET
+     - ``/api/config/projects/{mount_name}``
+     - Read project config (.srunx.json)
+   * - PUT
+     - ``/api/config/projects/{mount_name}``
+     - Update project config
+   * - POST
+     - ``/api/config/projects/{mount_name}/init``
+     - Initialize project config with example values
+
+GET /api/config
+^^^^^^^^^^^^^^^^
+
+Returns the current merged configuration (system + user + project).
+
+**Response:**
+
+.. code-block:: json
+
+   {
+     "resources": {
+       "nodes": 1,
+       "gpus_per_node": 0,
+       "ntasks_per_node": 1,
+       "cpus_per_task": 1,
+       "memory_per_node": null,
+       "time_limit": null,
+       "partition": null,
+       "nodelist": null
+     },
+     "environment": {
+       "conda": null,
+       "venv": null,
+       "container": null,
+       "env_vars": {}
+     },
+     "notifications": {
+       "slack_webhook_url": null
+     },
+     "log_dir": "logs",
+     "work_dir": null
+   }
+
+PUT /api/config
+^^^^^^^^^^^^^^^^
+
+Validate and save configuration to the user config file (``~/.config/srunx/config.json``).
+
+**Request body:** A full or partial ``SrunxConfig`` object (same shape as GET response).
+
+**Response:** The updated merged configuration.
+
+**Error responses:**
+
+* ``422`` — Validation error
+* ``500`` — Failed to write config file
+
+GET /api/config/paths
+^^^^^^^^^^^^^^^^^^^^^^
+
+Returns all config file paths with their existence status and source label.
+
+**Response:**
+
+.. code-block:: json
+
+   [
+     {"path": "/etc/srunx/config.json", "exists": false, "source": "system"},
+     {"path": "/home/user/.config/srunx/config.json", "exists": true, "source": "user"},
+     {"path": ".srunx.json", "exists": false, "source": "project (.srunx.json)"},
+     {"path": "srunx.json", "exists": false, "source": "project (srunx.json)"}
+   ]
+
+POST /api/config/reset
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Reset user config to defaults. Overwrites ``~/.config/srunx/config.json`` with a fresh ``SrunxConfig``.
+
+**Response:** The default configuration.
+
+GET /api/config/ssh/profiles
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Returns all SSH profiles and identifies the current active profile.
+
+**Response:**
+
+.. code-block:: json
+
+   {
+     "current": "dgx-server",
+     "profiles": {
+       "dgx-server": {
+         "hostname": "dgx.example.com",
+         "username": "researcher",
+         "key_filename": "~/.ssh/id_ed25519",
+         "port": 22,
+         "description": "Main DGX cluster",
+         "ssh_host": null,
+         "proxy_jump": null,
+         "mounts": [],
+         "env_vars": {}
+       }
+     }
+   }
+
+POST /api/config/ssh/profiles
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Add a new SSH profile.
+
+**Request body:**
+
+.. code-block:: json
+
+   {
+     "name": "dgx-server",
+     "hostname": "dgx.example.com",
+     "username": "researcher",
+     "key_filename": "~/.ssh/id_ed25519",
+     "port": 22,
+     "description": "Main DGX cluster",
+     "ssh_host": null,
+     "proxy_jump": null
+   }
+
+**Response:** The created profile object.
+
+**Error responses:**
+
+* ``409`` — Profile with the same name already exists
+
+PUT /api/config/ssh/profiles/{name}
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Update an existing SSH profile. Only valid ``ServerProfile`` fields are applied: ``hostname``, ``username``, ``key_filename``, ``port``, ``description``, ``ssh_host``, ``proxy_jump``, ``env_vars``.
+
+**Request body:** Object with fields to update (partial update).
+
+**Response:** The updated profile object.
+
+**Error responses:**
+
+* ``404`` — Profile not found
+
+DELETE /api/config/ssh/profiles/{name}
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Delete an SSH profile and all its mounts.
+
+**Response:**
+
+.. code-block:: json
+
+   {"ok": true}
+
+**Error responses:**
+
+* ``404`` — Profile not found
+
+POST /api/config/ssh/profiles/{name}/activate
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Set a profile as the current active profile.
+
+**Response:**
+
+.. code-block:: json
+
+   {"ok": true}
+
+**Error responses:**
+
+* ``404`` — Profile not found
+
+POST /api/config/ssh/profiles/{name}/mounts
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Add a mount point to a profile.
+
+**Request body:**
+
+.. code-block:: json
+
+   {
+     "name": "ml-project",
+     "local": "/home/user/projects/ml-project",
+     "remote": "/home/researcher/ml-project"
+   }
+
+**Response:** The created mount object.
+
+**Error responses:**
+
+* ``404`` — Profile not found
+* ``422`` — Validation error
+
+DELETE /api/config/ssh/profiles/{name}/mounts/{mount_name}
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Remove a mount from a profile.
+
+**Response:**
+
+.. code-block:: json
+
+   {"ok": true}
+
+**Error responses:**
+
+* ``404`` — Profile or mount not found
+
+GET /api/config/env
+^^^^^^^^^^^^^^^^^^^^
+
+Returns all ``SRUNX_*`` and ``SLACK_WEBHOOK_URL`` environment variables currently set in the server process.
+
+**Response:**
+
+.. code-block:: json
+
+   [
+     {
+       "name": "SRUNX_DEFAULT_PARTITION",
+       "value": "gpu",
+       "description": "Default SLURM partition"
+     },
+     {
+       "name": "SRUNX_SSH_PROFILE",
+       "value": "dgx-server",
+       "description": "SSH profile for web server"
+     }
+   ]
+
+Returns an empty list if no ``SRUNX_*`` variables are set.
+
+GET /api/config/projects
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+List projects derived from the current SSH profile's mounts.
+
+**Response:**
+
+.. code-block:: json
+
+   [
+     {
+       "mount_name": "ml-project",
+       "local_path": "/home/user/projects/ml-project",
+       "remote_path": "/home/researcher/ml-project",
+       "config_exists": true,
+       "config_path": "/home/user/projects/ml-project/.srunx.json"
+     }
+   ]
+
+Returns an empty list if no SSH profile is active.
+
+GET /api/config/projects/{mount_name}
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Read ``.srunx.json`` from a mount's local directory.
+
+**Response:**
+
+.. code-block:: json
+
+   {
+     "mount_name": "ml-project",
+     "local_path": "/home/user/projects/ml-project",
+     "config_path": "/home/user/projects/ml-project/.srunx.json",
+     "exists": true,
+     "config": {
+       "resources": {"gpus_per_node": 4, "time_limit": "8:00:00"},
+       "environment": {"conda": "ml_env"}
+     }
+   }
+
+**Error responses:**
+
+* ``400`` — No active SSH profile
+* ``404`` — Mount not found in active profile
+
+PUT /api/config/projects/{mount_name}
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Save ``.srunx.json`` to a mount's local directory.
+
+**Request body:** A ``SrunxConfig`` object.
+
+**Response:** The saved project config response.
+
+**Error responses:**
+
+* ``400`` — No active SSH profile
+* ``404`` — Mount not found
+* ``422`` — Validation error
+* ``500`` — Failed to write file
+
+POST /api/config/projects/{mount_name}/init
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Initialize ``.srunx.json`` with example values in a mount's local directory.
+
+**Response:** The created project config response with example values.
+
+**Error responses:**
+
+* ``400`` — No active SSH profile
+* ``404`` — Mount not found
+* ``409`` — ``.srunx.json`` already exists
 
 History
 -------

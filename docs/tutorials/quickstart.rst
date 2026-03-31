@@ -64,9 +64,10 @@ Create a workflow YAML file (``workflow.yaml``):
        depends_on: [preprocess]
        resources:
          gpus_per_node: 1
-         conda: ml_env
          memory_per_node: "32GB"
          time_limit: "4:00:00"
+       environment:
+         conda: ml_env
 
      - name: evaluate
        command: ["python", "evaluate.py"]
