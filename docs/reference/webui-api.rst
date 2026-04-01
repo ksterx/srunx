@@ -1085,6 +1085,6 @@ The Web UI is configured via environment variables:
    * - ``SRUNX_SSH_PORT``
      - 22
      - SSH port
-   * - ``SRUNX_WORKFLOW_DIR``
-     - ``workflows/``
-     - Directory for workflow YAML files
+   * -
+     -
+     - Workflows are stored per-mount in ``<mount>/.srunx/workflows/``

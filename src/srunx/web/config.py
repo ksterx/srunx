@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -11,9 +10,6 @@ class WebConfig(BaseModel):
 
     host: str = Field(default="127.0.0.1")
     port: int = Field(default=8000)
-    workflow_dir: Path = Field(
-        default_factory=lambda: Path(os.getenv("SRUNX_WORKFLOW_DIR", "workflows"))
-    )
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     # SSH connection — either profile_name or (hostname + username)

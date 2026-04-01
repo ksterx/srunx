@@ -7,14 +7,14 @@ test.beforeEach(async ({ page }) => {
 
 test.describe("Workflow Detail", () => {
   test("DAG view renders with React Flow canvas", async ({ page }) => {
-    await page.goto("/workflows/ml-pipeline");
+    await page.goto("/workflows/ml-pipeline?mount=ml-project");
 
     const reactFlow = page.locator(".react-flow");
     await expect(reactFlow).toBeVisible({ timeout: 10000 });
   });
 
   test("shows workflow name and job count in header", async ({ page }) => {
-    await page.goto("/workflows/ml-pipeline");
+    await page.goto("/workflows/ml-pipeline?mount=ml-project");
 
     await expect(
       page.getByRole("heading", { name: "ml-pipeline" }),
@@ -23,7 +23,7 @@ test.describe("Workflow Detail", () => {
   });
 
   test("DAG/list view toggle works", async ({ page }) => {
-    await page.goto("/workflows/ml-pipeline");
+    await page.goto("/workflows/ml-pipeline?mount=ml-project");
 
     /* Default is DAG view */
     await expect(page.locator(".react-flow")).toBeVisible({ timeout: 10000 });
@@ -42,7 +42,7 @@ test.describe("Workflow Detail", () => {
   });
 
   test("clicking a job in list view opens detail sidebar", async ({ page }) => {
-    await page.goto("/workflows/ml-pipeline");
+    await page.goto("/workflows/ml-pipeline?mount=ml-project");
 
     /* Switch to list view */
     await page.getByRole("button", { name: /list/i }).click();
@@ -60,7 +60,7 @@ test.describe("Workflow Detail", () => {
   });
 
   test("shows error state for non-existent workflow", async ({ page }) => {
-    await page.goto("/workflows/nonexistent");
+    await page.goto("/workflows/nonexistent?mount=ml-project");
 
     await expect(page.getByText("Failed to load workflow")).toBeVisible({
       timeout: 10000,

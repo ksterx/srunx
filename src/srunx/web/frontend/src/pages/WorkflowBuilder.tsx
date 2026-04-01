@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import {
+  Link,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import {
   ReactFlow,
   Background,
@@ -313,6 +318,8 @@ const WORKFLOW_NAME_RE = /^[\w-]+$/;
 
 export function WorkflowBuilder() {
   const { name: editName } = useParams<{ name?: string }>();
+  const [searchParams] = useSearchParams();
+  const mountFromUrl = searchParams.get("mount");
   const isEditMode = editName !== undefined;
   const navigate = useNavigate();
 
@@ -335,7 +342,9 @@ export function WorkflowBuilder() {
 
   const [workflowName, setWorkflowName] = useState("");
   const [originalName, setOriginalName] = useState<string | null>(null);
-  const [defaultProject, setDefaultProject] = useState<string | null>(null);
+  const [defaultProject, setDefaultProject] = useState<string | null>(
+    mountFromUrl,
+  );
   const [mounts, setMounts] = useState<Mount[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<SelectedEdge | null>(null);
@@ -364,7 +373,12 @@ export function WorkflowBuilder() {
 
     async function fetchWorkflow() {
       try {
-        const workflow = await workflowsApi.get(nameToLoad);
+        if (!mountFromUrl) {
+          setSaveError("No mount specified in URL");
+          setLoadingWorkflow(false);
+          return;
+        }
+        const workflow = await workflowsApi.get(nameToLoad, mountFromUrl);
         if (cancelled) return;
         setWorkflowName(workflow.name);
         setOriginalName(workflow.name);
@@ -489,27 +503,32 @@ export function WorkflowBuilder() {
     try {
       const request = serialize(trimmedName, defaultProject);
 
+      if (!defaultProject) {
+        setSaveError("A project (mount) must be selected to save a workflow");
+        setSaving(false);
+        return;
+      }
+
       if (isEditMode && originalName) {
-        // Edit mode: delete the old workflow first, then create the new one.
-        // If the name changed, we create first (to fail early on conflict),
-        // then delete the old one.
+        const editMount = mountFromUrl ?? defaultProject;
         if (trimmedName !== originalName) {
           await workflowsApi.create(request);
           try {
-            await workflowsApi.delete(originalName);
+            await workflowsApi.delete(originalName, editMount);
           } catch {
             // Old workflow deletion failed, but new one was created -- acceptable
           }
         } else {
-          // Same name: delete old, then create new
-          await workflowsApi.delete(originalName);
+          await workflowsApi.delete(originalName, editMount);
           await workflowsApi.create(request);
         }
       } else {
         await workflowsApi.create(request);
       }
 
-      navigate(`/workflows/${encodeURIComponent(trimmedName)}`);
+      navigate(
+        `/workflows/${encodeURIComponent(trimmedName)}?mount=${encodeURIComponent(defaultProject)}`,
+      );
     } catch (err) {
       if (err instanceof Error) {
         setSaveError(err.message);

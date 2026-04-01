@@ -54,6 +54,24 @@ export async function setupMockRoutes(page: Page) {
     return route.continue();
   });
 
+  /* ── Mounts (needed by workflows page) ─────── */
+  await page.route("**/api/files/mounts/config*", (route) => {
+    return route.fulfill({
+      json: [
+        {
+          name: "ml-project",
+          local: "/home/user/ml-project",
+          remote: "/home/user/ml-project",
+        },
+      ],
+    });
+  });
+  await page.route("**/api/files/mounts*", (route) => {
+    return route.fulfill({
+      json: [{ name: "ml-project", remote: "/home/user/ml-project" }],
+    });
+  });
+
   /* ── Workflows ─────────────────────────────── */
   await page.route("**/api/workflows/runs/*/cancel", (route) => {
     if (route.request().method() === "POST") {
@@ -114,13 +132,17 @@ export async function setupMockRoutes(page: Page) {
     });
   });
 
+  await page.route("**/api/workflows?*", (route) => {
+    return route.fulfill({ json: MOCK_WORKFLOWS });
+  });
   await page.route("**/api/workflows", (route) => {
     return route.fulfill({ json: MOCK_WORKFLOWS });
   });
 
   await page.route("**/api/workflows/*", (route) => {
     const url = route.request().url();
-    const segment = decodeURIComponent(url.split("/api/workflows/")[1]);
+    const rawSegment = url.split("/api/workflows/")[1];
+    const segment = decodeURIComponent(rawSegment.split("?")[0]);
 
     /* Let create endpoint through to its own mock */
     if (segment === "create" && route.request().method() === "POST") {

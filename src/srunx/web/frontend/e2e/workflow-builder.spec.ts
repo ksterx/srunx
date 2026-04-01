@@ -15,11 +15,11 @@ test.describe("Workflow Builder", () => {
     await expect(newBtn).toBeVisible();
     await newBtn.click();
 
-    await expect(page).toHaveURL(/\/workflows\/new$/);
+    await expect(page).toHaveURL(/\/workflows\/new/);
   });
 
   test("displays empty builder canvas with toolbar", async ({ page }) => {
-    await page.goto("/workflows/new");
+    await page.goto("/workflows/new?mount=ml-project");
 
     /* Toolbar elements */
     await expect(page.getByPlaceholder("workflow-name")).toBeVisible();
@@ -33,7 +33,7 @@ test.describe("Workflow Builder", () => {
   });
 
   test("Add Job creates a new node on the canvas", async ({ page }) => {
-    await page.goto("/workflows/new");
+    await page.goto("/workflows/new?mount=ml-project");
 
     const addBtn = page.getByRole("button", { name: "Add Job" });
     await addBtn.click();
@@ -45,7 +45,7 @@ test.describe("Workflow Builder", () => {
   });
 
   test("adding multiple jobs creates multiple nodes", async ({ page }) => {
-    await page.goto("/workflows/new");
+    await page.goto("/workflows/new?mount=ml-project");
 
     const addBtn = page.getByRole("button", { name: "Add Job" });
     await addBtn.click();
@@ -58,7 +58,7 @@ test.describe("Workflow Builder", () => {
   });
 
   test("clicking a node opens the property panel", async ({ page }) => {
-    await page.goto("/workflows/new");
+    await page.goto("/workflows/new?mount=ml-project");
 
     /* Add a job */
     await page.getByRole("button", { name: "Add Job" }).click();
@@ -75,7 +75,7 @@ test.describe("Workflow Builder", () => {
   });
 
   test("editing job name in panel updates the node", async ({ page }) => {
-    await page.goto("/workflows/new");
+    await page.goto("/workflows/new?mount=ml-project");
 
     await page.getByRole("button", { name: "Add Job" }).click();
     await expect(page.getByText("job_1")).toBeVisible();
@@ -98,7 +98,7 @@ test.describe("Workflow Builder", () => {
   });
 
   test("save shows error when workflow name is empty", async ({ page }) => {
-    await page.goto("/workflows/new");
+    await page.goto("/workflows/new?mount=ml-project");
 
     await page.getByRole("button", { name: "Add Job" }).click();
 
@@ -110,7 +110,7 @@ test.describe("Workflow Builder", () => {
   });
 
   test("save shows validation errors for empty command", async ({ page }) => {
-    await page.goto("/workflows/new");
+    await page.goto("/workflows/new?mount=ml-project");
 
     /* Add a job (default has empty command) */
     await page.getByRole("button", { name: "Add Job" }).click();
@@ -126,7 +126,7 @@ test.describe("Workflow Builder", () => {
   });
 
   test("successful save redirects to workflow detail", async ({ page }) => {
-    await page.goto("/workflows/new");
+    await page.goto("/workflows/new?mount=ml-project");
 
     /* Set workflow name */
     await page.getByPlaceholder("workflow-name").fill("my-pipeline");
@@ -152,13 +152,13 @@ test.describe("Workflow Builder", () => {
     await page.getByRole("button", { name: /Save Workflow/ }).click();
 
     /* Should redirect to the workflow detail page */
-    await expect(page).toHaveURL(/\/workflows\/my-pipeline$/, {
+    await expect(page).toHaveURL(/\/workflows\/my-pipeline/, {
       timeout: 5000,
     });
   });
 
   test("save with invalid name shows error", async ({ page }) => {
-    await page.goto("/workflows/new");
+    await page.goto("/workflows/new?mount=ml-project");
 
     /* Set invalid workflow name with spaces */
     await page.getByPlaceholder("workflow-name").fill("my pipeline");
@@ -186,7 +186,7 @@ test.describe("Workflow Builder", () => {
   });
 
   test("close button on property panel hides it", async ({ page }) => {
-    await page.goto("/workflows/new");
+    await page.goto("/workflows/new?mount=ml-project");
 
     await page.getByRole("button", { name: "Add Job" }).click();
     await expect(page.getByText("job_1")).toBeVisible();

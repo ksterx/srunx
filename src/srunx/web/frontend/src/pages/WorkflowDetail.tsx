@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import {
+  useParams,
+  Link,
+  useNavigate,
+  useSearchParams,
+} from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   ArrowLeft,
@@ -47,6 +52,8 @@ const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
 
 export function WorkflowDetail() {
   const { name } = useParams<{ name: string }>();
+  const [searchParams] = useSearchParams();
+  const mount = searchParams.get("mount");
   const navigate = useNavigate();
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
   const [view, setView] = useState<"dag" | "list">("dag");
@@ -57,12 +64,12 @@ export function WorkflowDetail() {
   const [runError, setRunError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  if (!name) {
+  if (!name || !mount) {
     return (
       <div
         style={{ padding: 48, textAlign: "center", color: "var(--text-muted)" }}
       >
-        Invalid workflow name
+        {!name ? "Invalid workflow name" : "No mount specified"}
       </div>
     );
   }
@@ -71,7 +78,9 @@ export function WorkflowDetail() {
     data: workflow,
     loading,
     error,
-  } = useApi(() => workflowsApi.get(name), [name], { pollInterval: 10000 });
+  } = useApi(() => workflowsApi.get(name, mount), [name, mount], {
+    pollInterval: 10000,
+  });
 
   /* ── Stop polling on unmount ──────────────── */
   useEffect(() => {
@@ -122,7 +131,7 @@ export function WorkflowDetail() {
     setRunError(null);
     setRunning(true);
     try {
-      const run = await workflowsApi.run(name);
+      const run = await workflowsApi.run(name, mount);
       setRunData(run);
     } catch (err) {
       setRunError(
@@ -131,7 +140,7 @@ export function WorkflowDetail() {
     } finally {
       setRunning(false);
     }
-  }, [name, running]);
+  }, [name, mount, running]);
 
   /* ── Delete handler ────────────────────────── */
   const handleDelete = useCallback(async () => {
@@ -139,14 +148,14 @@ export function WorkflowDetail() {
     if (!window.confirm(`Delete workflow "${name}"? This cannot be undone.`))
       return;
     try {
-      await workflowsApi.delete(name);
+      await workflowsApi.delete(name, mount);
       navigate("/workflows");
     } catch (err) {
       setRunError(
         err instanceof Error ? err.message : "Failed to delete workflow",
       );
     }
-  }, [name, navigate]);
+  }, [name, mount, navigate]);
 
   /* ── Cancel handler ────────────────────────── */
   const handleCancel = useCallback(async () => {
@@ -307,7 +316,7 @@ export function WorkflowDetail() {
           </div>
 
           <Link
-            to={`/workflows/${encodeURIComponent(name)}/edit`}
+            to={`/workflows/${encodeURIComponent(name)}/edit?mount=${encodeURIComponent(mount)}`}
             className="btn btn-ghost"
             title="Edit workflow"
           >
