@@ -96,7 +96,7 @@ srunx-web  # -> http://127.0.0.1:8000
 
 **Explorer** — Browse remote files via SSH mounts. Shell scripts can be submitted as sbatch jobs directly from the file tree.
 
-<img src="https://raw.githubusercontent.com/ksterx/srunx/main/public/screenshots/explorer.png" width="800" alt="File explorer with sbatch submit">
+<img src="https://raw.githubusercontent.com/ksterx/srunx/main/public/screenshots/explorer_sbatch.gif" width="800" alt="Explorer sbatch submission">
 
 </details>
 
