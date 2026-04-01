@@ -79,9 +79,6 @@ A dashboard for visual cluster management. Connect to your SLURM cluster over SS
 srunx-web  # -> http://127.0.0.1:8000
 ```
 
-<details>
-<summary><b>Screenshots</b></summary>
-
 **Jobs** — Browse, search, filter, and cancel jobs.
 
 <img src="https://raw.githubusercontent.com/ksterx/srunx/main/public/screenshots/jobs.png" width="800" alt="Jobs page">
@@ -97,8 +94,6 @@ srunx-web  # -> http://127.0.0.1:8000
 **Explorer** — Browse remote files via SSH mounts. Shell scripts can be submitted as sbatch jobs directly from the file tree.
 
 <img src="https://raw.githubusercontent.com/ksterx/srunx/main/public/screenshots/explorer_sbatch.gif" width="800" alt="Explorer sbatch submission">
-
-</details>
 
 ## Workflow Orchestration
 
