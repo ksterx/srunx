@@ -30,13 +30,13 @@ Stop juggling `sbatch` scripts, `squeue` loops, and SSH sessions.
 Requires Python 3.12+ and access to a SLURM cluster (local or via SSH).
 
 ```bash
-pip install srunx
+uv add srunx
 ```
 
 For the web dashboard:
 
 ```bash
-pip install "srunx[web]"
+uv add "srunx[web]"
 ```
 
 ## Quick Start
