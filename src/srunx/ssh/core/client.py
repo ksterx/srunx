@@ -197,8 +197,8 @@ class SSHSlurmClient:
             raise ConnectionError("SSH client is not connected")
 
         stdin, stdout, stderr = self.ssh_client.exec_command(command)
-        stdout_data = stdout.read().decode("utf-8")
-        stderr_data = stderr.read().decode("utf-8")
+        stdout_data = stdout.read().decode("utf-8", errors="replace")
+        stderr_data = stderr.read().decode("utf-8", errors="replace")
         exit_code = stdout.channel.recv_exit_status()
 
         return stdout_data, stderr_data, exit_code
@@ -427,7 +427,14 @@ class SSHSlurmClient:
         # Build the command with full path if available
         if self._slurm_path:
             # Replace SLURM commands with full paths
-            slurm_commands = ["sbatch", "squeue", "sacct", "scancel", "sinfo"]
+            slurm_commands = [
+                "sbatch",
+                "squeue",
+                "sacct",
+                "scancel",
+                "scontrol",
+                "sinfo",
+            ]
             modified_command = command
             for cmd in slurm_commands:
                 if modified_command.startswith(cmd + " ") or modified_command == cmd:
@@ -840,7 +847,7 @@ class SSHSlurmClient:
     ) -> tuple[str | None, str | None]:
         """Query ``scontrol show job`` for StdOut / StdErr paths."""
         quoted_id = shlex.quote(job_id)
-        stdout, _, rc = self.execute_command(
+        stdout, _, rc = self._execute_slurm_command(
             f"scontrol show job {quoted_id} 2>/dev/null"
         )
         if rc != 0 or not stdout.strip():
