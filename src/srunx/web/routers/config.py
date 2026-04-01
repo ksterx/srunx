@@ -237,7 +237,6 @@ _ENV_VAR_DESCRIPTIONS: dict[str, str] = {
     "SRUNX_SSH_USERNAME": "SSH username for web server",
     "SRUNX_SSH_KEY": "SSH key path for web server",
     "SRUNX_SSH_PORT": "SSH port for web server",
-    "SRUNX_WORKFLOW_DIR": "Workflow directory for web server",
     "SRUNX_TEMP_DIR": "Temporary directory for SSH operations",
     "SLACK_WEBHOOK_URL": "Slack webhook URL for notifications",
 }

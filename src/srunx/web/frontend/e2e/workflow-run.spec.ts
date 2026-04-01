@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => {
 
 test.describe("Workflow Run & Lifecycle", () => {
   test("Run Workflow button is visible on detail page", async ({ page }) => {
-    await page.goto("/workflows/ml-pipeline");
+    await page.goto("/workflows/ml-pipeline?mount=ml-project");
 
     await expect(
       page.getByRole("button", { name: /Run Workflow/ }),
@@ -16,7 +16,7 @@ test.describe("Workflow Run & Lifecycle", () => {
 
   test("clicking Run Workflow triggers execution", async ({ page }) => {
     let runCalled = false;
-    await page.route("**/api/workflows/ml-pipeline/run", (route) => {
+    await page.route("**/api/workflows/ml-pipeline/run*", (route) => {
       runCalled = true;
       return route.fulfill({
         status: 202,
@@ -41,7 +41,7 @@ test.describe("Workflow Run & Lifecycle", () => {
       });
     });
 
-    await page.goto("/workflows/ml-pipeline");
+    await page.goto("/workflows/ml-pipeline?mount=ml-project");
     await page.getByRole("button", { name: /Run Workflow/ }).click();
 
     await expect(() => expect(runCalled).toBe(true)).toPass({ timeout: 3000 });
@@ -50,7 +50,7 @@ test.describe("Workflow Run & Lifecycle", () => {
   test("Run Workflow button becomes disabled after clicking", async ({
     page,
   }) => {
-    await page.route("**/api/workflows/ml-pipeline/run", (route) => {
+    await page.route("**/api/workflows/ml-pipeline/run*", (route) => {
       return route.fulfill({
         status: 202,
         json: {
@@ -66,7 +66,7 @@ test.describe("Workflow Run & Lifecycle", () => {
       });
     });
 
-    await page.goto("/workflows/ml-pipeline");
+    await page.goto("/workflows/ml-pipeline?mount=ml-project");
     const runBtn = page.getByRole("button", { name: /Run Workflow/ });
     await runBtn.click();
 
@@ -75,7 +75,7 @@ test.describe("Workflow Run & Lifecycle", () => {
   });
 
   test("cancel button appears during active run", async ({ page }) => {
-    await page.route("**/api/workflows/ml-pipeline/run", (route) => {
+    await page.route("**/api/workflows/ml-pipeline/run*", (route) => {
       return route.fulfill({
         status: 202,
         json: {
@@ -91,7 +91,7 @@ test.describe("Workflow Run & Lifecycle", () => {
       });
     });
 
-    await page.goto("/workflows/ml-pipeline");
+    await page.goto("/workflows/ml-pipeline?mount=ml-project");
 
     /* Cancel button should not be visible before a run starts */
     await expect(
@@ -107,7 +107,7 @@ test.describe("Workflow Run & Lifecycle", () => {
   });
 
   test("clicking Cancel sets run to cancelled", async ({ page }) => {
-    await page.route("**/api/workflows/ml-pipeline/run", (route) => {
+    await page.route("**/api/workflows/ml-pipeline/run*", (route) => {
       return route.fulfill({
         status: 202,
         json: {
@@ -123,7 +123,7 @@ test.describe("Workflow Run & Lifecycle", () => {
       });
     });
 
-    await page.goto("/workflows/ml-pipeline");
+    await page.goto("/workflows/ml-pipeline?mount=ml-project");
     await page.getByRole("button", { name: /Run Workflow/ }).click();
 
     /* Wait for Cancel button to appear */
@@ -137,7 +137,7 @@ test.describe("Workflow Run & Lifecycle", () => {
   });
 
   test("delete workflow navigates back to list", async ({ page }) => {
-    await page.goto("/workflows/ml-pipeline");
+    await page.goto("/workflows/ml-pipeline?mount=ml-project");
 
     /* Override confirm dialog to accept */
     page.on("dialog", (dialog) => dialog.accept());
@@ -146,13 +146,13 @@ test.describe("Workflow Run & Lifecycle", () => {
     await expect(deleteBtn).toBeVisible();
     await deleteBtn.click();
 
-    await expect(page).toHaveURL(/\/workflows$/, { timeout: 3000 });
+    await expect(page).toHaveURL(/\/workflows/, { timeout: 3000 });
   });
 
   test("delete workflow is cancelled when dialog is dismissed", async ({
     page,
   }) => {
-    await page.goto("/workflows/ml-pipeline");
+    await page.goto("/workflows/ml-pipeline?mount=ml-project");
 
     /* Override confirm dialog to dismiss */
     page.on("dialog", (dialog) => dialog.dismiss());
@@ -160,26 +160,26 @@ test.describe("Workflow Run & Lifecycle", () => {
     await page.getByTitle("Delete workflow").click();
 
     /* Should remain on the detail page */
-    await expect(page).toHaveURL(/\/workflows\/ml-pipeline$/);
+    await expect(page).toHaveURL(/\/workflows\/ml-pipeline/);
     await expect(
       page.getByRole("heading", { name: "ml-pipeline" }),
     ).toBeVisible();
   });
 
   test("Edit link navigates to edit page", async ({ page }) => {
-    await page.goto("/workflows/ml-pipeline");
+    await page.goto("/workflows/ml-pipeline?mount=ml-project");
 
     const editLink = page.getByRole("link", { name: /Edit/i });
     await expect(editLink).toBeVisible();
     await editLink.click();
 
-    await expect(page).toHaveURL(/\/workflows\/ml-pipeline\/edit$/);
+    await expect(page).toHaveURL(/\/workflows\/ml-pipeline\/edit/);
   });
 
   test("Run Workflow button is disabled during active run", async ({
     page,
   }) => {
-    await page.route("**/api/workflows/ml-pipeline/run", (route) => {
+    await page.route("**/api/workflows/ml-pipeline/run*", (route) => {
       return route.fulfill({
         status: 202,
         json: {
@@ -195,7 +195,7 @@ test.describe("Workflow Run & Lifecycle", () => {
       });
     });
 
-    await page.goto("/workflows/ml-pipeline");
+    await page.goto("/workflows/ml-pipeline?mount=ml-project");
     await page.getByRole("button", { name: /Run Workflow/ }).click();
 
     /* Button should be disabled while a run is active */

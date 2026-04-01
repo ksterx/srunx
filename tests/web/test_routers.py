@@ -66,15 +66,32 @@ def mock_adapter() -> MagicMock:
 def client(  # type: ignore[misc]
     mock_adapter: MagicMock, tmp_path: Path
 ) -> TestClient:
-    # Use tmp_path for workflow_dir to avoid leftover files
     import srunx.web.config as config_mod
     from srunx.web.config import get_web_config
 
     original = config_mod._config
     config_mod._config = None
     cfg = get_web_config()
-    cfg.workflow_dir = tmp_path / "workflows"
     config_mod._config = cfg
+
+    # Create a fake mount directory so per-mount workflow storage works
+    mount_local = tmp_path / "project"
+    mount_local.mkdir()
+
+    # Patch get_current_profile in sync_utils to return a profile with a mount
+    from unittest.mock import patch
+
+    from srunx.ssh.core.config import MountConfig, ServerProfile
+
+    fake_mount = MountConfig(
+        name="test-project", local=str(mount_local), remote="/home/user/project"
+    )
+    fake_profile = ServerProfile(
+        hostname="test.example.com",
+        username="tester",
+        key_filename="~/.ssh/id_rsa",
+        mounts=[fake_mount],
+    )
 
     # Clear run registry to avoid cross-test state leakage
     from srunx.web.state import run_registry
@@ -83,10 +100,18 @@ def client(  # type: ignore[misc]
 
     app = create_app()
     app.dependency_overrides[get_adapter] = lambda: mock_adapter
-    yield TestClient(app, raise_server_exceptions=False)
+
+    with patch(
+        "srunx.web.routers.workflows._get_current_profile", return_value=fake_profile
+    ):
+        yield TestClient(app, raise_server_exceptions=False)
 
     config_mod._config = original
     run_registry._runs.clear()
+
+
+# Mount name used in all workflow tests
+MOUNT = "test-project"
 
 
 # ── Jobs Router ───────────────────────────────────
@@ -215,7 +240,7 @@ class TestHistoryRouter:
 
 class TestWorkflowsRouter:
     def test_list_empty(self, client: TestClient) -> None:
-        resp = client.get("/api/workflows")
+        resp = client.get("/api/workflows", params={"mount": MOUNT})
         assert resp.status_code == 200
         assert resp.json() == []
 
@@ -234,16 +259,26 @@ class TestWorkflowsRouter:
     def test_upload_rejects_path_traversal(self, client: TestClient) -> None:
         resp = client.post(
             "/api/workflows/upload",
-            json={"yaml": "name: test\njobs: []", "filename": "../../evil.yaml"},
+            json={
+                "yaml": "name: test\njobs: []",
+                "filename": "../../evil.yaml",
+                "mount": MOUNT,
+            },
         )
         # Should use safe basename, so stem "evil" passes but path is safe
-        # The actual behavior depends on the workflow_dir existing
         assert resp.status_code in (200, 422)
 
     def test_upload_rejects_bad_filename(self, client: TestClient) -> None:
         resp = client.post(
             "/api/workflows/upload",
-            json={"yaml": "name: test", "filename": "bad name!.yaml"},
+            json={"yaml": "name: test", "filename": "bad name!.yaml", "mount": MOUNT},
+        )
+        assert resp.status_code == 422
+
+    def test_upload_requires_mount(self, client: TestClient) -> None:
+        resp = client.post(
+            "/api/workflows/upload",
+            json={"yaml": "name: test\njobs: []", "filename": "test.yaml"},
         )
         assert resp.status_code == 422
 
@@ -254,9 +289,18 @@ class TestWorkflowsRouter:
 
     # ── POST /api/workflows/create ───────────────────
 
+    def test_create_workflow_requires_mount(self, client: TestClient) -> None:
+        payload = {
+            "name": "no-mount",
+            "jobs": [{"name": "a", "command": ["echo", "hi"]}],
+        }
+        resp = client.post("/api/workflows/create", json=payload)
+        assert resp.status_code == 422
+
     def test_create_workflow_success(self, client: TestClient) -> None:
         payload = {
             "name": "my-pipeline",
+            "default_project": MOUNT,
             "jobs": [
                 {
                     "name": "preprocess",
@@ -283,6 +327,7 @@ class TestWorkflowsRouter:
     def test_create_workflow_conflict(self, client: TestClient) -> None:
         payload = {
             "name": "dup-wf",
+            "default_project": MOUNT,
             "jobs": [{"name": "a", "command": ["echo", "hi"]}],
         }
         resp1 = client.post("/api/workflows/create", json=payload)
@@ -294,6 +339,7 @@ class TestWorkflowsRouter:
     def test_create_workflow_reserved_name(self, client: TestClient) -> None:
         payload = {
             "name": "new",
+            "default_project": MOUNT,
             "jobs": [{"name": "a", "command": ["echo", "hi"]}],
         }
         resp = client.post("/api/workflows/create", json=payload)
@@ -303,6 +349,7 @@ class TestWorkflowsRouter:
     def test_create_workflow_bad_name(self, client: TestClient) -> None:
         payload = {
             "name": "bad name!",
+            "default_project": MOUNT,
             "jobs": [{"name": "a", "command": ["echo", "hi"]}],
         }
         resp = client.post("/api/workflows/create", json=payload)
@@ -311,6 +358,7 @@ class TestWorkflowsRouter:
     def test_create_workflow_cycle_detected(self, client: TestClient) -> None:
         payload = {
             "name": "cyclic",
+            "default_project": MOUNT,
             "jobs": [
                 {"name": "a", "command": ["echo", "a"], "depends_on": ["b"]},
                 {"name": "b", "command": ["echo", "b"], "depends_on": ["a"]},
@@ -324,6 +372,7 @@ class TestWorkflowsRouter:
     def test_create_workflow_unknown_dependency(self, client: TestClient) -> None:
         payload = {
             "name": "bad-dep",
+            "default_project": MOUNT,
             "jobs": [
                 {
                     "name": "a",
@@ -339,25 +388,27 @@ class TestWorkflowsRouter:
         """Verify the YAML file is written and can be re-loaded."""
         payload = {
             "name": "persist-test",
+            "default_project": MOUNT,
             "jobs": [{"name": "step1", "command": ["bash", "-c", "echo ok"]}],
         }
         resp = client.post("/api/workflows/create", json=payload)
         assert resp.status_code == 200
 
         # The workflow should now appear in the list
-        list_resp = client.get("/api/workflows")
+        list_resp = client.get("/api/workflows", params={"mount": MOUNT})
         names = [w["name"] for w in list_resp.json()]
         assert "persist-test" in names
 
     def test_create_workflow_retrievable_by_name(self, client: TestClient) -> None:
         payload = {
             "name": "fetch-me",
+            "default_project": MOUNT,
             "jobs": [{"name": "only", "command": ["true"]}],
         }
         resp = client.post("/api/workflows/create", json=payload)
         assert resp.status_code == 200
 
-        get_resp = client.get("/api/workflows/fetch-me")
+        get_resp = client.get("/api/workflows/fetch-me", params={"mount": MOUNT})
         assert get_resp.status_code == 200
         assert get_resp.json()["name"] == "fetch-me"
 
@@ -387,6 +438,7 @@ class TestWorkflowsRouter:
         # Create the workflow first
         create_payload = {
             "name": "run-test",
+            "default_project": MOUNT,
             "jobs": [
                 {"name": "step1", "command": ["echo", "a"]},
                 {
@@ -417,7 +469,7 @@ class TestWorkflowsRouter:
         mock_adapter.submit_job.side_effect = mock_submit
 
         # Run the workflow
-        resp = client.post("/api/workflows/run-test/run")
+        resp = client.post("/api/workflows/run-test/run", params={"mount": MOUNT})
         assert resp.status_code == 202
         data = resp.json()
         assert data["workflow_name"] == "run-test"
@@ -439,11 +491,15 @@ class TestWorkflowsRouter:
         assert "afterok:10001" in dep
 
     def test_run_workflow_not_found(self, client: TestClient) -> None:
-        resp = client.post("/api/workflows/nonexistent-wf/run")
+        resp = client.post("/api/workflows/nonexistent-wf/run", params={"mount": MOUNT})
         assert resp.status_code == 404
 
     def test_run_workflow_invalid_name(self, client: TestClient) -> None:
-        resp = client.post("/api/workflows/bad name!/run")
+        resp = client.post("/api/workflows/bad name!/run", params={"mount": MOUNT})
+        assert resp.status_code == 422
+
+    def test_run_workflow_requires_mount(self, client: TestClient) -> None:
+        resp = client.post("/api/workflows/some-wf/run")
         assert resp.status_code == 422
 
     def test_run_workflow_submit_failure(
@@ -452,6 +508,7 @@ class TestWorkflowsRouter:
         """If sbatch fails, the run should be marked as failed."""
         create_payload = {
             "name": "fail-run",
+            "default_project": MOUNT,
             "jobs": [{"name": "boom", "command": ["echo", "fail"]}],
         }
         resp = client.post("/api/workflows/create", json=create_payload)
@@ -459,7 +516,7 @@ class TestWorkflowsRouter:
 
         mock_adapter.submit_job.side_effect = RuntimeError("sbatch error")
 
-        resp = client.post("/api/workflows/fail-run/run")
+        resp = client.post("/api/workflows/fail-run/run", params={"mount": MOUNT})
         assert resp.status_code == 502
         assert "sbatch" in resp.json()["detail"]
 
@@ -469,27 +526,28 @@ class TestWorkflowsRouter:
         """Create a workflow then delete it."""
         payload = {
             "name": "to-delete",
+            "default_project": MOUNT,
             "jobs": [{"name": "a", "command": ["echo", "hi"]}],
         }
         resp = client.post("/api/workflows/create", json=payload)
         assert resp.status_code == 200
 
-        resp = client.delete("/api/workflows/to-delete")
+        resp = client.delete("/api/workflows/to-delete", params={"mount": MOUNT})
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "deleted"
         assert data["name"] == "to-delete"
 
         # Confirm it's gone
-        resp = client.get("/api/workflows/to-delete")
+        resp = client.get("/api/workflows/to-delete", params={"mount": MOUNT})
         assert resp.status_code == 404
 
     def test_delete_workflow_not_found(self, client: TestClient) -> None:
-        resp = client.delete("/api/workflows/nonexistent")
+        resp = client.delete("/api/workflows/nonexistent", params={"mount": MOUNT})
         assert resp.status_code == 404
 
     def test_delete_workflow_invalid_name(self, client: TestClient) -> None:
-        resp = client.delete("/api/workflows/bad name!")
+        resp = client.delete("/api/workflows/bad name!", params={"mount": MOUNT})
         assert resp.status_code == 422
 
     # ── POST /api/workflows/runs/{run_id}/cancel ───

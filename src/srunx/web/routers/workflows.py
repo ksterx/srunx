@@ -23,7 +23,6 @@ from srunx.models import (
 )
 from srunx.runner import WorkflowRunner
 
-from ..config import get_web_config
 from ..deps import get_adapter
 from ..ssh_adapter import SlurmSSHAdapter
 from ..state import run_registry
@@ -152,12 +151,45 @@ def _workflow_to_yaml(
     return yaml.dump(doc, default_flow_style=False, sort_keys=False)
 
 
-def _workflow_dir() -> Path:
-    return get_web_config().workflow_dir
+def _get_current_profile():
+    """Get the current SSH profile from web config or ConfigManager."""
+    from ..sync_utils import get_current_profile
+
+    return get_current_profile()
 
 
-def _find_yaml(name: str) -> Path:
-    d = _workflow_dir()
+def _find_mount(profile, mount_name: str):
+    """Find a mount by name within a profile's mounts."""
+    for m in profile.mounts:
+        if m.name == mount_name:
+            return m
+    raise HTTPException(status_code=404, detail=f"Mount '{mount_name}' not found")
+
+
+def _workflow_dir(mount_name: str) -> Path:
+    """Resolve workflow directory for a given mount.
+
+    Returns ``<mount.local>/.srunx/workflows/``.
+    """
+    profile = _get_current_profile()
+    if profile is None:
+        raise HTTPException(status_code=503, detail="No SSH profile configured")
+    mount = _find_mount(profile, mount_name)
+    return Path(mount.local) / ".srunx" / "workflows"
+
+
+def _ensure_workflow_dir(mount_name: str) -> Path:
+    """Like ``_workflow_dir`` but creates the directory (and ``.srunx/.gitignore``) if needed."""
+    d = _workflow_dir(mount_name)
+    d.mkdir(parents=True, exist_ok=True)
+    gitignore = d.parent / ".gitignore"
+    if not gitignore.exists():
+        gitignore.write_text("*\n!workflows/\n!workflows/**\n!.gitignore\n")
+    return d
+
+
+def _find_yaml(name: str, mount_name: str) -> Path:
+    d = _workflow_dir(mount_name)
     for ext in (".yaml", ".yml"):
         p = d / f"{name}{ext}"
         if p.exists():
@@ -207,8 +239,8 @@ def _serialize_workflow(runner: WorkflowRunner) -> dict[str, Any]:
 
 
 @router.get("")
-async def list_workflows() -> list[dict[str, Any]]:
-    d = _workflow_dir()
+async def list_workflows(mount: str) -> list[dict[str, Any]]:
+    d = _workflow_dir(mount)
     if not d.exists():
         return []
 
@@ -297,10 +329,11 @@ async def validate_workflow(body: dict[str, str]) -> dict[str, Any]:
 async def upload_workflow(body: dict[str, str]) -> dict[str, Any]:
     yaml_content = body.get("yaml", "")
     filename = body.get("filename", "")
+    mount_name = body.get("mount", "")
 
-    if not yaml_content or not filename:
+    if not yaml_content or not filename or not mount_name:
         raise HTTPException(
-            status_code=422, detail="Both 'yaml' and 'filename' required"
+            status_code=422, detail="'yaml', 'filename', and 'mount' are required"
         )
 
     _reject_python_args(yaml_content)
@@ -316,8 +349,7 @@ async def upload_workflow(body: dict[str, str]) -> dict[str, Any]:
             detail="Filename must be alphanumeric with hyphens/underscores only",
         )
 
-    d = _workflow_dir()
-    d.mkdir(parents=True, exist_ok=True)
+    d = _ensure_workflow_dir(mount_name)
     dest = d / safe_filename
     dest.write_text(yaml_content)
 
@@ -338,6 +370,12 @@ async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
     dependency cycles, serializes to YAML, and persists to disk.
     """
     name = body.name
+    mount_name = body.default_project
+    if not mount_name:
+        raise HTTPException(
+            status_code=422,
+            detail="A mount (default_project) is required to save a workflow",
+        )
 
     # Reserved name guard
     if name in _RESERVED_NAMES:
@@ -347,8 +385,7 @@ async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
         )
 
     # Check for existing workflow with the same name
-    d = _workflow_dir()
-    d.mkdir(parents=True, exist_ok=True)
+    d = _ensure_workflow_dir(mount_name)
     for ext in (".yaml", ".yml"):
         if (d / f"{name}{ext}").exists():
             raise HTTPException(
@@ -438,6 +475,7 @@ async def _monitor_run(
 async def run_workflow(
     name: str,
     request: Request,
+    mount: str | None = None,
     adapter: SlurmSSHAdapter = Depends(get_adapter),
 ) -> dict[str, Any]:
     """Run a workflow: sync mounts, submit jobs with SLURM dependencies."""
@@ -453,8 +491,10 @@ async def run_workflow(
 
     if not _SAFE_NAME.match(name):
         raise HTTPException(status_code=422, detail="Invalid workflow name")
+    if not mount:
+        raise HTTPException(status_code=422, detail="mount query parameter is required")
 
-    yaml_path = _find_yaml(name)
+    yaml_path = _find_yaml(name, mount)
 
     # Load workflow
     runner = await anyio.to_thread.run_sync(lambda: WorkflowRunner.from_yaml(yaml_path))
@@ -520,7 +560,7 @@ async def run_workflow(
                     # ShellJob: read the script directly
                     # Validate script_path is within allowed boundaries
                     script_path = Path(job.script_path).resolve()  # type: ignore[union-attr]
-                    allowed_roots = [_workflow_dir().resolve()]
+                    allowed_roots = [_workflow_dir(mount).resolve()]
                     if profile:
                         allowed_roots.extend(
                             Path(m.local).resolve() for m in profile.mounts
@@ -613,21 +653,21 @@ async def run_workflow(
 
 
 @router.delete("/{name}")
-async def delete_workflow(name: str) -> dict[str, str]:
+async def delete_workflow(name: str, mount: str) -> dict[str, str]:
     """Delete a workflow YAML file."""
     if not _SAFE_NAME.match(name):
         raise HTTPException(status_code=422, detail="Invalid workflow name")
-    yaml_path = _find_yaml(name)  # raises 404 if not found
+    yaml_path = _find_yaml(name, mount)  # raises 404 if not found
     await anyio.to_thread.run_sync(lambda: yaml_path.unlink())
     return {"status": "deleted", "name": name}
 
 
 @router.get("/{name}")
-async def get_workflow(name: str) -> dict[str, Any]:
+async def get_workflow(name: str, mount: str) -> dict[str, Any]:
     if not _SAFE_NAME.match(name):
         raise HTTPException(status_code=422, detail="Invalid workflow name")
 
-    yaml_path = _find_yaml(name)
+    yaml_path = _find_yaml(name, mount)
     try:
         runner = await anyio.to_thread.run_sync(
             lambda: WorkflowRunner.from_yaml(yaml_path)

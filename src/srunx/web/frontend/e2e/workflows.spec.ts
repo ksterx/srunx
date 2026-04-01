@@ -34,7 +34,7 @@ test.describe("Workflows", () => {
     const viewBtn = page.getByRole("link", { name: "View DAG" }).first();
     await viewBtn.click();
 
-    await expect(page).toHaveURL(/\/workflows\/ml-pipeline$/);
+    await expect(page).toHaveURL(/\/workflows\/ml-pipeline/);
   });
 
   test("Upload YAML button opens file dialog", async ({ page }) => {

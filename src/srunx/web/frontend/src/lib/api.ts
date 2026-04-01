@@ -103,23 +103,31 @@ export const jobs = {
 /* ── Workflows ────────────────────────────────── */
 
 export const workflows = {
-  list: async (): Promise<Workflow[]> => {
-    const res = await fetch("/api/workflows");
+  list: async (mount: string): Promise<Workflow[]> => {
+    const params = new URLSearchParams({ mount });
+    const res = await fetch(`/api/workflows?${params}`);
     if (!res.ok) throw new Error("Failed to fetch workflows");
     return res.json();
   },
 
-  get: async (name: string): Promise<Workflow> => {
-    const res = await fetch(`/api/workflows/${encodeURIComponent(name)}`);
+  get: async (name: string, mount: string): Promise<Workflow> => {
+    const params = new URLSearchParams({ mount });
+    const res = await fetch(
+      `/api/workflows/${encodeURIComponent(name)}?${params}`,
+    );
     if (!res.ok) throw new Error(`Failed to fetch workflow "${name}"`);
     return res.json();
   },
 
-  upload: async (yamlContent: string, filename: string): Promise<Workflow> => {
+  upload: async (
+    yamlContent: string,
+    filename: string,
+    mount: string,
+  ): Promise<Workflow> => {
     const res = await fetch("/api/workflows/upload", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ yaml: yamlContent, filename }),
+      body: JSON.stringify({ yaml: yamlContent, filename, mount }),
     });
     if (!res.ok) {
       const err = await res.json();
@@ -141,10 +149,12 @@ export const workflows = {
     return res.json();
   },
 
-  run: async (name: string): Promise<WorkflowRun> => {
-    const res = await fetch(`/api/workflows/${encodeURIComponent(name)}/run`, {
-      method: "POST",
-    });
+  run: async (name: string, mount: string): Promise<WorkflowRun> => {
+    const params = new URLSearchParams({ mount });
+    const res = await fetch(
+      `/api/workflows/${encodeURIComponent(name)}/run?${params}`,
+      { method: "POST" },
+    );
     if (!res.ok) {
       const err = await res.json();
       throw new Error(extractDetail(err, "Failed to run workflow"));
@@ -161,10 +171,12 @@ export const workflows = {
     return res.json();
   },
 
-  delete: async (name: string): Promise<void> => {
-    const res = await fetch(`/api/workflows/${encodeURIComponent(name)}`, {
-      method: "DELETE",
-    });
+  delete: async (name: string, mount: string): Promise<void> => {
+    const params = new URLSearchParams({ mount });
+    const res = await fetch(
+      `/api/workflows/${encodeURIComponent(name)}?${params}`,
+      { method: "DELETE" },
+    );
     if (!res.ok) {
       const err = await res.json();
       throw new Error(extractDetail(err, "Failed to delete workflow"));

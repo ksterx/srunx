@@ -1,25 +1,53 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
-import { GitFork, Pencil, Play, Eye, Upload, Plus, X } from "lucide-react";
+import {
+  GitFork,
+  Pencil,
+  Play,
+  Eye,
+  Upload,
+  Plus,
+  X,
+  FolderOpen,
+} from "lucide-react";
 import { useApi } from "../hooks/use-api.ts";
-import { workflows as workflowsApi } from "../lib/api.ts";
-import type { Workflow } from "../lib/types.ts";
+import { workflows as workflowsApi, files as filesApi } from "../lib/api.ts";
+import type { Mount, Workflow } from "../lib/types.ts";
 
 export function Workflows() {
+  const [mounts, setMounts] = useState<Mount[]>([]);
+  const [selectedMount, setSelectedMount] = useState<string | null>(null);
+
+  // Load available mounts
+  useEffect(() => {
+    filesApi
+      .mounts()
+      .then((m) => {
+        setMounts(m);
+        if (m.length > 0) setSelectedMount(m[0].name);
+      })
+      .catch(() => {});
+  }, []);
+
   const {
     data: workflowList,
     error,
     refetch,
-  } = useApi(() => workflowsApi.list(), []);
+  } = useApi(
+    () =>
+      selectedMount ? workflowsApi.list(selectedMount) : Promise.resolve([]),
+    [selectedMount],
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   const handleUpload = async (file: File) => {
+    if (!selectedMount) return;
     try {
       setUploadError(null);
       const text = await file.text();
-      await workflowsApi.upload(text, file.name);
+      await workflowsApi.upload(text, file.name, selectedMount);
       refetch();
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed");
@@ -42,9 +70,40 @@ export function Workflows() {
       >
         <div>
           <h1 style={{ marginBottom: 4 }}>Workflows</h1>
-          <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>
-            YAML-defined pipelines with dependency graphs
-          </p>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              color: "var(--text-muted)",
+              fontSize: "0.85rem",
+            }}
+          >
+            {mounts.length > 0 ? (
+              <>
+                <FolderOpen size={14} />
+                <select
+                  className="input"
+                  value={selectedMount ?? ""}
+                  onChange={(e) => setSelectedMount(e.target.value || null)}
+                  style={{
+                    width: 180,
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "0.8rem",
+                    padding: "2px 8px",
+                  }}
+                >
+                  {mounts.map((m) => (
+                    <option key={m.name} value={m.name}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </>
+            ) : (
+              <span>No mounts configured. Add one in Settings.</span>
+            )}
+          </div>
         </div>
         <input
           ref={fileInputRef}
@@ -58,7 +117,14 @@ export function Workflows() {
           }}
         />
         <div style={{ display: "flex", gap: 8 }}>
-          <Link to="/workflows/new" className="btn btn-primary">
+          <Link
+            to={
+              selectedMount
+                ? `/workflows/new?mount=${encodeURIComponent(selectedMount)}`
+                : "/workflows/new"
+            }
+            className="btn btn-primary"
+          >
             <Plus size={14} />
             New Workflow
           </Link>
@@ -101,10 +167,12 @@ export function Workflows() {
             <WorkflowCard
               key={wf.name}
               workflow={wf}
+              mount={selectedMount!}
               index={i}
               onDelete={async () => {
+                if (!selectedMount) return;
                 try {
-                  await workflowsApi.delete(wf.name);
+                  await workflowsApi.delete(wf.name, selectedMount);
                   refetch();
                 } catch (err) {
                   setUploadError(
@@ -144,11 +212,12 @@ export function Workflows() {
 
 type WorkflowCardProps = {
   workflow: Workflow;
+  mount: string;
   index: number;
   onDelete: () => void;
 };
 
-function WorkflowCard({ workflow, index, onDelete }: WorkflowCardProps) {
+function WorkflowCard({ workflow, mount, index, onDelete }: WorkflowCardProps) {
   const jobCount = workflow.jobs.length;
   const depCount = workflow.jobs.reduce(
     (sum, j) => sum + (j.depends_on?.length ?? 0),
@@ -318,7 +387,7 @@ function WorkflowCard({ workflow, index, onDelete }: WorkflowCardProps) {
         {/* Actions */}
         <div style={{ display: "flex", gap: 8 }}>
           <Link
-            to={`/workflows/${workflow.name}`}
+            to={`/workflows/${encodeURIComponent(workflow.name)}?mount=${encodeURIComponent(mount)}`}
             className="btn btn-ghost"
             style={{ flex: 1, justifyContent: "center" }}
           >
@@ -326,7 +395,7 @@ function WorkflowCard({ workflow, index, onDelete }: WorkflowCardProps) {
             View DAG
           </Link>
           <Link
-            to={`/workflows/${encodeURIComponent(workflow.name)}/edit`}
+            to={`/workflows/${encodeURIComponent(workflow.name)}/edit?mount=${encodeURIComponent(mount)}`}
             className="btn btn-ghost"
             style={{ flex: 1, justifyContent: "center" }}
             onClick={(e) => e.stopPropagation()}
