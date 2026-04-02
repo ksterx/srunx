@@ -176,6 +176,7 @@ export type MountConfig = {
   name: string;
   local: string;
   remote: string;
+  exclude_patterns?: string[];
 };
 
 /* ── Config types ────────────────────────────── */
@@ -229,6 +230,7 @@ export type SSHMountConfig = {
   name: string;
   local: string;
   remote: string;
+  exclude_patterns?: string[];
 };
 
 export type SSHProfile = {

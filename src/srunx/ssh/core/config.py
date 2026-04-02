@@ -12,6 +12,9 @@ class MountConfig(BaseModel):
     name: str
     local: str  # local path, e.g. "~/projects/ml-project"
     remote: str  # remote path, e.g. "/home/user/projects/ml-project"
+    exclude_patterns: list[str] = Field(
+        default=[], description="Additional rsync exclude patterns for this mount"
+    )
 
     @model_validator(mode="after")
     def expand_and_validate_paths(self) -> "MountConfig":

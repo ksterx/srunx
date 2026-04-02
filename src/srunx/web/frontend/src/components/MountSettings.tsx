@@ -94,6 +94,7 @@ export function MountSettings({ onClose }: MountSettingsProps) {
   const [newName, setNewName] = useState("");
   const [newLocal, setNewLocal] = useState("");
   const [newRemote, setNewRemote] = useState("");
+  const [newExcludes, setNewExcludes] = useState("");
 
   /* Load mounts */
   useEffect(() => {
@@ -145,6 +146,11 @@ export function MountSettings({ onClose }: MountSettingsProps) {
       return;
     }
 
+    const excludePatterns = newExcludes
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
     try {
       setAdding(true);
       setError(null);
@@ -152,17 +158,20 @@ export function MountSettings({ onClose }: MountSettingsProps) {
         name: trimmedName,
         local: trimmedLocal,
         remote: trimmedRemote,
+        exclude_patterns:
+          excludePatterns.length > 0 ? excludePatterns : undefined,
       });
       setMounts((prev) => [...prev, created]);
       setNewName("");
       setNewLocal("");
       setNewRemote("");
+      setNewExcludes("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to add mount");
     } finally {
       setAdding(false);
     }
-  }, [newName, newLocal, newRemote]);
+  }, [newName, newLocal, newRemote, newExcludes]);
 
   /* Close on backdrop click */
   function handleBackdropClick(e: React.MouseEvent) {
@@ -381,6 +390,20 @@ export function MountSettings({ onClose }: MountSettingsProps) {
                             <Trash2 size={14} />
                           )}
                         </button>
+                        {mount.exclude_patterns &&
+                          mount.exclude_patterns.length > 0 && (
+                            <div
+                              style={{
+                                gridColumn: "1 / -1",
+                                fontFamily: "var(--font-mono)",
+                                fontSize: "0.7rem",
+                                color: "var(--text-muted)",
+                                paddingTop: 2,
+                              }}
+                            >
+                              exclude: {mount.exclude_patterns.join(", ")}
+                            </div>
+                          )}
                       </div>
                     ))}
                   </div>
@@ -458,6 +481,21 @@ export function MountSettings({ onClose }: MountSettingsProps) {
                         }}
                       />
                     </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column" }}>
+                    <label style={labelStyle}>Exclude Patterns</label>
+                    <input
+                      className="input"
+                      type="text"
+                      value={newExcludes}
+                      onChange={(e) => setNewExcludes(e.target.value)}
+                      placeholder="data/,logs/,*.bin (comma-separated)"
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        fontSize: "0.8rem",
+                      }}
+                    />
                   </div>
 
                   <div style={{ display: "flex", justifyContent: "flex-end" }}>
