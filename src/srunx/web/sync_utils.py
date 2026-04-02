@@ -68,7 +68,9 @@ def sync_mount_by_name(profile: ServerProfile, mount_name: str) -> None:
     if mount is None:
         raise ValueError(f"Mount '{mount_name}' not found in profile")
     rsync = build_rsync_client(profile)
-    result = rsync.push(mount.local, mount.remote)
+    result = rsync.push(
+        mount.local, mount.remote, exclude_patterns=mount.exclude_patterns or None
+    )
     if result.returncode != 0:
         raise RuntimeError(
             f"rsync sync failed for mount '{mount_name}': {result.stderr}"

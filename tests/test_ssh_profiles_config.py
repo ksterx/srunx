@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from srunx.ssh.core.config import ConfigManager, ServerProfile
+from srunx.ssh.core.config import ConfigManager, MountConfig, ServerProfile
 
 
 @pytest.fixture
@@ -168,3 +168,87 @@ class TestConfigManager:
         config_manager = ConfigManager(temp_config_file)
         result = config_manager.set_current_profile("nonexistent")
         assert result is False
+
+
+class TestMountConfigExcludePatterns:
+    """Tests for MountConfig.exclude_patterns field."""
+
+    def test_default_exclude_patterns_is_empty(self, tmp_path):
+        mount = MountConfig(name="proj", local=str(tmp_path), remote="/remote/proj")
+        assert mount.exclude_patterns == []
+
+    def test_exclude_patterns_set_on_creation(self, tmp_path):
+        patterns = ["data/", "*.bin", "logs/"]
+        mount = MountConfig(
+            name="proj",
+            local=str(tmp_path),
+            remote="/remote/proj",
+            exclude_patterns=patterns,
+        )
+        assert mount.exclude_patterns == patterns
+
+    def test_exclude_patterns_serialized_in_model_dump(self, tmp_path):
+        patterns = ["data/", "*.log"]
+        mount = MountConfig(
+            name="proj",
+            local=str(tmp_path),
+            remote="/remote/proj",
+            exclude_patterns=patterns,
+        )
+        dumped = mount.model_dump()
+        assert dumped["exclude_patterns"] == patterns
+
+    def test_exclude_patterns_deserialized_from_dict(self, tmp_path):
+        data = {
+            "name": "proj",
+            "local": str(tmp_path),
+            "remote": "/remote/proj",
+            "exclude_patterns": ["weights/", "*.ckpt"],
+        }
+        mount = MountConfig.model_validate(data)
+        assert mount.exclude_patterns == ["weights/", "*.ckpt"]
+
+    def test_backward_compat_missing_exclude_patterns(self, tmp_path):
+        """Old config without exclude_patterns should deserialize with default []."""
+        data = {
+            "name": "proj",
+            "local": str(tmp_path),
+            "remote": "/remote/proj",
+        }
+        mount = MountConfig.model_validate(data)
+        assert mount.exclude_patterns == []
+
+    def test_mount_with_excludes_persisted_via_config_manager(self, temp_config_file):
+        cm = ConfigManager(temp_config_file)
+        profile = ServerProfile(hostname="h", username="u", key_filename="/k")
+        cm.add_profile("p", profile)
+
+        mount = MountConfig(
+            name="proj",
+            local="/tmp/local",
+            remote="/remote/proj",
+            exclude_patterns=["data/", "*.bin"],
+        )
+        cm.add_profile_mount("p", mount)
+
+        # Reload from disk
+        cm2 = ConfigManager(temp_config_file)
+        loaded_profile = cm2.get_profile("p")
+        assert loaded_profile is not None
+        assert len(loaded_profile.mounts) == 1
+        assert loaded_profile.mounts[0].exclude_patterns == ["data/", "*.bin"]
+
+    def test_mount_without_excludes_persisted_via_config_manager(
+        self, temp_config_file
+    ):
+        cm = ConfigManager(temp_config_file)
+        profile = ServerProfile(hostname="h", username="u", key_filename="/k")
+        cm.add_profile("p", profile)
+
+        mount = MountConfig(name="proj", local="/tmp/local", remote="/remote/proj")
+        cm.add_profile_mount("p", mount)
+
+        cm2 = ConfigManager(temp_config_file)
+        loaded_profile = cm2.get_profile("p")
+        assert loaded_profile is not None
+        assert loaded_profile.mounts[0].exclude_patterns == []

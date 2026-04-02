@@ -513,6 +513,7 @@ def add_mount_impl(
     local: str,
     remote: str,
     config: str | None = None,
+    exclude_patterns: list[str] | None = None,
 ) -> None:
     """Implementation for adding a mount to a profile."""
     from ..core.config import MountConfig
@@ -535,7 +536,12 @@ def add_mount_impl(
                 raise typer.Exit(1)
 
         # Create MountConfig (triggers path validation)
-        mount = MountConfig(name=name, local=local, remote=remote)
+        mount = MountConfig(
+            name=name,
+            local=local,
+            remote=remote,
+            exclude_patterns=exclude_patterns or [],
+        )
 
         # Add mount to profile
         success = config_manager.add_profile_mount(profile_name, mount)
@@ -546,6 +552,10 @@ def add_mount_impl(
             )
             console.print(f"[dim]  Local:  {mount.local}[/dim]")
             console.print(f"[dim]  Remote: {mount.remote}[/dim]")
+            if mount.exclude_patterns:
+                console.print(
+                    f"[dim]  Exclude: {', '.join(mount.exclude_patterns)}[/dim]"
+                )
         else:
             console.print(
                 f"[red]Failed to add mount '{name}' to profile '{profile_name}'[/red]"
@@ -580,9 +590,13 @@ def list_mounts_impl(profile_name: str, config: str | None = None) -> None:
         table.add_column("Name", style="cyan", no_wrap=True)
         table.add_column("Local", style="green")
         table.add_column("Remote", style="magenta")
+        table.add_column("Excludes", style="dim")
 
         for mount in profile.mounts:
-            table.add_row(mount.name, mount.local, mount.remote)
+            excludes_str = (
+                ", ".join(mount.exclude_patterns) if mount.exclude_patterns else ""
+            )
+            table.add_row(mount.name, mount.local, mount.remote, excludes_str)
 
         console.print(table)
 

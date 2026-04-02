@@ -100,6 +100,7 @@ export function SSHProfilesTab() {
     local: "",
     remote: "",
   });
+  const [newMountExcludes, setNewMountExcludes] = useState("");
   const [newEnvKey, setNewEnvKey] = useState("");
   const [newEnvValue, setNewEnvValue] = useState("");
 
@@ -208,9 +209,18 @@ export function SSHProfilesTab() {
 
   const handleAddMount = async (profileName: string) => {
     if (!newMount.name || !newMount.local || !newMount.remote) return;
+    const excludePatterns = newMountExcludes
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
     try {
-      await configApi.addSSHMount(profileName, newMount);
+      await configApi.addSSHMount(profileName, {
+        ...newMount,
+        exclude_patterns:
+          excludePatterns.length > 0 ? excludePatterns : undefined,
+      });
       setNewMount({ name: "", local: "", remote: "" });
+      setNewMountExcludes("");
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to add mount");
@@ -510,9 +520,6 @@ export function SSHProfilesTab() {
                     <div
                       key={m.name}
                       style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "var(--sp-2)",
                         padding: "var(--sp-2) var(--sp-3)",
                         background: "var(--bg-base)",
                         borderRadius: "var(--radius-md)",
@@ -520,102 +527,141 @@ export function SSHProfilesTab() {
                         marginBottom: "var(--sp-2)",
                       }}
                     >
-                      <span
+                      <div
                         style={{
-                          fontFamily: "var(--font-mono)",
-                          fontSize: "0.8rem",
-                          color: "var(--accent)",
-                          minWidth: 80,
-                        }}
-                      >
-                        {m.name}
-                      </span>
-                      <span
-                        style={{
-                          fontFamily: "var(--font-mono)",
-                          fontSize: "0.75rem",
-                          color: "var(--text-secondary)",
-                          flex: 1,
-                        }}
-                      >
-                        {m.local} &rarr; {m.remote}
-                      </span>
-                      <button
-                        onClick={() => handleRemoveMount(name, m.name)}
-                        style={{
-                          background: "transparent",
-                          border: "none",
-                          color: "var(--text-muted)",
-                          cursor: "pointer",
-                          padding: 4,
                           display: "flex",
+                          alignItems: "center",
+                          gap: "var(--sp-2)",
                         }}
                       >
-                        <X size={14} />
-                      </button>
+                        <span
+                          style={{
+                            fontFamily: "var(--font-mono)",
+                            fontSize: "0.8rem",
+                            color: "var(--accent)",
+                            minWidth: 80,
+                          }}
+                        >
+                          {m.name}
+                        </span>
+                        <span
+                          style={{
+                            fontFamily: "var(--font-mono)",
+                            fontSize: "0.75rem",
+                            color: "var(--text-secondary)",
+                            flex: 1,
+                          }}
+                        >
+                          {m.local} &rarr; {m.remote}
+                        </span>
+                        <button
+                          onClick={() => handleRemoveMount(name, m.name)}
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            color: "var(--text-muted)",
+                            cursor: "pointer",
+                            padding: 4,
+                            display: "flex",
+                          }}
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                      {m.exclude_patterns && m.exclude_patterns.length > 0 && (
+                        <div
+                          style={{
+                            marginTop: "var(--sp-1)",
+                            fontFamily: "var(--font-mono)",
+                            fontSize: "0.7rem",
+                            color: "var(--text-muted)",
+                            paddingLeft: 80,
+                          }}
+                        >
+                          exclude: {m.exclude_patterns.join(", ")}
+                        </div>
+                      )}
                     </div>
                   ))}
                   <div
                     style={{
                       display: "flex",
+                      flexDirection: "column",
                       gap: "var(--sp-2)",
-                      alignItems: "center",
                     }}
                   >
-                    <input
-                      className="input"
-                      placeholder="name"
-                      value={newMount.name}
-                      onChange={(e) =>
-                        setNewMount({ ...newMount, name: e.target.value })
-                      }
+                    <div
                       style={{
-                        width: 100,
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "0.8rem",
-                      }}
-                    />
-                    <input
-                      className="input"
-                      placeholder="local path"
-                      value={newMount.local}
-                      onChange={(e) =>
-                        setNewMount({ ...newMount, local: e.target.value })
-                      }
-                      style={{
-                        flex: 1,
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "0.8rem",
-                      }}
-                    />
-                    <input
-                      className="input"
-                      placeholder="remote path"
-                      value={newMount.remote}
-                      onChange={(e) =>
-                        setNewMount({ ...newMount, remote: e.target.value })
-                      }
-                      style={{
-                        flex: 1,
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "0.8rem",
-                      }}
-                    />
-                    <button
-                      className="btn btn-primary"
-                      onClick={() => handleAddMount(name)}
-                      disabled={
-                        !newMount.name || !newMount.local || !newMount.remote
-                      }
-                      style={{
-                        padding: "var(--sp-2) var(--sp-3)",
-                        fontSize: "0.75rem",
-                        gap: 4,
+                        display: "flex",
+                        gap: "var(--sp-2)",
+                        alignItems: "center",
                       }}
                     >
-                      <Plus size={14} />
-                      Add
-                    </button>
+                      <input
+                        className="input"
+                        placeholder="name"
+                        value={newMount.name}
+                        onChange={(e) =>
+                          setNewMount({ ...newMount, name: e.target.value })
+                        }
+                        style={{
+                          width: 100,
+                          fontFamily: "var(--font-mono)",
+                          fontSize: "0.8rem",
+                        }}
+                      />
+                      <input
+                        className="input"
+                        placeholder="local path"
+                        value={newMount.local}
+                        onChange={(e) =>
+                          setNewMount({ ...newMount, local: e.target.value })
+                        }
+                        style={{
+                          flex: 1,
+                          fontFamily: "var(--font-mono)",
+                          fontSize: "0.8rem",
+                        }}
+                      />
+                      <input
+                        className="input"
+                        placeholder="remote path"
+                        value={newMount.remote}
+                        onChange={(e) =>
+                          setNewMount({ ...newMount, remote: e.target.value })
+                        }
+                        style={{
+                          flex: 1,
+                          fontFamily: "var(--font-mono)",
+                          fontSize: "0.8rem",
+                        }}
+                      />
+                      <button
+                        className="btn btn-primary"
+                        onClick={() => handleAddMount(name)}
+                        disabled={
+                          !newMount.name || !newMount.local || !newMount.remote
+                        }
+                        style={{
+                          padding: "var(--sp-2) var(--sp-3)",
+                          fontSize: "0.75rem",
+                          gap: 4,
+                        }}
+                      >
+                        <Plus size={14} />
+                        Add
+                      </button>
+                    </div>
+                    <input
+                      className="input"
+                      placeholder="exclude patterns (comma-separated, e.g. data/,logs/,*.bin)"
+                      value={newMountExcludes}
+                      onChange={(e) => setNewMountExcludes(e.target.value)}
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        fontSize: "0.8rem",
+                      }}
+                    />
                   </div>
                 </div>
 

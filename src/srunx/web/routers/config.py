@@ -108,6 +108,7 @@ class MountCreateRequest(BaseModel):
     name: str
     local: str
     remote: str
+    exclude_patterns: list[str] = []
 
 
 @router.get("/ssh/profiles")
@@ -198,7 +199,12 @@ async def add_profile_mount(name: str, body: MountCreateRequest) -> dict[str, An
         raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
 
     try:
-        mount = MountConfig(name=body.name, local=body.local, remote=body.remote)
+        mount = MountConfig(
+            name=body.name,
+            local=body.local,
+            remote=body.remote,
+            exclude_patterns=body.exclude_patterns,
+        )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
 

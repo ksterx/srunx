@@ -130,13 +130,19 @@ def _list_entries(target: Path, mount_root: Path) -> list[FileEntry]:
 
 
 @router.get("/mounts/config")
-async def list_mounts_config() -> list[dict[str, str]]:
+async def list_mounts_config() -> list[dict]:
     """List all mounts with full details (name, local, remote) for management."""
     profile = await anyio.to_thread.run_sync(_get_current_profile)
     if profile is None or not profile.mounts:
         return []
     return [
-        {"name": m.name, "local": m.local, "remote": m.remote} for m in profile.mounts
+        {
+            "name": m.name,
+            "local": m.local,
+            "remote": m.remote,
+            "exclude_patterns": m.exclude_patterns,
+        }
+        for m in profile.mounts
     ]
 
 
@@ -153,11 +159,12 @@ async def list_mounts() -> list[MountInfo]:
 
 
 @router.post("/mounts")
-async def add_mount(body: dict[str, str]) -> dict[str, str]:
+async def add_mount(body: dict) -> dict:
     """Add a new mount to the current SSH profile."""
     name = body.get("name", "")
     local = body.get("local", "")
     remote = body.get("remote", "")
+    exclude_patterns: list[str] = body.get("exclude_patterns", [])
 
     if not name or not local or not remote:
         raise HTTPException(422, "name, local, and remote are required")
@@ -173,7 +180,12 @@ async def add_mount(body: dict[str, str]) -> dict[str, str]:
         raise HTTPException(409, f"Mount '{name}' already exists")
 
     try:
-        mount = MountConfig(name=name, local=local, remote=remote)
+        mount = MountConfig(
+            name=name,
+            local=local,
+            remote=remote,
+            exclude_patterns=exclude_patterns,
+        )
     except Exception as e:
         raise HTTPException(422, str(e)) from e
 
@@ -184,7 +196,12 @@ async def add_mount(body: dict[str, str]) -> dict[str, str]:
     pname = profile_name  # bind for lambda
     await anyio.to_thread.run_sync(lambda: cm.add_profile_mount(pname, mount))
 
-    return {"name": mount.name, "local": mount.local, "remote": mount.remote}
+    return {
+        "name": mount.name,
+        "local": mount.local,
+        "remote": mount.remote,
+        "exclude_patterns": mount.exclude_patterns,
+    }
 
 
 @router.delete("/mounts/{mount_name}")

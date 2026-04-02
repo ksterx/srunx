@@ -565,6 +565,10 @@ def sync_mount(
         str | None,
         typer.Argument(help="Mount name (auto-detected from cwd if omitted)"),
     ] = None,
+    exclude: Annotated[
+        list[str] | None,
+        typer.Option("--exclude", "-e", help="Exclude pattern (repeatable)"),
+    ] = None,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", "-n", help="Preview without syncing")
     ] = False,
@@ -658,6 +662,13 @@ def sync_mount(
             console.print("  [yellow]Dry run — no files will be transferred[/yellow]")
         console.print()
 
+        # Merge mount-level and CLI-level exclude patterns
+        mount_excludes = mount.exclude_patterns or []
+        cli_excludes = exclude or []
+        all_excludes = mount_excludes + [
+            p for p in cli_excludes if p not in mount_excludes
+        ]
+
         # When ssh_host is set, delegate to ~/.ssh/config for all
         # connection params (user, key, proxy, port).
         if profile.ssh_host:
@@ -665,6 +676,7 @@ def sync_mount(
                 hostname=profile.ssh_host,
                 username="",
                 ssh_config_path=str(Path.home() / ".ssh" / "config"),
+                exclude_patterns=all_excludes or None,
             )
         else:
             rsync = RsyncClient(
@@ -673,6 +685,7 @@ def sync_mount(
                 key_filename=profile.key_filename,
                 port=profile.port,
                 proxy_jump=profile.proxy_jump,
+                exclude_patterns=all_excludes or None,
             )
 
         result = rsync.push(mount.local, mount.remote, dry_run=dry_run)
@@ -944,6 +957,10 @@ def mount_add(
     remote: Annotated[
         str, typer.Option("--remote", help="Remote directory path (absolute)")
     ],
+    exclude: Annotated[
+        list[str] | None,
+        typer.Option("--exclude", "-e", help="Exclude pattern (repeatable)"),
+    ] = None,
     config: Annotated[
         str | None,
         typer.Option(
@@ -954,7 +971,7 @@ def mount_add(
     """Add a path mount to a profile."""
     from .profile_impl import add_mount_impl
 
-    add_mount_impl(profile_name, name, local, remote, config)
+    add_mount_impl(profile_name, name, local, remote, config, exclude_patterns=exclude)
 
 
 @profile_mount_app.command("list")

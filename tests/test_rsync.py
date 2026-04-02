@@ -440,6 +440,43 @@ class TestPushWithExcludePatterns:
         assert "artifacts/" in exclude_values
         assert ".git/" in exclude_values
 
+    def test_constructor_excludes_merged_with_defaults(self):
+        """Exclude patterns passed at construction are merged with DEFAULT_EXCLUDES."""
+        client = _make_rsync_client(
+            hostname="h", username="u", exclude_patterns=["data/", "*.bin"]
+        )
+        assert "data/" in client.exclude_patterns
+        assert "*.bin" in client.exclude_patterns
+        # Defaults still present
+        assert ".git/" in client.exclude_patterns
+        assert "__pycache__/" in client.exclude_patterns
+
+    def test_constructor_excludes_no_duplicates(self):
+        """Passing a pattern already in DEFAULT_EXCLUDES doesn't create duplicates."""
+        client = _make_rsync_client(
+            hostname="h", username="u", exclude_patterns=[".git/", "data/"]
+        )
+        assert client.exclude_patterns.count(".git/") == 1
+        assert "data/" in client.exclude_patterns
+
+    def test_constructor_and_per_call_excludes_combined(self, tmp_path: Path):
+        """Constructor-level and per-call excludes are both present in the command."""
+        client = _make_rsync_client(
+            hostname="h", username="u", exclude_patterns=["weights/"]
+        )
+
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push(tmp_path, "~/dst/", exclude_patterns=["logs/"])
+
+        call_args = mock_run.call_args[0][0]
+        exclude_values = [
+            call_args[i + 1] for i, v in enumerate(call_args) if v == "--exclude"
+        ]
+        assert "weights/" in exclude_values  # from constructor
+        assert "logs/" in exclude_values  # from per-call
+        assert ".git/" in exclude_values  # from defaults
+
 
 class TestMkpath:
     def test_mkpath_in_rsync_cmd_when_supported(self):
