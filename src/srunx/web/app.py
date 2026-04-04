@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_web_config
@@ -116,8 +117,6 @@ def create_app() -> FastAPI:
 
     # Serve frontend static files (production) with SPA fallback
     if _FRONTEND_DIST.exists():
-        from fastapi.responses import FileResponse
-
         app.mount(
             "/assets",
             StaticFiles(directory=str(_FRONTEND_DIST / "assets")),

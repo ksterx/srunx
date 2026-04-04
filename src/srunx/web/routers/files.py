@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import anyio
 from fastapi import APIRouter, HTTPException
@@ -130,7 +130,7 @@ def _list_entries(target: Path, mount_root: Path) -> list[FileEntry]:
 
 
 @router.get("/mounts/config")
-async def list_mounts_config() -> list[dict]:
+async def list_mounts_config() -> list[dict[str, Any]]:
     """List all mounts with full details (name, local, remote) for management."""
     profile = await anyio.to_thread.run_sync(_get_current_profile)
     if profile is None or not profile.mounts:
