@@ -472,6 +472,8 @@ src/srunx/_version.py
 # Playwright
 test-results/
 playwright-report/
+.playwright-mcp/
 public/*
+*.png
 !public/slack_screenshot.png
 !public/screenshots/
