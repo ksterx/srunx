@@ -58,6 +58,7 @@ Define a workflow:
    tutorials/installation
    tutorials/quickstart
    tutorials/webui
+   tutorials/mcp-setup
 
 .. toctree::
    :maxdepth: 2
@@ -70,6 +71,7 @@ Define a workflow:
    how-to/webui
    how-to/settings
    how-to/explorer
+   how-to/mcp-usage
 
 .. toctree::
    :maxdepth: 2
@@ -77,12 +79,14 @@ Define a workflow:
 
    reference/api
    reference/webui-api
+   reference/mcp-tools
 
 .. toctree::
    :maxdepth: 2
    :caption: Explanation
 
    explanation/architecture
+   explanation/mcp-architecture
 
 Indices and tables
 ==================
