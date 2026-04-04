@@ -23,10 +23,14 @@ web = [
     "uvicorn[standard]>=0.34.0",
     "anyio>=4.0.0",
 ]
+mcp = [
+    "mcp[cli]>=1.0.0",
+]
 
 [project.scripts]
 srunx = "srunx.cli.main:main"
 srunx-web = "srunx.web.app:main"
+srunx-mcp = "srunx.mcp.server:main"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
