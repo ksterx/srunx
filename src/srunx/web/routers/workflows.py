@@ -42,6 +42,7 @@ class WorkflowJobInput(BaseModel):
     name: str
     command: list[str]
     depends_on: list[str] = []
+    outputs: dict[str, str] = Field(default_factory=dict)
     resources: dict[str, Any] | None = None
     environment: dict[str, Any] | None = None
     work_dir: str | None = None
@@ -52,6 +53,7 @@ class WorkflowJobInput(BaseModel):
 
 class WorkflowCreateRequest(BaseModel):
     name: str = Field(..., pattern=r"^[\w\-]+$")
+    args: dict[str, Any] = Field(default_factory=dict)
     jobs: list[WorkflowJobInput]
     default_project: str | None = None
 
@@ -77,6 +79,7 @@ def _validate_and_build_workflow(data: dict[str, Any]) -> Workflow:
             "name": jd["name"],
             "command": jd["command"],
             "depends_on": jd.get("depends_on", []),
+            "outputs": jd.get("outputs", {}),
             "resources": resource,
             "environment": environment,
         }
@@ -103,6 +106,7 @@ def _workflow_to_yaml(
     name: str,
     jobs_data: list[dict[str, Any]],
     default_project: str | None = None,
+    args: dict[str, Any] | None = None,
 ) -> str:
     """Serialize a workflow to YAML compatible with ``WorkflowRunner.from_yaml``.
 
@@ -119,6 +123,10 @@ def _workflow_to_yaml(
         depends = jd.get("depends_on", [])
         if depends:
             entry["depends_on"] = depends
+
+        outputs = jd.get("outputs", {})
+        if outputs:
+            entry["outputs"] = outputs
 
         # Resources — only include non-None values
         raw_res = jd.get("resources") or {}
@@ -147,6 +155,8 @@ def _workflow_to_yaml(
     doc: dict[str, Any] = {"name": name}
     if default_project:
         doc["default_project"] = default_project
+    if args:
+        doc["args"] = args
     doc["jobs"] = serialized_jobs
     return yaml.dump(doc, default_flow_style=False, sort_keys=False)
 
@@ -214,6 +224,7 @@ def _serialize_workflow(runner: WorkflowRunner) -> dict[str, Any]:
             "job_id": job.job_id,
             "status": job._status.value,
             "depends_on": job.depends_on,
+            "outputs": job.outputs,
         }
         if hasattr(job, "command"):
             cmd = job.command  # type: ignore[union-attr]
@@ -233,6 +244,8 @@ def _serialize_workflow(runner: WorkflowRunner) -> dict[str, Any]:
             d["resources"] = {}
         jobs.append(d)
     result: dict[str, Any] = {"name": wf.name, "jobs": jobs}
+    if runner.args:
+        result["args"] = runner.args
     if runner.default_project:
         result["default_project"] = runner.default_project
     return result
@@ -393,6 +406,14 @@ async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
                 detail=f"Workflow '{name}' already exists",
             )
 
+    # Reject python: args from web for security
+    for val in body.args.values():
+        if isinstance(val, str) and "python:" in val:
+            raise HTTPException(
+                status_code=422,
+                detail="Args with 'python:' values are not allowed via web for security reasons",
+            )
+
     # Build the raw dict list from the request for validation + serialization
     jobs_raw: list[dict[str, Any]] = [
         j.model_dump(exclude_none=True) for j in body.jobs
@@ -418,7 +439,7 @@ async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
 
     # Serialize and write to disk
     yaml_content = _workflow_to_yaml(
-        name, jobs_raw, default_project=body.default_project
+        name, jobs_raw, default_project=body.default_project, args=body.args or None
     )
     dest = d / f"{name}.yaml"
     await anyio.to_thread.run_sync(lambda: dest.write_text(yaml_content))
@@ -547,13 +568,27 @@ async def run_workflow(
     # Only render Job instances (not ShellJob)
     job_map: dict[str, Job | ShellJob] = {job.name: job for job in workflow.jobs}
 
+    # Generate shared outputs directory for inter-job variable passing
+    from uuid import uuid4
+
+    any_job_has_outputs = any(job.outputs for job in workflow.jobs)
+    any_job_has_deps = any(job.depends_on for job in workflow.jobs)
+    wf_outputs_dir: str | None = None
+    if any_job_has_outputs or any_job_has_deps:
+        wf_outputs_dir = f"/tmp/srunx/{name}_{uuid4().hex[:8]}"
+
     def _render_all_scripts() -> dict[str, str]:
         scripts: dict[str, str] = {}
         with tempfile.TemporaryDirectory() as tmpdir:
             for job in workflow.jobs:
                 if isinstance(job, Job):
+                    dep_names = [dep.job_name for dep in job.parsed_dependencies]
                     rendered_path = render_job_script(
-                        template_path, job, output_dir=tmpdir
+                        template_path,
+                        job,
+                        output_dir=tmpdir,
+                        outputs_dir=wf_outputs_dir,
+                        dependency_names=dep_names if wf_outputs_dir else None,
                     )
                     scripts[job.name] = Path(rendered_path).read_text()
                 else:

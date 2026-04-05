@@ -51,6 +51,8 @@ class Slurm:
         verbose: bool = False,
         record_history: bool = True,
         workflow_name: str | None = None,
+        outputs_dir: str | None = None,
+        dependency_names: list[str] | None = None,
     ) -> RunnableJobType:
         """Submit a job to SLURM.
 
@@ -61,6 +63,8 @@ class Slurm:
             verbose: Whether to print the rendered content.
             record_history: Whether to record job in history database.
             workflow_name: Name of the workflow if part of a workflow.
+            outputs_dir: Shared directory for inter-job output variables.
+            dependency_names: Names of dependency jobs whose outputs should be sourced.
 
         Returns:
             Job instance with updated job_id and status.
@@ -74,7 +78,14 @@ class Slurm:
             template = template_path or self.default_template
 
             with tempfile.TemporaryDirectory() as temp_dir:
-                script_path = render_job_script(template, job, temp_dir, verbose)
+                script_path = render_job_script(
+                    template,
+                    job,
+                    temp_dir,
+                    verbose,
+                    outputs_dir=outputs_dir,
+                    dependency_names=dependency_names,
+                )
                 logger.debug(f"Generated SLURM script at: {script_path}")
 
                 # Submit job with sbatch --parsable for reliable job ID extraction
@@ -375,6 +386,8 @@ class Slurm:
         poll_interval: int = 5,
         verbose: bool = False,
         workflow_name: str | None = None,
+        outputs_dir: str | None = None,
+        dependency_names: list[str] | None = None,
     ) -> RunnableJobType:
         """Submit a job and wait for completion."""
         submitted_job = self.submit(
@@ -383,6 +396,8 @@ class Slurm:
             callbacks=callbacks,
             verbose=verbose,
             workflow_name=workflow_name,
+            outputs_dir=outputs_dir,
+            dependency_names=dependency_names,
         )
         monitored_job = self.monitor(
             submitted_job, poll_interval=poll_interval, callbacks=callbacks

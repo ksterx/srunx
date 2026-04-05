@@ -57,11 +57,13 @@ export const MOCK_JOBS = [
 export const MOCK_WORKFLOWS = [
   {
     name: "ml-pipeline",
+    args: { base_dir: "/data/experiments", model_name: "resnet50" },
     jobs: [
       {
         name: "preprocess",
         status: "COMPLETED",
         depends_on: [],
+        outputs: { data_path: "/data/experiments/preprocessed" },
         command: ["python", "preprocess.py"],
         resources: { nodes: 1, gpus_per_node: 0 },
       },
@@ -69,6 +71,7 @@ export const MOCK_WORKFLOWS = [
         name: "train",
         status: "RUNNING",
         depends_on: ["preprocess"],
+        outputs: { model_path: "/data/experiments/models/best.pt" },
         command: ["python", "train.py"],
         resources: { nodes: 2, gpus_per_node: 4 },
       },
@@ -76,6 +79,7 @@ export const MOCK_WORKFLOWS = [
         name: "evaluate",
         status: "PENDING",
         depends_on: ["train"],
+        outputs: {},
         command: ["python", "evaluate.py"],
         resources: { nodes: 1, gpus_per_node: 1 },
       },

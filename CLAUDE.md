@@ -124,15 +124,23 @@ src/srunx/
 │   ├── helpers/       # SSH utility tools
 │   │   └── proxy_helper.py  # Proxy connection analysis
 │   └── example.py     # SSH usage examples
-└── templates/         # SLURM script templates
-    ├── base.slurm.jinja
-    └── advanced.slurm.jinja
+├── templates/         # SLURM script templates
+│   ├── base.slurm.jinja
+│   └── advanced.slurm.jinja
+└── web/               # Web UI (FastAPI + React)
+    ├── routers/       # API endpoints (jobs, workflows, resources, etc.)
+    └── frontend/      # React SPA
+        └── src/
+            ├── components/  # Reusable components (KeyValueEditor, JobPropertyPanel, etc.)
+            ├── hooks/       # Custom hooks (use-workflow-builder, etc.)
+            ├── pages/       # Page components (WorkflowBuilder, etc.)
+            └── lib/         # Types, API client
 ```
 
 ### Core Components
 
 #### Models (`models.py`)
-- **BaseJob**: Base class for all job types with common fields (name, job_id, depends_on, status)
+- **BaseJob**: Base class for all job types with common fields (name, job_id, depends_on, outputs, status)
 - **Job**: Complete SLURM job configuration with command, resources, and environment
 - **ShellJob**: Job that executes a shell script with variables (script_path, script_vars)
 - **JobResource**: Resource allocation (nodes, GPUs, memory, time, partition, nodelist)
@@ -244,31 +252,51 @@ src/srunx/
 ### Template System
 - Enhanced Jinja2 templates with conditional resource allocation
 - `base.slurm.jinja`: Simple job template
-- `advanced.slurm.jinja`: Full-featured template with all options
+- `advanced.slurm.jinja`: Full-featured template with all options, including inter-job outputs support
 - Automatic environment setup integration
 
 ### Workflow Definition
-Enhanced YAML workflow format:
+Enhanced YAML workflow format with variables and outputs:
 ```yaml
 name: ml_pipeline
+args:
+  base_dir: /data/experiments
+  model_name: resnet50
+
 jobs:
   - name: preprocess
-    command: ["python", "preprocess.py"]
+    command: ["python", "preprocess.py", "--output", "{{ base_dir }}/data"]
+    outputs:
+      data_path: "{{ base_dir }}/data/processed"
     nodes: 1
 
   - name: train
-    command: ["python", "train.py"]
+    command: ["python", "train.py", "--data", "$data_path"]
     depends_on: [preprocess]
+    outputs:
+      model_path: "{{ base_dir }}/models/best.pt"
     gpus_per_node: 1
     conda: ml_env
     memory_per_node: "32GB"
     time_limit: "4:00:00"
 
   - name: evaluate
-    command: ["python", "evaluate.py"]
+    command: ["python", "evaluate.py", "--model", "$model_path"]
     depends_on: [train]
-    async: true
 ```
+
+#### Workflow Variables (`args`)
+- Defined at workflow level, expanded into job fields via Jinja2 (`{{ var_name }}`) at workflow load time
+- Supports `python:` prefix for dynamic evaluation (CLI only, rejected from web API for security)
+- Variables can reference each other with automatic dependency resolution
+
+#### Inter-Job Outputs
+- Jobs declare static `outputs` (dict of KEY=value) written to `$SRUNX_OUTPUTS` file at job start
+- Jobs can also write dynamic outputs at runtime: `echo "key=value" >> $SRUNX_OUTPUTS`
+- Dependent jobs automatically source parent output files via `$SRUNX_OUTPUTS_DIR/<job_name>.env`
+- Output variable keys must be valid shell identifiers (`^[A-Za-z_][A-Za-z0-9_]*$`)
+- Values are single-quoted in generated scripts to prevent shell injection
+- Outputs directory uses `chmod 700` for multi-tenant security
 
 ### Key Improvements
 - **Unified Job Model**: Single `Job` class with comprehensive configuration
@@ -277,6 +305,7 @@ jobs:
 - **Better Error Handling**: Comprehensive validation and error messages
 - **Resource Management**: Full SLURM resource specification
 - **Workflow Validation**: Dependency checking and cycle detection
+- **Inter-Job Communication**: Runtime variable passing between workflow jobs via shared outputs directory
 
 ## Dependencies
 - **Jinja2**: Template rendering

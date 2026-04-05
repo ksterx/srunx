@@ -431,7 +431,9 @@ class TestWorkflowRunner:
         assert len(results) == 1
         assert "test_job" in results
         assert results["test_job"] is job
-        mock_slurm.run.assert_called_once_with(job, workflow_name="test")
+        mock_slurm.run.assert_called_once_with(
+            job, workflow_name="test", outputs_dir=None, dependency_names=None
+        )
 
     @patch("srunx.runner.Slurm")
     def test_run_workflow_with_dependencies(self, mock_slurm_class):
@@ -1243,3 +1245,156 @@ class TestEnhancedDependencies:
 
         completed_jobs = ["job_a"]  # job_b not completed
         assert not job.dependencies_satisfied({}, completed_job_names=completed_jobs)
+
+
+class TestWorkflowOutputs:
+    """Tests for workflow outputs feature."""
+
+    @pytest.fixture
+    def temp_dir(self, tmp_path):
+        return tmp_path
+
+    def test_from_yaml_with_outputs(self, temp_dir):
+        """Test loading workflow YAML with outputs declared on jobs."""
+        yaml_content = {
+            "name": "outputs_workflow",
+            "args": {"base_dir": "/data/experiments"},
+            "jobs": [
+                {
+                    "name": "train",
+                    "command": ["python", "train.py"],
+                    "outputs": {
+                        "model_path": "{{ base_dir }}/models/best.pt",
+                        "metrics_dir": "{{ base_dir }}/metrics",
+                    },
+                    "environment": {"conda": "ml_env"},
+                },
+                {
+                    "name": "evaluate",
+                    "command": ["python", "eval.py"],
+                    "depends_on": ["train"],
+                    "environment": {"conda": "ml_env"},
+                },
+            ],
+        }
+
+        yaml_path = temp_dir / "outputs_workflow.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+
+        runner = WorkflowRunner.from_yaml(yaml_path)
+
+        train_job = next(j for j in runner.workflow.jobs if j.name == "train")
+        assert train_job.outputs == {
+            "model_path": "/data/experiments/models/best.pt",
+            "metrics_dir": "/data/experiments/metrics",
+        }
+
+    def test_parse_job_with_outputs(self):
+        """Test parse_job correctly passes outputs."""
+        data = {
+            "name": "train",
+            "command": ["python", "train.py"],
+            "outputs": {"model_path": "/data/model.pt"},
+        }
+        job = WorkflowRunner.parse_job(data)
+        assert job.outputs == {"model_path": "/data/model.pt"}
+
+    def test_parse_job_without_outputs(self):
+        """Test parse_job defaults to empty outputs."""
+        data = {
+            "name": "train",
+            "command": ["python", "train.py"],
+        }
+        job = WorkflowRunner.parse_job(data)
+        assert job.outputs == {}
+
+    @patch("srunx.runner.Slurm")
+    def test_run_generates_outputs_dir_when_outputs_present(self, mock_slurm_class):
+        """When jobs have outputs, outputs_dir should be generated and passed."""
+        mock_slurm = Mock()
+        mock_slurm_class.return_value = mock_slurm
+
+        job = Job(
+            name="train",
+            command=["python", "train.py"],
+            outputs={"model": "/path/to/model"},
+            environment=JobEnvironment(conda="env"),
+        )
+        job.status = JobStatus.COMPLETED
+        mock_slurm.run.return_value = job
+
+        workflow = Workflow(name="test", jobs=[job])
+        runner = WorkflowRunner(workflow)
+        runner.run()
+
+        call_kwargs = mock_slurm.run.call_args[1]
+        assert call_kwargs["outputs_dir"] is not None
+        assert call_kwargs["outputs_dir"].startswith("/tmp/srunx/test_")
+
+    @patch("srunx.runner.Slurm")
+    def test_run_generates_outputs_dir_when_dependencies_present(
+        self, mock_slurm_class
+    ):
+        """When jobs have dependencies, outputs_dir should be generated."""
+        mock_slurm = Mock()
+        mock_slurm_class.return_value = mock_slurm
+
+        job1 = Job(
+            name="job1",
+            command=["echo", "1"],
+            environment=JobEnvironment(conda="env"),
+        )
+        job2 = Job(
+            name="job2",
+            command=["echo", "2"],
+            depends_on=["job1"],
+            environment=JobEnvironment(conda="env"),
+        )
+        job1._status = JobStatus.PENDING
+        job2._status = JobStatus.PENDING
+
+        def mock_run(job, **kwargs):
+            job.status = JobStatus.COMPLETED
+            return job
+
+        mock_slurm.run.side_effect = mock_run
+
+        workflow = Workflow(name="dep_test", jobs=[job1, job2])
+        runner = WorkflowRunner(workflow)
+        runner.run()
+
+        # Both calls should receive the same outputs_dir
+        calls = mock_slurm.run.call_args_list
+        assert len(calls) == 2
+        dir1 = calls[0][1]["outputs_dir"]
+        dir2 = calls[1][1]["outputs_dir"]
+        assert dir1 is not None
+        assert dir1 == dir2
+        assert dir1.startswith("/tmp/srunx/dep_test_")
+
+        # job2 should have dependency_names=["job1"]
+        dep_names = calls[1][1]["dependency_names"]
+        assert dep_names == ["job1"]
+
+    @patch("srunx.runner.Slurm")
+    def test_run_no_outputs_dir_when_no_outputs_or_deps(self, mock_slurm_class):
+        """When no outputs or dependencies, outputs_dir should be None."""
+        mock_slurm = Mock()
+        mock_slurm_class.return_value = mock_slurm
+
+        job = Job(
+            name="simple",
+            command=["echo", "hello"],
+            environment=JobEnvironment(conda="env"),
+        )
+        job.status = JobStatus.COMPLETED
+        mock_slurm.run.return_value = job
+
+        workflow = Workflow(name="simple", jobs=[job])
+        runner = WorkflowRunner(workflow)
+        runner.run()
+
+        call_kwargs = mock_slurm.run.call_args[1]
+        assert call_kwargs["outputs_dir"] is None
+        assert call_kwargs["dependency_names"] is None

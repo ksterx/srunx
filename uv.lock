@@ -2329,6 +2329,8 @@ web = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "fastapi" },
+    { name = "httpx" },
     { name = "jupyterlab" },
     { name = "mypy" },
     { name = "pre-commit" },
@@ -2365,6 +2367,8 @@ provides-extras = ["mcp", "web"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "fastapi", specifier = ">=0.135.2" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "jupyterlab", specifier = ">=4.4.3" },
     { name = "mypy", specifier = ">=1.16.0" },
     { name = "pre-commit", specifier = ">=4.2.0" },

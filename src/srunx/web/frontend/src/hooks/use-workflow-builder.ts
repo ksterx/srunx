@@ -45,6 +45,7 @@ function makeDefaultJob(id: string, name: string): BuilderJob {
     venv: null,
     container: null,
     env_vars: "",
+    outputs: "",
     work_dir: null,
     log_dir: null,
     retry: null,
@@ -105,6 +106,19 @@ function hasCycle(nodeIds: string[], edges: Edge[]): boolean {
 /* ── Workflow → Builder conversion ──────────────── */
 
 function workflowJobToBuilderJob(job: RunnableJob, id: string): BuilderJob {
+  // Convert outputs record to "KEY=value" per line string
+  const outputsRecord =
+    "outputs" in job
+      ? ((job as Record<string, unknown>).outputs as
+          | Record<string, string>
+          | undefined)
+      : undefined;
+  const outputsStr = outputsRecord
+    ? Object.entries(outputsRecord)
+        .map(([k, v]) => `${k}=${v}`)
+        .join("\n")
+    : "";
+
   return {
     id,
     name: job.name,
@@ -121,6 +135,7 @@ function workflowJobToBuilderJob(job: RunnableJob, id: string): BuilderJob {
     venv: job.environment?.venv ?? null,
     container: null,
     env_vars: "",
+    outputs: outputsStr,
     work_dir: null,
     log_dir: null,
     retry: null,
@@ -347,6 +362,7 @@ export function useWorkflowBuilder() {
     (
       workflowName: string,
       defaultProject?: string | null,
+      args?: Record<string, string>,
     ): WorkflowCreateRequest => {
       const jobEntries = nodes.map((node) => {
         const job = jobMapRef.current.get(node.id);
@@ -423,6 +439,18 @@ export function useWorkflowBuilder() {
         if (Object.keys(environment).length > 0) {
           entry.environment = environment;
         }
+        // Build outputs
+        if (job.outputs.trim()) {
+          const outputs: Record<string, string> = {};
+          for (const line of job.outputs.split("\n")) {
+            const eq = line.indexOf("=");
+            if (eq > 0) {
+              outputs[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+            }
+          }
+          if (Object.keys(outputs).length > 0) entry.outputs = outputs;
+        }
+
         if (job.work_dir !== null) entry.work_dir = job.work_dir;
         if (job.log_dir !== null) entry.log_dir = job.log_dir;
         if (job.retry !== null) entry.retry = job.retry;
@@ -435,6 +463,9 @@ export function useWorkflowBuilder() {
         name: workflowName,
         jobs: jobEntries,
       };
+      if (args && Object.keys(args).length > 0) {
+        request.args = args;
+      }
       if (defaultProject) {
         request.default_project = defaultProject;
       }

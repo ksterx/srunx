@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from textwrap import dedent
 from typing import Any, Self
+from uuid import uuid4
 
 import jinja2
 import yaml  # type: ignore
@@ -498,6 +499,16 @@ class WorkflowRunner:
         # Get the jobs to execute based on options
         jobs_to_execute = self._get_jobs_to_execute(from_job, to_job, single_job)
 
+        # Generate shared outputs directory for inter-job variable passing
+        any_job_has_outputs = any(
+            getattr(job, "outputs", None) for job in jobs_to_execute
+        )
+        any_job_has_deps = any(job.depends_on for job in jobs_to_execute)
+        outputs_dir: str | None = None
+        if any_job_has_outputs or any_job_has_deps:
+            run_id = uuid4().hex[:8]
+            outputs_dir = f"/tmp/srunx/{self.workflow.name}_{run_id}"
+
         # Log execution plan
         if single_job:
             logger.info(f"🚀 Executing single job: {single_job}")
@@ -592,8 +603,20 @@ class WorkflowRunner:
             """Execute a single job."""
             logger.info(f"⚡ {'SUBMITTED':<12} Job {job.name:<12}")
 
+            # Resolve dependency names for outputs sourcing
+            dep_names = (
+                [dep.job_name for dep in job.parsed_dependencies]
+                if outputs_dir
+                else None
+            )
+
             try:
-                result = self.slurm.run(job, workflow_name=self.workflow.name)
+                result = self.slurm.run(
+                    job,
+                    workflow_name=self.workflow.name,
+                    outputs_dir=outputs_dir,
+                    dependency_names=dep_names,
+                )
                 return result
             except Exception as e:
                 # Show SLURM logs when job fails
@@ -918,6 +941,7 @@ class WorkflowRunner:
         base = {
             "name": data["name"],
             "depends_on": data.get("depends_on", []),
+            "outputs": data.get("outputs", {}),
             "retry": data.get("retry", 0),
             "retry_delay": data.get("retry_delay", 60),
         }
