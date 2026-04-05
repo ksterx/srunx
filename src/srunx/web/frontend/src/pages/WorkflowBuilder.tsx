@@ -18,7 +18,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { motion } from "framer-motion";
-import { ArrowLeft, Plus, Save, Settings } from "lucide-react";
+import { ArrowLeft, Plus, Save, Settings, Variable } from "lucide-react";
 import { useWorkflowBuilder } from "../hooks/use-workflow-builder.ts";
 import { JobPropertyPanel } from "../components/JobPropertyPanel.tsx";
 import { MountSettings } from "../components/MountSettings.tsx";
@@ -352,6 +352,8 @@ export function WorkflowBuilder() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [loadingWorkflow, setLoadingWorkflow] = useState(isEditMode);
   const [showMountSettings, setShowMountSettings] = useState(false);
+  const [showArgsEditor, setShowArgsEditor] = useState(false);
+  const [argsText, setArgsText] = useState("");
 
   /* ── Load available mounts ─────────────────── */
 
@@ -383,6 +385,13 @@ export function WorkflowBuilder() {
         setWorkflowName(workflow.name);
         setOriginalName(workflow.name);
         setDefaultProject(workflow.default_project ?? null);
+        if (workflow.args && Object.keys(workflow.args).length > 0) {
+          setArgsText(
+            Object.entries(workflow.args)
+              .map(([k, v]) => `${k}=${v}`)
+              .join("\n"),
+          );
+        }
         loadWorkflow(workflow);
       } catch (err) {
         if (cancelled) return;
@@ -501,7 +510,21 @@ export function WorkflowBuilder() {
     // Serialize and submit
     setSaving(true);
     try {
-      const request = serialize(trimmedName, defaultProject);
+      // Parse args text into Record
+      const parsedArgs: Record<string, string> = {};
+      if (argsText.trim()) {
+        for (const line of argsText.split("\n")) {
+          const eq = line.indexOf("=");
+          if (eq > 0) {
+            parsedArgs[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+          }
+        }
+      }
+      const request = serialize(
+        trimmedName,
+        defaultProject,
+        Object.keys(parsedArgs).length > 0 ? parsedArgs : undefined,
+      );
 
       if (!defaultProject) {
         setSaveError("A project (mount) must be selected to save a workflow");
@@ -645,6 +668,18 @@ export function WorkflowBuilder() {
           <Settings size={16} />
         </button>
 
+        <button
+          className="btn btn-ghost"
+          onClick={() => setShowArgsEditor((prev) => !prev)}
+          title="Workflow variables (args)"
+          style={{
+            padding: "6px 8px",
+            color: argsText.trim() ? "var(--accent)" : undefined,
+          }}
+        >
+          <Variable size={16} />
+        </button>
+
         <div style={{ flex: 1 }} />
 
         <button
@@ -669,6 +704,57 @@ export function WorkflowBuilder() {
               : "Save Workflow"}
         </button>
       </div>
+
+      {/* ── Args editor ────────────────────── */}
+      {showArgsEditor && (
+        <div
+          style={{
+            padding: "var(--sp-3) var(--sp-5)",
+            background: "var(--bg-overlay)",
+            borderBottom: "1px solid var(--border-default)",
+            flexShrink: 0,
+          }}
+        >
+          <div
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "0.7rem",
+              color: "var(--text-muted)",
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+              marginBottom: 6,
+            }}
+          >
+            Workflow Variables (args)
+          </div>
+          <textarea
+            className="input"
+            rows={3}
+            value={argsText}
+            onChange={(e) => setArgsText(e.target.value)}
+            placeholder={
+              "base_dir=/data/experiments\nmodel_name=resnet50\nbatch_size=32"
+            }
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "0.75rem",
+              resize: "vertical",
+              width: "100%",
+              maxWidth: 500,
+            }}
+          />
+          <div
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "0.6rem",
+              color: "var(--text-muted)",
+              marginTop: 4,
+            }}
+          >
+            {"Use {{ var_name }} in job commands to reference these variables"}
+          </div>
+        </div>
+      )}
 
       {/* ── Validation / save errors ─────────── */}
       {allErrors.length > 0 && (

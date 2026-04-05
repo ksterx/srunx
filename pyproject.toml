@@ -65,6 +65,8 @@ dev = [
     "sphinx-rtd-theme>=3.0.2",
     "sphinx-book-theme>=1.1.4",
     "sphinxcontrib-mermaid>=2.0.1",
+    "fastapi>=0.135.2",
+    "httpx>=0.28.1",
 ]
 
 [tool.pytest.ini_options]

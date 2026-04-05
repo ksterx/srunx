@@ -52,6 +52,7 @@ export type RunnableJob = CommandJob | ShellJob;
 
 export type Workflow = {
   name: string;
+  args?: Record<string, string>;
   jobs: RunnableJob[];
   default_project?: string | null;
 };
@@ -135,6 +136,7 @@ export type BuilderJob = {
   venv: string | null;
   container: BuilderContainer | null;
   env_vars: string; // "KEY=VAL" per line, parsed on save
+  outputs: string; // "KEY=value" per line, parsed on save
   // Job-level
   work_dir: string | null;
   log_dir: string | null;
@@ -280,11 +282,13 @@ export type ProjectConfigResponse = {
 
 export type WorkflowCreateRequest = {
   name: string;
+  args?: Record<string, string>;
   default_project?: string | null;
   jobs: Array<{
     name: string;
     command: string[];
     depends_on: string[];
+    outputs?: Record<string, string>;
     resources?: {
       nodes?: number;
       gpus_per_node?: number;

@@ -542,6 +542,37 @@ export function JobPropertyPanel({
         </div>
       </div>
 
+      {/* ── Outputs ──────────────────────────── */}
+      <div style={sectionDividerStyle}>
+        <div style={sectionTitleStyle}>Outputs</div>
+        <div style={fieldStyle}>
+          <textarea
+            className="input"
+            rows={2}
+            value={job.outputs}
+            onChange={(e) => onUpdate({ outputs: e.target.value })}
+            placeholder={
+              "model_path=/data/models/best.pt\nmetrics_dir=/data/metrics"
+            }
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "0.75rem",
+              resize: "vertical",
+            }}
+          />
+          <div
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "0.6rem",
+              color: "var(--text-muted)",
+              marginTop: 2,
+            }}
+          >
+            Exported as env vars to dependent jobs via $SRUNX_OUTPUTS
+          </div>
+        </div>
+      </div>
+
       {/* ── Container ─────────────────────────── */}
       <div style={sectionDividerStyle}>
         <div

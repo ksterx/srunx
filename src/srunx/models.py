@@ -328,6 +328,25 @@ class BaseJob(BaseModel):
     depends_on: list[str] = Field(
         default_factory=list, description="Task dependencies for workflow execution"
     )
+    outputs: dict[str, str] = Field(
+        default_factory=dict,
+        description="Static output variables (KEY=VALUE) written to outputs file at job start",
+    )
+
+    @field_validator("outputs")
+    @classmethod
+    def validate_output_keys(cls, v: dict[str, str]) -> dict[str, str]:
+        """Ensure output variable names are valid shell identifiers."""
+        import re
+
+        for key in v:
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                raise ValueError(
+                    f"Invalid output variable name: '{key}'. "
+                    "Must be a valid shell identifier (letters, digits, underscores)."
+                )
+        return v
+
     retry: int = Field(
         default=0, ge=0, description="Number of retry attempts on failure"
     )
@@ -763,6 +782,8 @@ def render_job_script(
     job: Job,
     output_dir: Path | str | None = None,
     verbose: bool = False,
+    outputs_dir: str | None = None,
+    dependency_names: list[str] | None = None,
 ) -> str:
     """Render a SLURM job script from a template.
 
@@ -771,6 +792,8 @@ def render_job_script(
         job: Job configuration.
         output_dir: Directory where the generated script will be saved.
         verbose: Whether to print the rendered content.
+        outputs_dir: Shared directory for inter-job output variables (SRUNX_OUTPUTS_DIR).
+        dependency_names: Names of dependency jobs whose outputs should be sourced.
 
     Returns:
         Path to the generated SLURM batch script.
@@ -795,6 +818,9 @@ def render_job_script(
         "srun_args": srun_args,
         "launch_prefix": launch_prefix,
         "container": job.environment.container,
+        "outputs_dir": outputs_dir,
+        "job_outputs": job.outputs,
+        "dependency_names": dependency_names or [],
         **job.resources.model_dump(),
     }
 
