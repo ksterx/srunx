@@ -17,11 +17,12 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft, Plus, Save, Settings, Variable } from "lucide-react";
 import { useWorkflowBuilder } from "../hooks/use-workflow-builder.ts";
 import { JobPropertyPanel } from "../components/JobPropertyPanel.tsx";
 import { MountSettings } from "../components/MountSettings.tsx";
+import { KeyValueEditor, type KVEntry } from "../components/KeyValueEditor.tsx";
 import { workflows as workflowsApi, files as filesApi } from "../lib/api.ts";
 import type { BuilderJob, DependencyType, Mount } from "../lib/types.ts";
 
@@ -353,7 +354,7 @@ export function WorkflowBuilder() {
   const [loadingWorkflow, setLoadingWorkflow] = useState(isEditMode);
   const [showMountSettings, setShowMountSettings] = useState(false);
   const [showArgsEditor, setShowArgsEditor] = useState(false);
-  const [argsText, setArgsText] = useState("");
+  const [argsEntries, setArgsEntries] = useState<KVEntry[]>([]);
 
   /* ── Load available mounts ─────────────────── */
 
@@ -386,10 +387,11 @@ export function WorkflowBuilder() {
         setOriginalName(workflow.name);
         setDefaultProject(workflow.default_project ?? null);
         if (workflow.args && Object.keys(workflow.args).length > 0) {
-          setArgsText(
-            Object.entries(workflow.args)
-              .map(([k, v]) => `${k}=${v}`)
-              .join("\n"),
+          setArgsEntries(
+            Object.entries(workflow.args).map(([key, value]) => ({
+              key,
+              value,
+            })),
           );
         }
         loadWorkflow(workflow);
@@ -510,14 +512,11 @@ export function WorkflowBuilder() {
     // Serialize and submit
     setSaving(true);
     try {
-      // Parse args text into Record
+      // Build args from entries
       const parsedArgs: Record<string, string> = {};
-      if (argsText.trim()) {
-        for (const line of argsText.split("\n")) {
-          const eq = line.indexOf("=");
-          if (eq > 0) {
-            parsedArgs[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
-          }
+      for (const { key, value } of argsEntries) {
+        if (key.trim()) {
+          parsedArgs[key.trim()] = value;
         }
       }
       const request = serialize(
@@ -674,7 +673,7 @@ export function WorkflowBuilder() {
           title="Workflow variables (args)"
           style={{
             padding: "6px 8px",
-            color: argsText.trim() ? "var(--accent)" : undefined,
+            color: argsEntries.length > 0 ? "var(--accent)" : undefined,
           }}
         >
           <Variable size={16} />
@@ -705,56 +704,51 @@ export function WorkflowBuilder() {
         </button>
       </div>
 
-      {/* ── Args editor ────────────────────── */}
-      {showArgsEditor && (
-        <div
-          style={{
-            padding: "var(--sp-3) var(--sp-5)",
-            background: "var(--bg-overlay)",
-            borderBottom: "1px solid var(--border-default)",
-            flexShrink: 0,
-          }}
-        >
-          <div
+      {/* ── Args slide-out panel ──────────── */}
+      <AnimatePresence>
+        {showArgsEditor && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
             style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "0.7rem",
-              color: "var(--text-muted)",
-              textTransform: "uppercase",
-              letterSpacing: "0.06em",
-              marginBottom: 6,
+              overflow: "hidden",
+              flexShrink: 0,
+              borderBottom: "1px solid var(--border-default)",
             }}
           >
-            Workflow Variables (args)
-          </div>
-          <textarea
-            className="input"
-            rows={3}
-            value={argsText}
-            onChange={(e) => setArgsText(e.target.value)}
-            placeholder={
-              "base_dir=/data/experiments\nmodel_name=resnet50\nbatch_size=32"
-            }
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "0.75rem",
-              resize: "vertical",
-              width: "100%",
-              maxWidth: 500,
-            }}
-          />
-          <div
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "0.6rem",
-              color: "var(--text-muted)",
-              marginTop: 4,
-            }}
-          >
-            {"Use {{ var_name }} in job commands to reference these variables"}
-          </div>
-        </div>
-      )}
+            <div
+              style={{
+                padding: "var(--sp-4) var(--sp-5)",
+                background: "var(--bg-surface)",
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: "var(--font-display)",
+                  fontSize: "0.7rem",
+                  fontWeight: 500,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                  color: "var(--text-secondary)",
+                  marginBottom: "var(--sp-3)",
+                }}
+              >
+                Workflow Variables
+              </div>
+              <KeyValueEditor
+                entries={argsEntries}
+                onChange={setArgsEntries}
+                keyPlaceholder="variable"
+                valuePlaceholder="/path/or/value"
+                addLabel="Add Variable"
+                hint={"Reference in job commands with {{ variable_name }}"}
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ── Validation / save errors ─────────── */}
       {allErrors.length > 0 && (

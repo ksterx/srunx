@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { X, Trash2, FolderOpen } from "lucide-react";
 import type {
@@ -7,6 +7,7 @@ import type {
   ContainerRuntime,
 } from "../lib/types.ts";
 import { FileBrowser } from "./FileBrowser.tsx";
+import { KeyValueEditor, type KVEntry } from "./KeyValueEditor.tsx";
 
 /* ── Props ───────────────────────────────────── */
 
@@ -153,6 +154,26 @@ export function JobPropertyPanel({
     }
 
     setBrowserTarget(null);
+  }
+
+  // Convert outputs string ↔ KVEntry[]
+  const outputEntries: KVEntry[] = useMemo(() => {
+    if (!job.outputs.trim()) return [];
+    return job.outputs
+      .split("\n")
+      .filter((l) => l.includes("="))
+      .map((line) => {
+        const eq = line.indexOf("=");
+        return {
+          key: line.slice(0, eq).trim(),
+          value: line.slice(eq + 1).trim(),
+        };
+      });
+  }, [job.outputs]);
+
+  function handleOutputsChange(entries: KVEntry[]) {
+    const text = entries.map((e) => `${e.key}=${e.value}`).join("\n");
+    onUpdate({ outputs: text });
   }
 
   const hasContainer = job.container !== null;
@@ -545,32 +566,15 @@ export function JobPropertyPanel({
       {/* ── Outputs ──────────────────────────── */}
       <div style={sectionDividerStyle}>
         <div style={sectionTitleStyle}>Outputs</div>
-        <div style={fieldStyle}>
-          <textarea
-            className="input"
-            rows={2}
-            value={job.outputs}
-            onChange={(e) => onUpdate({ outputs: e.target.value })}
-            placeholder={
-              "model_path=/data/models/best.pt\nmetrics_dir=/data/metrics"
-            }
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "0.75rem",
-              resize: "vertical",
-            }}
-          />
-          <div
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "0.6rem",
-              color: "var(--text-muted)",
-              marginTop: 2,
-            }}
-          >
-            Exported as env vars to dependent jobs via $SRUNX_OUTPUTS
-          </div>
-        </div>
+        <KeyValueEditor
+          entries={outputEntries}
+          onChange={handleOutputsChange}
+          keyPlaceholder="name"
+          valuePlaceholder="/path/or/value"
+          addLabel="Add Output"
+          compact
+          hint="Exported as env vars to dependent jobs via $SRUNX_OUTPUTS"
+        />
       </div>
 
       {/* ── Container ─────────────────────────── */}
