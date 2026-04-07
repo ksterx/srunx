@@ -175,7 +175,7 @@ The Settings page lets you manage all srunx configuration from the browser.
 
 5. On the **Notifications** tab, enter a Slack webhook URL to receive job notifications
 6. The **Environment** tab shows all active ``SRUNX_*`` variables (read-only)
-7. The **Project** tab lists projects from your mounts — initialize ``.srunx.json`` for per-project config overrides
+7. The **Project** tab lists projects from your mounts — initialize ``srunx.json`` for per-project config overrides
 
 .. note::
 

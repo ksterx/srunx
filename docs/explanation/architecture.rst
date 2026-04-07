@@ -283,7 +283,7 @@ Stateless per-request reads
 Mount-based project model
    Projects are not derived from the current working directory (which is
    meaningless for a web server). Instead, each SSH profile mount defines a
-   project: the mount's ``local`` directory is scanned for ``.srunx.json``.
+   project: the mount's ``local`` directory is scanned for ``srunx.json``.
    This makes project configuration remote-friendly — the same mount mapping
    used for file browsing and rsync sync also drives per-project settings.
 
@@ -339,5 +339,5 @@ Configuration is loaded in order of precedence (lowest to highest):
 
 1. System-wide: ``/etc/srunx/config.json``
 2. User-wide: ``~/.config/srunx/config.json``
-3. Project-wide: ``.srunx.json`` or ``srunx.json`` in the working directory
+3. Project-wide: ``srunx.json`` in the working directory
 4. Environment variables: ``SRUNX_DEFAULT_*``

@@ -102,7 +102,7 @@ export function ProjectTab() {
       setSaving(true);
       const resp = await configApi.initProject(mountName);
       setEditConfig(resp.config);
-      setSuccess(`Initialized .srunx.json for "${mountName}"`);
+      setSuccess(`Initialized srunx.json for "${mountName}"`);
       await load();
       setExpandedMount(mountName);
     } catch (e) {
@@ -238,7 +238,7 @@ export function ProjectTab() {
                   }
                   style={{ fontSize: "0.6rem" }}
                 >
-                  {proj.config_exists ? ".srunx.json" : "NO CONFIG"}
+                  {proj.config_exists ? "srunx.json" : "NO CONFIG"}
                 </span>
               </div>
               <div
@@ -329,7 +329,7 @@ export function ProjectTab() {
                     disabled={saving}
                   >
                     <Plus size={14} />
-                    Initialize .srunx.json
+                    Initialize srunx.json
                   </button>
                 ) : editConfig ? (
                   <div>

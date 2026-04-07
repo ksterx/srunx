@@ -130,16 +130,16 @@ Initialize a project
 
 1. Open the **Project** tab
 2. Find a mount that shows "No config"
-3. Click **Initialize** to create a ``.srunx.json`` with example values in the mount's local directory
+3. Click **Initialize** to create a ``srunx.json`` with example values in the mount's local directory
 
 Edit project config
 ~~~~~~~~~~~~~~~~~~~~
 
-1. Click **Edit** on a project that has an existing ``.srunx.json``
+1. Click **Edit** on a project that has an existing ``srunx.json``
 2. Modify per-project resource defaults, environment settings, or notification overrides
 3. Click **Save**
 
-Project-level settings in ``.srunx.json`` override the global user config for workflows that execute within that mount's directory.
+Project-level settings in ``srunx.json`` override the global user config for workflows that execute within that mount's directory.
 
 Equivalent CLI Commands
 ------------------------
