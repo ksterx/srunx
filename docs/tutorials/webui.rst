@@ -18,6 +18,9 @@ The Web UI is an optional feature. Install it with the ``web`` extra:
 
 .. code-block:: bash
 
+   uv add "srunx[web]"
+
+   # Or if installing from source
    uv sync --extra web
 
 This installs FastAPI, uvicorn, and other backend dependencies.
@@ -52,7 +55,14 @@ Step 3: Start the Server
 
 .. code-block:: bash
 
-   srunx-web
+   srunx ui
+
+You can customize the host and port:
+
+.. code-block:: bash
+
+   srunx ui --port 3000
+   srunx ui --host 0.0.0.0 --port 8080
 
 You should see:
 

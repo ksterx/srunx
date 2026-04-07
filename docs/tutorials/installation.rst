@@ -5,15 +5,31 @@ Requirements
 ------------
 
 - Python 3.12 or higher
-- SLURM workload manager
-- Access to a SLURM cluster
+- `uv <https://docs.astral.sh/uv/>`_ (recommended) or pip
+- Access to a SLURM cluster (local or via SSH)
 
-Installing from PyPI
----------------------
+Installing with uv (recommended)
+----------------------------------
+
+.. code-block:: bash
+
+   uv add srunx
+
+To use the Web UI, install with the ``web`` extra:
+
+.. code-block:: bash
+
+   uv add "srunx[web]"
+
+Installing with pip
+--------------------
 
 .. code-block:: bash
 
    pip install srunx
+
+   # With Web UI support
+   pip install "srunx[web]"
 
 Installing from Source
 ----------------------
@@ -23,18 +39,17 @@ Installing from Source
    git clone https://github.com/ksterx/srunx.git
    cd srunx
    uv sync
-   uv run pip install -e .
 
 Development Installation
 ------------------------
 
-For development, you'll need to install the development dependencies:
+For development, install with the dev dependency group:
 
 .. code-block:: bash
 
    git clone https://github.com/ksterx/srunx.git
    cd srunx
-   uv sync --group dev
+   uv sync --group dev --all-extras
 
 Verification
 ------------

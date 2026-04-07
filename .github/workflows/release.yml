@@ -38,6 +38,19 @@ jobs:
         uv run pytest tests/test_integration.py tests/test_runner.py -v --tb=short
       continue-on-error: true
 
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+        cache: "npm"
+        cache-dependency-path: src/srunx/web/frontend/package-lock.json
+
+    - name: Build frontend
+      run: |
+        cd src/srunx/web/frontend
+        npm ci
+        npm run build
+
     - name: Build package
       run: uv build
 

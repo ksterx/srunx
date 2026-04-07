@@ -281,7 +281,7 @@ class TestSSHSlurmClient:
         )
 
         def _exec(cmd):
-            if cmd.startswith("scontrol"):
+            if "scontrol" in cmd:
                 return (scontrol_output, "", 0)
             if "cat" in cmd and "train_12345.log" in cmd:
                 return ("epoch 1 done\nepoch 2 done\n", "", 0)
@@ -307,7 +307,7 @@ class TestSSHSlurmClient:
         scontrol_output = "StdOut=/logs/job_12345.log StdErr=/logs/job_12345.log\n"
 
         def _exec(cmd):
-            if cmd.startswith("scontrol"):
+            if "scontrol" in cmd:
                 return (scontrol_output, "", 0)
             if "cat" in cmd and "job_12345.log" in cmd:
                 return ("all output here\n", "", 0)
@@ -328,7 +328,7 @@ class TestSSHSlurmClient:
         scontrol_output = "StdOut=/logs/out.log StdErr=/logs/err.log\n"
 
         def _exec(cmd):
-            if cmd.startswith("scontrol"):
+            if "scontrol" in cmd:
                 return (scontrol_output, "", 0)
             if "tail -c +101" in cmd and "out.log" in cmd:
                 return ("new stdout\n", "", 0)

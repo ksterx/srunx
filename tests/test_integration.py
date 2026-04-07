@@ -317,7 +317,8 @@ class TestConfigurationIntegration:
 
     def test_environment_variable_config(self):
         """Test configuration through environment variables."""
-        # Mock environment variables
+        from srunx.config import get_config
+
         env_vars = {
             "SRUNX_DEFAULT_NODES": "2",
             "SRUNX_DEFAULT_GPUS_PER_NODE": "4",
@@ -326,25 +327,17 @@ class TestConfigurationIntegration:
             "SRUNX_DEFAULT_CONDA": "ml_env",
         }
 
-        # Test job creation with environment defaults
         with pytest.MonkeyPatch().context() as m:
             for key, value in env_vars.items():
                 m.setenv(key, value)
 
-            # Force reload of config
-            import importlib
+            config = get_config(reload=True)
 
-            from srunx import config, models
-
-            importlib.reload(config)
-            importlib.reload(models)
-
-            job = Job(command=["python", "test.py"])
-
-            # These assertions depend on the configuration system working
-            # In a real scenario, you might need to test the config loading separately
-            assert isinstance(job.resources.nodes, int)
-            assert isinstance(job.resources.gpus_per_node, int)
+            assert config.resources.nodes == 2
+            assert config.resources.gpus_per_node == 4
+            assert config.resources.memory_per_node == "64GB"
+            assert config.resources.partition == "gpu"
+            assert config.environment.conda == "ml_env"
 
     def test_config_file_integration(self):
         """Test configuration file loading."""

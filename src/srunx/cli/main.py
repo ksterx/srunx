@@ -122,6 +122,35 @@ app.add_typer(ssh_app, name="ssh")
 app.add_typer(template_app, name="template")
 
 
+@app.command()
+def ui(
+    host: Annotated[str, typer.Option(help="Host to bind")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Port to bind")] = 8000,
+) -> None:
+    """Launch the srunx Web UI."""
+    try:
+        import uvicorn
+    except ImportError:
+        Console().print(
+            "[red]Web UI requires extra dependencies. "
+            "Install with: uv pip install srunx[web][/red]"
+        )
+        raise typer.Exit(1) from None
+
+    from srunx.web.config import get_web_config
+
+    config = get_web_config()
+    config.host = host
+    config.port = port
+
+    uvicorn.run(
+        "srunx.web.app:create_app",
+        factory=True,
+        host=host,
+        port=port,
+    )
+
+
 def _parse_env_vars(env_var_list: list[str] | None) -> dict[str, str]:
     """Parse environment variables from list of KEY=VALUE strings."""
     if not env_var_list:

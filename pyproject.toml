@@ -29,7 +29,6 @@ mcp = [
 
 [project.scripts]
 srunx = "srunx.cli.main:main"
-srunx-web = "srunx.web.app:main"
 srunx-mcp = "srunx.mcp.server:main"
 
 [build-system]
@@ -38,6 +37,20 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/srunx"]
+exclude = [
+    "src/srunx/web/frontend/src",
+    "src/srunx/web/frontend/node_modules",
+    "src/srunx/web/frontend/package.json",
+    "src/srunx/web/frontend/package-lock.json",
+    "src/srunx/web/frontend/tsconfig*.json",
+    "src/srunx/web/frontend/vite.config.ts",
+    "src/srunx/web/frontend/index.html",
+    "src/srunx/web/frontend/eslint.config.js",
+    "src/srunx/web/frontend/components.json",
+    "src/srunx/web/frontend/.gitignore",
+]
+
+[tool.hatch.build.hooks.custom]
 
 [tool.hatch.build.targets.wheel.sources]
 "src/srunx" = "srunx"
