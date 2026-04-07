@@ -413,10 +413,9 @@ class TestJob:
     @patch.dict(os.environ, {}, clear=True)
     def test_job_defaults(self):
         """Test Job default values."""
-        # Clear environment and force config reload
-        import importlib
+        import srunx.config
 
-        importlib.reload(importlib.import_module("srunx.models"))
+        srunx.config._config = None
 
         job = Job(
             command=["python", "script.py"],

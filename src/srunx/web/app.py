@@ -138,7 +138,7 @@ def create_app() -> FastAPI:
 
 
 def main() -> None:
-    """Entry point for `srunx-web` command."""
+    """Entry point for `srunx ui` command."""
     import uvicorn
 
     config = get_web_config()

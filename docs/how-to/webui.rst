@@ -10,13 +10,13 @@ Connect to a Different Cluster
 
 .. code-block:: bash
 
-   SRUNX_SSH_PROFILE=other-cluster srunx-web
+   SRUNX_SSH_PROFILE=other-cluster srunx ui
 
 **Using direct connection parameters:**
 
 .. code-block:: bash
 
-   SRUNX_SSH_HOSTNAME=slurm.example.com SRUNX_SSH_USERNAME=user srunx-web
+   SRUNX_SSH_HOSTNAME=slurm.example.com SRUNX_SSH_USERNAME=user srunx ui
 
 **With a custom SSH key:**
 
@@ -25,17 +25,16 @@ Connect to a Different Cluster
    SRUNX_SSH_HOSTNAME=slurm.example.com \
    SRUNX_SSH_USERNAME=user \
    SRUNX_SSH_KEY=~/.ssh/id_ed25519 \
-   srunx-web
+   srunx ui
 
 Change the Server Port
 -----------------------
 
-By default, the server runs on port 8000. Set the ``SRUNX_WEB_PORT`` environment variable or edit the config:
+By default, the server runs on port 8000. Use the ``--port`` option:
 
 .. code-block:: bash
 
-   # Start on port 3001
-   SRUNX_WEB_PORT=3001 srunx-web
+   srunx ui --port 3001
 
 Monitor GPU Resources
 ----------------------
@@ -276,7 +275,7 @@ For frontend development or demos, the server can start without an SSH connectio
 
 .. code-block:: bash
 
-   srunx-web
+   srunx ui
 
 If no SSH profile is configured, the server starts with a warning:
 
@@ -295,7 +294,7 @@ For frontend development with hot-reload:
 .. code-block:: bash
 
    # Terminal 1: Start the backend
-   srunx-web
+   srunx ui
 
    # Terminal 2: Start the Vite dev server
    cd src/srunx/web/frontend

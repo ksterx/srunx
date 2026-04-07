@@ -70,13 +70,15 @@ srunx flow run workflow.yaml
 | `srunx report` | Generate job execution report |
 | `srunx config` | Manage configuration |
 | `srunx template` | Manage job templates |
+| `srunx ui` | Launch the web dashboard |
 
 ## Web Dashboard
 
 A dashboard for visual cluster management. Connect to your SLURM cluster over SSH and manage jobs, workflows, and resources from a browser.
 
 ```bash
-srunx-web  # -> http://127.0.0.1:8000
+srunx ui                # -> http://127.0.0.1:8000
+srunx ui --port 3000    # custom port
 ```
 
 **Jobs** — Browse, search, filter, and cancel jobs.

@@ -70,7 +70,7 @@ locally and connects to SLURM clusters via SSH.
    flowchart LR
      subgraph local["Local Machine"]
        Browser["Browser :8000"]
-       FastAPI["FastAPI\n(srunx-web)"]
+       FastAPI["FastAPI\n(srunx ui)"]
        Adapter["SlurmSSHAdapter"]
        Browser --> FastAPI --> Adapter
      end

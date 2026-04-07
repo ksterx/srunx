@@ -188,7 +188,7 @@ srunx provides four interfaces to the same underlying functionality:
      - In-process
      - Programmatic integration, notebooks
    * - Web UI
-     - ``srunx-web``
+     - ``srunx ui``
      - HTTP (browser)
      - Visual workflow building, monitoring dashboards
    * - MCP
