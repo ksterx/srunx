@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { setupMockRoutes } from "./fixtures/mock-routes.ts";
+import { MOCK_JOBS } from "./fixtures/mock-data.ts";
 
 test.beforeEach(async ({ page }) => {
   await setupMockRoutes(page);
@@ -79,5 +80,154 @@ test.describe("Jobs", () => {
     await logLink.click();
 
     await expect(page).toHaveURL(/\/jobs\/\d+\/logs$/);
+  });
+
+  test("handles non-standard SLURM statuses without crashing", async ({
+    page,
+  }) => {
+    /* Override jobs mock with non-standard SLURM statuses */
+    await page.route("**/api/jobs", async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      return route.fulfill({
+        json: [
+          {
+            ...MOCK_JOBS[0],
+            job_id: 20001,
+            name: "completing-job",
+            status: "COMPLETING",
+          },
+          {
+            ...MOCK_JOBS[0],
+            job_id: 20002,
+            name: "nodefail-job",
+            status: "NODE_FAIL",
+          },
+          {
+            ...MOCK_JOBS[0],
+            job_id: 20003,
+            name: "preempted-job",
+            status: "PREEMPTED",
+          },
+          {
+            ...MOCK_JOBS[0],
+            job_id: 20004,
+            name: "suspended-job",
+            status: "SUSPENDED",
+          },
+          {
+            ...MOCK_JOBS[0],
+            job_id: 20005,
+            name: "unknown-status-job",
+            status: "CONFIGURING",
+          },
+        ],
+      });
+    });
+
+    await page.goto("/jobs");
+
+    /* Page must NOT show the ErrorBoundary "Something went wrong" */
+    await expect(page.getByText("Something went wrong")).not.toBeVisible();
+
+    /* All jobs should render */
+    await expect(page.getByText("5 jobs")).toBeVisible();
+    const table = page.locator("table");
+    await expect(
+      table.getByRole("cell", { name: "completing-job" }),
+    ).toBeVisible();
+    await expect(
+      table.getByRole("cell", { name: "nodefail-job" }),
+    ).toBeVisible();
+    await expect(
+      table.getByRole("cell", { name: "preempted-job" }),
+    ).toBeVisible();
+    await expect(
+      table.getByRole("cell", { name: "suspended-job" }),
+    ).toBeVisible();
+    await expect(
+      table.getByRole("cell", { name: "unknown-status-job" }),
+    ).toBeVisible();
+
+    /* Status badges should render (CONFIGURING falls back to Unknown) */
+    await expect(table.getByText("Completing", { exact: true })).toBeVisible();
+    await expect(table.getByText("Node Fail", { exact: true })).toBeVisible();
+    await expect(table.getByText("Preempted", { exact: true })).toBeVisible();
+    await expect(table.getByText("Suspended", { exact: true })).toBeVisible();
+    await expect(table.getByText("Unknown", { exact: true })).toBeVisible();
+  });
+
+  test("handles job status changing during polling without crashing", async ({
+    page,
+  }) => {
+    let callCount = 0;
+    await page.route("**/api/jobs", async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      callCount++;
+      if (callCount === 1) {
+        /* First poll: job is RUNNING */
+        return route.fulfill({
+          json: [
+            {
+              ...MOCK_JOBS[0],
+              job_id: 30001,
+              name: "changing-job",
+              status: "RUNNING",
+            },
+          ],
+        });
+      }
+      /* Subsequent polls: job transitions to COMPLETING then COMPLETED */
+      return route.fulfill({
+        json: [
+          {
+            ...MOCK_JOBS[0],
+            job_id: 30001,
+            name: "changing-job",
+            status: "COMPLETED",
+          },
+        ],
+      });
+    });
+
+    await page.goto("/jobs");
+
+    /* First render: Running */
+    await expect(page.locator("table").getByText("Running")).toBeVisible();
+
+    /* Wait for poll to update status */
+    await expect(page.locator("table").getByText("Completed")).toBeVisible({
+      timeout: 10000,
+    });
+
+    /* Must not have crashed */
+    await expect(page.getByText("Something went wrong")).not.toBeVisible();
+  });
+
+  test("handles undefined/null status gracefully", async ({ page }) => {
+    await page.route("**/api/jobs", async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      return route.fulfill({
+        json: [
+          {
+            ...MOCK_JOBS[0],
+            job_id: 40001,
+            name: "null-status-job",
+            status: null,
+          },
+          {
+            ...MOCK_JOBS[0],
+            job_id: 40002,
+            name: "empty-status-job",
+            status: "",
+          },
+        ],
+      });
+    });
+
+    await page.goto("/jobs");
+
+    /* Page must NOT crash */
+    await expect(page.getByText("Something went wrong")).not.toBeVisible();
+    await expect(page.getByText("2 jobs")).toBeVisible();
   });
 });
