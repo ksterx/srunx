@@ -50,6 +50,8 @@ exclude = [
     "src/srunx/web/frontend/.gitignore",
 ]
 
+[tool.hatch.build.hooks.custom]
+
 [tool.hatch.build.targets.wheel.sources]
 "src/srunx" = "srunx"
 
