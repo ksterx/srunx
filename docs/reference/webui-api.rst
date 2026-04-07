@@ -691,7 +691,7 @@ Config
      - List projects from current profile's mounts
    * - GET
      - ``/api/config/projects/{mount_name}``
-     - Read project config (.srunx.json)
+     - Read project config (srunx.json)
    * - PUT
      - ``/api/config/projects/{mount_name}``
      - Update project config
@@ -758,8 +758,7 @@ Returns all config file paths with their existence status and source label.
    [
      {"path": "/etc/srunx/config.json", "exists": false, "source": "system"},
      {"path": "/home/user/.config/srunx/config.json", "exists": true, "source": "user"},
-     {"path": ".srunx.json", "exists": false, "source": "project (.srunx.json)"},
-     {"path": "srunx.json", "exists": false, "source": "project (srunx.json)"}
+     {"path": "srunx.json", "exists": false, "source": "project"}
    ]
 
 POST /api/config/reset
@@ -940,7 +939,7 @@ List projects derived from the current SSH profile's mounts.
        "local_path": "/home/user/projects/ml-project",
        "remote_path": "/home/researcher/ml-project",
        "config_exists": true,
-       "config_path": "/home/user/projects/ml-project/.srunx.json"
+       "config_path": "/home/user/projects/ml-project/srunx.json"
      }
    ]
 
@@ -949,7 +948,7 @@ Returns an empty list if no SSH profile is active.
 GET /api/config/projects/{mount_name}
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Read ``.srunx.json`` from a mount's local directory.
+Read ``srunx.json`` from a mount's local directory.
 
 **Response:**
 
@@ -958,7 +957,7 @@ Read ``.srunx.json`` from a mount's local directory.
    {
      "mount_name": "ml-project",
      "local_path": "/home/user/projects/ml-project",
-     "config_path": "/home/user/projects/ml-project/.srunx.json",
+     "config_path": "/home/user/projects/ml-project/srunx.json",
      "exists": true,
      "config": {
        "resources": {"gpus_per_node": 4, "time_limit": "8:00:00"},
@@ -974,7 +973,7 @@ Read ``.srunx.json`` from a mount's local directory.
 PUT /api/config/projects/{mount_name}
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Save ``.srunx.json`` to a mount's local directory.
+Save ``srunx.json`` to a mount's local directory.
 
 **Request body:** A ``SrunxConfig`` object.
 
@@ -990,7 +989,7 @@ Save ``.srunx.json`` to a mount's local directory.
 POST /api/config/projects/{mount_name}/init
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Initialize ``.srunx.json`` with example values in a mount's local directory.
+Initialize ``srunx.json`` with example values in a mount's local directory.
 
 **Response:** The created project config response with example values.
 
@@ -998,7 +997,7 @@ Initialize ``.srunx.json`` with example values in a mount's local directory.
 
 * ``400`` — No active SSH profile
 * ``404`` — Mount not found
-* ``409`` — ``.srunx.json`` already exists
+* ``409`` — ``srunx.json`` already exists
 
 History
 -------

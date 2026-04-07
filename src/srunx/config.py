@@ -89,7 +89,6 @@ def get_config_paths() -> list[Path]:
     paths.append(user_config_dir / "config.json")
 
     # Project-wide config (current working directory)
-    paths.append(Path.cwd() / ".srunx.json")
     paths.append(Path.cwd() / "srunx.json")
 
     return paths

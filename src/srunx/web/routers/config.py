@@ -62,7 +62,7 @@ async def update_config(body: dict[str, Any]) -> dict[str, Any]:
 @router.get("/paths")
 async def get_paths() -> list[ConfigPathInfo]:
     """Return all config file paths with their existence status."""
-    sources = ["system", "user", "project (.srunx.json)", "project (srunx.json)"]
+    sources = ["system", "user", "project"]
     paths = get_config_paths()
     return [
         ConfigPathInfo(
@@ -285,13 +285,9 @@ class ProjectConfigResponse(BaseModel):
 
 
 def _resolve_project_path(local_dir: str) -> Path:
-    """Find .srunx.json or srunx.json in a local directory."""
+    """Find srunx.json in a local directory."""
     local = Path(local_dir).expanduser().resolve()
-    for filename in [".srunx.json", "srunx.json"]:
-        candidate = local / filename
-        if candidate.exists():
-            return candidate
-    return local / ".srunx.json"
+    return local / "srunx.json"
 
 
 def _get_mount_from_profile(mount_name: str) -> tuple[str, str]:
@@ -345,7 +341,7 @@ async def list_projects() -> list[ProjectInfo]:
 
 @router.get("/projects/{mount_name}")
 async def get_project_config(mount_name: str) -> ProjectConfigResponse:
-    """Read .srunx.json from a mount's local directory."""
+    """Read srunx.json from a mount's local directory."""
     local, _ = _get_mount_from_profile(mount_name)
     config_path = _resolve_project_path(local)
 
@@ -372,7 +368,7 @@ async def get_project_config(mount_name: str) -> ProjectConfigResponse:
 async def update_project_config(
     mount_name: str, body: dict[str, Any]
 ) -> ProjectConfigResponse:
-    """Save .srunx.json to a mount's local directory."""
+    """Save srunx.json to a mount's local directory."""
     local, _ = _get_mount_from_profile(mount_name)
 
     try:
@@ -380,7 +376,7 @@ async def update_project_config(
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=e.errors()) from e
 
-    config_path = Path(local).expanduser().resolve() / ".srunx.json"
+    config_path = Path(local).expanduser().resolve() / "srunx.json"
     try:
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config.model_dump(exclude_unset=True), f, indent=2)
@@ -400,9 +396,9 @@ async def update_project_config(
 
 @router.post("/projects/{mount_name}/init")
 async def init_project_config(mount_name: str) -> ProjectConfigResponse:
-    """Initialize .srunx.json in a mount's local directory."""
+    """Initialize srunx.json in a mount's local directory."""
     local, _ = _get_mount_from_profile(mount_name)
-    config_path = Path(local).expanduser().resolve() / ".srunx.json"
+    config_path = Path(local).expanduser().resolve() / "srunx.json"
 
     if config_path.exists():
         raise HTTPException(status_code=409, detail=f"{config_path} already exists")

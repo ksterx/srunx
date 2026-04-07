@@ -197,9 +197,7 @@ class TestConfigPaths:
     def test_get_config_paths(self):
         """Test getting configuration paths."""
         paths = get_config_paths()
-        assert (
-            len(paths) == 4
-        )  # system, user, project (.srunx.json), project (srunx.json)
+        assert len(paths) == 3  # system, user, project (srunx.json)
         assert all(isinstance(path, Path) for path in paths)
 
     @patch("os.name", "posix")
@@ -228,7 +226,6 @@ class TestConfigSaving:
                 mock_paths.return_value = [
                     Path("/etc/srunx/config.json"),  # system
                     user_config_path,  # user
-                    Path(".srunx.json"),  # project
                     Path("srunx.json"),  # project
                 ]
 
