@@ -33,6 +33,7 @@ export function LogViewer() {
   const isRunning = job?.status === "RUNNING";
   const [stdoutLines, setStdoutLines] = useState<string[]>([]);
   const [stderrLines, setStderrLines] = useState<string[]>([]);
+  const [initialLoading, setInitialLoading] = useState(true);
   const offsetRef = useRef({ stdout: 0, stderr: 0 });
   const mountedRef = useRef(true);
 
@@ -56,12 +57,15 @@ export function LogViewer() {
       offsetRef.current.stderr = data.stderr_offset;
     } catch {
       // Ignore transient errors during polling
+    } finally {
+      if (mountedRef.current) setInitialLoading(false);
     }
   }, [id]);
 
   useEffect(() => {
     mountedRef.current = true;
     // Initial full fetch
+    setInitialLoading(true);
     fetchLogs();
     return () => {
       mountedRef.current = false;
@@ -160,7 +164,11 @@ export function LogViewer() {
                 color: "var(--text-muted)",
               }}
             >
-              {isRunning ? "Polling logs..." : "Static logs"}
+              {initialLoading
+                ? "Loading logs..."
+                : isRunning
+                  ? "Polling logs..."
+                  : "Static logs"}
             </span>
           </div>
         </div>
@@ -232,7 +240,7 @@ export function LogViewer() {
         <LogStream
           lines={activeTab === "stdout" ? stdoutLines : stderrLines}
           stream={activeTab}
-          loading={isRunning}
+          loading={isRunning || initialLoading}
         />
       </motion.div>
     </div>
