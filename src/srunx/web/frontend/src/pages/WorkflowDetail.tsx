@@ -25,6 +25,7 @@ import type {
 } from "../lib/types.ts";
 import { DAGView } from "../components/DAGView.tsx";
 import { StatusBadge } from "../components/StatusBadge.tsx";
+import { WorkflowRunDialog } from "../components/WorkflowRunDialog.tsx";
 
 const TERMINAL_STATUSES: ReadonlySet<WorkflowRunStatus> = new Set([
   "completed",
@@ -60,8 +61,8 @@ export function WorkflowDetail() {
 
   /* ── Run state ──────────────────────────────── */
   const [runData, setRunData] = useState<WorkflowRun | null>(null);
-  const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const [showRunDialog, setShowRunDialog] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   if (!name || !mount) {
@@ -125,22 +126,10 @@ export function WorkflowDetail() {
     };
   }, [runData?.id, runData?.status]);
 
-  /* ── Run handler ──────────────────────────── */
-  const handleRun = useCallback(async () => {
-    if (!name || running) return;
-    setRunError(null);
-    setRunning(true);
-    try {
-      const run = await workflowsApi.run(name, mount);
-      setRunData(run);
-    } catch (err) {
-      setRunError(
-        err instanceof Error ? err.message : "Failed to run workflow",
-      );
-    } finally {
-      setRunning(false);
-    }
-  }, [name, mount, running]);
+  /* ── Run handler (via dialog) ────────────── */
+  const handleRunStarted = useCallback((run: Record<string, unknown>) => {
+    setRunData(run as unknown as WorkflowRun);
+  }, []);
 
   /* ── Delete handler ────────────────────────── */
   const handleDelete = useCallback(async () => {
@@ -345,19 +334,15 @@ export function WorkflowDetail() {
 
           <button
             className="btn btn-primary"
-            onClick={handleRun}
-            disabled={
-              running || (!!runData && !TERMINAL_STATUSES.has(runData.status))
-            }
+            onClick={() => setShowRunDialog(true)}
+            disabled={!!runData && !TERMINAL_STATUSES.has(runData.status)}
             style={{
               opacity:
-                running || (runData && !TERMINAL_STATUSES.has(runData.status))
-                  ? 0.6
-                  : 1,
+                runData && !TERMINAL_STATUSES.has(runData.status) ? 0.6 : 1,
             }}
           >
             <Play size={14} />
-            {running ? "Starting..." : "Run Workflow"}
+            Run Workflow
           </button>
 
           {/* Cancel button — visible only when a run is active */}
@@ -662,6 +647,20 @@ export function WorkflowDetail() {
           </motion.div>
         )}
       </div>
+
+      {/* Run dialog */}
+      {showRunDialog && workflow && (
+        <WorkflowRunDialog
+          workflowName={name}
+          mount={mount}
+          jobNames={workflow.jobs.map((j) => j.name)}
+          onClose={() => setShowRunDialog(false)}
+          onRunStarted={(run) => {
+            setShowRunDialog(false);
+            handleRunStarted(run);
+          }}
+        />
+      )}
     </div>
   );
 }

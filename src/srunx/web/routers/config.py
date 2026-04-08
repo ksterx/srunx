@@ -189,6 +189,137 @@ async def activate_ssh_profile(name: str) -> dict[str, bool]:
     return {"ok": True}
 
 
+class SSHConnectResponse(BaseModel):
+    connected: bool
+    profile_name: str
+    hostname: str
+    error: str | None = None
+
+
+@router.post("/ssh/profiles/{name}/connect")
+async def connect_ssh_profile(name: str) -> SSHConnectResponse:
+    """Switch the live SSH connection to a different profile."""
+    import anyio
+
+    from ..deps import swap_adapter
+    from ..ssh_adapter import SlurmSSHAdapter
+
+    cm = _get_config_manager()
+    profile = cm.get_profile(name)
+    if not profile:
+        raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
+
+    try:
+        new_adapter = SlurmSSHAdapter(profile_name=name)
+        connected = await anyio.to_thread.run_sync(new_adapter.connect)
+    except Exception as e:
+        return SSHConnectResponse(
+            connected=False,
+            profile_name=name,
+            hostname=profile.hostname,
+            error=str(e),
+        )
+
+    if not connected:
+        try:
+            await anyio.to_thread.run_sync(new_adapter.disconnect)
+        except Exception:
+            pass
+        return SSHConnectResponse(
+            connected=False,
+            profile_name=name,
+            hostname=profile.hostname,
+            error="SSH connection failed",
+        )
+
+    old_adapter = swap_adapter(new_adapter, profile_name=name)
+    cm.set_current_profile(name)
+
+    # Disconnect old adapter in background
+    if old_adapter:
+
+        async def _disconnect_old() -> None:
+            await anyio.to_thread.run_sync(old_adapter.disconnect)
+
+        try:
+            await _disconnect_old()
+        except Exception:
+            pass
+
+    return SSHConnectResponse(
+        connected=True,
+        profile_name=name,
+        hostname=profile.hostname,
+    )
+
+
+class SSHTestResult(BaseModel):
+    ssh_connected: bool
+    slurm_available: bool
+    hostname: str
+    user: str
+    slurm_version: str
+    error: str | None = None
+
+
+@router.post("/ssh/profiles/{name}/test")
+async def test_ssh_profile(name: str) -> SSHTestResult:
+    """Test SSH connectivity and SLURM availability for a profile without switching."""
+    import anyio
+
+    from ..ssh_adapter import SlurmSSHAdapter
+
+    cm = _get_config_manager()
+    profile = cm.get_profile(name)
+    if not profile:
+        raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
+
+    temp_adapter: SlurmSSHAdapter | None = None
+    try:
+        temp_adapter = SlurmSSHAdapter(profile_name=name)
+        result = await anyio.to_thread.run_sync(temp_adapter._client.test_connection)
+    except Exception as e:
+        return SSHTestResult(
+            ssh_connected=False,
+            slurm_available=False,
+            hostname=profile.hostname,
+            user=profile.username,
+            slurm_version="",
+            error=str(e),
+        )
+    finally:
+        if temp_adapter is not None:
+            try:
+                await anyio.to_thread.run_sync(temp_adapter.disconnect)
+            except Exception:
+                pass
+
+    return SSHTestResult(
+        ssh_connected=bool(result.get("ssh_connected", False)),
+        slurm_available=bool(result.get("slurm_available", False)),
+        hostname=str(result.get("hostname", "")),
+        user=str(result.get("user", "")),
+        slurm_version=str(result.get("slurm_version", "")),
+        error=str(result["error"]) if result.get("error") else None,
+    )
+
+
+class SSHConnectionStatus(BaseModel):
+    connected: bool
+    profile_name: str | None
+
+
+@router.get("/ssh/status")
+async def get_ssh_status() -> SSHConnectionStatus:
+    """Return the current SSH connection status."""
+    from ..deps import get_active_profile_name, get_adapter_or_none
+
+    return SSHConnectionStatus(
+        connected=get_adapter_or_none() is not None,
+        profile_name=get_active_profile_name(),
+    )
+
+
 @router.post("/ssh/profiles/{name}/mounts")
 async def add_profile_mount(name: str, body: MountCreateRequest) -> dict[str, Any]:
     """Add a mount to an SSH profile."""

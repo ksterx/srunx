@@ -252,6 +252,27 @@ export type SSHProfilesResponse = {
   profiles: Record<string, SSHProfile>;
 };
 
+export type SSHConnectResponse = {
+  connected: boolean;
+  profile_name: string;
+  hostname: string;
+  error: string | null;
+};
+
+export type SSHTestResult = {
+  ssh_connected: boolean;
+  slurm_available: boolean;
+  hostname: string;
+  user: string;
+  slurm_version: string;
+  error: string | null;
+};
+
+export type SSHConnectionStatus = {
+  connected: boolean;
+  profile_name: string | null;
+};
+
 /* ── Environment variable info ──────────────── */
 
 export type EnvVarInfo = {
@@ -276,6 +297,60 @@ export type ProjectConfigResponse = {
   config_path: string;
   exists: boolean;
   config: SrunxConfig | null;
+};
+
+/* ── Workflow run options ────────────────────── */
+
+export type WorkflowRunOptions = {
+  from_job?: string;
+  to_job?: string;
+  single_job?: string;
+  dry_run?: boolean;
+};
+
+export type DryRunJobInfo = {
+  name: string;
+  script: string;
+  depends_on: string[];
+  resources: Record<string, unknown>;
+};
+
+export type DryRunResult = {
+  dry_run: true;
+  jobs: DryRunJobInfo[];
+  execution_order: string[];
+};
+
+/* ── Templates ──────────────────────────────── */
+
+export type TemplateListItem = {
+  name: string;
+  description: string;
+  use_case: string;
+};
+
+export type TemplateDetail = {
+  name: string;
+  description: string;
+  use_case: string;
+  content: string;
+};
+
+/* ── Script preview ─────────────────────────── */
+
+export type ScriptPreviewRequest = {
+  name?: string;
+  command: string[];
+  resources?: Record<string, string | number | null>;
+  environment?: Record<string, string | Record<string, unknown> | null>;
+  work_dir?: string;
+  log_dir?: string;
+  template_name?: string;
+};
+
+export type ScriptPreviewResponse = {
+  script: string;
+  template_used: string;
 };
 
 /* ── Workflow create request ─────────────────── */

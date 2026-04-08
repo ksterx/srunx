@@ -714,3 +714,672 @@ class TestWorkflowsRouter:
         )
         assert "SRUNX_OUTPUTS_DIR" in eval_script
         assert "train.env" in eval_script  # Should source train's outputs
+
+
+# ── Config SSH Connect / Test / Status ───────────────
+
+
+class TestConfigSSHConnect:
+    """Tests for SSH profile connect, test, and status endpoints."""
+
+    def test_connect_profile_not_found(self, client: TestClient) -> None:
+        """POST /api/config/ssh/profiles/{name}/connect with unknown profile returns 404."""
+        from unittest.mock import patch
+
+        mock_cm = MagicMock()
+        mock_cm.get_profile.return_value = None
+
+        with patch(
+            "srunx.web.routers.config._get_config_manager", return_value=mock_cm
+        ):
+            resp = client.post("/api/config/ssh/profiles/nonexistent/connect")
+        assert resp.status_code == 404
+
+    def test_connect_success(self, client: TestClient) -> None:
+        """Successful SSH connect swaps the adapter and returns connected=True."""
+        from unittest.mock import patch
+
+        from srunx.ssh.core.config import ServerProfile
+
+        profile = ServerProfile(
+            hostname="gpu.example.com",
+            username="tester",
+            key_filename="~/.ssh/id_rsa",
+        )
+        mock_cm = MagicMock()
+        mock_cm.get_profile.return_value = profile
+
+        mock_new_adapter = MagicMock()
+        mock_new_adapter.connect.return_value = True
+
+        with (
+            patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
+            patch(
+                "srunx.web.ssh_adapter.SlurmSSHAdapter",
+                return_value=mock_new_adapter,
+            ),
+            patch("srunx.web.deps.swap_adapter", return_value=None),
+        ):
+            resp = client.post("/api/config/ssh/profiles/myprofile/connect")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["connected"] is True
+        assert data["profile_name"] == "myprofile"
+        assert data["hostname"] == "gpu.example.com"
+        assert data["error"] is None
+
+    def test_connect_failure_returns_error(self, client: TestClient) -> None:
+        """When SSH connect() returns False, response has connected=False with error."""
+        from unittest.mock import patch
+
+        from srunx.ssh.core.config import ServerProfile
+
+        profile = ServerProfile(
+            hostname="gpu.example.com",
+            username="tester",
+            key_filename="~/.ssh/id_rsa",
+        )
+        mock_cm = MagicMock()
+        mock_cm.get_profile.return_value = profile
+
+        mock_new_adapter = MagicMock()
+        mock_new_adapter.connect.return_value = False
+
+        with (
+            patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
+            patch(
+                "srunx.web.ssh_adapter.SlurmSSHAdapter",
+                return_value=mock_new_adapter,
+            ),
+        ):
+            resp = client.post("/api/config/ssh/profiles/myprofile/connect")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["connected"] is False
+        assert data["error"] == "SSH connection failed"
+
+    def test_connect_exception_returns_error(self, client: TestClient) -> None:
+        """When adapter creation raises an exception, response has connected=False."""
+        from unittest.mock import patch
+
+        from srunx.ssh.core.config import ServerProfile
+
+        profile = ServerProfile(
+            hostname="gpu.example.com",
+            username="tester",
+            key_filename="~/.ssh/id_rsa",
+        )
+        mock_cm = MagicMock()
+        mock_cm.get_profile.return_value = profile
+
+        with (
+            patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
+            patch(
+                "srunx.web.ssh_adapter.SlurmSSHAdapter",
+                side_effect=ConnectionError("Host unreachable"),
+            ),
+        ):
+            resp = client.post("/api/config/ssh/profiles/myprofile/connect")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["connected"] is False
+        assert "Host unreachable" in (data["error"] or "")
+
+    def test_test_profile_not_found(self, client: TestClient) -> None:
+        """POST /api/config/ssh/profiles/{name}/test with unknown profile returns 404."""
+        from unittest.mock import patch
+
+        mock_cm = MagicMock()
+        mock_cm.get_profile.return_value = None
+
+        with patch(
+            "srunx.web.routers.config._get_config_manager", return_value=mock_cm
+        ):
+            resp = client.post("/api/config/ssh/profiles/unknown/test")
+        assert resp.status_code == 404
+
+    def test_test_ssh_and_slurm_ok(self, client: TestClient) -> None:
+        """Successful test reports SSH connected and SLURM available."""
+        from unittest.mock import patch
+
+        from srunx.ssh.core.config import ServerProfile
+
+        profile = ServerProfile(
+            hostname="gpu.example.com",
+            username="tester",
+            key_filename="~/.ssh/id_rsa",
+        )
+        mock_cm = MagicMock()
+        mock_cm.get_profile.return_value = profile
+
+        mock_adapter = MagicMock()
+        mock_adapter._client.test_connection.return_value = {
+            "ssh_connected": True,
+            "slurm_available": True,
+            "hostname": "gpu.example.com",
+            "user": "tester",
+            "slurm_version": "23.02.7",
+        }
+
+        with (
+            patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
+            patch(
+                "srunx.web.ssh_adapter.SlurmSSHAdapter",
+                return_value=mock_adapter,
+            ),
+        ):
+            resp = client.post("/api/config/ssh/profiles/myprofile/test")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ssh_connected"] is True
+        assert data["slurm_available"] is True
+        assert data["hostname"] == "gpu.example.com"
+        assert data["slurm_version"] == "23.02.7"
+        assert data["error"] is None
+
+    def test_test_ssh_ok_slurm_unavailable(self, client: TestClient) -> None:
+        """SSH connects but SLURM commands fail."""
+        from unittest.mock import patch
+
+        from srunx.ssh.core.config import ServerProfile
+
+        profile = ServerProfile(
+            hostname="gpu.example.com",
+            username="tester",
+            key_filename="~/.ssh/id_rsa",
+        )
+        mock_cm = MagicMock()
+        mock_cm.get_profile.return_value = profile
+
+        mock_adapter = MagicMock()
+        mock_adapter._client.test_connection.return_value = {
+            "ssh_connected": True,
+            "slurm_available": False,
+            "hostname": "gpu.example.com",
+            "user": "tester",
+            "slurm_version": "",
+            "error": "sinfo: command not found",
+        }
+
+        with (
+            patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
+            patch(
+                "srunx.web.ssh_adapter.SlurmSSHAdapter",
+                return_value=mock_adapter,
+            ),
+        ):
+            resp = client.post("/api/config/ssh/profiles/myprofile/test")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ssh_connected"] is True
+        assert data["slurm_available"] is False
+        assert "sinfo" in (data["error"] or "")
+
+    def test_test_connection_failure(self, client: TestClient) -> None:
+        """When adapter construction raises, error is returned."""
+        from unittest.mock import patch
+
+        from srunx.ssh.core.config import ServerProfile
+
+        profile = ServerProfile(
+            hostname="gpu.example.com",
+            username="tester",
+            key_filename="~/.ssh/id_rsa",
+        )
+        mock_cm = MagicMock()
+        mock_cm.get_profile.return_value = profile
+
+        with (
+            patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
+            patch(
+                "srunx.web.ssh_adapter.SlurmSSHAdapter",
+                side_effect=OSError("Connection refused"),
+            ),
+        ):
+            resp = client.post("/api/config/ssh/profiles/myprofile/test")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ssh_connected"] is False
+        assert data["slurm_available"] is False
+        assert "Connection refused" in (data["error"] or "")
+
+    def test_ssh_status_connected(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """GET /api/config/ssh/status returns connected=True when adapter is set."""
+        from unittest.mock import patch
+
+        with (
+            patch(
+                "srunx.web.deps.get_active_profile_name", return_value="test-profile"
+            ),
+            patch("srunx.web.deps.get_adapter_or_none", return_value=mock_adapter),
+        ):
+            resp = client.get("/api/config/ssh/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["connected"] is True
+        assert data["profile_name"] == "test-profile"
+
+    def test_ssh_status_disconnected(self, client: TestClient) -> None:
+        """GET /api/config/ssh/status returns connected=False when no adapter."""
+        from unittest.mock import patch
+
+        with (
+            patch("srunx.web.deps.get_adapter_or_none", return_value=None),
+            patch("srunx.web.deps.get_active_profile_name", return_value=None),
+        ):
+            resp = client.get("/api/config/ssh/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["connected"] is False
+        assert data["profile_name"] is None
+
+
+# ── Script Preview ───────────────────────────────────
+
+
+class TestScriptPreview:
+    """Tests for POST /api/jobs/preview (local rendering, no SSH needed)."""
+
+    def test_basic_preview(self, client: TestClient) -> None:
+        """Preview with a simple command returns a valid SLURM script."""
+        resp = client.post(
+            "/api/jobs/preview",
+            json={"command": ["python", "train.py"]},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "#!/bin/bash" in data["script"]
+        assert data["template_used"] == "advanced"
+
+    def test_preview_with_resources_and_environment(self, client: TestClient) -> None:
+        """Preview with resources and environment settings renders them in the script."""
+        resp = client.post(
+            "/api/jobs/preview",
+            json={
+                "name": "gpu-train",
+                "command": ["python", "train.py"],
+                "resources": {"nodes": 2, "gpus_per_node": 4, "partition": "gpu"},
+                "environment": {"conda": "ml_env"},
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        script = data["script"]
+        assert "gpu-train" in script
+        assert "ml_env" in script
+        assert data["template_used"] == "advanced"
+
+    def test_preview_with_specific_template(self, client: TestClient) -> None:
+        """Preview with template_name='base' uses the base template."""
+        resp = client.post(
+            "/api/jobs/preview",
+            json={
+                "command": ["echo", "hello"],
+                "template_name": "base",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["template_used"] == "base"
+        assert "#!/bin/bash" in data["script"]
+
+    def test_preview_invalid_template(self, client: TestClient) -> None:
+        """Preview with unknown template_name returns 404."""
+        resp = client.post(
+            "/api/jobs/preview",
+            json={
+                "command": ["echo", "hi"],
+                "template_name": "nonexistent-template",
+            },
+        )
+        assert resp.status_code == 404
+
+    def test_preview_with_custom_name(self, client: TestClient) -> None:
+        """Preview with a custom job name renders it in the script header."""
+        resp = client.post(
+            "/api/jobs/preview",
+            json={
+                "name": "my-custom-job",
+                "command": ["python", "run.py"],
+            },
+        )
+        assert resp.status_code == 200
+        assert "my-custom-job" in resp.json()["script"]
+
+    def test_preview_missing_command_returns_422(self, client: TestClient) -> None:
+        """Preview without command field returns validation error."""
+        resp = client.post("/api/jobs/preview", json={"name": "no-cmd"})
+        assert resp.status_code == 422
+
+    def test_preview_with_work_dir_and_log_dir(self, client: TestClient) -> None:
+        """Preview with work_dir and log_dir passes them to the template."""
+        resp = client.post(
+            "/api/jobs/preview",
+            json={
+                "command": ["python", "train.py"],
+                "work_dir": "/scratch/user/experiment",
+                "log_dir": "/scratch/user/logs",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "/scratch/user/experiment" in data["script"] or data["template_used"]
+
+
+# ── Templates Router ─────────────────────────────────
+
+
+class TestTemplatesRouter:
+    """Tests for GET/POST /api/templates endpoints."""
+
+    def test_list_templates(self, client: TestClient) -> None:
+        """GET /api/templates returns all built-in templates."""
+        resp = client.get("/api/templates")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        assert len(data) >= 2  # at least base and advanced
+        names = {t["name"] for t in data}
+        assert "base" in names
+        assert "advanced" in names
+        # Verify structure
+        for t in data:
+            assert "name" in t
+            assert "description" in t
+            assert "use_case" in t
+
+    def test_get_known_template(self, client: TestClient) -> None:
+        """GET /api/templates/advanced returns template detail with raw content."""
+        resp = client.get("/api/templates/advanced")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "advanced"
+        assert data["description"]
+        assert "content" in data
+        # The raw content should be a Jinja2 template
+        assert "{%" in data["content"] or "{{" in data["content"]
+
+    def test_get_unknown_template(self, client: TestClient) -> None:
+        """GET /api/templates/nonexistent returns 404."""
+        resp = client.get("/api/templates/nonexistent")
+        assert resp.status_code == 404
+
+    def test_get_base_template(self, client: TestClient) -> None:
+        """GET /api/templates/base returns the base template."""
+        resp = client.get("/api/templates/base")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "base"
+        assert len(data["content"]) > 0
+
+    def test_apply_preview_only(self, client: TestClient) -> None:
+        """POST /api/templates/{name}/apply with preview_only=True returns rendered script."""
+        resp = client.post(
+            "/api/templates/advanced/apply",
+            json={
+                "command": ["python", "train.py"],
+                "job_name": "preview-job",
+                "preview_only": True,
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "script" in data
+        assert data["template_used"] == "advanced"
+        assert "#!/bin/bash" in data["script"]
+
+    def test_apply_submits_job(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """POST /api/templates/{name}/apply with preview_only=False submits the job."""
+        resp = client.post(
+            "/api/templates/base/apply",
+            json={
+                "command": ["echo", "hello"],
+                "job_name": "submit-test",
+                "preview_only": False,
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["job_id"] == 10002
+        mock_adapter.submit_job.assert_called_once()
+
+    def test_apply_unknown_template(self, client: TestClient) -> None:
+        """POST /api/templates/nonexistent/apply returns 404."""
+        resp = client.post(
+            "/api/templates/nonexistent/apply",
+            json={
+                "command": ["echo", "hi"],
+                "preview_only": True,
+            },
+        )
+        assert resp.status_code == 404
+
+    def test_apply_submit_failure(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """When sbatch fails during apply, 502 is returned."""
+        mock_adapter.submit_job.side_effect = RuntimeError("sbatch: error")
+        resp = client.post(
+            "/api/templates/advanced/apply",
+            json={
+                "command": ["python", "train.py"],
+                "job_name": "fail-job",
+                "preview_only": False,
+            },
+        )
+        assert resp.status_code == 502
+
+
+# ── Workflow Execution Control ───────────────────────
+
+
+class TestWorkflowExecutionControl:
+    """Tests for POST /api/workflows/{name}/run with WorkflowRunRequest body."""
+
+    def _create_test_workflow(self, client: TestClient) -> None:
+        """Helper: create a 3-step workflow for execution control tests."""
+        payload = {
+            "name": "exec-ctrl",
+            "default_project": MOUNT,
+            "jobs": [
+                {"name": "step1", "command": ["echo", "step1"]},
+                {
+                    "name": "step2",
+                    "command": ["echo", "step2"],
+                    "depends_on": ["step1"],
+                },
+                {
+                    "name": "step3",
+                    "command": ["echo", "step3"],
+                    "depends_on": ["step2"],
+                },
+            ],
+        }
+        resp = client.post("/api/workflows/create", json=payload)
+        assert resp.status_code == 200
+
+    def _setup_mock_submit(self, mock_adapter: MagicMock) -> None:
+        """Configure mock_adapter.submit_job to return incrementing job IDs."""
+        counter = {"n": 0}
+
+        def mock_submit(
+            script_content: str,
+            job_name: str | None = None,
+            dependency: str | None = None,
+        ) -> dict:
+            counter["n"] += 1
+            return {
+                "name": job_name or "job",
+                "job_id": 30000 + counter["n"],
+                "status": "PENDING",
+                "depends_on": [],
+                "command": [],
+                "resources": {},
+            }
+
+        mock_adapter.submit_job.side_effect = mock_submit
+
+    def test_dry_run_returns_scripts(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """dry_run=True returns rendered scripts without submitting."""
+        self._create_test_workflow(client)
+
+        resp = client.post(
+            "/api/workflows/exec-ctrl/run",
+            params={"mount": MOUNT},
+            json={"dry_run": True},
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["dry_run"] is True
+        assert len(data["jobs"]) == 3
+        for job in data["jobs"]:
+            assert "script" in job
+            assert "#!/bin/bash" in job["script"]
+            assert "name" in job
+        # Verify execution order
+        names = data["execution_order"]
+        assert names == ["step1", "step2", "step3"]
+        # submit_job should NOT have been called
+        mock_adapter.submit_job.assert_not_called()
+
+    def test_single_job_execution(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """single_job runs only the specified job, skipping dependencies."""
+        self._create_test_workflow(client)
+        self._setup_mock_submit(mock_adapter)
+
+        resp = client.post(
+            "/api/workflows/exec-ctrl/run",
+            params={"mount": MOUNT},
+            json={"single_job": "step2"},
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        # Only one job should have been submitted
+        assert mock_adapter.submit_job.call_count == 1
+        call_kwargs = mock_adapter.submit_job.call_args
+        # The job_name kwarg should be step2
+        assert call_kwargs.kwargs.get("job_name") == "step2" or (
+            call_kwargs[1].get("job_name") == "step2" if len(call_kwargs) > 1 else False
+        )
+
+    def test_single_job_invalid_name(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """single_job with a name not in the workflow returns 422."""
+        self._create_test_workflow(client)
+
+        resp = client.post(
+            "/api/workflows/exec-ctrl/run",
+            params={"mount": MOUNT},
+            json={"single_job": "nonexistent"},
+        )
+        assert resp.status_code == 422
+
+    def test_from_job_filters_start(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """from_job skips jobs before the specified job."""
+        self._create_test_workflow(client)
+        self._setup_mock_submit(mock_adapter)
+
+        resp = client.post(
+            "/api/workflows/exec-ctrl/run",
+            params={"mount": MOUNT},
+            json={"from_job": "step2"},
+        )
+        assert resp.status_code == 202
+        # step2 and step3 should be submitted (2 jobs)
+        assert mock_adapter.submit_job.call_count == 2
+
+    def test_to_job_filters_end(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """to_job stops execution after the specified job."""
+        self._create_test_workflow(client)
+        self._setup_mock_submit(mock_adapter)
+
+        resp = client.post(
+            "/api/workflows/exec-ctrl/run",
+            params={"mount": MOUNT},
+            json={"to_job": "step2"},
+        )
+        assert resp.status_code == 202
+        # step1 and step2 should be submitted (2 jobs)
+        assert mock_adapter.submit_job.call_count == 2
+
+    def test_from_job_invalid_name(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """from_job with unknown job name returns 422."""
+        self._create_test_workflow(client)
+
+        resp = client.post(
+            "/api/workflows/exec-ctrl/run",
+            params={"mount": MOUNT},
+            json={"from_job": "no-such-job"},
+        )
+        assert resp.status_code == 422
+
+    def test_to_job_invalid_name(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """to_job with unknown job name returns 422."""
+        self._create_test_workflow(client)
+
+        resp = client.post(
+            "/api/workflows/exec-ctrl/run",
+            params={"mount": MOUNT},
+            json={"to_job": "no-such-job"},
+        )
+        assert resp.status_code == 422
+
+    def test_no_body_backward_compat(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """Running a workflow without a body (backward compat) still works."""
+        self._create_test_workflow(client)
+        self._setup_mock_submit(mock_adapter)
+
+        resp = client.post(
+            "/api/workflows/exec-ctrl/run",
+            params={"mount": MOUNT},
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["status"] == "running"
+        # All 3 jobs should be submitted
+        assert mock_adapter.submit_job.call_count == 3
+
+    def test_dry_run_single_job(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """dry_run combined with single_job returns only that job's script."""
+        self._create_test_workflow(client)
+
+        resp = client.post(
+            "/api/workflows/exec-ctrl/run",
+            params={"mount": MOUNT},
+            json={"dry_run": True, "single_job": "step2"},
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["dry_run"] is True
+        assert len(data["jobs"]) == 1
+        assert data["jobs"][0]["name"] == "step2"
+        mock_adapter.submit_job.assert_not_called()

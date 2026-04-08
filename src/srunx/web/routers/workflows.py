@@ -492,14 +492,69 @@ async def _monitor_run(
         await anyio.sleep(10)
 
 
+class WorkflowRunRequest(BaseModel):
+    from_job: str | None = None
+    to_job: str | None = None
+    single_job: str | None = None
+    dry_run: bool = False
+
+
+def _filter_workflow_jobs(
+    workflow: Workflow,
+    from_job: str | None,
+    to_job: str | None,
+    single_job: str | None,
+) -> list[Job | ShellJob]:
+    """Filter workflow jobs based on execution control parameters."""
+    all_jobs = {job.name: job for job in workflow.jobs}
+
+    if single_job:
+        if single_job not in all_jobs:
+            raise HTTPException(422, f"Job '{single_job}' not found in workflow")
+        job = all_jobs[single_job]
+        # Create a copy-like job with no dependencies for standalone execution
+        return [job]
+
+    names = [job.name for job in workflow.jobs]
+
+    start_idx = 0
+    end_idx = len(names)
+
+    if from_job:
+        if from_job not in all_jobs:
+            raise HTTPException(422, f"Job '{from_job}' not found in workflow")
+        start_idx = names.index(from_job)
+
+    if to_job:
+        if to_job not in all_jobs:
+            raise HTTPException(422, f"Job '{to_job}' not found in workflow")
+        end_idx = names.index(to_job) + 1
+
+    if from_job and to_job and start_idx >= end_idx:
+        raise HTTPException(
+            422,
+            f"from_job '{from_job}' must appear before to_job '{to_job}' in the workflow",
+        )
+
+    selected_names = set(names[start_idx:end_idx])
+    return [job for job in workflow.jobs if job.name in selected_names]
+
+
 @router.post("/{name}/run", status_code=202)
 async def run_workflow(
     name: str,
     request: Request,
     mount: str | None = None,
+    body: WorkflowRunRequest | None = None,
     adapter: SlurmSSHAdapter = Depends(get_adapter),
 ) -> dict[str, Any]:
-    """Run a workflow: sync mounts, submit jobs with SLURM dependencies."""
+    """Run a workflow: sync mounts, submit jobs with SLURM dependencies.
+
+    Accepts optional body with execution control:
+    - from_job / to_job: run a range of jobs
+    - single_job: run only one job
+    - dry_run: render scripts without submitting
+    """
     from collections import deque
 
     from srunx.models import render_job_script
@@ -515,22 +570,33 @@ async def run_workflow(
     if not mount:
         raise HTTPException(status_code=422, detail="mount query parameter is required")
 
+    run_opts = body or WorkflowRunRequest()
+
     yaml_path = _find_yaml(name, mount)
 
     # Load workflow
     runner = await anyio.to_thread.run_sync(lambda: WorkflowRunner.from_yaml(yaml_path))
     workflow = runner.workflow
 
-    # Create run record
-    run = run_registry.create(name)
-    run_id = run.id
-    run_registry.update_status(run_id, "syncing")
+    # Filter jobs based on execution control params
+    if run_opts.from_job or run_opts.to_job or run_opts.single_job:
+        filtered_jobs = _filter_workflow_jobs(
+            workflow, run_opts.from_job, run_opts.to_job, run_opts.single_job
+        )
+        workflow = Workflow(name=workflow.name, jobs=filtered_jobs)
 
-    # ── Sync mounts ─────────────────────────────────────────────────
+    # Create run record (skip for dry runs)
+    run_id: str | None = None
+    if not run_opts.dry_run:
+        run = run_registry.create(name)
+        run_id = run.id
+        run_registry.update_status(run_id, "syncing")
+
+    # ── Sync mounts (skip for dry runs) ──────────────────────────────
 
     profile = await anyio.to_thread.run_sync(get_current_profile)
 
-    if profile is not None:
+    if profile is not None and not run_opts.dry_run:
         # Build raw jobs data from the loaded workflow for mount resolution
         jobs_raw: list[dict[str, Any]] = []
         for job in workflow.jobs:
@@ -548,16 +614,18 @@ async def run_workflow(
                     lambda mn=mount_name: sync_mount_by_name(profile, mn)  # type: ignore[misc]
                 )
             except Exception as exc:
-                run_registry.fail_run(
-                    run_id, f"Sync failed for mount '{mount_name}': {exc}"
-                )
+                if run_id:
+                    run_registry.fail_run(
+                        run_id, f"Sync failed for mount '{mount_name}': {exc}"
+                    )
                 raise HTTPException(
                     status_code=502,
                     detail=f"Mount sync failed for '{mount_name}': {exc}",
                 ) from exc
 
     # ── Render SLURM scripts ────────────────────────────────────────
-    run_registry.update_status(run_id, "submitting")
+    if run_id:
+        run_registry.update_status(run_id, "submitting")
 
     template_path = (
         Path(__file__).resolve().parent.parent.parent
@@ -577,12 +645,18 @@ async def run_workflow(
     if any_job_has_outputs or any_job_has_deps:
         wf_outputs_dir = f"/tmp/srunx/{name}_{uuid4().hex[:8]}"
 
+    job_names_in_wf = {job.name for job in workflow.jobs}
+
     def _render_all_scripts() -> dict[str, str]:
         scripts: dict[str, str] = {}
         with tempfile.TemporaryDirectory() as tmpdir:
             for job in workflow.jobs:
                 if isinstance(job, Job):
-                    dep_names = [dep.job_name for dep in job.parsed_dependencies]
+                    dep_names = [
+                        dep.job_name
+                        for dep in job.parsed_dependencies
+                        if dep.job_name in job_names_in_wf
+                    ]
                     rendered_path = render_job_script(
                         template_path,
                         job,
@@ -613,20 +687,51 @@ async def run_workflow(
     try:
         scripts = await anyio.to_thread.run_sync(_render_all_scripts)
     except Exception as exc:
-        run_registry.fail_run(run_id, f"Script rendering failed: {exc}")
+        if run_id:
+            run_registry.fail_run(run_id, f"Script rendering failed: {exc}")
         raise HTTPException(
             status_code=500, detail=f"Script rendering failed: {exc}"
         ) from exc
 
+    # ── Dry run: return rendered scripts without submitting ────────
+    if run_opts.dry_run:
+        dry_run_jobs = []
+        for job in workflow.jobs:
+            dry_run_jobs.append(
+                {
+                    "name": job.name,
+                    "script": scripts.get(job.name, ""),
+                    "depends_on": [
+                        d.job_name
+                        for d in job.parsed_dependencies
+                        if d.job_name in job_names_in_wf
+                    ],
+                    "resources": job.resources.model_dump()
+                    if isinstance(job, Job)
+                    else {},
+                }
+            )
+        return {
+            "dry_run": True,
+            "jobs": dry_run_jobs,
+            "execution_order": [job.name for job in workflow.jobs],
+        }
+
     # ── Topological submit (BFS) ────────────────────────────────────
+    assert run_id is not None  # guaranteed: dry_run returns before this point
+    filtered_names = {job.name for job in workflow.jobs}
     dependents: dict[str, list[str]] = {job.name: [] for job in workflow.jobs}
     in_degree: dict[str, int] = {
-        job.name: len(job.parsed_dependencies) for job in workflow.jobs
+        job.name: len(
+            [d for d in job.parsed_dependencies if d.job_name in filtered_names]
+        )
+        for job in workflow.jobs
     }
 
     for job in workflow.jobs:
         for dep in job.parsed_dependencies:
-            dependents[dep.job_name].append(job.name)
+            if dep.job_name in filtered_names:
+                dependents[dep.job_name].append(job.name)
 
     queue: deque[str] = deque(
         job.name for job in workflow.jobs if in_degree[job.name] == 0
@@ -638,10 +743,13 @@ async def run_workflow(
         current_job = job_map[current_name]
 
         # Build dependency flag from parent SLURM IDs
+        # For single_job mode, skip dependencies (job runs standalone)
         dep_parts: list[str] = []
-        for dep in current_job.parsed_dependencies:
-            parent_id = submitted[dep.job_name]
-            dep_parts.append(f"{dep.dep_type}:{parent_id}")
+        if not run_opts.single_job:
+            for dep in current_job.parsed_dependencies:
+                if dep.job_name in submitted:
+                    parent_id = submitted[dep.job_name]
+                    dep_parts.append(f"{dep.dep_type}:{parent_id}")
         dependency = ",".join(dep_parts) if dep_parts else None
 
         try:

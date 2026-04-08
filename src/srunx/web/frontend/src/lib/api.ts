@@ -10,14 +10,22 @@ import type {
   ProjectConfigResponse,
   ProjectInfo,
   ResourceSnapshot,
+  ScriptPreviewRequest,
+  ScriptPreviewResponse,
+  SSHConnectResponse,
+  SSHConnectionStatus,
   SSHMountConfig,
   SSHProfile,
   SSHProfilesResponse,
+  SSHTestResult,
   SrunxConfig,
   SyncResult,
+  TemplateDetail,
+  TemplateListItem,
   Workflow,
   WorkflowCreateRequest,
   WorkflowRun,
+  WorkflowRunOptions,
 } from "./types.ts";
 
 /* ── Helpers ─────────────────────────────────── */
@@ -80,6 +88,21 @@ export const jobs = {
     if (!res.ok) {
       const err = await res.json();
       throw new Error(extractDetail(err, "Failed to submit job"));
+    }
+    return res.json();
+  },
+
+  preview: async (
+    body: ScriptPreviewRequest,
+  ): Promise<ScriptPreviewResponse> => {
+    const res = await fetch("/api/jobs/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(extractDetail(err, "Failed to preview script"));
     }
     return res.json();
   },
@@ -149,11 +172,19 @@ export const workflows = {
     return res.json();
   },
 
-  run: async (name: string, mount: string): Promise<WorkflowRun> => {
+  run: async (
+    name: string,
+    mount: string,
+    options?: WorkflowRunOptions,
+  ): Promise<WorkflowRun | Record<string, unknown>> => {
     const params = new URLSearchParams({ mount });
     const res = await fetch(
       `/api/workflows/${encodeURIComponent(name)}/run?${params}`,
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: options ? { "Content-Type": "application/json" } : {},
+        body: options ? JSON.stringify(options) : undefined,
+      },
     );
     if (!res.ok) {
       const err = await res.json();
@@ -399,6 +430,36 @@ export const config = {
     }
   },
 
+  connectSSHProfile: async (name: string): Promise<SSHConnectResponse> => {
+    const res = await fetch(
+      `/api/config/ssh/profiles/${encodeURIComponent(name)}/connect`,
+      { method: "POST" },
+    );
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(extractDetail(err, "Failed to connect SSH profile"));
+    }
+    return res.json();
+  },
+
+  testSSHProfile: async (name: string): Promise<SSHTestResult> => {
+    const res = await fetch(
+      `/api/config/ssh/profiles/${encodeURIComponent(name)}/test`,
+      { method: "POST" },
+    );
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(extractDetail(err, "Failed to test SSH profile"));
+    }
+    return res.json();
+  },
+
+  sshStatus: async (): Promise<SSHConnectionStatus> => {
+    const res = await fetch("/api/config/ssh/status");
+    if (!res.ok) throw new Error("Failed to fetch SSH status");
+    return res.json();
+  },
+
   addSSHMount: async (
     profileName: string,
     mount: SSHMountConfig,
@@ -485,6 +546,50 @@ export const config = {
       throw new Error(
         extractDetail(err, "Failed to initialize project config"),
       );
+    }
+    return res.json();
+  },
+};
+
+/* ── Templates ──────────────────────────────── */
+
+export const templates = {
+  list: async (): Promise<TemplateListItem[]> => {
+    const res = await fetch("/api/templates");
+    if (!res.ok) throw new Error("Failed to fetch templates");
+    return res.json();
+  },
+
+  get: async (name: string): Promise<TemplateDetail> => {
+    const res = await fetch(`/api/templates/${encodeURIComponent(name)}`);
+    if (!res.ok) throw new Error(`Failed to fetch template "${name}"`);
+    return res.json();
+  },
+
+  apply: async (
+    name: string,
+    body: {
+      command: string[];
+      job_name?: string;
+      resources?: Record<string, unknown>;
+      environment?: Record<string, unknown>;
+      work_dir?: string;
+      log_dir?: string;
+      mount_name?: string;
+      preview_only?: boolean;
+    },
+  ): Promise<Record<string, unknown>> => {
+    const res = await fetch(
+      `/api/templates/${encodeURIComponent(name)}/apply`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(extractDetail(err, "Failed to apply template"));
     }
     return res.json();
   },

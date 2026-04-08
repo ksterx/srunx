@@ -3,15 +3,21 @@ import {
   LayoutDashboard,
   Layers,
   GitFork,
+  FileCode2,
   Cpu,
   Settings,
   Terminal,
   ChevronLeft,
   ChevronRight,
   FolderTree,
+  Server,
+  Loader2,
+  ChevronUp as ChevronUpIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { config as configApi } from "../lib/api.ts";
+import type { SSHProfilesResponse } from "../lib/types.ts";
 
 type NavItem = {
   to: string;
@@ -23,6 +29,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/", icon: <LayoutDashboard size={18} />, label: "Dashboard" },
   { to: "/jobs", icon: <Layers size={18} />, label: "Jobs" },
   { to: "/workflows", icon: <GitFork size={18} />, label: "Workflows" },
+  { to: "/templates", icon: <FileCode2 size={18} />, label: "Templates" },
   { to: "/resources", icon: <Cpu size={18} />, label: "Resources" },
   { to: "/settings", icon: <Settings size={18} />, label: "Settings" },
 ];
@@ -39,6 +46,61 @@ export function Sidebar({
   onNavigate,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
+  const [profileData, setProfileData] = useState<SSHProfilesResponse | null>(
+    null,
+  );
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [connecting, setConnecting] = useState<string | null>(null);
+  const [connectedProfile, setConnectedProfile] = useState<string | null>(null);
+
+  const loadProfiles = useCallback(async () => {
+    try {
+      const [profiles, status] = await Promise.all([
+        configApi.sshProfiles(),
+        configApi.sshStatus(),
+      ]);
+      setProfileData(profiles);
+      setConnectedProfile(status.profile_name);
+    } catch {
+      // silent
+    }
+  }, []);
+
+  useEffect(() => {
+    loadProfiles();
+  }, [loadProfiles]);
+
+  const handleSwitchProfile = async (name: string) => {
+    setConnecting(name);
+    try {
+      const res = await configApi.connectSSHProfile(name);
+      if (res.connected) {
+        setConnectedProfile(name);
+      }
+    } catch {
+      // silent
+    } finally {
+      setConnecting(null);
+      setProfileOpen(false);
+      await loadProfiles();
+    }
+  };
+
+  // Close dropdown on outside click
+  const profileRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!profileOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        profileRef.current &&
+        !profileRef.current.contains(e.target as Node)
+      ) {
+        setProfileOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [profileOpen]);
 
   return (
     <motion.aside
@@ -221,6 +283,169 @@ export function Sidebar({
           </NavLink>
         ))}
       </nav>
+
+      {/* Profile switcher */}
+      {profileData && !collapsed && (
+        <div
+          ref={profileRef}
+          style={{
+            padding: "8px 12px",
+            borderTop: "1px solid var(--border-ghost)",
+            position: "relative",
+          }}
+        >
+          <button
+            onClick={() => setProfileOpen((v) => !v)}
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--border-ghost)",
+              background: "var(--bg-base)",
+              color: "var(--text-secondary)",
+              cursor: "pointer",
+              fontSize: "0.75rem",
+              fontFamily: "var(--font-mono)",
+            }}
+          >
+            <Server
+              size={13}
+              style={{
+                flexShrink: 0,
+                color: connectedProfile
+                  ? "var(--st-completed)"
+                  : "var(--text-muted)",
+              }}
+            />
+            <span
+              style={{
+                flex: 1,
+                textAlign: "left",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {connectedProfile ?? "No connection"}
+            </span>
+            <ChevronUpIcon
+              size={12}
+              style={{
+                flexShrink: 0,
+                transform: profileOpen ? "rotate(180deg)" : "rotate(0deg)",
+                transition: "transform 150ms",
+              }}
+            />
+          </button>
+
+          <AnimatePresence>
+            {profileOpen && (
+              <motion.div
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 4 }}
+                transition={{ duration: 0.12 }}
+                style={{
+                  position: "absolute",
+                  bottom: "100%",
+                  left: 12,
+                  right: 12,
+                  marginBottom: 4,
+                  background: "var(--bg-surface)",
+                  border: "1px solid var(--border-subtle)",
+                  borderRadius: 8,
+                  boxShadow: "var(--shadow-panel)",
+                  overflow: "hidden",
+                  zIndex: 100,
+                }}
+              >
+                {Object.keys(profileData.profiles).map((name) => {
+                  const isCurrent = name === connectedProfile;
+                  const isConnecting = connecting === name;
+                  return (
+                    <button
+                      key={name}
+                      onClick={() => {
+                        if (!isCurrent && !isConnecting)
+                          handleSwitchProfile(name);
+                      }}
+                      disabled={isConnecting}
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "8px 12px",
+                        border: "none",
+                        background: isCurrent
+                          ? "var(--accent-dim)"
+                          : "transparent",
+                        color: isCurrent
+                          ? "var(--accent)"
+                          : "var(--text-secondary)",
+                        cursor: isCurrent ? "default" : "pointer",
+                        fontSize: "0.75rem",
+                        fontFamily: "var(--font-mono)",
+                        textAlign: "left",
+                      }}
+                    >
+                      {isConnecting ? (
+                        <Loader2 size={12} className="spin" />
+                      ) : (
+                        <Server size={12} />
+                      )}
+                      <span
+                        style={{
+                          flex: 1,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {name}
+                      </span>
+                      {isCurrent && (
+                        <span
+                          style={{
+                            fontSize: "0.65rem",
+                            color: "var(--st-completed)",
+                          }}
+                        >
+                          connected
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      )}
+
+      {collapsed && profileData && (
+        <div
+          style={{
+            padding: "8px 0",
+            display: "flex",
+            justifyContent: "center",
+            borderTop: "1px solid var(--border-ghost)",
+          }}
+          title={connectedProfile ?? "No connection"}
+        >
+          <Server
+            size={14}
+            style={{
+              color: connectedProfile
+                ? "var(--st-completed)"
+                : "var(--text-muted)",
+            }}
+          />
+        </div>
+      )}
 
       {/* Collapse toggle */}
       <button
