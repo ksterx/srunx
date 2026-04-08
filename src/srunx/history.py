@@ -415,6 +415,7 @@ class JobHistory:
 
 # Global history instance
 _history: JobHistory | None = None
+_history_lock = __import__("threading").Lock()
 
 
 def get_history(db_path: str | Path | None = None) -> JobHistory:
@@ -428,5 +429,7 @@ def get_history(db_path: str | Path | None = None) -> JobHistory:
     """
     global _history
     if _history is None:
-        _history = JobHistory(db_path)
+        with _history_lock:
+            if _history is None:
+                _history = JobHistory(db_path)
     return _history
