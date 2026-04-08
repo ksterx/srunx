@@ -73,15 +73,26 @@ _SAFE_BUILTINS: dict[str, Any] = {
 }
 
 
+def _make_safe_globals(local_vars: dict[str, Any]) -> dict[str, Any]:
+    """Build a restricted globals dict for eval/exec."""
+    return {
+        "__builtins__": _SAFE_BUILTINS,
+        "datetime": _SAFE_BUILTINS["datetime"],
+        "math": _SAFE_BUILTINS["math"],
+        "re": _SAFE_BUILTINS["re"],
+        **local_vars,
+    }
+
+
 def _safe_eval(code: str, local_vars: dict[str, Any]) -> Any:
     """Evaluate a Python expression in a restricted namespace."""
-    return eval(code, {"__builtins__": _SAFE_BUILTINS}, local_vars)  # noqa: S307
+    return eval(code, _make_safe_globals(local_vars))  # noqa: S307
 
 
 def _safe_exec(code: str, local_vars: dict[str, Any]) -> dict[str, Any]:
     """Execute Python code in a restricted namespace. Returns the local namespace."""
-    ns: dict[str, Any] = {**local_vars}
-    exec(code, {"__builtins__": _SAFE_BUILTINS}, ns)  # noqa: S102
+    ns = _make_safe_globals(local_vars)
+    exec(code, ns)  # noqa: S102
     return ns
 
 

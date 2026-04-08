@@ -897,3 +897,128 @@ class TestPerJobTemplate:
         script_path = render_job_script(template_path, job, temp_dir)
         content = Path(script_path).read_text()
         assert "WORLD_SIZE" in content
+
+
+class TestShellInjectionPrevention:
+    """Test that shell injection is prevented in rendered scripts."""
+
+    def test_env_vars_semicolon_injection(self, temp_dir):
+        """Semicolons in env var values must not break out of the export statement."""
+        template_path = (
+            Path(__file__).resolve().parent.parent
+            / "src"
+            / "srunx"
+            / "templates"
+            / "base.slurm.jinja"
+        )
+        job = Job(
+            name="injection_test",
+            command=["echo", "hello"],
+            environment=JobEnvironment(
+                env_vars={"EVIL": "foo; rm -rf /"},
+            ),
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        # The value must be single-quoted, preventing the semicolon from executing
+        assert "export EVIL='foo; rm -rf /'" in content
+        # Must NOT contain unquoted export
+        assert "export EVIL=foo;" not in content
+
+    def test_env_vars_command_substitution_injection(self, temp_dir):
+        """Command substitution in env var values must be quoted."""
+        template_path = (
+            Path(__file__).resolve().parent.parent
+            / "src"
+            / "srunx"
+            / "templates"
+            / "base.slurm.jinja"
+        )
+        job = Job(
+            name="subst_test",
+            command=["echo", "hello"],
+            environment=JobEnvironment(
+                env_vars={"CMD": "$(whoami)"},
+            ),
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        assert "export CMD='$(whoami)'" in content
+
+    def test_env_vars_single_quote_escaping(self, temp_dir):
+        """Single quotes within values must be properly escaped."""
+        template_path = (
+            Path(__file__).resolve().parent.parent
+            / "src"
+            / "srunx"
+            / "templates"
+            / "base.slurm.jinja"
+        )
+        job = Job(
+            name="quote_test",
+            command=["echo", "hello"],
+            environment=JobEnvironment(
+                env_vars={"MSG": "it's working"},
+            ),
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        # Single quote must be escaped as '\'' within single-quoted string
+        assert "export MSG='it'\\''s working'" in content
+
+    def test_conda_name_injection(self, temp_dir):
+        """Conda env name with special chars must be quoted."""
+        template_path = (
+            Path(__file__).resolve().parent.parent
+            / "src"
+            / "srunx"
+            / "templates"
+            / "base.slurm.jinja"
+        )
+        job = Job(
+            name="conda_test",
+            command=["echo", "hello"],
+            environment=JobEnvironment(conda="my_env; echo pwned"),
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        assert "conda activate 'my_env; echo pwned'" in content
+        assert "conda activate my_env;" not in content
+
+
+class TestWorkflowAdd:
+    """Test Workflow.add() method with dependency validation."""
+
+    def test_add_job_without_dependencies(self):
+        """Adding a job with no dependencies should succeed."""
+        wf = Workflow(name="test")
+        job = Job(name="job1", command=["echo", "1"])
+        wf.add(job)
+        assert len(wf.jobs) == 1
+        assert wf.jobs[0].name == "job1"
+
+    def test_add_job_with_valid_dependency(self):
+        """Adding a job whose dependencies exist should succeed."""
+        wf = Workflow(name="test")
+        job1 = Job(name="job1", command=["echo", "1"])
+        job2 = Job(name="job2", command=["echo", "2"], depends_on=["job1"])
+        wf.add(job1)
+        wf.add(job2)
+        assert len(wf.jobs) == 2
+
+    def test_add_job_with_invalid_dependency_raises(self):
+        """Adding a job with unknown dependency should raise."""
+        from srunx.exceptions import WorkflowValidationError
+
+        wf = Workflow(name="test")
+        job = Job(name="job1", command=["echo", "1"], depends_on=["nonexistent"])
+        with pytest.raises(WorkflowValidationError, match="unknown job 'nonexistent'"):
+            wf.add(job)

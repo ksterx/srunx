@@ -441,3 +441,50 @@ class TestSSHSlurmClient:
         mock_ssh_client.cleanup_job_files(job)
 
         mock_ssh_client.cleanup_file.assert_not_called()
+
+
+class TestShellQuoting:
+    """Test that remote paths are properly quoted to prevent shell injection."""
+
+    @pytest.fixture
+    def client(self):
+        c = SSHSlurmClient(hostname="test.example.com", username="testuser")
+        c.execute_command = Mock(return_value=("", "", 0))
+        c.verbose = False
+        c.logger = Mock()
+        return c
+
+    def test_cleanup_file_quotes_path(self, client):
+        """cleanup_file should use shlex.quote on the remote path."""
+        client.cleanup_file("/tmp/safe file; rm -rf /")
+        call_args = client.execute_command.call_args[0][0]
+        assert call_args == "rm -f '/tmp/safe file; rm -rf /'"
+
+    def test_file_exists_quotes_path(self, client):
+        """file_exists should use shlex.quote on the remote path."""
+        client.execute_command = Mock(return_value=("exists", "", 0))
+        client.file_exists("/tmp/test; echo pwned")
+        call_args = client.execute_command.call_args[0][0]
+        assert "test -f '/tmp/test; echo pwned'" in call_args
+
+    def test_validate_remote_script_quotes_path(self, client):
+        """validate_remote_script should quote all path usages."""
+        import shlex
+
+        client.execute_command = Mock(
+            side_effect=[
+                ("readable", "", 0),
+                ("executable", "", 0),
+                ("100", "", 0),
+            ]
+        )
+        client.file_exists = Mock(return_value=True)
+
+        path = "/tmp/evil path; cat /etc/passwd"
+        quoted = shlex.quote(path)
+        client.validate_remote_script(path)
+
+        # Every execute_command call must contain the shlex-quoted path
+        for call in client.execute_command.call_args_list:
+            cmd = call[0][0]
+            assert quoted in cmd, f"Unquoted path in command: {cmd}"
