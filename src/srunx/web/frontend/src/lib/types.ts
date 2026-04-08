@@ -111,7 +111,7 @@ export type LogData = {
 
 export type ContainerRuntime = "pyxis" | "apptainer" | "singularity";
 
-export type JobTemplate = "base";
+export type JobTemplate = string;
 
 export type BuilderContainer = {
   runtime: ContainerRuntime;
@@ -341,6 +341,7 @@ export type TemplateListItem = {
   name: string;
   description: string;
   use_case: string;
+  user_defined?: boolean;
 };
 
 export type TemplateDetail = {
@@ -348,6 +349,19 @@ export type TemplateDetail = {
   description: string;
   use_case: string;
   content: string;
+};
+
+export type TemplateCreateRequest = {
+  name: string;
+  description: string;
+  use_case: string;
+  content: string;
+};
+
+export type TemplateUpdateRequest = {
+  description?: string;
+  use_case?: string;
+  content?: string;
 };
 
 /* ── Script preview ─────────────────────────── */

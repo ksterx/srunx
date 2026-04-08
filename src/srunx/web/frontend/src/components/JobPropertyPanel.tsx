@@ -1,12 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { X, Trash2, FolderOpen } from "lucide-react";
 import type {
   BuilderJob,
   BuilderContainer,
   ContainerRuntime,
-  JobTemplate,
+  TemplateListItem,
 } from "../lib/types.ts";
+import { templates as templatesApi } from "../lib/api.ts";
 import { FileBrowser } from "./FileBrowser.tsx";
 import { KeyValueEditor, type KVEntry } from "./KeyValueEditor.tsx";
 
@@ -124,6 +125,17 @@ export function JobPropertyPanel({
       onUpdate({ venv: value, conda: null });
     }
   }
+
+  const [templateOptions, setTemplateOptions] = useState<TemplateListItem[]>(
+    [],
+  );
+
+  useEffect(() => {
+    templatesApi
+      .list()
+      .then(setTemplateOptions)
+      .catch(() => {});
+  }, []);
 
   const [browserTarget, setBrowserTarget] = useState<
     "command" | "work_dir" | "log_dir" | null
@@ -310,6 +322,33 @@ export function JobPropertyPanel({
         </div>
       </div>
 
+      {/* ── Template ─────────────────────────── */}
+      <div style={sectionDividerStyle}>
+        <div style={sectionTitleStyle}>Template</div>
+        <div style={fieldStyle}>
+          <select
+            className="input"
+            value={job.template}
+            onChange={(e) => onUpdate({ template: e.target.value })}
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "0.8rem",
+            }}
+          >
+            {templateOptions.length > 0 ? (
+              templateOptions.map((t) => (
+                <option key={t.name} value={t.name}>
+                  {t.name}
+                  {t.description ? ` — ${t.description}` : ""}
+                </option>
+              ))
+            ) : (
+              <option value="base">base</option>
+            )}
+          </select>
+        </div>
+      </div>
+
       {/* ── Basic ─────────────────────────────── */}
       <div style={sectionDividerStyle}>
         <div style={sectionTitleStyle}>Basic</div>
@@ -354,23 +393,6 @@ export function JobPropertyPanel({
               <FolderOpen size={14} />
             </button>
           </div>
-        </div>
-
-        <div style={fieldStyle}>
-          <label style={labelStyle}>Template</label>
-          <select
-            className="input"
-            value={job.template}
-            onChange={(e) =>
-              onUpdate({ template: e.target.value as JobTemplate })
-            }
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "0.8rem",
-            }}
-          >
-            <option value="base">Base</option>
-          </select>
         </div>
 
         <div style={gridStyle}>
