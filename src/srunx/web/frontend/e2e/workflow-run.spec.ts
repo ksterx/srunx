@@ -42,7 +42,13 @@ test.describe("Workflow Run & Lifecycle", () => {
     });
 
     await page.goto("/workflows/ml-pipeline?mount=ml-project");
+    // Click Run Workflow on the detail page to open dialog
     await page.getByRole("button", { name: /Run Workflow/ }).click();
+    // Click Run Workflow inside the dialog to submit
+    await page
+      .getByRole("button", { name: /Run Workflow/ })
+      .nth(1)
+      .click();
 
     await expect(() => expect(runCalled).toBe(true)).toPass({ timeout: 3000 });
   });
@@ -68,10 +74,16 @@ test.describe("Workflow Run & Lifecycle", () => {
 
     await page.goto("/workflows/ml-pipeline?mount=ml-project");
     const runBtn = page.getByRole("button", { name: /Run Workflow/ });
+    // Open dialog
     await runBtn.click();
+    // Submit from dialog
+    await page
+      .getByRole("button", { name: /Run Workflow/ })
+      .nth(1)
+      .click();
 
-    /* After triggering a run, the button should be disabled */
-    await expect(runBtn).toBeDisabled({ timeout: 5000 });
+    /* After triggering a run, the detail page button should be disabled */
+    await expect(runBtn.first()).toBeDisabled({ timeout: 5000 });
   });
 
   test("cancel button appears during active run", async ({ page }) => {
@@ -98,7 +110,12 @@ test.describe("Workflow Run & Lifecycle", () => {
       page.getByRole("button", { name: /Cancel/ }),
     ).not.toBeVisible();
 
+    // Open dialog and submit
     await page.getByRole("button", { name: /Run Workflow/ }).click();
+    await page
+      .getByRole("button", { name: /Run Workflow/ })
+      .nth(1)
+      .click();
 
     /* Cancel button should appear after run starts */
     await expect(page.getByRole("button", { name: /Cancel/ })).toBeVisible({
@@ -124,7 +141,12 @@ test.describe("Workflow Run & Lifecycle", () => {
     });
 
     await page.goto("/workflows/ml-pipeline?mount=ml-project");
+    // Open dialog and submit
     await page.getByRole("button", { name: /Run Workflow/ }).click();
+    await page
+      .getByRole("button", { name: /Run Workflow/ })
+      .nth(1)
+      .click();
 
     /* Wait for Cancel button to appear */
     const cancelBtn = page.getByRole("button", { name: /Cancel/ });
@@ -196,11 +218,16 @@ test.describe("Workflow Run & Lifecycle", () => {
     });
 
     await page.goto("/workflows/ml-pipeline?mount=ml-project");
+    // Open dialog and submit
     await page.getByRole("button", { name: /Run Workflow/ }).click();
+    await page
+      .getByRole("button", { name: /Run Workflow/ })
+      .nth(1)
+      .click();
 
     /* Button should be disabled while a run is active */
     await expect(
-      page.getByRole("button", { name: /Run Workflow/ }),
+      page.getByRole("button", { name: /Run Workflow/ }).first(),
     ).toBeDisabled({ timeout: 3000 });
   });
 });
