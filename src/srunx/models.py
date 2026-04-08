@@ -26,92 +26,7 @@ def _get_config_defaults():
 
         return get_config()
     except (ImportError, Exception):
-        # Fallback if config module is not available or fails
         return None
-
-
-def _default_nodes():
-    """Get default nodes from config."""
-    config = _get_config_defaults()
-    return config.resources.nodes if config else 1
-
-
-def _default_gpus_per_node():
-    """Get default GPUs per node from config."""
-    config = _get_config_defaults()
-    return config.resources.gpus_per_node if config else 0
-
-
-def _default_ntasks_per_node():
-    """Get default ntasks per node from config."""
-    config = _get_config_defaults()
-    return config.resources.ntasks_per_node if config else 1
-
-
-def _default_cpus_per_task():
-    """Get default CPUs per task from config."""
-    config = _get_config_defaults()
-    return config.resources.cpus_per_task if config else 1
-
-
-def _default_memory_per_node():
-    """Get default memory per node from config."""
-    config = _get_config_defaults()
-    return config.resources.memory_per_node if config else None
-
-
-def _default_time_limit():
-    """Get default time limit from config."""
-    config = _get_config_defaults()
-    return config.resources.time_limit if config else None
-
-
-def _default_nodelist():
-    """Get default nodelist from config."""
-    config = _get_config_defaults()
-    return config.resources.nodelist if config else None
-
-
-def _default_partition():
-    """Get default partition from config."""
-    config = _get_config_defaults()
-    return config.resources.partition if config else None
-
-
-def _default_conda():
-    """Get default conda environment from config."""
-    config = _get_config_defaults()
-    return config.environment.conda if config else None
-
-
-def _default_venv():
-    """Get default venv path from config."""
-    config = _get_config_defaults()
-    return config.environment.venv if config else None
-
-
-def _default_container():
-    """Get default container resource from config."""
-    config = _get_config_defaults()
-    return config.environment.container if config else None
-
-
-def _default_env_vars():
-    """Get default environment variables from config."""
-    config = _get_config_defaults()
-    return config.environment.env_vars if config else {}
-
-
-def _default_log_dir():
-    """Get default log directory from config."""
-    config = _get_config_defaults()
-    return config.log_dir if config else os.getenv("SLURM_LOG_DIR", "logs")
-
-
-def _default_work_dir():
-    """Get default work directory from config."""
-    config = _get_config_defaults()
-    return config.work_dir if config else None
 
 
 class JobStatus(Enum):
@@ -206,39 +121,46 @@ class JobDependency(BaseModel):
 class JobResource(BaseModel):
     """SLURM resource allocation requirements."""
 
-    nodes: int = Field(
-        default_factory=_default_nodes, ge=1, description="Number of compute nodes"
-    )
-    gpus_per_node: int = Field(
-        default_factory=_default_gpus_per_node,
-        ge=0,
-        description="Number of GPUs per node",
-    )
-    ntasks_per_node: int = Field(
-        default_factory=_default_ntasks_per_node,
-        ge=1,
-        description="Number of jobs per node",
-    )
-    cpus_per_task: int = Field(
-        default_factory=_default_cpus_per_task,
-        ge=1,
-        description="Number of CPUs per task",
-    )
+    nodes: int = Field(default=1, ge=1, description="Number of compute nodes")
+    gpus_per_node: int = Field(default=0, ge=0, description="Number of GPUs per node")
+    ntasks_per_node: int = Field(default=1, ge=1, description="Number of jobs per node")
+    cpus_per_task: int = Field(default=1, ge=1, description="Number of CPUs per task")
     memory_per_node: str | None = Field(
-        default_factory=_default_memory_per_node,
-        description="Memory per node (e.g., '32GB')",
+        default=None, description="Memory per node (e.g., '32GB')"
     )
     time_limit: str | None = Field(
-        default_factory=_default_time_limit, description="Time limit (e.g., '1:00:00')"
+        default=None, description="Time limit (e.g., '1:00:00')"
     )
     nodelist: str | None = Field(
-        default_factory=_default_nodelist,
-        description="Specific nodes to use (e.g., 'node001,node002')",
+        default=None, description="Specific nodes to use (e.g., 'node001,node002')"
     )
     partition: str | None = Field(
-        default_factory=_default_partition,
-        description="SLURM partition to use (e.g., 'gpu', 'cpu')",
+        default=None, description="SLURM partition to use (e.g., 'gpu', 'cpu')"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_config_defaults(cls, data: dict) -> dict:
+        """Apply config defaults for fields not explicitly provided."""
+        if not isinstance(data, dict):
+            return data
+        config = _get_config_defaults()
+        if config is None:
+            return data
+        defaults = {
+            "nodes": config.resources.nodes,
+            "gpus_per_node": config.resources.gpus_per_node,
+            "ntasks_per_node": config.resources.ntasks_per_node,
+            "cpus_per_task": config.resources.cpus_per_task,
+            "memory_per_node": config.resources.memory_per_node,
+            "time_limit": config.resources.time_limit,
+            "nodelist": config.resources.nodelist,
+            "partition": config.resources.partition,
+        }
+        for key, value in defaults.items():
+            if key not in data and value is not None:
+                data[key] = value
+        return data
 
 
 class ContainerResource(BaseModel):
@@ -300,18 +222,34 @@ class ContainerResource(BaseModel):
 class JobEnvironment(BaseModel):
     """Job environment configuration."""
 
-    conda: str | None = Field(
-        default_factory=_default_conda, description="Conda environment name"
-    )
-    venv: str | None = Field(
-        default_factory=_default_venv, description="Virtual environment path"
-    )
+    conda: str | None = Field(default=None, description="Conda environment name")
+    venv: str | None = Field(default=None, description="Virtual environment path")
     container: ContainerResource | None = Field(
-        default_factory=_default_container, description="Container resource"
+        default=None, description="Container resource"
     )
     env_vars: dict[str, str] = Field(
-        default_factory=_default_env_vars, description="Environment variables"
+        default_factory=dict, description="Environment variables"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_config_defaults(cls, data: dict) -> dict:
+        """Apply config defaults for fields not explicitly provided."""
+        if not isinstance(data, dict):
+            return data
+        config = _get_config_defaults()
+        if config is None:
+            return data
+        defaults = {
+            "conda": config.environment.conda,
+            "venv": config.environment.venv,
+            "container": config.environment.container,
+            "env_vars": config.environment.env_vars,
+        }
+        for key, value in defaults.items():
+            if key not in data and value is not None:
+                data[key] = value
+        return data
 
     @model_validator(mode="after")
     def validate_environment(self) -> Self:
@@ -576,13 +514,28 @@ class Job(BaseJob):
         default_factory=JobEnvironment, description="Environment setup"
     )
     log_dir: str = Field(
-        default_factory=_default_log_dir,
+        default_factory=lambda: os.getenv("SLURM_LOG_DIR", "logs"),
         description="Directory for log files",
     )
     work_dir: str = Field(
-        default_factory=lambda: _default_work_dir() or os.getcwd(),
+        default_factory=os.getcwd,
         description="Working directory",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_config_defaults(cls, data: dict) -> dict:
+        """Apply config defaults for log_dir and work_dir."""
+        if not isinstance(data, dict):
+            return data
+        config = _get_config_defaults()
+        if config is None:
+            return data
+        if "log_dir" not in data and config.log_dir:
+            data["log_dir"] = config.log_dir
+        if "work_dir" not in data and config.work_dir:
+            data["work_dir"] = config.work_dir
+        return data
 
 
 class ShellJob(BaseJob):
