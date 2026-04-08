@@ -93,7 +93,8 @@ class SSHSlurmClient:
             else:
                 # Direct connection
                 self.ssh_client = paramiko.SSHClient()
-                self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                self.ssh_client.load_system_host_keys()
+                self.ssh_client.set_missing_host_key_policy(paramiko.WarningPolicy())
 
                 if self.key_filename:
                     self.ssh_client.connect(
