@@ -36,6 +36,17 @@ def get_current_profile() -> ServerProfile | None:
     return cm.get_profile(profile_name)
 
 
+def find_mount(profile: ServerProfile, mount_name: str):
+    """Find a mount by name within a profile's mounts.
+
+    Raises ValueError if not found.
+    """
+    for m in profile.mounts:
+        if m.name == mount_name:
+            return m
+    raise ValueError(f"Mount '{mount_name}' not found")
+
+
 def build_rsync_client(profile: ServerProfile) -> RsyncClient:
     """Create RsyncClient from SSH profile, handling ssh_host vs hostname.
 

@@ -178,11 +178,13 @@ def _get_current_profile():
 
 
 def _find_mount(profile, mount_name: str):
-    """Find a mount by name within a profile's mounts."""
-    for m in profile.mounts:
-        if m.name == mount_name:
-            return m
-    raise HTTPException(status_code=404, detail=f"Mount '{mount_name}' not found")
+    """Find a mount by name. Raises HTTPException 404 if not found."""
+    from ..sync_utils import find_mount
+
+    try:
+        return find_mount(profile, mount_name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 def _workflow_dir(mount_name: str) -> Path:
