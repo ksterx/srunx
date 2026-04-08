@@ -207,10 +207,11 @@ class TestJobMonitor:
         monitor._notify_callbacks("state_changed")
         assert callback.on_job_running.call_count == 1
 
-        # Third call: COMPLETED (should notify)
+        # Third call: COMPLETED (should notify — clear cache for new mock)
         job_completed = Job(name="job1", job_id=123, command=["test"])
         job_completed._status = JobStatus.COMPLETED
         monitor.client.retrieve = MagicMock(return_value=job_completed)
+        monitor._cached_jobs = None
 
         monitor._notify_callbacks("state_changed")
         assert callback.on_job_completed.call_count == 1
