@@ -8,7 +8,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from srunx.template import get_template_info, get_template_path, list_templates
+from srunx.template import (
+    get_template_info,
+    get_template_path,
+    list_templates,
+)
 
 from ..deps import get_adapter
 from ..ssh_adapter import SlurmSSHAdapter  # noqa: F811
@@ -20,6 +24,7 @@ class TemplateListItem(BaseModel):
     name: str
     description: str
     use_case: str
+    user_defined: bool = False
 
 
 class TemplateDetail(BaseModel):
@@ -37,6 +42,7 @@ async def list_all_templates() -> list[TemplateListItem]:
             name=t["name"],
             description=t["description"],
             use_case=t["use_case"],
+            user_defined=t.get("user_defined") == "true",
         )
         for t in list_templates()
     ]
@@ -137,3 +143,77 @@ async def apply_template(
         raise HTTPException(status_code=502, detail=f"sbatch failed: {e}") from e
 
     return result
+
+
+# ── User template CRUD ───────────────────────────
+
+
+class TemplateCreateRequest(BaseModel):
+    name: str
+    description: str
+    use_case: str
+    content: str
+
+
+class TemplateUpdateRequest(BaseModel):
+    description: str | None = None
+    use_case: str | None = None
+    content: str | None = None
+
+
+@router.post("", status_code=201)
+async def create_template(req: TemplateCreateRequest) -> TemplateListItem:
+    """Create a new user-defined template."""
+    from srunx.template import create_user_template
+
+    try:
+        info = create_user_template(
+            name=req.name,
+            description=req.description,
+            use_case=req.use_case,
+            content=req.content,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+    return TemplateListItem(
+        name=info["name"],
+        description=info["description"],
+        use_case=info["use_case"],
+    )
+
+
+@router.put("/{name}")
+async def update_template(name: str, req: TemplateUpdateRequest) -> TemplateDetail:
+    """Update a user-defined template."""
+    from srunx.template import update_user_template
+
+    try:
+        info = update_user_template(
+            name=name,
+            description=req.description,
+            use_case=req.use_case,
+            content=req.content,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+    template_file = Path(get_template_path(name))
+    content = template_file.read_text(encoding="utf-8")
+    return TemplateDetail(
+        name=info["name"],
+        description=info["description"],
+        use_case=info["use_case"],
+        content=content,
+    )
+
+
+@router.delete("/{name}", status_code=204)
+async def delete_template(name: str) -> None:
+    """Delete a user-defined template."""
+    from srunx.template import delete_user_template
+
+    try:
+        delete_user_template(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e

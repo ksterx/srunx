@@ -6,6 +6,8 @@ import {
   MOCK_HISTORY,
   MOCK_STATS,
   MOCK_LOGS,
+  MOCK_TEMPLATES,
+  MOCK_TEMPLATE_DETAIL,
 } from "./mock-data.ts";
 
 /**
@@ -181,6 +183,44 @@ export async function setupMockRoutes(page: Page) {
 
   await page.route("**/api/history*", (route) => {
     return route.fulfill({ json: MOCK_HISTORY });
+  });
+
+  /* ── Templates ─────────────────────────────── */
+  await page.route("**/api/templates", (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({ json: MOCK_TEMPLATES });
+    }
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON();
+      return route.fulfill({
+        status: 201,
+        json: {
+          name: body.name,
+          description: body.description,
+          use_case: body.use_case,
+        },
+      });
+    }
+    return route.continue();
+  });
+
+  await page.route("**/api/templates/*", (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({ json: MOCK_TEMPLATE_DETAIL });
+    }
+    if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON();
+      return route.fulfill({
+        json: {
+          ...MOCK_TEMPLATE_DETAIL,
+          ...body,
+        },
+      });
+    }
+    if (route.request().method() === "DELETE") {
+      return route.fulfill({ status: 204 });
+    }
+    return route.continue();
   });
 }
 

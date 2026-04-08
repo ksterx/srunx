@@ -20,8 +20,10 @@ import type {
   SSHTestResult,
   SrunxConfig,
   SyncResult,
+  TemplateCreateRequest,
   TemplateDetail,
   TemplateListItem,
+  TemplateUpdateRequest,
   Workflow,
   WorkflowCreateRequest,
   WorkflowRun,
@@ -592,5 +594,44 @@ export const templates = {
       throw new Error(extractDetail(err, "Failed to apply template"));
     }
     return res.json();
+  },
+
+  create: async (body: TemplateCreateRequest): Promise<TemplateListItem> => {
+    const res = await fetch("/api/templates", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(extractDetail(err, "Failed to create template"));
+    }
+    return res.json();
+  },
+
+  update: async (
+    name: string,
+    body: TemplateUpdateRequest,
+  ): Promise<TemplateDetail> => {
+    const res = await fetch(`/api/templates/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(extractDetail(err, "Failed to update template"));
+    }
+    return res.json();
+  },
+
+  delete: async (name: string): Promise<void> => {
+    const res = await fetch(`/api/templates/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(extractDetail(err, "Failed to delete template"));
+    }
   },
 };

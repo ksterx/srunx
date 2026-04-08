@@ -1083,12 +1083,12 @@ class TestTemplatesRouter:
     """Tests for GET/POST /api/templates endpoints."""
 
     def test_list_templates(self, client: TestClient) -> None:
-        """GET /api/templates returns all built-in templates."""
+        """GET /api/templates returns at least the built-in templates."""
         resp = client.get("/api/templates")
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
-        assert len(data) == 1
+        assert len(data) >= 1
         names = {t["name"] for t in data}
         assert "base" in names
         # Verify structure

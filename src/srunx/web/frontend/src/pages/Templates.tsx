@@ -1,6 +1,16 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
-import { FileCode2, Play, Loader2, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  FileCode2,
+  Play,
+  Loader2,
+  ChevronDown,
+  ChevronUp,
+  Plus,
+  Trash2,
+  Pencil,
+  X,
+} from "lucide-react";
 import { templates as templatesApi } from "../lib/api.ts";
 import type { TemplateListItem, TemplateDetail } from "../lib/types.ts";
 import { ScriptPreview } from "../components/ScriptPreview.tsx";
@@ -27,6 +37,21 @@ const EMPTY_FORM: ApplyForm = {
   conda: "",
 };
 
+type TemplateForm = {
+  name: string;
+  description: string;
+  use_case: string;
+  content: string;
+};
+
+const EMPTY_TEMPLATE_FORM: TemplateForm = {
+  name: "",
+  description: "",
+  use_case: "",
+  content:
+    "#!/bin/bash\n\n#SBATCH --job-name={{ job_name }}\n#SBATCH --nodes={{ nodes }}\n\nsrun {{ command }}\n",
+};
+
 export function Templates() {
   const [items, setItems] = useState<TemplateListItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -39,6 +64,14 @@ export function Templates() {
   const [form, setForm] = useState<ApplyForm>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [commandError, setCommandError] = useState(false);
+
+  // Template CRUD state
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState<string | null>(null);
+  const [templateForm, setTemplateForm] =
+    useState<TemplateForm>(EMPTY_TEMPLATE_FORM);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   const loadList = useCallback(async () => {
     try {
@@ -79,6 +112,81 @@ export function Templates() {
       setError(e instanceof Error ? e.message : "Failed to load template");
     } finally {
       setDetailLoading(false);
+    }
+  };
+
+  const handleCreate = async () => {
+    if (!templateForm.name.trim() || !templateForm.content.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await templatesApi.create(templateForm);
+      setSuccess(`Template "${templateForm.name}" created`);
+      setShowCreateDialog(false);
+      setTemplateForm(EMPTY_TEMPLATE_FORM);
+      await loadList();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to create template");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleEdit = async (name: string) => {
+    try {
+      const d = await templatesApi.get(name);
+      setEditingTemplate(name);
+      setTemplateForm({
+        name: d.name,
+        description: d.description,
+        use_case: d.use_case,
+        content: d.content,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load template");
+    }
+  };
+
+  const handleUpdate = async () => {
+    if (!editingTemplate) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await templatesApi.update(editingTemplate, {
+        description: templateForm.description,
+        use_case: templateForm.use_case,
+        content: templateForm.content,
+      });
+      setSuccess(`Template "${editingTemplate}" updated`);
+      setEditingTemplate(null);
+      setTemplateForm(EMPTY_TEMPLATE_FORM);
+      if (selected === editingTemplate) {
+        const d = await templatesApi.get(editingTemplate);
+        setDetail(d);
+      }
+      await loadList();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to update template");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (name: string) => {
+    setDeleting(name);
+    setError(null);
+    try {
+      await templatesApi.delete(name);
+      setSuccess(`Template "${name}" deleted`);
+      if (selected === name) {
+        setSelected(null);
+        setDetail(null);
+      }
+      await loadList();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to delete template");
+    } finally {
+      setDeleting(null);
     }
   };
 
@@ -154,7 +262,26 @@ export function Templates() {
         gap: "var(--sp-4)",
       }}
     >
-      <h2 style={{ fontSize: "1.1rem", fontWeight: 600 }}>Job Templates</h2>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <h2 style={{ fontSize: "1.1rem", fontWeight: 600 }}>Job Templates</h2>
+        <button
+          className="btn btn-primary"
+          onClick={() => {
+            setShowCreateDialog(true);
+            setTemplateForm(EMPTY_TEMPLATE_FORM);
+          }}
+          style={{ gap: 6 }}
+        >
+          <Plus size={14} />
+          New Template
+        </button>
+      </div>
 
       {error && (
         <div
@@ -199,6 +326,7 @@ export function Templates() {
       >
         {items.map((t) => {
           const isSelected = selected === t.name;
+          const isUser = t.user_defined === true;
           return (
             <motion.div
               key={t.name}
@@ -216,6 +344,7 @@ export function Templates() {
                     display: "flex",
                     alignItems: "center",
                     gap: "var(--sp-2)",
+                    flex: 1,
                   }}
                 >
                   <FileCode2 size={14} />
@@ -228,7 +357,55 @@ export function Templates() {
                   >
                     {t.name}
                   </h3>
+                  {isUser && (
+                    <span
+                      style={{
+                        fontSize: "0.6rem",
+                        padding: "1px 6px",
+                        borderRadius: "var(--radius-sm)",
+                        background: "var(--accent-dim)",
+                        color: "var(--accent)",
+                        fontFamily: "var(--font-mono)",
+                      }}
+                    >
+                      custom
+                    </span>
+                  )}
                 </div>
+                {isUser && (
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: "var(--sp-1)",
+                    }}
+                  >
+                    <button
+                      className="btn btn-ghost"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleEdit(t.name);
+                      }}
+                      style={{ padding: 4 }}
+                    >
+                      <Pencil size={12} />
+                    </button>
+                    <button
+                      className="btn btn-ghost"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDelete(t.name);
+                      }}
+                      disabled={deleting === t.name}
+                      style={{ padding: 4, color: "var(--st-failed)" }}
+                    >
+                      {deleting === t.name ? (
+                        <Loader2 size={12} className="spin" />
+                      ) : (
+                        <Trash2 size={12} />
+                      )}
+                    </button>
+                  </div>
+                )}
               </div>
               <div className="panel-body">
                 <p
@@ -414,6 +591,201 @@ export function Templates() {
             </div>
           </div>
         </motion.div>
+      )}
+      {/* Create / Edit dialog */}
+      {(showCreateDialog || editingTemplate) && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 100,
+          }}
+          onClick={() => {
+            setShowCreateDialog(false);
+            setEditingTemplate(null);
+            setTemplateForm(EMPTY_TEMPLATE_FORM);
+          }}
+        >
+          <motion.div
+            className="panel"
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(640px, 90vw)",
+              maxHeight: "85vh",
+              overflow: "auto",
+            }}
+          >
+            <div className="panel-header">
+              <h3 style={{ textTransform: "none", letterSpacing: 0 }}>
+                {editingTemplate ? `Edit: ${editingTemplate}` : "New Template"}
+              </h3>
+              <button
+                className="btn btn-ghost"
+                onClick={() => {
+                  setShowCreateDialog(false);
+                  setEditingTemplate(null);
+                  setTemplateForm(EMPTY_TEMPLATE_FORM);
+                }}
+                style={{ padding: 4 }}
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <div
+              className="panel-body"
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: "var(--sp-3)",
+              }}
+            >
+              {!editingTemplate && (
+                <div>
+                  <label
+                    style={{
+                      fontSize: "0.7rem",
+                      color: "var(--text-muted)",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                    }}
+                  >
+                    Name <span style={{ color: "var(--st-failed)" }}>*</span>
+                  </label>
+                  <input
+                    className="input"
+                    placeholder="my-template"
+                    value={templateForm.name}
+                    onChange={(e) =>
+                      setTemplateForm({ ...templateForm, name: e.target.value })
+                    }
+                    style={{
+                      width: "100%",
+                      marginTop: 4,
+                      fontFamily: "var(--font-mono)",
+                    }}
+                  />
+                </div>
+              )}
+              <div>
+                <label
+                  style={{
+                    fontSize: "0.7rem",
+                    color: "var(--text-muted)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                  }}
+                >
+                  Description
+                </label>
+                <input
+                  className="input"
+                  placeholder="What this template does"
+                  value={templateForm.description}
+                  onChange={(e) =>
+                    setTemplateForm({
+                      ...templateForm,
+                      description: e.target.value,
+                    })
+                  }
+                  style={{ width: "100%", marginTop: 4 }}
+                />
+              </div>
+              <div>
+                <label
+                  style={{
+                    fontSize: "0.7rem",
+                    color: "var(--text-muted)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                  }}
+                >
+                  Use Case
+                </label>
+                <input
+                  className="input"
+                  placeholder="e.g. Single GPU training jobs"
+                  value={templateForm.use_case}
+                  onChange={(e) =>
+                    setTemplateForm({
+                      ...templateForm,
+                      use_case: e.target.value,
+                    })
+                  }
+                  style={{ width: "100%", marginTop: 4 }}
+                />
+              </div>
+              <div>
+                <label
+                  style={{
+                    fontSize: "0.7rem",
+                    color: "var(--text-muted)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                  }}
+                >
+                  Template Content (Jinja2){" "}
+                  <span style={{ color: "var(--st-failed)" }}>*</span>
+                </label>
+                <textarea
+                  className="input"
+                  value={templateForm.content}
+                  onChange={(e) =>
+                    setTemplateForm({
+                      ...templateForm,
+                      content: e.target.value,
+                    })
+                  }
+                  style={{
+                    width: "100%",
+                    marginTop: 4,
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "0.75rem",
+                    minHeight: 240,
+                    resize: "vertical",
+                    lineHeight: 1.6,
+                  }}
+                />
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  gap: "var(--sp-2)",
+                  justifyContent: "flex-end",
+                }}
+              >
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setShowCreateDialog(false);
+                    setEditingTemplate(null);
+                    setTemplateForm(EMPTY_TEMPLATE_FORM);
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  onClick={editingTemplate ? handleUpdate : handleCreate}
+                  disabled={
+                    saving ||
+                    (!editingTemplate && !templateForm.name.trim()) ||
+                    !templateForm.content.trim()
+                  }
+                  style={{ gap: 6 }}
+                >
+                  {saving && <Loader2 size={14} className="spin" />}
+                  {editingTemplate ? "Update" : "Create"}
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        </div>
       )}
     </div>
   );
