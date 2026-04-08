@@ -1,6 +1,7 @@
 """Base monitor class for SLURM monitoring implementations."""
 
 import signal
+import threading
 import time
 from abc import ABC, abstractmethod
 from typing import Any
@@ -37,7 +38,6 @@ class BaseMonitor(ABC):
         self.config = config or MonitorConfig()
         self.callbacks = callbacks or []
         self._stop_requested = False
-        self._setup_signal_handlers()
 
         if self.config.is_aggressive:
             logger.warning(
@@ -49,8 +49,11 @@ class BaseMonitor(ABC):
         """
         Setup graceful shutdown handlers for SIGTERM and SIGINT.
 
-        Sets _stop_requested flag to True when signal received.
+        Only installs handlers when called from the main thread.
+        Safe to call from background threads (silently skips).
         """
+        if threading.current_thread() is not threading.main_thread():
+            return
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
 
@@ -116,6 +119,8 @@ class BaseMonitor(ABC):
             TimeoutError: If timeout reached before condition met
             SlurmError: If SLURM command fails repeatedly
         """
+        self._stop_requested = False
+        self._setup_signal_handlers()
         start_time = time.time()
         logger.info(
             f"Starting until-condition monitoring "
@@ -158,6 +163,8 @@ class BaseMonitor(ABC):
         Raises:
             SlurmError: If SLURM command fails repeatedly
         """
+        self._stop_requested = False
+        self._setup_signal_handlers()
         previous_state: dict[str, Any] | None = None
         logger.info(
             f"Starting continuous monitoring "
