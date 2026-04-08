@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             _logger.info("Connecting to SLURM server via SSH...")
             if adapter.connect():
                 _logger.info("SSH connection established")
-                set_adapter(adapter)
+                set_adapter(adapter, profile_name=profile_name)
             else:
                 _logger.warning(
                     "SSH connection failed — SLURM endpoints will be unavailable"
@@ -81,9 +81,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             yield
             tg.cancel_scope.cancel()
     finally:
-        if adapter:
-            _logger.info("Closing SSH connection...")
-            adapter.disconnect()
+        # Disconnect the *current* adapter (may differ from startup adapter after profile switch)
+        from .deps import get_active_profile_name
+
+        current_adapter: SlurmSSHAdapter | None = None
+        try:
+            from .deps import get_adapter as _get
+
+            current_adapter = _get()
+        except Exception:
+            pass
+        if current_adapter is not None:
+            _logger.info(
+                "Closing SSH connection (profile: %s)...",
+                get_active_profile_name(),
+            )
+            current_adapter.disconnect()
 
 
 def create_app() -> FastAPI:
@@ -107,6 +120,7 @@ def create_app() -> FastAPI:
 
     # REST routers
     from .routers import config as config_router
+    from .routers import templates
 
     app.include_router(config_router.router)
     app.include_router(jobs.router)
@@ -114,6 +128,7 @@ def create_app() -> FastAPI:
     app.include_router(resources.router)
     app.include_router(history.router)
     app.include_router(files.router)
+    app.include_router(templates.router)
 
     # Serve frontend static files (production) with SPA fallback
     if _FRONTEND_DIST.exists():

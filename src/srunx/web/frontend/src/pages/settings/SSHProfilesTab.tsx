@@ -10,12 +10,17 @@ import {
   FolderSync,
   X,
   Edit3,
+  Plug,
+  FlaskConical,
+  Loader2,
 } from "lucide-react";
 import { config as configApi } from "../../lib/api.ts";
 import type {
   SSHProfile,
   SSHProfilesResponse,
   SSHMountConfig,
+  SSHTestResult,
+  SSHConnectionStatus,
 } from "../../lib/types.ts";
 
 type ProfileFormData = {
@@ -103,12 +108,24 @@ export function SSHProfilesTab() {
   const [newMountExcludes, setNewMountExcludes] = useState("");
   const [newEnvKey, setNewEnvKey] = useState("");
   const [newEnvValue, setNewEnvValue] = useState("");
+  const [connStatus, setConnStatus] = useState<SSHConnectionStatus | null>(
+    null,
+  );
+  const [connecting, setConnecting] = useState<string | null>(null);
+  const [testing, setTesting] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, SSHTestResult>>(
+    {},
+  );
 
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await configApi.sshProfiles();
-      setData(res);
+      const [profiles, status] = await Promise.all([
+        configApi.sshProfiles(),
+        configApi.sshStatus(),
+      ]);
+      setData(profiles);
+      setConnStatus(status);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load profiles");
@@ -163,13 +180,39 @@ export function SSHProfilesTab() {
     }
   };
 
-  const handleActivate = async (name: string) => {
+  const handleConnect = async (name: string) => {
+    setConnecting(name);
+    setError(null);
     try {
-      await configApi.activateSSHProfile(name);
-      setSuccess(`Profile "${name}" activated`);
+      const res = await configApi.connectSSHProfile(name);
+      if (res.connected) {
+        setSuccess(`Connected to "${name}" (${res.hostname})`);
+      } else {
+        setError(`Connection failed: ${res.error}`);
+      }
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to activate profile");
+      setError(e instanceof Error ? e.message : "Failed to connect");
+    } finally {
+      setConnecting(null);
+    }
+  };
+
+  const handleTest = async (name: string) => {
+    setTesting(name);
+    setError(null);
+    try {
+      const result = await configApi.testSSHProfile(name);
+      setTestResults((prev) => ({ ...prev, [name]: result }));
+      if (result.ssh_connected && result.slurm_available) {
+        setSuccess(`Test passed: SSH OK, SLURM ${result.slurm_version}`);
+      } else if (result.error) {
+        setError(`Test failed: ${result.error}`);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to test profile");
+    } finally {
+      setTesting(null);
     }
   };
 
@@ -279,8 +322,11 @@ export function SSHProfilesTab() {
       {/* Profile list */}
       {profiles.map(([name, profile]) => {
         const isActive = data?.current === name;
+        const isConnected =
+          connStatus?.profile_name === name && connStatus.connected;
         const isExpanded = expandedProfile === name;
         const isEditing = editingProfile === name;
+        const testResult = testResults[name];
 
         return (
           <div key={name} className="panel">
@@ -301,10 +347,22 @@ export function SSHProfilesTab() {
                 <h3 style={{ textTransform: "none", letterSpacing: 0 }}>
                   {name}
                 </h3>
-                {isActive && (
+                {isConnected && (
                   <span
                     className="badge badge-completed"
                     style={{ fontSize: "0.65rem" }}
+                  >
+                    CONNECTED
+                  </span>
+                )}
+                {isActive && !isConnected && (
+                  <span
+                    className="badge"
+                    style={{
+                      fontSize: "0.65rem",
+                      background: "var(--st-pending-dim)",
+                      color: "var(--st-pending)",
+                    }}
                   >
                     ACTIVE
                   </span>
@@ -326,16 +384,40 @@ export function SSHProfilesTab() {
                   gap: "var(--sp-2)",
                 }}
               >
-                {!isActive && (
+                <button
+                  className="btn btn-ghost"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleTest(name);
+                  }}
+                  disabled={testing === name}
+                  style={{ padding: "4px 8px", fontSize: "0.7rem" }}
+                  title="Test SSH connection"
+                >
+                  {testing === name ? (
+                    <Loader2 size={12} className="spin" />
+                  ) : (
+                    <FlaskConical size={12} />
+                  )}
+                  Test
+                </button>
+                {!isConnected && (
                   <button
-                    className="btn btn-ghost"
+                    className="btn btn-primary"
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleActivate(name);
+                      handleConnect(name);
                     }}
+                    disabled={connecting === name}
                     style={{ padding: "4px 8px", fontSize: "0.7rem" }}
+                    title="Connect to this profile"
                   >
-                    Activate
+                    {connecting === name ? (
+                      <Loader2 size={12} className="spin" />
+                    ) : (
+                      <Plug size={12} />
+                    )}
+                    Connect
                   </button>
                 )}
                 <button
@@ -374,6 +456,89 @@ export function SSHProfilesTab() {
             {/* Expanded content */}
             {isExpanded && (
               <div className="panel-body">
+                {/* Test result */}
+                {testResult && (
+                  <div
+                    style={{
+                      padding: "var(--sp-3) var(--sp-4)",
+                      background:
+                        testResult.ssh_connected && testResult.slurm_available
+                          ? "var(--st-completed-dim)"
+                          : "var(--st-failed-dim)",
+                      border: `1px solid ${
+                        testResult.ssh_connected && testResult.slurm_available
+                          ? "rgba(52,211,153,0.3)"
+                          : "rgba(244,63,94,0.3)"
+                      }`,
+                      borderRadius: "var(--radius-md)",
+                      marginBottom: "var(--sp-4)",
+                      fontFamily: "var(--font-mono)",
+                      fontSize: "0.8rem",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                    }}
+                  >
+                    <div>
+                      <span
+                        style={{
+                          color: testResult.ssh_connected
+                            ? "var(--st-completed)"
+                            : "var(--st-failed)",
+                        }}
+                      >
+                        SSH: {testResult.ssh_connected ? "OK" : "FAIL"}
+                      </span>
+                      {" / "}
+                      <span
+                        style={{
+                          color: testResult.slurm_available
+                            ? "var(--st-completed)"
+                            : "var(--st-failed)",
+                        }}
+                      >
+                        SLURM:{" "}
+                        {testResult.slurm_available
+                          ? testResult.slurm_version || "OK"
+                          : "FAIL"}
+                      </span>
+                      {testResult.user && (
+                        <span
+                          style={{ color: "var(--text-muted)", marginLeft: 8 }}
+                        >
+                          ({testResult.user}@{testResult.hostname})
+                        </span>
+                      )}
+                      {testResult.error && (
+                        <span
+                          style={{ color: "var(--st-failed)", marginLeft: 8 }}
+                        >
+                          {testResult.error}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() =>
+                        setTestResults((prev) => {
+                          const next = { ...prev };
+                          delete next[name];
+                          return next;
+                        })
+                      }
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "var(--text-muted)",
+                        cursor: "pointer",
+                        padding: 4,
+                        display: "flex",
+                      }}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                )}
+
                 {/* Edit form */}
                 {isEditing ? (
                   <div

@@ -16,6 +16,59 @@ router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 _logger = logging.getLogger(__name__)
 
 
+class ScriptPreviewRequest(BaseModel):
+    name: str = "preview"
+    command: list[str]
+    resources: dict[str, str | int | None] | None = None
+    environment: dict[str, str | dict | None] | None = None
+    work_dir: str | None = None
+    log_dir: str | None = None
+    template_name: str | None = None
+
+
+class ScriptPreviewResponse(BaseModel):
+    script: str
+    template_used: str
+
+
+@router.post("/preview")
+async def preview_script(req: ScriptPreviewRequest) -> ScriptPreviewResponse:
+    """Render a SLURM script from job config without submitting."""
+    import tempfile
+
+    from srunx.models import Job, JobEnvironment, JobResource
+    from srunx.template import get_template_path
+
+    template_name = req.template_name or "advanced"
+    try:
+        template_path = get_template_path(template_name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+    resources = JobResource(**(req.resources or {}))
+    environment = JobEnvironment(**(req.environment or {}))
+    job = Job(
+        name=req.name,
+        command=req.command,
+        resources=resources,
+        environment=environment,
+        work_dir=req.work_dir or ".",
+        log_dir=req.log_dir or ".",
+    )
+
+    from srunx.models import render_job_script
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        script_path = await anyio.to_thread.run_sync(
+            lambda: render_job_script(template_path, job, output_dir=tmpdir)
+        )
+        from pathlib import Path
+
+        script_content = Path(script_path).read_text()
+
+    return ScriptPreviewResponse(script=script_content, template_used=template_name)
+
+
 class JobSubmitRequest(BaseModel):
     name: str
     script_content: str

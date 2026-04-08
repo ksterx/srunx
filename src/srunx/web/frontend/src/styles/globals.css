@@ -566,6 +566,14 @@ body::after {
   to { stroke-dashoffset: -9; }
 }
 
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
 .react-flow__controls {
   background: var(--bg-surface) !important;
   border: 1px solid var(--border-subtle) !important;
