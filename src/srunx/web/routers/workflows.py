@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os  # noqa: E402
 import re
 import tempfile
 from pathlib import Path
@@ -590,101 +591,64 @@ def _filter_workflow_jobs(
     return [job for job in workflow.jobs if job.name in selected_names]
 
 
-@router.post("/{name}/run", status_code=202)
-async def run_workflow(
-    name: str,
-    request: Request,
-    mount: str | None = None,
-    body: WorkflowRunRequest | None = None,
-    adapter: SlurmSSHAdapter = Depends(get_adapter),
-) -> dict[str, Any]:
-    """Run a workflow: sync mounts, submit jobs with SLURM dependencies.
-
-    Accepts optional body with execution control:
-    - from_job / to_job: run a range of jobs
-    - single_job: run only one job
-    - dry_run: render scripts without submitting
-    """
-    from collections import deque
-
-    from srunx.models import render_job_script
-
+async def _sync_mounts(
+    workflow: Workflow,
+    runner: WorkflowRunner,
+    run_id: str | None,
+) -> Any:
+    """Sync SSH mounts for the workflow. Returns the SSH profile or None."""
     from ..sync_utils import (
         get_current_profile,
         resolve_mounts_for_workflow,
         sync_mount_by_name,
     )
 
-    if not _SAFE_NAME.match(name):
-        raise HTTPException(status_code=422, detail="Invalid workflow name")
-    if not mount:
-        raise HTTPException(status_code=422, detail="mount query parameter is required")
-
-    run_opts = body or WorkflowRunRequest()
-
-    yaml_path = _find_yaml(name, mount)
-
-    # Load workflow
-    runner = await anyio.to_thread.run_sync(lambda: WorkflowRunner.from_yaml(yaml_path))
-    workflow = runner.workflow
-
-    # Filter jobs based on execution control params
-    if run_opts.from_job or run_opts.to_job or run_opts.single_job:
-        filtered_jobs = _filter_workflow_jobs(
-            workflow, run_opts.from_job, run_opts.to_job, run_opts.single_job
-        )
-        workflow = Workflow(name=workflow.name, jobs=filtered_jobs)
-
-    # Create run record (skip for dry runs)
-    run_id: str | None = None
-    if not run_opts.dry_run:
-        run = run_registry.create(name)
-        run_id = run.id
-        run_registry.update_status(run_id, "syncing")
-
-    # ── Sync mounts (skip for dry runs) ──────────────────────────────
-
     profile = await anyio.to_thread.run_sync(get_current_profile)
+    if profile is None or run_id is None:
+        return profile
 
-    if profile is not None and not run_opts.dry_run:
-        # Build raw jobs data from the loaded workflow for mount resolution
-        jobs_raw: list[dict[str, Any]] = []
-        for job in workflow.jobs:
-            jd: dict[str, Any] = {"name": job.name}
-            if hasattr(job, "work_dir"):
-                jd["work_dir"] = getattr(job, "work_dir", "")
-            jobs_raw.append(jd)
+    jobs_raw: list[dict[str, Any]] = []
+    for job in workflow.jobs:
+        jd: dict[str, Any] = {"name": job.name}
+        if hasattr(job, "work_dir"):
+            jd["work_dir"] = getattr(job, "work_dir", "")
+        jobs_raw.append(jd)
 
-        mount_names = resolve_mounts_for_workflow(
-            profile, jobs_raw, default_project=runner.default_project
-        )
-        for mount_name in mount_names:
-            try:
-                await anyio.to_thread.run_sync(
-                    lambda mn=mount_name: sync_mount_by_name(profile, mn)  # type: ignore[misc]
-                )
-            except Exception as exc:
-                if run_id:
-                    run_registry.fail_run(
-                        run_id, f"Sync failed for mount '{mount_name}': {exc}"
-                    )
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Mount sync failed for '{mount_name}': {exc}",
-                ) from exc
+    mount_names = resolve_mounts_for_workflow(
+        profile, jobs_raw, default_project=runner.default_project
+    )
+    for mount_name in mount_names:
+        try:
+            await anyio.to_thread.run_sync(
+                lambda mn=mount_name: sync_mount_by_name(profile, mn)  # type: ignore[misc]
+            )
+        except Exception as exc:
+            run_registry.fail_run(
+                run_id, f"Sync failed for mount '{mount_name}': {exc}"
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Mount sync failed for '{mount_name}': {exc}",
+            ) from exc
+    return profile
 
-    # ── Render SLURM scripts ────────────────────────────────────────
-    if run_id:
-        run_registry.update_status(run_id, "submitting")
 
-    # Read raw YAML to extract per-job template names
+def _prepare_render_context(
+    yaml_path: Path,
+    workflow: Workflow,
+    name: str,
+) -> tuple[dict[str, str], dict[str, dict[str, str]], str | None]:
+    """Parse raw YAML for template/extra args and build outputs dir.
+
+    Returns (job_template_map, job_extra_args, wf_outputs_dir).
+    """
+    from uuid import uuid4
+
     import yaml as _yaml
 
-    raw_yaml = await anyio.to_thread.run_sync(
-        lambda: yaml_path.read_text(encoding="utf-8")
-    )
-    raw_data = _yaml.safe_load(raw_yaml)
+    raw_data = _yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
     raw_jobs = raw_data.get("jobs", [])
+
     job_template_map: dict[str, str] = {}
     job_extra_args: dict[str, dict[str, str]] = {}
     for rj in raw_jobs:
@@ -699,108 +663,86 @@ async def run_workflow(
         if extras:
             job_extra_args[rj_name] = extras
 
-    templates_dir = Path(__file__).resolve().parent.parent.parent / "templates"
-
-    # Only render Job instances (not ShellJob)
-    job_map: dict[str, Job | ShellJob] = {job.name: job for job in workflow.jobs}
-
-    # Generate shared outputs directory for inter-job variable passing
-    from uuid import uuid4
-
     any_job_has_outputs = any(job.outputs for job in workflow.jobs)
     any_job_has_deps = any(job.depends_on for job in workflow.jobs)
     wf_outputs_dir: str | None = None
     if any_job_has_outputs or any_job_has_deps:
-        wf_outputs_dir = f"/tmp/srunx/{name}_{uuid4().hex[:8]}"
+        base = os.getenv("SRUNX_TEMP_DIR", "/tmp/srunx")
+        wf_outputs_dir = f"{base}/{name}_{uuid4().hex[:8]}"
 
+    return job_template_map, job_extra_args, wf_outputs_dir
+
+
+def _render_scripts(
+    workflow: Workflow,
+    mount: str,
+    profile: Any,
+    job_template_map: dict[str, str],
+    job_extra_args: dict[str, dict[str, str]],
+    wf_outputs_dir: str | None,
+) -> dict[str, str]:
+    """Render SLURM scripts for all jobs in the workflow."""
+    from srunx.models import render_job_script
+    from srunx.template import TEMPLATES
+
+    templates_dir = Path(__file__).resolve().parent.parent.parent / "templates"
     job_names_in_wf = {job.name for job in workflow.jobs}
+    scripts: dict[str, str] = {}
 
-    def _render_all_scripts() -> dict[str, str]:
-        from srunx.template import TEMPLATES
-
-        scripts: dict[str, str] = {}
-        with tempfile.TemporaryDirectory() as tmpdir:
-            for job in workflow.jobs:
-                if isinstance(job, Job):
-                    # Resolve per-job template
-                    tpl_name = job_template_map.get(job.name, "base")
-                    tpl_info = TEMPLATES.get(tpl_name)
-                    if tpl_info:
-                        template_path = templates_dir / tpl_info["path"]
-                    else:
-                        template_path = templates_dir / "base.slurm.jinja"
-
-                    dep_names = [
-                        dep.job_name
-                        for dep in job.parsed_dependencies
-                        if dep.job_name in job_names_in_wf
-                    ]
-                    extras = job_extra_args.get(job.name, {})
-                    rendered_path = render_job_script(
-                        template_path,
-                        job,
-                        output_dir=tmpdir,
-                        outputs_dir=wf_outputs_dir,
-                        dependency_names=dep_names if wf_outputs_dir else None,
-                        extra_srun_args=extras.get("srun_args"),
-                        extra_launch_prefix=extras.get("launch_prefix"),
-                    )
-                    scripts[job.name] = Path(rendered_path).read_text()
-                else:
-                    # ShellJob: read the script directly
-                    # Validate script_path is within allowed boundaries
-                    script_path = Path(job.script_path).resolve()  # type: ignore[union-attr]
-                    allowed_roots = [_workflow_dir(mount).resolve()]
-                    if profile:
-                        allowed_roots.extend(
-                            Path(m.local).resolve() for m in profile.mounts
-                        )
-                    if not any(
-                        script_path.is_relative_to(root) for root in allowed_roots
-                    ):
-                        raise HTTPException(
-                            403,
-                            f"Script path '{job.script_path}' is outside allowed directories",  # type: ignore[union-attr]
-                        )
-                    scripts[job.name] = script_path.read_text()
-        return scripts
-
-    try:
-        scripts = await anyio.to_thread.run_sync(_render_all_scripts)
-    except Exception as exc:
-        if run_id:
-            run_registry.fail_run(run_id, f"Script rendering failed: {exc}")
-        raise HTTPException(
-            status_code=500, detail=f"Script rendering failed: {exc}"
-        ) from exc
-
-    # ── Dry run: return rendered scripts without submitting ────────
-    if run_opts.dry_run:
-        dry_run_jobs = []
+    with tempfile.TemporaryDirectory() as tmpdir:
         for job in workflow.jobs:
-            dry_run_jobs.append(
-                {
-                    "name": job.name,
-                    "script": scripts.get(job.name, ""),
-                    "depends_on": [
-                        d.job_name
-                        for d in job.parsed_dependencies
-                        if d.job_name in job_names_in_wf
-                    ],
-                    "resources": job.resources.model_dump()
-                    if isinstance(job, Job)
-                    else {},
-                }
-            )
-        return {
-            "dry_run": True,
-            "jobs": dry_run_jobs,
-            "execution_order": [job.name for job in workflow.jobs],
-        }
+            if isinstance(job, Job):
+                tpl_name = job_template_map.get(job.name, "base")
+                tpl_info = TEMPLATES.get(tpl_name)
+                if tpl_info:
+                    template_path = templates_dir / tpl_info["path"]
+                else:
+                    template_path = templates_dir / "base.slurm.jinja"
 
-    # ── Topological submit (BFS) ────────────────────────────────────
-    assert run_id is not None  # guaranteed: dry_run returns before this point
+                dep_names = [
+                    dep.job_name
+                    for dep in job.parsed_dependencies
+                    if dep.job_name in job_names_in_wf
+                ]
+                extras = job_extra_args.get(job.name, {})
+                rendered_path = render_job_script(
+                    template_path,
+                    job,
+                    output_dir=tmpdir,
+                    outputs_dir=wf_outputs_dir,
+                    dependency_names=dep_names if wf_outputs_dir else None,
+                    extra_srun_args=extras.get("srun_args"),
+                    extra_launch_prefix=extras.get("launch_prefix"),
+                )
+                scripts[job.name] = Path(rendered_path).read_text()
+            else:
+                script_path = Path(job.script_path).resolve()  # type: ignore[union-attr]
+                allowed_roots = [_workflow_dir(mount).resolve()]
+                if profile:
+                    allowed_roots.extend(
+                        Path(m.local).resolve() for m in profile.mounts
+                    )
+                if not any(script_path.is_relative_to(root) for root in allowed_roots):
+                    raise HTTPException(
+                        403,
+                        f"Script path '{job.script_path}' is outside allowed directories",  # type: ignore[union-attr]
+                    )
+                scripts[job.name] = script_path.read_text()
+    return scripts
+
+
+async def _submit_jobs_bfs(
+    workflow: Workflow,
+    scripts: dict[str, str],
+    run_id: str,
+    run_opts: WorkflowRunRequest,
+    adapter: SlurmSSHAdapter,
+) -> dict[str, str]:
+    """Submit jobs in topological order via BFS, returning {name: slurm_id}."""
+    from collections import deque
+
     filtered_names = {job.name for job in workflow.jobs}
+    job_map: dict[str, Job | ShellJob] = {job.name: job for job in workflow.jobs}
     dependents: dict[str, list[str]] = {job.name: [] for job in workflow.jobs}
     in_degree: dict[str, int] = {
         job.name: len(
@@ -817,14 +759,12 @@ async def run_workflow(
     queue: deque[str] = deque(
         job.name for job in workflow.jobs if in_degree[job.name] == 0
     )
-    submitted: dict[str, str] = {}  # job_name -> slurm_job_id
+    submitted: dict[str, str] = {}
 
     while queue:
         current_name = queue.popleft()
         current_job = job_map[current_name]
 
-        # Build dependency flag from parent SLURM IDs
-        # For single_job mode, skip dependencies (job runs standalone)
         dep_parts: list[str] = []
         if not run_opts.single_job:
             for dep in current_job.parsed_dependencies:
@@ -852,26 +792,112 @@ async def run_workflow(
                 detail=f"sbatch failed for '{current_name}': {exc}",
             ) from exc
 
-        # Enqueue dependents whose in-degree reaches 0
         for dep_name in dependents[current_name]:
             in_degree[dep_name] -= 1
             if in_degree[dep_name] == 0:
                 queue.append(dep_name)
 
-    # ── Finalize and start monitor ──────────────────────────────────
+    return submitted
+
+
+@router.post("/{name}/run", status_code=202)
+async def run_workflow(
+    name: str,
+    request: Request,
+    mount: str | None = None,
+    body: WorkflowRunRequest | None = None,
+    adapter: SlurmSSHAdapter = Depends(get_adapter),
+) -> dict[str, Any]:
+    """Run a workflow: sync mounts, submit jobs with SLURM dependencies."""
+    if not _SAFE_NAME.match(name):
+        raise HTTPException(status_code=422, detail="Invalid workflow name")
+    if not mount:
+        raise HTTPException(status_code=422, detail="mount query parameter is required")
+
+    run_opts = body or WorkflowRunRequest()
+    yaml_path = _find_yaml(name, mount)
+
+    # Load and optionally filter workflow
+    runner = await anyio.to_thread.run_sync(lambda: WorkflowRunner.from_yaml(yaml_path))
+    workflow = runner.workflow
+    if run_opts.from_job or run_opts.to_job or run_opts.single_job:
+        filtered_jobs = _filter_workflow_jobs(
+            workflow, run_opts.from_job, run_opts.to_job, run_opts.single_job
+        )
+        workflow = Workflow(name=workflow.name, jobs=filtered_jobs)
+
+    # Create run record (skip for dry runs)
+    run_id: str | None = None
+    if not run_opts.dry_run:
+        run = run_registry.create(name)
+        run_id = run.id
+        run_registry.update_status(run_id, "syncing")
+
+    # Phase 1: Sync mounts
+    profile = await _sync_mounts(workflow, runner, run_id)
+
+    # Phase 2: Prepare render context and render scripts
+    if run_id:
+        run_registry.update_status(run_id, "submitting")
+
+    job_template_map, job_extra_args, wf_outputs_dir = await anyio.to_thread.run_sync(
+        lambda: _prepare_render_context(yaml_path, workflow, name)
+    )
+
+    try:
+        scripts = await anyio.to_thread.run_sync(
+            lambda: _render_scripts(
+                workflow,
+                mount,
+                profile,
+                job_template_map,
+                job_extra_args,
+                wf_outputs_dir,
+            )
+        )
+    except Exception as exc:
+        if run_id:
+            run_registry.fail_run(run_id, f"Script rendering failed: {exc}")
+        raise HTTPException(
+            status_code=500, detail=f"Script rendering failed: {exc}"
+        ) from exc
+
+    # Phase 3: Dry run early return
+    if run_opts.dry_run:
+        job_names_in_wf = {job.name for job in workflow.jobs}
+        return {
+            "dry_run": True,
+            "jobs": [
+                {
+                    "name": job.name,
+                    "script": scripts.get(job.name, ""),
+                    "depends_on": [
+                        d.job_name
+                        for d in job.parsed_dependencies
+                        if d.job_name in job_names_in_wf
+                    ],
+                    "resources": job.resources.model_dump()
+                    if isinstance(job, Job)
+                    else {},
+                }
+                for job in workflow.jobs
+            ],
+            "execution_order": [job.name for job in workflow.jobs],
+        }
+
+    # Phase 4: Submit and monitor
+    assert run_id is not None
+    submitted = await _submit_jobs_bfs(workflow, scripts, run_id, run_opts, adapter)
+
     run_registry.set_job_ids(run_id, submitted)
     run_registry.update_status(run_id, "running")
-
-    # Initialize job statuses to PENDING
     for jname in submitted:
         run_registry.update_job_status(run_id, jname, "PENDING")
 
-    # Start background monitor (task_group may not exist in test environments)
     tg = getattr(request.app.state, "task_group", None)
     if tg is not None:
         tg.start_soon(_monitor_run, run_id, submitted, adapter)
 
-    # Re-fetch the run to return the latest state
     final_run = run_registry.get(run_id)
     return final_run.model_dump() if final_run else {"id": run_id, "status": "running"}
 

@@ -3,6 +3,7 @@
 import ast
 import datetime
 import math
+import os  # noqa: E402
 import re
 import time
 from collections import defaultdict
@@ -612,7 +613,8 @@ class WorkflowRunner:
         outputs_dir: str | None = None
         if any_job_has_outputs or any_job_has_deps:
             run_id = uuid4().hex[:8]
-            outputs_dir = f"/tmp/srunx/{self.workflow.name}_{run_id}"
+            base = os.getenv("SRUNX_TEMP_DIR", "/tmp/srunx")
+            outputs_dir = f"{base}/{self.workflow.name}_{run_id}"
 
         # Log execution plan
         if single_job:
