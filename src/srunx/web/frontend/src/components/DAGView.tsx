@@ -12,6 +12,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { motion } from "framer-motion";
+import { computeDAGLayers } from "../lib/dag-layout.ts";
 import type { RunnableJob, JobStatus } from "../lib/types.ts";
 import { StatusBadge } from "./StatusBadge.tsx";
 
@@ -184,37 +185,7 @@ const nodeTypes = { jobNode: JobNode };
 
 function layoutDAG(jobs: RunnableJob[]): { nodes: Node[]; edges: Edge[] } {
   const jobMap = new Map(jobs.map((j) => [j.name, j]));
-
-  /* Compute layers via BFS from roots */
-  const layers = new Map<string, number>();
-  const roots = jobs.filter((j) => !j.depends_on || j.depends_on.length === 0);
-
-  const queue = roots.map((j) => ({ name: j.name, layer: 0 }));
-  while (queue.length > 0) {
-    const { name, layer } = queue.shift()!;
-    const existing = layers.get(name);
-    if (existing !== undefined && existing >= layer) continue;
-    layers.set(name, layer);
-
-    for (const job of jobs) {
-      if (job.depends_on?.some((d) => d === name || d.includes(`:${name}`))) {
-        queue.push({ name: job.name, layer: layer + 1 });
-      }
-    }
-  }
-
-  /* Assign missing jobs to layer 0 */
-  for (const job of jobs) {
-    if (!layers.has(job.name)) layers.set(job.name, 0);
-  }
-
-  /* Group by layer */
-  const layerGroups = new Map<number, string[]>();
-  for (const [name, layer] of layers) {
-    const group = layerGroups.get(layer) ?? [];
-    group.push(name);
-    layerGroups.set(layer, group);
-  }
+  const { groups } = computeDAGLayers(jobs);
 
   const NODE_W = 260;
   const NODE_H = 110;
@@ -222,7 +193,7 @@ function layoutDAG(jobs: RunnableJob[]): { nodes: Node[]; edges: Edge[] } {
   const GAP_Y = 60;
 
   const nodes: Node[] = [];
-  for (const [layer, names] of layerGroups) {
+  for (const [layer, names] of groups) {
     const totalWidth = names.length * NODE_W + (names.length - 1) * GAP_X;
     const startX = -totalWidth / 2;
     names.forEach((name, i) => {

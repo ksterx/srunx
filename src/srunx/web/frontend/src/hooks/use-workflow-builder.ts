@@ -18,6 +18,7 @@ import type {
   Workflow,
   WorkflowCreateRequest,
 } from "../lib/types.ts";
+import { computeDAGLayers } from "../lib/dag-layout.ts";
 
 /* ── Constants ───────────────────────────────────── */
 
@@ -162,40 +163,10 @@ function workflowJobToBuilderJob(job: RunnableJob, id: string): BuilderJob {
 function computeLayeredPositions(
   jobs: RunnableJob[],
 ): Map<string, { x: number; y: number }> {
+  const { groups } = computeDAGLayers(jobs);
   const positions = new Map<string, { x: number; y: number }>();
 
-  // BFS layer assignment
-  const layers = new Map<string, number>();
-  const roots = jobs.filter((j) => !j.depends_on || j.depends_on.length === 0);
-  const queue = roots.map((j) => ({ name: j.name, layer: 0 }));
-
-  while (queue.length > 0) {
-    const { name, layer } = queue.shift()!;
-    const existing = layers.get(name);
-    if (existing !== undefined && existing >= layer) continue;
-    layers.set(name, layer);
-
-    for (const job of jobs) {
-      if (job.depends_on?.some((d) => d === name || d.includes(`:${name}`))) {
-        queue.push({ name: job.name, layer: layer + 1 });
-      }
-    }
-  }
-
-  // Assign missing jobs to layer 0
-  for (const job of jobs) {
-    if (!layers.has(job.name)) layers.set(job.name, 0);
-  }
-
-  // Group by layer
-  const layerGroups = new Map<number, string[]>();
-  for (const [name, layer] of layers) {
-    const group = layerGroups.get(layer) ?? [];
-    group.push(name);
-    layerGroups.set(layer, group);
-  }
-
-  for (const [layer, names] of layerGroups) {
+  for (const [layer, names] of groups) {
     names.forEach((name, i) => {
       positions.set(name, {
         x: INITIAL_X + i * NODE_SPACING_X,
