@@ -336,7 +336,7 @@ export function Sidebar({
               style={{
                 flexShrink: 0,
                 transform: profileOpen ? "rotate(180deg)" : "rotate(0deg)",
-                transition: "transform 150ms",
+                transition: "transform var(--duration-fast)",
               }}
             />
           </button>
@@ -463,7 +463,7 @@ export function Sidebar({
           borderTopStyle: "solid",
           borderTopWidth: 1,
           borderTopColor: "var(--border-ghost)",
-          transition: "color 150ms",
+          transition: "color var(--duration-fast)",
         }}
         onMouseEnter={(e) =>
           (e.currentTarget.style.color = "var(--text-secondary)")

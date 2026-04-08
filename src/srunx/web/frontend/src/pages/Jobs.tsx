@@ -6,6 +6,7 @@ import { useApi } from "../hooks/use-api.ts";
 import { jobs as jobsApi } from "../lib/api.ts";
 import type { JobStatus } from "../lib/types.ts";
 import { StatusBadge } from "../components/StatusBadge.tsx";
+import { ErrorBanner } from "../components/ErrorBanner.tsx";
 
 const ALL_STATUSES: JobStatus[] = [
   "PENDING",
@@ -127,21 +128,7 @@ export function Jobs() {
       </motion.div>
 
       {/* Error banners */}
-      {(error || cancelError) && (
-        <div
-          style={{
-            padding: "var(--sp-3) var(--sp-4)",
-            background: "var(--st-failed-dim)",
-            border: "1px solid rgba(244,63,94,0.3)",
-            borderRadius: "var(--radius-md)",
-            color: "var(--st-failed)",
-            fontFamily: "var(--font-mono)",
-            fontSize: "0.8rem",
-          }}
-        >
-          {cancelError ?? error}
-        </div>
-      )}
+      <ErrorBanner error={cancelError ?? error} />
 
       {/* Table */}
       <motion.div
