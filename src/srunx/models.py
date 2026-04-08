@@ -1,6 +1,7 @@
 """Data models for SLURM job management."""
 
 import os
+import re
 import subprocess
 import time
 from enum import Enum
@@ -275,7 +276,6 @@ class BaseJob(BaseModel):
     @classmethod
     def validate_output_keys(cls, v: dict[str, str]) -> dict[str, str]:
         """Ensure output variable names are valid shell identifiers."""
-        import re
 
         for key in v:
             if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):

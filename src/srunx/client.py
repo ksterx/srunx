@@ -2,6 +2,7 @@
 
 import glob
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -248,9 +249,6 @@ class Slurm:
                 # Parse GPU count from TRES (e.g., "gpu:8" or "billing=8,cpu=8,gres/gpu=8,mem=100G,node=1")
                 gpus = 0
                 if tres and "gpu" in tres.lower():
-                    # Try to extract gpu count from various TRES formats
-                    import re
-
                     # Match patterns like "gpu:8", "gres/gpu=8", "gpu:NVIDIA-A100:8"
                     gpu_match = re.search(r"gpu[:/=](?:[^:]+:)?(\d+)", tres.lower())
                     if gpu_match:
@@ -634,7 +632,6 @@ class Slurm:
         Raises:
             subprocess.CalledProcessError: If scontrol command fails
         """
-        import re
 
         try:
             result = subprocess.run(

@@ -755,10 +755,8 @@ class SSHSlurmClient:
 
         Valid formats: 12345, 12345_4, 12345_[1-10], 12345.0
         """
-        import re as _re
-
         job_id_str = str(job_id)
-        if not _re.fullmatch(r"[0-9][0-9_.\[\]\-]*", job_id_str):
+        if not re.fullmatch(r"[0-9][0-9_.\[\]\-]*", job_id_str):
             raise ValueError(f"Invalid SLURM job ID: {job_id_str!r}")
         return job_id_str
 
@@ -782,11 +780,9 @@ class SSHSlurmClient:
             ``(stdout, stderr, new_stdout_offset, new_stderr_offset)``
         """
         try:
-            import re as _re
-
             safe_job_id = self._sanitize_job_id(job_id)
             safe_job_name = None
-            if job_name and _re.fullmatch(r"[\w\-\.]+", job_name):
+            if job_name and re.fullmatch(r"[\w\-\.]+", job_name):
                 safe_job_name = job_name
 
             output_content = ""
@@ -958,9 +954,7 @@ class SSHSlurmClient:
             safe_job_name = None
             if job_name:
                 # Only allow alphanumeric, underscore, hyphen, dot in job names
-                import re as _re
-
-                if _re.fullmatch(r"[\w\-\.]+", job_name):
+                if re.fullmatch(r"[\w\-\.]+", job_name):
                     safe_job_name = job_name
                 else:
                     self.logger.warning(
