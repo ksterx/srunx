@@ -1430,21 +1430,21 @@ class TestSafeEvalExec:
         """os.system must not be accessible."""
         from srunx.runner import _safe_eval
 
-        with pytest.raises(NameError):
+        with pytest.raises((NameError, AttributeError)):
             _safe_eval("os.system('echo pwned')", {})
 
     def test_safe_eval_blocks_import(self):
         """__import__ must not be accessible."""
         from srunx.runner import _safe_eval
 
-        with pytest.raises((NameError, TypeError)):
+        with pytest.raises(NameError):
             _safe_eval("__import__('os')", {})
 
     def test_safe_eval_blocks_open(self):
         """open() must not be accessible."""
         from srunx.runner import _safe_eval
 
-        with pytest.raises((NameError, TypeError)):
+        with pytest.raises(NameError):
             _safe_eval("open('/etc/passwd')", {})
 
     def test_safe_eval_blocks_subprocess(self):
@@ -1458,8 +1458,22 @@ class TestSafeEvalExec:
         """import statements must fail in sandbox."""
         from srunx.runner import _safe_exec
 
-        with pytest.raises(ImportError):
+        with pytest.raises(ValueError, match="Unsupported statement"):
             _safe_exec("import os", {})
+
+    def test_safe_eval_blocks_class_escape(self):
+        """Prevent sandbox escape via __class__.__bases__.__subclasses__."""
+        from srunx.runner import _safe_eval
+
+        with pytest.raises((AttributeError, ValueError)):
+            _safe_eval("().__class__.__bases__[0].__subclasses__()", {})
+
+    def test_safe_eval_blocks_type_escape(self):
+        """Prevent sandbox escape via type()."""
+        from srunx.runner import _safe_eval
+
+        with pytest.raises(NameError):
+            _safe_eval("type(()).__bases__[0].__subclasses__()", {})
 
     def test_safe_exec_allows_result(self):
         """exec sandbox should allow setting result variable."""

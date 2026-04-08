@@ -294,7 +294,7 @@ class SSHSlurmClient:
         # Basic syntax check for shell scripts
         if remote_path.endswith(".sh"):
             stdout, stderr, exit_code = self.execute_command(
-                f"bash -n {remote_path} 2>&1 || echo 'SYNTAX_ERROR'"
+                f"bash -n {quoted_path} 2>&1 || echo 'SYNTAX_ERROR'"
             )
             if "SYNTAX_ERROR" in stdout or exit_code != 0:
                 return (
@@ -610,7 +610,7 @@ class SSHSlurmClient:
                 cmd = f"{self._get_slurm_command('sbatch')}"
                 cmd += f" -J {safe_name}"
                 cmd += " -o $SLURM_LOG_DIR/%x_%j.log"
-                cmd += f" {script_path}"
+                cmd += f" {shlex.quote(script_path)}"
 
                 stdout, stderr, exit_code = self._execute_slurm_command(cmd)
                 if exit_code == 0:
