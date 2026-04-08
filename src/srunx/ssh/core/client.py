@@ -449,8 +449,8 @@ class SSHSlurmClient:
             # Use login shell to find commands in PATH
             final_command = f"{env_setup} && {command}"
 
-        # Execute with bash login shell
-        full_cmd = f"bash -l -c '{final_command}'"
+        # Execute with bash login shell (shlex.quote prevents injection via embedded quotes)
+        full_cmd = f"bash -l -c {shlex.quote(final_command)}"
         self.logger.debug(f"Executing SLURM command: {full_cmd}")
         stdout, stderr, exit_code = self.execute_command(full_cmd)
         self.logger.debug(
