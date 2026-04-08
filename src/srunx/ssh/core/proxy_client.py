@@ -20,7 +20,8 @@ class ProxySSHClient:
         try:
             # Connect to proxy host
             self.proxy_client = paramiko.SSHClient()
-            self.proxy_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self.proxy_client.load_system_host_keys()
+            self.proxy_client.set_missing_host_key_policy(paramiko.WarningPolicy())
 
             proxy_connect_kwargs = {
                 "hostname": proxy_host_config.hostname,
@@ -85,7 +86,8 @@ class ProxySSHClient:
 
         # Connect to target through proxy
         target_client = paramiko.SSHClient()
-        target_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        target_client.load_system_host_keys()
+        target_client.set_missing_host_key_policy(paramiko.WarningPolicy())
 
         # Create transport over proxy channel
         target_transport = paramiko.Transport(proxy_channel)
@@ -146,7 +148,8 @@ def create_proxy_aware_connection(
     if not proxy_jump:
         # Direct connection
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.load_system_host_keys()
+        client.set_missing_host_key_policy(paramiko.WarningPolicy())
         client.connect(
             hostname=hostname, username=username, key_filename=key_filename, port=port
         )

@@ -12,8 +12,17 @@ const MAX_LOG_LINES = 10000;
 export function LogViewer() {
   const { jobId } = useParams<{ jobId: string }>();
   const id = Number(jobId);
+  const isValidId = Boolean(jobId) && !Number.isNaN(id);
 
-  if (!jobId || Number.isNaN(id)) {
+  const { data: job, error: jobError } = useApi(
+    () => (isValidId ? jobsApi.get(id) : Promise.resolve(null)),
+    [id, isValidId],
+    { pollInterval: 5000 },
+  );
+
+  const [activeTab, setActiveTab] = useState<"stdout" | "stderr">("stdout");
+
+  if (!isValidId) {
     return (
       <div
         style={{ padding: 48, textAlign: "center", color: "var(--text-muted)" }}
@@ -22,12 +31,6 @@ export function LogViewer() {
       </div>
     );
   }
-
-  const { data: job, error: jobError } = useApi(() => jobsApi.get(id), [id], {
-    pollInterval: 5000,
-  });
-
-  const [activeTab, setActiveTab] = useState<"stdout" | "stderr">("stdout");
 
   /* ── Incremental (offset-based) log polling ───── */
   const isRunning = job?.status === "RUNNING";

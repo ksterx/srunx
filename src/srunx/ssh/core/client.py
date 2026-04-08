@@ -93,7 +93,8 @@ class SSHSlurmClient:
             else:
                 # Direct connection
                 self.ssh_client = paramiko.SSHClient()
-                self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                self.ssh_client.load_system_host_keys()
+                self.ssh_client.set_missing_host_key_policy(paramiko.WarningPolicy())
 
                 if self.key_filename:
                     self.ssh_client.connect(
@@ -114,7 +115,7 @@ class SSHSlurmClient:
             self.sftp_client = self.ssh_client.open_sftp()
 
             # Create temp directory on server
-            self.execute_command(f"mkdir -p {self.temp_dir}")
+            self.execute_command(f"mkdir -p {shlex.quote(self.temp_dir)}")
 
             # Initialize SLURM paths and environment
             self._initialize_slurm_paths()
@@ -224,7 +225,7 @@ class SSHSlurmClient:
             self.sftp_client.put(str(local_path_obj), remote_path)
             # Make the uploaded script executable if it's a script
             if local_path_obj.suffix in [".sh", ".py", ".pl", ".r"]:
-                self.execute_command(f"chmod +x {remote_path}")
+                self.execute_command(f"chmod +x {shlex.quote(remote_path)}")
             if self.verbose:
                 self.logger.info(f"Uploaded {local_path} to {remote_path}")
             return remote_path
@@ -235,7 +236,7 @@ class SSHSlurmClient:
     def cleanup_file(self, remote_path: str) -> None:
         """Remove a file from the server"""
         try:
-            self.execute_command(f"rm -f {remote_path}")
+            self.execute_command(f"rm -f {shlex.quote(remote_path)}")
             if self.verbose:
                 self.logger.info(f"Cleaned up remote file: {remote_path}")
         except Exception as e:
@@ -244,7 +245,7 @@ class SSHSlurmClient:
     def file_exists(self, remote_path: str) -> bool:
         """Check if a file exists on the server"""
         stdout, stderr, exit_code = self.execute_command(
-            f"test -f {remote_path} && echo 'exists' || echo 'not_found'"
+            f"test -f {shlex.quote(remote_path)} && echo 'exists' || echo 'not_found'"
         )
         exists = stdout.strip() == "exists"
         self.logger.debug(f"File existence check for {remote_path}: {exists}")
@@ -257,15 +258,16 @@ class SSHSlurmClient:
             return False, f"Remote script file not found: {remote_path}"
 
         # Check if file is readable
+        quoted_path = shlex.quote(remote_path)
         stdout, stderr, exit_code = self.execute_command(
-            f"test -r {remote_path} && echo 'readable' || echo 'not_readable'"
+            f"test -r {quoted_path} && echo 'readable' || echo 'not_readable'"
         )
         if stdout.strip() != "readable":
             return False, f"Remote script file is not readable: {remote_path}"
 
         # Check if file is executable (warn if not)
         stdout, stderr, exit_code = self.execute_command(
-            f"test -x {remote_path} && echo 'executable' || echo 'not_executable'"
+            f"test -x {quoted_path} && echo 'executable' || echo 'not_executable'"
         )
         if stdout.strip() != "executable":
             self.logger.warning(
@@ -274,7 +276,7 @@ class SSHSlurmClient:
 
         # Check file size (warn if empty or too large)
         stdout, stderr, exit_code = self.execute_command(
-            f"wc -c < {remote_path} 2>/dev/null || echo '0'"
+            f"wc -c < {quoted_path} 2>/dev/null || echo '0'"
         )
         try:
             file_size = int(stdout.strip())
@@ -292,7 +294,7 @@ class SSHSlurmClient:
         # Basic syntax check for shell scripts
         if remote_path.endswith(".sh"):
             stdout, stderr, exit_code = self.execute_command(
-                f"bash -n {remote_path} 2>&1 || echo 'SYNTAX_ERROR'"
+                f"bash -n {quoted_path} 2>&1 || echo 'SYNTAX_ERROR'"
             )
             if "SYNTAX_ERROR" in stdout or exit_code != 0:
                 return (
@@ -518,7 +520,7 @@ class SSHSlurmClient:
             self._write_remote_file(remote_script_path, script_content)
 
             # Make script executable
-            self.execute_command(f"chmod +x {remote_script_path}")
+            self.execute_command(f"chmod +x {shlex.quote(remote_script_path)}")
 
             # Validate the uploaded script
             valid, validation_msg = self.validate_remote_script(remote_script_path)
@@ -608,7 +610,7 @@ class SSHSlurmClient:
                 cmd = f"{self._get_slurm_command('sbatch')}"
                 cmd += f" -J {safe_name}"
                 cmd += " -o $SLURM_LOG_DIR/%x_%j.log"
-                cmd += f" {script_path}"
+                cmd += f" {shlex.quote(script_path)}"
 
                 stdout, stderr, exit_code = self._execute_slurm_command(cmd)
                 if exit_code == 0:
@@ -753,10 +755,8 @@ class SSHSlurmClient:
 
         Valid formats: 12345, 12345_4, 12345_[1-10], 12345.0
         """
-        import re as _re
-
         job_id_str = str(job_id)
-        if not _re.fullmatch(r"[0-9][0-9_.\[\]\-]*", job_id_str):
+        if not re.fullmatch(r"[0-9][0-9_.\[\]\-]*", job_id_str):
             raise ValueError(f"Invalid SLURM job ID: {job_id_str!r}")
         return job_id_str
 
@@ -780,11 +780,9 @@ class SSHSlurmClient:
             ``(stdout, stderr, new_stdout_offset, new_stderr_offset)``
         """
         try:
-            import re as _re
-
             safe_job_id = self._sanitize_job_id(job_id)
             safe_job_name = None
-            if job_name and _re.fullmatch(r"[\w\-\.]+", job_name):
+            if job_name and re.fullmatch(r"[\w\-\.]+", job_name):
                 safe_job_name = job_name
 
             output_content = ""
@@ -956,9 +954,7 @@ class SSHSlurmClient:
             safe_job_name = None
             if job_name:
                 # Only allow alphanumeric, underscore, hyphen, dot in job names
-                import re as _re
-
-                if _re.fullmatch(r"[\w\-\.]+", job_name):
+                if re.fullmatch(r"[\w\-\.]+", job_name):
                     safe_job_name = job_name
                 else:
                     self.logger.warning(
@@ -1205,7 +1201,7 @@ class SSHSlurmClient:
 
     def _execute_with_environment(self, command: str) -> tuple[str, str, int]:
         """Execute command with full login environment"""
-        return self.execute_command(f'bash -l -c "{command}"')
+        return self.execute_command(f"bash -l -c {shlex.quote(command)}")
 
     def __enter__(self):
         if self.connect():

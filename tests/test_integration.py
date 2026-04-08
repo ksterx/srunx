@@ -95,9 +95,9 @@ class TestTemplateRendering:
             assert "#SBATCH --partition=gpu" in content
 
             # Verify environment setup
-            assert "conda activate pytorch" in content
-            assert "export CUDA_VISIBLE_DEVICES=0,1,2,3" in content
-            assert "export OMP_NUM_THREADS=8" in content
+            assert "conda activate 'pytorch'" in content
+            assert "export CUDA_VISIBLE_DEVICES='0,1,2,3'" in content
+            assert "export OMP_NUM_THREADS='8'" in content
 
             # Verify command
             assert "python train.py --epochs 100" in content
@@ -525,7 +525,7 @@ class TestContainerRenderIntegration:
                 content = f.read()
 
             # Both conda AND container should be present
-            assert "conda activate ml_env" in content
+            assert "conda activate 'ml_env'" in content
             assert "apptainer exec" in content
             assert "--nv" in content
             assert "test.sif" in content

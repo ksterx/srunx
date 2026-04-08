@@ -2,6 +2,7 @@
 
 import glob
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -248,9 +249,6 @@ class Slurm:
                 # Parse GPU count from TRES (e.g., "gpu:8" or "billing=8,cpu=8,gres/gpu=8,mem=100G,node=1")
                 gpus = 0
                 if tres and "gpu" in tres.lower():
-                    # Try to extract gpu count from various TRES formats
-                    import re
-
                     # Match patterns like "gpu:8", "gres/gpu=8", "gpu:NVIDIA-A100:8"
                     gpu_match = re.search(r"gpu[:/=](?:[^:]+:)?(\d+)", tres.lower())
                     if gpu_match:
@@ -315,68 +313,49 @@ class Slurm:
             match job.status:
                 case JobStatus.COMPLETED:
                     logger.info(job_status_msg(job))
-                    # Update history
-                    try:
-                        from srunx.history import get_history
-
-                        history = get_history()
-                        if job.job_id:
-                            history.update_job_completion(
-                                job.job_id, JobStatus.COMPLETED
-                            )
-                    except Exception as e:
-                        logger.warning(f"Failed to update job history: {e}")
-
+                    self._record_completion(job)
                     for callback in all_callbacks:
                         callback.on_job_completed(job)
                     return job
                 case JobStatus.FAILED:
-                    # Update history
-                    try:
-                        from srunx.history import get_history
-
-                        history = get_history()
-                        if job.job_id:
-                            history.update_job_completion(job.job_id, JobStatus.FAILED)
-                    except Exception as e:
-                        logger.warning(f"Failed to update job history: {e}")
-
-                    err_msg = job_status_msg(job) + "\n"
-                    if isinstance(job, Job):
-                        log_file = Path(job.log_dir) / f"{job.name}_{job.job_id}.log"
-                        if log_file.exists():
-                            with open(log_file) as f:
-                                err_msg += f.read()
-                                err_msg += f"\nLog file: {log_file}"
-                        else:
-                            err_msg += f"Log file not found: {log_file}"
+                    self._record_completion(job)
+                    err_msg = self._build_error_msg(job)
                     for callback in all_callbacks:
                         callback.on_job_failed(job)
                     raise RuntimeError(err_msg)
                 case JobStatus.CANCELLED | JobStatus.TIMEOUT:
-                    # Update history
-                    try:
-                        from srunx.history import get_history
-
-                        history = get_history()
-                        if job.job_id:
-                            history.update_job_completion(job.job_id, job.status)
-                    except Exception as e:
-                        logger.warning(f"Failed to update job history: {e}")
-
-                    err_msg = job_status_msg(job) + "\n"
-                    if isinstance(job, Job):
-                        log_file = Path(job.log_dir) / f"{job.name}_{job.job_id}.log"
-                        if log_file.exists():
-                            with open(log_file) as f:
-                                err_msg += f.read()
-                                err_msg += f"\nLog file: {log_file}"
-                        else:
-                            err_msg += f"Log file not found: {log_file}"
+                    self._record_completion(job)
+                    err_msg = self._build_error_msg(job)
                     for callback in all_callbacks:
                         callback.on_job_cancelled(job)
                     raise RuntimeError(err_msg)
             time.sleep(poll_interval)
+
+    @staticmethod
+    def _record_completion(job: BaseJob) -> None:
+        """Record job completion in history database."""
+        try:
+            from srunx.history import get_history
+
+            history = get_history()
+            if job.job_id:
+                history.update_job_completion(job.job_id, job.status)
+        except Exception as e:
+            logger.warning(f"Failed to update job history: {e}")
+
+    @staticmethod
+    def _build_error_msg(job: BaseJob) -> str:
+        """Build error message with log contents for a failed/cancelled job."""
+        err_msg = job_status_msg(job) + "\n"
+        if isinstance(job, Job):
+            log_file = Path(job.log_dir) / f"{job.name}_{job.job_id}.log"
+            if log_file.exists():
+                with open(log_file) as f:
+                    err_msg += f.read()
+                    err_msg += f"\nLog file: {log_file}"
+            else:
+                err_msg += f"Log file not found: {log_file}"
+        return err_msg
 
     def run(
         self,
@@ -410,6 +389,75 @@ class Slurm:
             # This should not happen in practice, but needed for type safety
             return submitted_job
 
+    @staticmethod
+    def _find_log_files(
+        job_id: int | str, job_name: str | None = None
+    ) -> tuple[list[str], list[str]]:
+        """Find SLURM log files for a job.
+
+        Returns:
+            Tuple of (found_files, searched_dirs)
+        """
+        job_id_str = str(job_id)
+        potential_log_patterns: list[str | None] = [
+            f"{job_name}_{job_id_str}.log" if job_name else None,
+            f"{job_name}_{job_id_str}.out" if job_name else None,
+            f"*_{job_id_str}.log",
+            f"*_{job_id_str}.out",
+            f"slurm-{job_id_str}.out",
+            f"slurm-{job_id_str}.err",
+            f"job_{job_id_str}.log",
+            f"{job_id_str}.log",
+        ]
+        patterns = [p for p in potential_log_patterns if p is not None]
+        log_dirs = [
+            os.environ.get("SLURM_LOG_DIR", ""),
+            "./",
+            "/tmp",
+        ]
+
+        found_files: list[str] = []
+        for log_dir in log_dirs:
+            if not log_dir:
+                continue
+            log_dir_path = Path(log_dir)
+            if not log_dir_path.exists():
+                continue
+            for pattern in patterns:
+                found_files.extend(glob.glob(str(log_dir_path / pattern)))
+
+        return found_files, [d for d in log_dirs if d]
+
+    @staticmethod
+    def _read_log_contents(found_files: list[str]) -> tuple[str, str]:
+        """Read output and error content from found log files.
+
+        Returns:
+            Tuple of (output_content, error_content)
+        """
+        output_content = ""
+        error_content = ""
+        if not found_files:
+            return output_content, error_content
+
+        primary_log = found_files[0]
+        try:
+            with open(primary_log, encoding="utf-8") as f:
+                output_content = f.read()
+        except (OSError, UnicodeDecodeError) as e:
+            logger.warning(f"Failed to read log file {primary_log}: {e}")
+            output_content = f"Could not read log file {primary_log}: {e}"
+
+        for log_file in found_files:
+            if "err" in Path(log_file).name.lower():
+                try:
+                    with open(log_file, encoding="utf-8") as f:
+                        error_content += f.read()
+                except (OSError, UnicodeDecodeError) as e:
+                    logger.warning(f"Failed to read error file {log_file}: {e}")
+
+        return output_content, error_content
+
     def get_job_output(
         self, job_id: int | str, job_name: str | None = None
     ) -> tuple[str, str]:
@@ -422,75 +470,10 @@ class Slurm:
         Returns:
             Tuple of (output_content, error_content)
         """
-        job_id_str = str(job_id)
-
-        # Try multiple common SLURM log file patterns
-        potential_log_patterns = [
-            # Pattern from SBATCH directives: %x_%j.log (job_name_job_id.log)
-            f"{job_name}_{job_id_str}.log" if job_name else None,
-            f"{job_name}_{job_id_str}.out" if job_name else None,
-            # Common SLURM_LOG_DIR patterns
-            f"*_{job_id_str}.log",
-            f"*_{job_id_str}.out",
-            # Default SLURM patterns
-            f"slurm-{job_id_str}.out",
-            f"slurm-{job_id_str}.err",
-            # Alternative patterns
-            f"job_{job_id_str}.log",
-            f"{job_id_str}.log",
-        ]
-
-        # Remove None values
-        patterns = [p for p in potential_log_patterns if p is not None]
-
-        # Common SLURM log directories to search
-        log_dirs = [
-            os.environ.get("SLURM_LOG_DIR", ""),
-            "./",  # Current directory
-            "/tmp",
-        ]
-
-        output_content = ""
-        error_content = ""
-        found_files = []
-
-        for log_dir in log_dirs:
-            if not log_dir:
-                continue
-
-            log_dir_path = Path(log_dir)
-            if not log_dir_path.exists():
-                continue
-
-            for pattern in patterns:
-                # Use glob to find matching files
-                search_pattern = str(log_dir_path / pattern)
-                matching_files = glob.glob(search_pattern)
-                found_files.extend(matching_files)
-
-        # Read content from found log files
-        if found_files:
-            # Use the first found file as primary output
-            primary_log = found_files[0]
-            try:
-                with open(primary_log, encoding="utf-8") as f:
-                    output_content = f.read()
-            except (OSError, UnicodeDecodeError) as e:
-                logger.warning(f"Failed to read log file {primary_log}: {e}")
-                output_content = f"Could not read log file {primary_log}: {e}"
-
-            # Look for separate error files
-            for log_file in found_files:
-                if "err" in Path(log_file).name.lower():
-                    try:
-                        with open(log_file, encoding="utf-8") as f:
-                            error_content += f.read()
-                    except (OSError, UnicodeDecodeError) as e:
-                        logger.warning(f"Failed to read error file {log_file}: {e}")
-        else:
-            logger.warning(f"No log files found for job {job_id_str}")
-
-        return output_content, error_content
+        found_files, _ = self._find_log_files(job_id, job_name)
+        if not found_files:
+            logger.warning(f"No log files found for job {job_id}")
+        return self._read_log_contents(found_files)
 
     def get_job_output_detailed(
         self, job_id: int | str, job_name: str | None = None, skip_content: bool = False
@@ -505,69 +488,13 @@ class Slurm:
         Returns:
             Dictionary with detailed log information
         """
-        job_id_str = str(job_id)
+        found_files, searched_dirs = self._find_log_files(job_id, job_name)
+        primary_log = found_files[0] if found_files else None
 
-        # Try multiple common SLURM log file patterns
-        potential_log_patterns = [
-            # Pattern from SBATCH directives: %x_%j.log (job_name_job_id.log)
-            f"{job_name}_{job_id_str}.log" if job_name else None,
-            f"{job_name}_{job_id_str}.out" if job_name else None,
-            # Common SLURM_LOG_DIR patterns
-            f"*_{job_id_str}.log",
-            f"*_{job_id_str}.out",
-            # Default SLURM patterns
-            f"slurm-{job_id_str}.out",
-            f"slurm-{job_id_str}.err",
-            # Alternative patterns
-            f"job_{job_id_str}.log",
-            f"{job_id_str}.log",
-        ]
-
-        patterns = [p for p in potential_log_patterns if p is not None]
-
-        log_dirs = [
-            os.environ.get("SLURM_LOG_DIR", ""),
-            "./",
-            "/tmp",
-        ]
-
-        found_files: list[str] = []
-        primary_log: str | None = None
-        output_content = ""
-        error_content = ""
-
-        for log_dir in log_dirs:
-            if not log_dir:
-                continue
-
-            log_dir_path = Path(log_dir)
-            if not log_dir_path.exists():
-                continue
-
-            for pattern in patterns:
-                search_pattern = str(log_dir_path / pattern)
-                matching_files = glob.glob(search_pattern)
-                found_files.extend(matching_files)
-
-        if found_files:
-            primary_log = found_files[0]
-
-            if not skip_content:
-                try:
-                    with open(primary_log, encoding="utf-8") as f:
-                        output_content = f.read()
-                except (OSError, UnicodeDecodeError) as e:
-                    logger.warning(f"Failed to read log file {primary_log}: {e}")
-                    output_content = f"Could not read log file {primary_log}: {e}"
-
-                # Look for separate error files
-                for log_file in found_files:
-                    if "err" in Path(log_file).name.lower():
-                        try:
-                            with open(log_file, encoding="utf-8") as f:
-                                error_content += f.read()
-                        except (OSError, UnicodeDecodeError) as e:
-                            logger.warning(f"Failed to read error file {log_file}: {e}")
+        if skip_content:
+            output_content, error_content = "", ""
+        else:
+            output_content, error_content = self._read_log_contents(found_files)
 
         return {
             "found_files": found_files,
@@ -575,7 +502,7 @@ class Slurm:
             "output": output_content,
             "error": error_content,
             "slurm_log_dir": os.environ.get("SLURM_LOG_DIR"),
-            "searched_dirs": [d for d in log_dirs if d],
+            "searched_dirs": searched_dirs,
         }
 
     def tail_log(
@@ -705,7 +632,6 @@ class Slurm:
         Raises:
             subprocess.CalledProcessError: If scontrol command fails
         """
-        import re
 
         try:
             result = subprocess.run(

@@ -178,11 +178,13 @@ def _get_current_profile():
 
 
 def _find_mount(profile, mount_name: str):
-    """Find a mount by name within a profile's mounts."""
-    for m in profile.mounts:
-        if m.name == mount_name:
-            return m
-    raise HTTPException(status_code=404, detail=f"Mount '{mount_name}' not found")
+    """Find a mount by name. Raises HTTPException 404 if not found."""
+    from ..sync_utils import find_mount
+
+    try:
+        return find_mount(profile, mount_name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 def _workflow_dir(mount_name: str) -> Path:
@@ -217,7 +219,8 @@ def _find_yaml(name: str, mount_name: str) -> Path:
 
 
 def _reject_python_args(yaml_content: str) -> None:
-    if "python:" in yaml_content:
+    """Reject YAML containing python: args (case-insensitive) for security."""
+    if "python:" in yaml_content.lower():
         raise HTTPException(
             status_code=422,
             detail="Workflow YAML contains 'python:' args which are not allowed via web for security reasons",
@@ -433,9 +436,9 @@ async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
                 detail=f"Workflow '{name}' already exists",
             )
 
-    # Reject python: args from web for security
+    # Reject python: args from web for security (case-insensitive)
     for val in body.args.values():
-        if isinstance(val, str) and "python:" in val:
+        if isinstance(val, str) and "python:" in val.lower():
             raise HTTPException(
                 status_code=422,
                 detail="Args with 'python:' values are not allowed via web for security reasons",

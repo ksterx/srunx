@@ -31,10 +31,13 @@ class WebConfig(BaseModel):
 
 
 _config: WebConfig | None = None
+_config_lock = __import__("threading").Lock()
 
 
 def get_web_config() -> WebConfig:
     global _config
     if _config is None:
-        _config = WebConfig()
+        with _config_lock:
+            if _config is None:
+                _config = WebConfig()
     return _config
