@@ -5,6 +5,24 @@ test.beforeEach(async ({ page }) => {
   await setupMockRoutes(page);
 });
 
+/**
+ * Helper: open the Run dialog, submit via the dialog's Run Workflow button,
+ * and wait for the dialog to close (indicating run started).
+ */
+async function triggerRunViaDialog(page: import("@playwright/test").Page) {
+  // Open dialog
+  await page.getByRole("button", { name: /Run Workflow/ }).click();
+  // Wait for dialog heading to appear
+  await expect(page.getByText(/^Run:/)).toBeVisible({ timeout: 3000 });
+  // Click the dialog's submit button (the second "Run Workflow" button)
+  await page
+    .getByRole("button", { name: /Run Workflow/ })
+    .nth(1)
+    .click();
+  // Wait for dialog to close
+  await expect(page.getByText(/^Run:/)).not.toBeVisible({ timeout: 5000 });
+}
+
 test.describe("Workflow Run & Lifecycle", () => {
   test("Run Workflow button is visible on detail page", async ({ page }) => {
     await page.goto("/workflows/ml-pipeline?mount=ml-project");
@@ -42,13 +60,7 @@ test.describe("Workflow Run & Lifecycle", () => {
     });
 
     await page.goto("/workflows/ml-pipeline?mount=ml-project");
-    // Click Run Workflow on the detail page to open dialog
-    await page.getByRole("button", { name: /Run Workflow/ }).click();
-    // Click Run Workflow inside the dialog to submit
-    await page
-      .getByRole("button", { name: /Run Workflow/ })
-      .nth(1)
-      .click();
+    await triggerRunViaDialog(page);
 
     await expect(() => expect(runCalled).toBe(true)).toPass({ timeout: 3000 });
   });
@@ -73,17 +85,12 @@ test.describe("Workflow Run & Lifecycle", () => {
     });
 
     await page.goto("/workflows/ml-pipeline?mount=ml-project");
-    const runBtn = page.getByRole("button", { name: /Run Workflow/ });
-    // Open dialog
-    await runBtn.click();
-    // Submit from dialog
-    await page
-      .getByRole("button", { name: /Run Workflow/ })
-      .nth(1)
-      .click();
+    await triggerRunViaDialog(page);
 
-    /* After triggering a run, the detail page button should be disabled */
-    await expect(runBtn.first()).toBeDisabled({ timeout: 5000 });
+    /* After triggering a run, the button should be disabled */
+    await expect(
+      page.getByRole("button", { name: /Run Workflow/ }),
+    ).toBeDisabled({ timeout: 5000 });
   });
 
   test("cancel button appears during active run", async ({ page }) => {
@@ -110,12 +117,7 @@ test.describe("Workflow Run & Lifecycle", () => {
       page.getByRole("button", { name: /Cancel/ }),
     ).not.toBeVisible();
 
-    // Open dialog and submit
-    await page.getByRole("button", { name: /Run Workflow/ }).click();
-    await page
-      .getByRole("button", { name: /Run Workflow/ })
-      .nth(1)
-      .click();
+    await triggerRunViaDialog(page);
 
     /* Cancel button should appear after run starts */
     await expect(page.getByRole("button", { name: /Cancel/ })).toBeVisible({
@@ -141,12 +143,7 @@ test.describe("Workflow Run & Lifecycle", () => {
     });
 
     await page.goto("/workflows/ml-pipeline?mount=ml-project");
-    // Open dialog and submit
-    await page.getByRole("button", { name: /Run Workflow/ }).click();
-    await page
-      .getByRole("button", { name: /Run Workflow/ })
-      .nth(1)
-      .click();
+    await triggerRunViaDialog(page);
 
     /* Wait for Cancel button to appear */
     const cancelBtn = page.getByRole("button", { name: /Cancel/ });
@@ -218,16 +215,11 @@ test.describe("Workflow Run & Lifecycle", () => {
     });
 
     await page.goto("/workflows/ml-pipeline?mount=ml-project");
-    // Open dialog and submit
-    await page.getByRole("button", { name: /Run Workflow/ }).click();
-    await page
-      .getByRole("button", { name: /Run Workflow/ })
-      .nth(1)
-      .click();
+    await triggerRunViaDialog(page);
 
     /* Button should be disabled while a run is active */
     await expect(
-      page.getByRole("button", { name: /Run Workflow/ }).first(),
-    ).toBeDisabled({ timeout: 3000 });
+      page.getByRole("button", { name: /Run Workflow/ }),
+    ).toBeDisabled({ timeout: 5000 });
   });
 });
