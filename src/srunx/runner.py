@@ -203,9 +203,6 @@ class WorkflowRunner:
         matches = re.findall(jinja_pattern, jobs_yaml)
         used_variables.update(matches)
 
-        # logger.info(f"Jobs YAML: {jobs_yaml}")
-        # logger.info(f"Used variables: {used_variables}")
-
         # 2) Find all variables that the used variables depend on (transitively)
         def find_dependencies(
             var_name: str, args: dict[str, Any], visited: set[str] | None = None
@@ -253,9 +250,6 @@ class WorkflowRunner:
         required_variables = set()
         for used_var in used_variables:
             required_variables.update(find_dependencies(used_var, args))
-
-        # logger.info(f"Required variables: {required_variables}")
-        # logger.info(f"Available args: {list(args.keys())}")
 
         # 3) Evaluate all required variables in correct dependency order
         if args:
@@ -426,13 +420,10 @@ class WorkflowRunner:
 
             args = evaluated_args
 
-        # logger.info(f"Final evaluated args: {args}")
-
         # 4) Render the jobs section with the evaluated variables
         template = jinja2.Template(jobs_yaml, undefined=jinja2.DebugUndefined)
         try:
             rendered_yaml = template.render(**(args or {}))
-            # logger.info(f"Rendered YAML: {rendered_yaml}")
             return yaml.safe_load(rendered_yaml)
         except jinja2.TemplateError as e:
             logger.error(f"Jinja template rendering failed: {e}")

@@ -120,7 +120,7 @@ class TestSSHSlurmClient:
         result = mock_ssh_client._execute_with_environment("echo hello")
 
         mock_ssh_client.execute_command.assert_called_once_with(
-            'bash -l -c "echo hello"'
+            "bash -l -c 'echo hello'"
         )
         assert result == ("output", "error", 0)
 

@@ -529,16 +529,6 @@ def test_connection(
                     border_style="green",
                 )
             )
-        elif result["ssh_connected"]:
-            console.print(
-                Panel(
-                    "[bold yellow]⚠️  Partial success[/bold yellow]\n"
-                    "SSH connection is working.",
-                    title="Warning",
-                    border_style="yellow",
-                )
-            )
-            raise typer.Exit(1)
         else:
             console.print(
                 Panel(

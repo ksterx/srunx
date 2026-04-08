@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class WatchMode(StrEnum):
@@ -35,13 +35,8 @@ class MonitorConfig(BaseModel):
         default=True, description="Send notifications when state changes"
     )
 
-    @property
-    def is_aggressive(self) -> bool:
-        """Check if polling interval is aggressive (<5 seconds)."""
-        return self.poll_interval < 5
-
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "examples": [
                 {
                     "poll_interval": 60,
@@ -57,10 +52,34 @@ class MonitorConfig(BaseModel):
                 },
             ]
         }
+    )
+
+    @property
+    def is_aggressive(self) -> bool:
+        """Check if polling interval is aggressive (<5 seconds)."""
+        return self.poll_interval < 5
 
 
 class ResourceSnapshot(BaseModel):
     """Point-in-time snapshot of SLURM partition resources."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "timestamp": "2025-12-13T10:30:00",
+                    "partition": "gpu",
+                    "total_gpus": 16,
+                    "gpus_in_use": 12,
+                    "gpus_available": 4,
+                    "jobs_running": 8,
+                    "nodes_total": 8,
+                    "nodes_idle": 2,
+                    "nodes_down": 1,
+                }
+            ]
+        }
+    )
 
     timestamp: datetime = Field(
         default_factory=datetime.now, description="When this snapshot was taken"
@@ -105,20 +124,3 @@ class ResourceSnapshot(BaseModel):
             True if gpus_available >= min_gpus
         """
         return self.gpus_available >= min_gpus
-
-    class Config:
-        json_schema_extra = {
-            "examples": [
-                {
-                    "timestamp": "2025-12-13T10:30:00",
-                    "partition": "gpu",
-                    "total_gpus": 16,
-                    "gpus_in_use": 12,
-                    "gpus_available": 4,
-                    "jobs_running": 8,
-                    "nodes_total": 8,
-                    "nodes_idle": 2,
-                    "nodes_down": 1,
-                }
-            ]
-        }

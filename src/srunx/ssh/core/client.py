@@ -1201,7 +1201,7 @@ class SSHSlurmClient:
 
     def _execute_with_environment(self, command: str) -> tuple[str, str, int]:
         """Execute command with full login environment"""
-        return self.execute_command(f'bash -l -c "{command}"')
+        return self.execute_command(f"bash -l -c {shlex.quote(command)}")
 
     def __enter__(self):
         if self.connect():
