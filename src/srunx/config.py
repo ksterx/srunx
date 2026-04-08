@@ -283,11 +283,14 @@ def create_example_config() -> str:
 
 # Global config instance
 _config: SrunxConfig | None = None
+_config_lock = __import__("threading").Lock()
 
 
 def get_config(reload: bool = False) -> SrunxConfig:
     """Get the global configuration instance."""
     global _config
     if _config is None or reload:
-        _config = load_config()
+        with _config_lock:
+            if _config is None or reload:
+                _config = load_config()
     return _config

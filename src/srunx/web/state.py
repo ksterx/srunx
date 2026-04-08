@@ -27,18 +27,40 @@ class WorkflowRun(BaseModel):
     error: str | None = None
 
 
+_MAX_RUNS = 1000
+_TERMINAL_STATUSES: set[RunStatus] = {"completed", "failed", "cancelled"}
+
+
 class RunRegistry:
     """Thread-safe in-memory registry for workflow runs."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_runs: int = _MAX_RUNS) -> None:
         self._runs: dict[str, WorkflowRun] = {}
         self._lock = threading.Lock()
+        self._max_runs = max_runs
 
     def create(self, workflow_name: str) -> WorkflowRun:
         run = WorkflowRun(workflow_name=workflow_name)
         with self._lock:
             self._runs[run.id] = run
+            self._evict_if_needed()
         return run
+
+    def _evict_if_needed(self) -> None:
+        """Remove oldest completed runs when registry exceeds max size.
+
+        Must be called while holding ``_lock``.
+        """
+        if len(self._runs) <= self._max_runs:
+            return
+        # Collect terminal runs sorted by completion time (oldest first)
+        terminal = sorted(
+            (r for r in self._runs.values() if r.status in _TERMINAL_STATUSES),
+            key=lambda r: r.completed_at or "",
+        )
+        to_remove = len(self._runs) - self._max_runs
+        for run in terminal[:to_remove]:
+            del self._runs[run.id]
 
     def get(self, run_id: str) -> WorkflowRun | None:
         with self._lock:
