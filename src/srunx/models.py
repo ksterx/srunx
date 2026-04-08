@@ -26,7 +26,7 @@ def _get_config_defaults():
         from srunx.config import get_config
 
         return get_config()
-    except (ImportError, Exception):
+    except ImportError:
         return None
 
 
