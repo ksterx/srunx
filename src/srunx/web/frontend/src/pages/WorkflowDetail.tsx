@@ -78,16 +78,6 @@ export function WorkflowDetail() {
     { pollInterval: 10000 },
   );
 
-  if (!name || !mount) {
-    return (
-      <div
-        style={{ padding: 48, textAlign: "center", color: "var(--text-muted)" }}
-      >
-        {!name ? "Invalid workflow name" : "No mount specified"}
-      </div>
-    );
-  }
-
   /* ── Stop polling on unmount ──────────────── */
   useEffect(() => {
     return () => {
@@ -142,7 +132,7 @@ export function WorkflowDetail() {
     if (!window.confirm(`Delete workflow "${name}"? This cannot be undone.`))
       return;
     try {
-      await workflowsApi.delete(name, mount);
+      await workflowsApi.delete(name, mount ?? "");
       navigate("/workflows");
     } catch (err) {
       setRunError(
@@ -177,6 +167,16 @@ export function WorkflowDetail() {
       };
     });
   }, [workflow, runData]);
+
+  if (!name || !mount) {
+    return (
+      <div
+        style={{ padding: 48, textAlign: "center", color: "var(--text-muted)" }}
+      >
+        {!name ? "Invalid workflow name" : "No mount specified"}
+      </div>
+    );
+  }
 
   const selected = liveJobs.find((j) => j.name === selectedJob);
 

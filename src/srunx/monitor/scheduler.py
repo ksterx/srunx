@@ -290,7 +290,7 @@ class ScheduledReporter:
 
             completed = failed = cancelled = 0
             for line in result.stdout.strip().splitlines():
-                state = line.strip().split("+")[0]  # strip "CANCELLED by ..." suffix
+                state = line.strip().split("+")[0]  # strip SLURM truncation indicator
                 if state == "COMPLETED":
                     completed += 1
                 elif state == "FAILED":
