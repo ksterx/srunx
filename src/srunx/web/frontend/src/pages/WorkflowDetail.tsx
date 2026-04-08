@@ -65,6 +65,17 @@ export function WorkflowDetail() {
   const [showRunDialog, setShowRunDialog] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const {
+    data: workflow,
+    loading,
+    error,
+  } = useApi(
+    () =>
+      name && mount ? workflowsApi.get(name, mount) : Promise.resolve(null),
+    [name, mount],
+    { pollInterval: 10000 },
+  );
+
   if (!name || !mount) {
     return (
       <div
@@ -74,14 +85,6 @@ export function WorkflowDetail() {
       </div>
     );
   }
-
-  const {
-    data: workflow,
-    loading,
-    error,
-  } = useApi(() => workflowsApi.get(name, mount), [name, mount], {
-    pollInterval: 10000,
-  });
 
   /* ── Stop polling on unmount ──────────────── */
   useEffect(() => {
