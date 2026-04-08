@@ -1,15 +1,19 @@
-import logging
+from typing import Any
 
 import paramiko
 
+from srunx.logging import get_logger
+
 from .ssh_config import SSHHost, get_ssh_config_host
+
+_logger = get_logger(__name__)
 
 
 class ProxySSHClient:
     """SSH Client with ProxyJump support using Paramiko"""
 
-    def __init__(self, logger: logging.Logger | None = None):
-        self.logger = logger or logging.getLogger(__name__)
+    def __init__(self, logger: Any | None = None):
+        self.logger = logger or _logger
         self.proxy_client: paramiko.SSHClient | None = None
         self.proxy_transport: paramiko.Transport | None = None
 
@@ -141,7 +145,7 @@ def create_proxy_aware_connection(
     port: int = 22,
     proxy_jump: str | None = None,
     ssh_config_path: str | None = None,
-    logger: logging.Logger | None = None,
+    logger: Any | None = None,
 ) -> tuple[paramiko.SSHClient, ProxySSHClient | None]:
     """Create SSH connection with optional ProxyJump support"""
 

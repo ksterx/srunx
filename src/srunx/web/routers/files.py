@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any, Literal
 
@@ -10,9 +9,11 @@ import anyio
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from srunx.logging import get_logger
+
 from ..config import get_web_config
 
-_logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import re
 import tempfile
 from pathlib import Path
@@ -14,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from srunx.exceptions import WorkflowValidationError
+from srunx.logging import get_logger
 from srunx.models import (
     Job,
     JobEnvironment,
@@ -27,7 +27,7 @@ from ..deps import get_adapter
 from ..ssh_adapter import SlurmSSHAdapter
 from ..state import run_registry
 
-_logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 

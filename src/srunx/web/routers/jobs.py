@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
+from srunx.logging import get_logger
+
 from ..deps import get_adapter
 from ..ssh_adapter import SlurmSSHAdapter
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
-_logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ScriptPreviewRequest(BaseModel):
@@ -99,7 +100,7 @@ async def submit_job(
                 detail="No SSH profile configured; cannot sync mount",
             )
         try:
-            _logger.info("Syncing mount '%s' before job submission", mount_name)
+            logger.info("Syncing mount '%s' before job submission", mount_name)
             await anyio.to_thread.run_sync(
                 lambda: sync_mount_by_name(profile, mount_name)
             )
@@ -139,7 +140,7 @@ async def submit_job(
                 slack = SlackCallback(webhook_url=webhook_url)
                 await anyio.to_thread.run_sync(lambda: slack.on_job_submitted(job))
         except Exception:
-            _logger.warning("Failed to send Slack notification", exc_info=True)
+            logger.warning("Failed to send Slack notification", exc_info=True)
 
     return result
 

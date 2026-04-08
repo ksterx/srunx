@@ -1,4 +1,3 @@
-import logging
 import os
 import re
 import shlex
@@ -10,9 +9,12 @@ from pathlib import Path
 
 import paramiko  # type: ignore
 
+from srunx.logging import get_logger
 from srunx.sync import RsyncClient
 
 from .proxy_client import ProxySSHClient, create_proxy_aware_connection
+
+_logger = get_logger(__name__)
 
 
 @dataclass
@@ -50,7 +52,7 @@ class SSHSlurmClient:
         self.ssh_client: paramiko.SSHClient | None = None
         self.sftp_client: paramiko.SFTPClient | None = None
         self.proxy_client: ProxySSHClient | None = None
-        self.logger = logging.getLogger(__name__)
+        self.logger = _logger
         self.temp_dir = os.getenv("SRUNX_TEMP_DIR", "/tmp/srunx")
         self._slurm_path: str | None = None  # Cache for SLURM command paths
         self._slurm_env: dict[str, str] | None = (

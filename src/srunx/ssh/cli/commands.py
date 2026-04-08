@@ -6,7 +6,6 @@ This module provides a clean typer-based interface for SSH SLURM operations,
 replacing the mixed argparse/typer architecture.
 """
 
-import logging
 import os
 import time
 from pathlib import Path
@@ -53,8 +52,9 @@ ssh_app.add_typer(profile_app, name="profile")
 
 def setup_logging(verbose: bool = False):
     """Configure logging for SSH operations."""
-    level = logging.DEBUG if verbose else logging.WARNING
-    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=level)
+    from srunx.logging import configure_cli_logging
+
+    configure_cli_logging(level="DEBUG" if verbose else "WARNING")
 
 
 def send_slack_notification(slack_client, message: str) -> None:
