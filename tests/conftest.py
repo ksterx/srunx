@@ -136,8 +136,10 @@ def reset_config():
         # Mock BaseJob.refresh to prevent real sacct calls and keep
         # _status unchanged (the mocked subprocess.run above would reset
         # every job to PENDING, breaking tests that set custom statuses).
-        with patch.object(srunx.models.BaseJob, "refresh") as mock_refresh:
-            mock_refresh.return_value = None
+        # Returns self to match the real refresh() signature.
+        with patch.object(
+            srunx.models.BaseJob, "refresh", side_effect=lambda self=None: self
+        ):
             yield
 
     # Restore original environment values
@@ -151,35 +153,3 @@ def reset_config():
     srunx.config._config = None
     if hasattr(srunx.models, "_cached_config"):
         srunx.models._cached_config = None
-
-
-@pytest.fixture
-def ensure_pending_status():
-    """Ensure all jobs created in this test have PENDING status."""
-    from srunx.models import JobStatus
-
-    # Store original __post_init__ method
-    original_post_init = None
-
-    def patched_post_init(self):
-        if original_post_init:
-            original_post_init(self)
-        # Force status to be PENDING for test consistency
-        self._status = JobStatus.PENDING
-
-    # Apply patches to all job classes
-    import srunx.models
-
-    classes_to_patch = [srunx.models.BaseJob, srunx.models.Job, srunx.models.ShellJob]
-
-    original_methods = {}
-    for cls in classes_to_patch:
-        if hasattr(cls, "__post_init__"):
-            original_methods[cls] = cls.__post_init__
-            cls.__post_init__ = patched_post_init
-
-    yield
-
-    # Restore original methods
-    for cls, original_method in original_methods.items():
-        cls.__post_init__ = original_method
