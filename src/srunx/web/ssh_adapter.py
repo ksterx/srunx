@@ -268,7 +268,7 @@ class SlurmSSHAdapter:
 
                 gpus = 0
                 if len(parts) >= 8:
-                    gpu_match = re.search(r"gpu=(\d+)", parts[7], re.IGNORECASE)
+                    gpu_match = GPU_TRES_RE.search(parts[7])
                     if gpu_match:
                         gpus = int(gpu_match.group(1))
 
@@ -321,7 +321,7 @@ class SlurmSSHAdapter:
             gpus = 0
             if len(parts) >= 9:
                 tres = parts[8]
-                gpu_match = re.search(r"gpu=(\d+)", tres, re.IGNORECASE)
+                gpu_match = GPU_TRES_RE.search(tres)
                 if gpu_match:
                     gpus = int(gpu_match.group(1))
 
