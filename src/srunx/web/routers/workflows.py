@@ -220,12 +220,30 @@ def _find_yaml(name: str, mount_name: str) -> Path:
 
 
 def _reject_python_args(yaml_content: str) -> None:
-    """Reject YAML containing python: args (case-insensitive) for security."""
-    if "python:" in yaml_content.lower():
-        raise HTTPException(
-            status_code=422,
-            detail="Workflow YAML contains 'python:' args which are not allowed via web for security reasons",
-        )
+    """Reject YAML whose args section contains python: values (case-insensitive).
+
+    Parses the YAML first so legitimate uses of "python:" in commands or
+    comments are not blocked.
+    """
+    try:
+        data = yaml.safe_load(yaml_content)
+    except Exception:
+        # Let downstream validation handle malformed YAML
+        return
+
+    if not isinstance(data, dict):
+        return
+
+    args = data.get("args")
+    if not isinstance(args, dict):
+        return
+
+    for key, val in args.items():
+        if isinstance(val, str) and "python:" in val.lower():
+            raise HTTPException(
+                status_code=422,
+                detail=f"Arg '{key}' contains 'python:' prefix which is not allowed via web for security reasons",
+            )
 
 
 def _serialize_workflow(
