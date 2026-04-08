@@ -252,6 +252,129 @@ def _strip_python_prefix(value: str) -> str:
     return stripped[len("python:") :].lstrip()
 
 
+_JINJA_VAR_RE = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
+
+
+def _find_jinja_refs(text: str) -> set[str]:
+    """Find all Jinja2 variable names referenced in *text*."""
+    return set(_JINJA_VAR_RE.findall(text))
+
+
+def _find_required_variables(jobs_yaml: str, args: dict[str, Any]) -> set[str]:
+    """Return the set of arg keys that the jobs YAML transitively depends on.
+
+    Starts from variables directly referenced in the YAML, then walks
+    through each arg value to discover transitive dependencies.
+    """
+
+    # Build a dependency graph: key -> set of keys it depends on
+    graph: dict[str, set[str]] = {}
+    for key, value in args.items():
+        deps: set[str] = set()
+        if isinstance(value, str):
+            deps = _find_jinja_refs(value) & args.keys()
+        graph[key] = deps
+
+    # Seed: variables referenced directly in the jobs section
+    seeds = _find_jinja_refs(jobs_yaml) & args.keys()
+
+    # Expand seeds transitively
+    required: set[str] = set()
+    queue = list(seeds)
+    while queue:
+        var = queue.pop()
+        if var in required:
+            continue
+        required.add(var)
+        queue.extend(graph.get(var, set()) - required)
+
+    return required
+
+
+def _eval_python_var(code_raw: str, evaluated: dict[str, Any]) -> Any:
+    """Evaluate a single python: variable value."""
+    code = jinja2.Template(code_raw, undefined=jinja2.DebugUndefined).render(
+        **evaluated
+    )
+    code = dedent(code).lstrip()
+    try:
+        return _safe_eval(code, {"args": evaluated})
+    except SyntaxError:
+        ns = _safe_exec(code, {"args": evaluated})
+        return ns.get("result")
+
+
+def _evaluate_variables(args: dict[str, Any], required: set[str]) -> dict[str, Any]:
+    """Evaluate all *required* args in topological order.
+
+    Uses ``graphlib.TopologicalSorter`` instead of ad-hoc while loops.
+    Python-prefixed values are evaluated via ``_safe_eval``/``_safe_exec``;
+    Jinja-only values are rendered via ``jinja2.Template``.
+    """
+    from graphlib import CycleError, TopologicalSorter
+
+    # Partition into python vs plain, only keeping required keys
+    plain: dict[str, Any] = {}
+    python: dict[str, str] = {}
+    for key in required:
+        if key not in args:
+            continue
+        value = args[key]
+        if isinstance(value, str) and _has_python_prefix(value):
+            python[key] = _strip_python_prefix(value)
+        else:
+            plain[key] = value
+
+    # Build dependency graph for ALL required variables
+    all_vars = {**plain, **{k: args[k] for k in python}}
+    graph: dict[str, set[str]] = {}
+    for key, value in all_vars.items():
+        if isinstance(value, str):
+            graph[key] = _find_jinja_refs(value) & required
+        elif key in python:
+            # For python vars, scan the code for variable name references
+            code = python[key]
+            deps = set()
+            for other in required:
+                if other != key and other in code:
+                    deps.add(other)
+            graph[key] = deps
+        else:
+            graph[key] = set()
+
+    # Topological sort
+    try:
+        sorter = TopologicalSorter(graph)
+        order = list(sorter.static_order())
+    except CycleError:
+        logger.warning("Circular variable dependencies detected, using fallback order")
+        order = list(required)
+
+    # Evaluate in order
+    evaluated: dict[str, Any] = {}
+    for key in order:
+        if key not in required or key not in args:
+            continue
+
+        if key in python:
+            try:
+                evaluated[key] = _eval_python_var(python[key], evaluated)
+            except Exception as e:
+                logger.warning(f"Failed to evaluate python variable '{key}': {e}")
+        elif isinstance(plain.get(key), str):
+            value = plain[key]
+            refs = _find_jinja_refs(value)
+            if refs:
+                tmpl = jinja2.Template(value, undefined=jinja2.DebugUndefined)
+                evaluated[key] = tmpl.render(**evaluated)
+            else:
+                evaluated[key] = value
+        else:
+            evaluated[key] = plain.get(key)
+
+    return evaluated
+
+
 class WorkflowRunner:
     """Runner for executing workflows defined in YAML with dynamic job scheduling.
 
@@ -345,240 +468,22 @@ class WorkflowRunner:
     ) -> list[dict[str, Any]]:
         """Render Jinja templates in job data using args.
 
-        - Evaluate any "python:" values in args (Jinja → eval/exec).
-        - Then render the whole jobs section with Jinja.
+        Phases:
+        1. Find which variables are used in the jobs YAML
+        2. Resolve variable dependencies via topological sort
+        3. Evaluate all variables in dependency order
+        4. Render the jobs YAML with evaluated variables
         """
-        # 1) Find which variables are actually used in the jobs
+        if not args:
+            return jobs_data
+
         jobs_yaml = yaml.dump(jobs_data, default_flow_style=False)
-        used_variables = set()
+        required = _find_required_variables(jobs_yaml, args)
+        evaluated = _evaluate_variables(args, required)
 
-        # Extract variable names from Jinja templates in the jobs YAML
-
-        jinja_pattern = r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}"
-        matches = re.findall(jinja_pattern, jobs_yaml)
-        used_variables.update(matches)
-
-        # 2) Find all variables that the used variables depend on (transitively)
-        def find_dependencies(
-            var_name: str, args: dict[str, Any], visited: set[str] | None = None
-        ) -> set[str]:
-            """Find all variables that a given variable depends on, transitively."""
-            if visited is None:
-                visited = set()
-
-            if var_name in visited or var_name not in args:
-                return set()
-
-            visited.add(var_name)
-            deps = {var_name}
-
-            var_value = args[var_name]
-            if isinstance(var_value, str):
-                # Find variables referenced in this variable's value
-                referenced_vars = re.findall(jinja_pattern, var_value)
-                for ref_var in referenced_vars:
-                    deps.update(find_dependencies(ref_var, args, visited.copy()))
-
-            return deps
-
-        def find_all_jinja_vars(text: str) -> set[str]:
-            """Find all Jinja variables in a text, including nested ones."""
-            all_vars = set()
-            current_vars = set(re.findall(jinja_pattern, text))
-            all_vars.update(current_vars)
-
-            # For each variable found, check if its value contains more variables
-            for var in current_vars:
-                if var in args:
-                    var_value = args[var]
-                    if isinstance(var_value, str):
-                        nested_vars = find_all_jinja_vars(var_value)
-                        all_vars.update(nested_vars)
-
-            return all_vars
-
-        # Find all required variables (including transitive dependencies)
-        # Also look for nested Jinja variables in the jobs_yaml itself
-        all_text_vars = find_all_jinja_vars(jobs_yaml)
-        used_variables.update(all_text_vars)
-
-        required_variables = set()
-        for used_var in used_variables:
-            required_variables.update(find_dependencies(used_var, args))
-
-        # 3) Evaluate all required variables in correct dependency order
-        if args:
-            evaluated_args: dict[str, Any] = {}
-
-            # Separate Python and non-Python variables (case-insensitive prefix)
-            python_vars = {
-                k: v
-                for k, v in args.items()
-                if isinstance(v, str)
-                and _has_python_prefix(v)
-                and k in required_variables
-            }
-            non_python_vars = {
-                k: v
-                for k, v in args.items()
-                if k in required_variables
-                and not (isinstance(v, str) and _has_python_prefix(v))
-            }
-
-            # First, evaluate Python variables that don't depend on other variables or have simple dependencies
-            # This handles cases like 'today' which is used by non-Python variables
-            processed_python: set[str] = set()
-
-            # Find Python variables that non-Python variables depend on
-            python_vars_needed_by_non_python = set()
-            for _, value in non_python_vars.items():
-                if isinstance(value, str):
-                    var_deps = set(re.findall(jinja_pattern, value))
-                    python_vars_needed_by_non_python.update(
-                        var_deps & set(python_vars.keys())
-                    )
-
-            # Evaluate these critical Python variables first
-            for key in python_vars_needed_by_non_python:
-                if key in python_vars:
-                    value = python_vars[key]
-                    code = _strip_python_prefix(value)
-                    try:
-                        code = jinja2.Template(
-                            code, undefined=jinja2.DebugUndefined
-                        ).render(**evaluated_args)
-                        code = dedent(code).lstrip()
-
-                        try:
-                            evaluated = _safe_eval(code, {"args": evaluated_args})
-                        except SyntaxError:
-                            ns = _safe_exec(code, {"args": evaluated_args})
-                            evaluated = ns.get("result")
-
-                        evaluated_args[key] = evaluated
-                        processed_python.add(key)
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to evaluate critical Python variable {key}: {e}"
-                        )
-
-            # Then process non-python vars in dependency order
-            processed_non_python: set[str] = set()
-            while len(processed_non_python) < len(non_python_vars):
-                made_progress = False
-                for key, value in non_python_vars.items():
-                    if key in processed_non_python:
-                        continue
-
-                    # Check if this variable depends on other variables
-                    if isinstance(value, str):
-                        var_deps = set(re.findall(jinja_pattern, value))
-                        required_non_python_deps = var_deps & set(
-                            non_python_vars.keys()
-                        )
-
-                        # All required dependencies must be available
-                        if required_non_python_deps.issubset(processed_non_python):
-                            # All dependencies are ready, render this variable
-                            if var_deps:
-                                template = jinja2.Template(
-                                    value, undefined=jinja2.StrictUndefined
-                                )
-                                evaluated_args[key] = template.render(**evaluated_args)
-                            else:
-                                evaluated_args[key] = value
-                            processed_non_python.add(key)
-                            made_progress = True
-                    else:
-                        # Non-string value, no dependencies
-                        evaluated_args[key] = value
-                        processed_non_python.add(key)
-                        made_progress = True
-
-                if not made_progress:
-                    # Handle remaining variables
-                    for key, value in non_python_vars.items():
-                        if key not in processed_non_python:
-                            if isinstance(value, str) and re.findall(
-                                jinja_pattern, value
-                            ):
-                                # Try to render with DebugUndefined
-                                template = jinja2.Template(
-                                    value, undefined=jinja2.DebugUndefined
-                                )
-                                evaluated_args[key] = template.render(**evaluated_args)
-                            else:
-                                evaluated_args[key] = value
-                            processed_non_python.add(key)
-                    break
-
-            # Finally, evaluate remaining Python variables in dependency order
-            # Remove already processed Python variables
-            remaining_python_vars = {
-                k: v for k, v in python_vars.items() if k not in processed_python
-            }
-
-            while remaining_python_vars:
-                made_progress = False
-                for key, value in list(remaining_python_vars.items()):
-                    code = _strip_python_prefix(value)
-
-                    # Check if this code depends on other variables
-                    depends_on = set()
-                    for other_key in args.keys():
-                        if other_key != key and other_key in code:
-                            depends_on.add(other_key)
-
-                    # Can evaluate if all dependencies are already evaluated
-                    required_deps = depends_on & required_variables
-                    available_vars = set(evaluated_args.keys())
-                    if required_deps.issubset(available_vars):
-                        try:
-                            code = jinja2.Template(
-                                code, undefined=jinja2.StrictUndefined
-                            ).render(**evaluated_args)
-                            code = dedent(code).lstrip()
-
-                            try:
-                                evaluated = _safe_eval(code, {"args": evaluated_args})
-                            except SyntaxError:
-                                ns = _safe_exec(code, {"args": evaluated_args})
-                                evaluated = ns.get("result")
-
-                            evaluated_args[key] = evaluated
-                            del remaining_python_vars[key]
-                            made_progress = True
-                        except Exception as e:
-                            logger.warning(f"Failed to evaluate variable {key}: {e}")
-                            del remaining_python_vars[key]
-                            made_progress = True
-
-                if not made_progress:
-                    # Circular dependency or other issue, try to evaluate remaining
-                    for key, value in remaining_python_vars.items():
-                        try:
-                            code = _strip_python_prefix(value)
-                            code = jinja2.Template(
-                                code, undefined=jinja2.DebugUndefined
-                            ).render(**evaluated_args)
-                            code = dedent(code).lstrip()
-                            try:
-                                evaluated = _safe_eval(code, {"args": evaluated_args})
-                            except SyntaxError:
-                                ns = _safe_exec(code, {"args": evaluated_args})
-                                evaluated = ns.get("result")
-                            evaluated_args[key] = evaluated
-                        except Exception:
-                            # Skip variables that can't be evaluated
-                            pass
-                    break
-
-            args = evaluated_args
-
-        # 4) Render the jobs section with the evaluated variables
         template = jinja2.Template(jobs_yaml, undefined=jinja2.DebugUndefined)
         try:
-            rendered_yaml = template.render(**(args or {}))
+            rendered_yaml = template.render(**evaluated)
             return yaml.safe_load(rendered_yaml)
         except jinja2.TemplateError as e:
             logger.error(f"Jinja template rendering failed: {e}")
