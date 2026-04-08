@@ -1,4 +1,5 @@
 import { motion } from "framer-motion";
+import { ErrorBanner } from "../components/ErrorBanner.tsx";
 import {
   AreaChart,
   Area,
@@ -48,21 +49,7 @@ export function Resources() {
         </p>
       </motion.div>
 
-      {error && (
-        <div
-          style={{
-            padding: "var(--sp-3) var(--sp-4)",
-            background: "var(--st-failed-dim)",
-            border: "1px solid rgba(244,63,94,0.3)",
-            borderRadius: "var(--radius-md)",
-            color: "var(--st-failed)",
-            fontFamily: "var(--font-mono)",
-            fontSize: "0.8rem",
-          }}
-        >
-          {error}
-        </div>
-      )}
+      <ErrorBanner error={error} />
 
       {/* Partition cards */}
       <div

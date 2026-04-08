@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Eye, Loader2, Copy, Check } from "lucide-react";
 import { jobs } from "../lib/api.ts";
+import { ErrorBanner } from "./ErrorBanner.tsx";
 import type { ScriptPreviewRequest } from "../lib/types.ts";
 
 type ScriptPreviewProps = {
@@ -65,21 +66,7 @@ export function ScriptPreview({
         Preview Script
       </button>
 
-      {error && (
-        <div
-          style={{
-            padding: "var(--sp-3) var(--sp-4)",
-            background: "var(--st-failed-dim)",
-            border: "1px solid rgba(244,63,94,0.3)",
-            borderRadius: "var(--radius-md)",
-            color: "var(--st-failed)",
-            fontFamily: "var(--font-mono)",
-            fontSize: "0.8rem",
-          }}
-        >
-          {error}
-        </div>
-      )}
+      <ErrorBanner error={error} />
 
       {script && (
         <div

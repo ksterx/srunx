@@ -1631,10 +1631,6 @@ export function FileExplorer() {
       </AnimatePresence>
 
       <style>{`
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
         pre code.hljs {
           background: transparent !important;
           padding: 0 !important;

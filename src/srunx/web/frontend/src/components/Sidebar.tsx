@@ -200,7 +200,7 @@ export function Sidebar({
               : "2px solid transparent",
             border: "none",
             cursor: "pointer",
-            transition: "all 150ms cubic-bezier(0.16,1,0.3,1)",
+            transition: "all var(--duration-fast) var(--ease-out)",
             width: "100%",
           }}
           onMouseEnter={(e) => {
@@ -262,7 +262,7 @@ export function Sidebar({
                 borderLeft: active
                   ? "2px solid var(--accent)"
                   : "2px solid transparent",
-                transition: "all 150ms cubic-bezier(0.16,1,0.3,1)",
+                transition: "all var(--duration-fast) var(--ease-out)",
               };
             }}
           >

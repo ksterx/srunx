@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import { Bell, Save, Check, AlertTriangle } from "lucide-react";
+import { ErrorBanner } from "../../components/ErrorBanner.tsx";
 import { config as configApi } from "../../lib/api.ts";
 import type { SrunxConfig } from "../../lib/types.ts";
 
@@ -69,21 +70,7 @@ export function NotificationsTab() {
     <div
       style={{ display: "flex", flexDirection: "column", gap: "var(--sp-4)" }}
     >
-      {error && (
-        <div
-          style={{
-            padding: "var(--sp-3) var(--sp-4)",
-            background: "var(--st-failed-dim)",
-            border: "1px solid rgba(244,63,94,0.3)",
-            borderRadius: "var(--radius-md)",
-            color: "var(--st-failed)",
-            fontFamily: "var(--font-mono)",
-            fontSize: "0.8rem",
-          }}
-        >
-          {error}
-        </div>
-      )}
+      <ErrorBanner error={error} />
       {success && (
         <motion.div
           initial={{ opacity: 0, y: -8 }}

@@ -708,14 +708,6 @@ export function FileBrowser({
           </div>
         </motion.div>
       </div>
-
-      {/* Spinner keyframe (injected once) */}
-      <style>{`
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
     </AnimatePresence>
   );
 }

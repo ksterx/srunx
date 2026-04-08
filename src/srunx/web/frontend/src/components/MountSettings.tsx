@@ -532,14 +532,6 @@ export function MountSettings({ onClose }: MountSettingsProps) {
           </div>
         </motion.div>
       </div>
-
-      {/* Spinner keyframe */}
-      <style>{`
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
     </AnimatePresence>
   );
 }
