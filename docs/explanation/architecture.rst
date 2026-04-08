@@ -219,7 +219,7 @@ submitted, ensuring the remote cluster has the latest source files.
 
 **Phase 2: Script rendering**
 
-Each ``Job`` in the workflow is rendered through the ``advanced.slurm.jinja``
+Each ``Job`` in the workflow is rendered through the ``base.slurm.jinja``
 template to produce a complete ``sbatch`` script. ``ShellJob`` instances use
 their script content directly. Rendering happens in a temporary directory and
 is purely CPU-bound (no network I/O).

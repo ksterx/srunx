@@ -784,6 +784,8 @@ def render_job_script(
     verbose: bool = False,
     outputs_dir: str | None = None,
     dependency_names: list[str] | None = None,
+    extra_srun_args: str | None = None,
+    extra_launch_prefix: str | None = None,
 ) -> str:
     """Render a SLURM job script from a template.
 
@@ -794,6 +796,8 @@ def render_job_script(
         verbose: Whether to print the rendered content.
         outputs_dir: Shared directory for inter-job output variables (SRUNX_OUTPUTS_DIR).
         dependency_names: Names of dependency jobs whose outputs should be sourced.
+        extra_srun_args: Additional srun flags to append after auto-generated ones.
+        extra_launch_prefix: Additional launch prefix to append after auto-generated ones.
 
     Returns:
         Path to the generated SLURM batch script.
@@ -809,6 +813,12 @@ def render_job_script(
     environment_setup, srun_args, launch_prefix = _build_environment_setup(
         job.environment
     )
+    # Merge user-specified extras with auto-generated values
+    if extra_srun_args:
+        srun_args = f"{srun_args} {extra_srun_args}".strip()
+    if extra_launch_prefix:
+        launch_prefix = f"{launch_prefix} {extra_launch_prefix}".strip()
+
     template_vars = {
         "job_name": job.name,
         "command": command_str,

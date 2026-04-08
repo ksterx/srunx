@@ -39,7 +39,7 @@ async def preview_script(req: ScriptPreviewRequest) -> ScriptPreviewResponse:
     from srunx.models import Job, JobEnvironment, JobResource
     from srunx.template import get_template_path
 
-    template_name = req.template_name or "advanced"
+    template_name = req.template_name or "base"
     try:
         template_path = get_template_path(template_name)
     except ValueError as e:

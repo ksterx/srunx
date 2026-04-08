@@ -121,18 +121,16 @@ class TestTemplateManagement:
 
         templates = list_templates()
 
-        assert len(templates) > 0
-        assert any(t["name"] == "pytorch-ddp" for t in templates)
-        assert any(t["name"] == "tensorflow-multiworker" for t in templates)
-        assert any(t["name"] == "horovod" for t in templates)
+        assert len(templates) == 1
+        assert templates[0]["name"] == "base"
 
     def test_get_template_path(self):
         """Test getting template path."""
         from srunx.template import get_template_path
 
         # Test valid template
-        path = get_template_path("pytorch-ddp")
-        assert path.endswith("pytorch_ddp.slurm.jinja")
+        path = get_template_path("base")
+        assert path.endswith("base.slurm.jinja")
 
         # Test invalid template
         with pytest.raises(ValueError):
@@ -142,9 +140,9 @@ class TestTemplateManagement:
         """Test getting template information."""
         from srunx.template import get_template_info
 
-        info = get_template_info("pytorch-ddp")
+        info = get_template_info("base")
 
-        assert info["name"] == "pytorch-ddp"
+        assert info["name"] == "base"
         assert "description" in info
         assert "use_case" in info
         assert "path" in info
@@ -408,8 +406,8 @@ class TestLastNOptimization:
         printed_texts = []
         with patch("rich.console.Console") as MockConsole:
             mock_console = MockConsole.return_value
-            mock_console.print.side_effect = (
-                lambda *args, **kwargs: printed_texts.append(args[0] if args else "")
+            mock_console.print.side_effect = lambda *args, **kwargs: (
+                printed_texts.append(args[0] if args else "")
             )
             client.tail_log(job_id=100, follow=False, last_n=3)
 

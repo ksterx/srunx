@@ -125,8 +125,7 @@ src/srunx/
 │   │   └── proxy_helper.py  # Proxy connection analysis
 │   └── example.py     # SSH usage examples
 ├── templates/         # SLURM script templates
-│   ├── base.slurm.jinja
-│   └── advanced.slurm.jinja
+│   └── base.slurm.jinja
 └── web/               # Web UI (FastAPI + React)
     ├── routers/       # API endpoints (jobs, workflows, resources, etc.)
     └── frontend/      # React SPA
@@ -251,8 +250,7 @@ src/srunx/
 
 ### Template System
 - Enhanced Jinja2 templates with conditional resource allocation
-- `base.slurm.jinja`: Simple job template
-- `advanced.slurm.jinja`: Full-featured template with all options, including inter-job outputs support
+- `base.slurm.jinja`: Full-featured template with all options, including inter-job outputs support
 - Automatic environment setup integration
 
 ### Workflow Definition

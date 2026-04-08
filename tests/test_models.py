@@ -619,14 +619,14 @@ class TestRenderJobScript:
         assert "python test.py" in content
         assert "conda activate test_env" in content
 
-    def test_render_advanced_template_empty_log_dir(self, temp_dir):
+    def test_render_base_template_empty_log_dir(self, temp_dir):
         """Empty log_dir should produce relative paths, not /%x_%j.log."""
         template_path = (
             Path(__file__).resolve().parent.parent
             / "src"
             / "srunx"
             / "templates"
-            / "advanced.slurm.jinja"
+            / "base.slurm.jinja"
         )
         job = Job(
             name="test_job",
@@ -647,14 +647,14 @@ class TestRenderJobScript:
         else:
             pytest.fail("No --output line found in rendered script")
 
-    def test_render_advanced_template_with_log_dir(self, temp_dir):
+    def test_render_base_template_with_log_dir(self, temp_dir):
         """Non-empty log_dir should be used as prefix."""
         template_path = (
             Path(__file__).resolve().parent.parent
             / "src"
             / "srunx"
             / "templates"
-            / "advanced.slurm.jinja"
+            / "base.slurm.jinja"
         )
         job = Job(
             name="test_job",
@@ -682,14 +682,14 @@ class TestRenderJobScript:
         captured = capsys.readouterr()
         assert "Test template: test_job" in captured.out
 
-    def test_render_advanced_template_with_outputs(self, temp_dir):
+    def test_render_base_template_with_outputs(self, temp_dir):
         """Test that outputs_dir and job_outputs render correctly."""
         template_path = (
             Path(__file__).resolve().parent.parent
             / "src"
             / "srunx"
             / "templates"
-            / "advanced.slurm.jinja"
+            / "base.slurm.jinja"
         )
         job = Job(
             name="train",
@@ -713,14 +713,14 @@ class TestRenderJobScript:
         assert "/data/models/best.pt" in content
         assert "accuracy" in content
 
-    def test_render_advanced_template_with_dependency_sourcing(self, temp_dir):
+    def test_render_base_template_with_dependency_sourcing(self, temp_dir):
         """Test that dependency output files are sourced."""
         template_path = (
             Path(__file__).resolve().parent.parent
             / "src"
             / "srunx"
             / "templates"
-            / "advanced.slurm.jinja"
+            / "base.slurm.jinja"
         )
         job = Job(
             name="evaluate",
@@ -741,14 +741,14 @@ class TestRenderJobScript:
         assert "source" in content
         assert "set -a" in content
 
-    def test_render_advanced_template_without_outputs(self, temp_dir):
+    def test_render_base_template_without_outputs(self, temp_dir):
         """When outputs_dir is None, no outputs block is rendered."""
         template_path = (
             Path(__file__).resolve().parent.parent
             / "src"
             / "srunx"
             / "templates"
-            / "advanced.slurm.jinja"
+            / "base.slurm.jinja"
         )
         job = Job(
             name="simple",
@@ -795,3 +795,105 @@ class TestOutputsValidation:
         """Empty outputs dict should be fine."""
         job = BaseJob(name="test", outputs={})
         assert job.outputs == {}
+
+
+class TestRenderJobScriptExtraArgs:
+    """Test render_job_script with extra_srun_args and extra_launch_prefix."""
+
+    def test_extra_srun_args_appended(self, temp_dir):
+        """User-specified srun_args should appear in the rendered script."""
+        template_path = temp_dir / "test.jinja"
+        template_path.write_text(
+            "#!/bin/bash\n"
+            "{% if srun_args %}srun {{ srun_args }} {{ command }}{% else %}"
+            "srun {{ command }}{% endif %}\n"
+        )
+        job = Job(
+            name="test_extra",
+            command=["python", "train.py"],
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(
+            template_path, job, temp_dir, extra_srun_args="--mpi=pmix"
+        )
+        content = Path(script_path).read_text()
+        assert "--mpi=pmix" in content
+
+    def test_extra_launch_prefix_appended(self, temp_dir):
+        """User-specified launch_prefix should appear in the rendered script."""
+        template_path = temp_dir / "test.jinja"
+        template_path.write_text(
+            "#!/bin/bash\n"
+            "{% if launch_prefix %}{{ launch_prefix }} {{ command }}{% else %}"
+            "{{ command }}{% endif %}\n"
+        )
+        job = Job(
+            name="test_prefix",
+            command=["python", "train.py"],
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(
+            template_path,
+            job,
+            temp_dir,
+            extra_launch_prefix="torchrun --nproc_per_node=4",
+        )
+        content = Path(script_path).read_text()
+        assert "torchrun --nproc_per_node=4" in content
+
+    def test_extra_args_merge_with_container(self, temp_dir):
+        """Extra srun_args should be appended after container-generated args."""
+        template_path = temp_dir / "test.jinja"
+        template_path.write_text("srun_args={{ srun_args }}\n")
+        job = Job(
+            name="test_merge",
+            command=["python", "train.py"],
+            environment=JobEnvironment(
+                container=ContainerResource(
+                    runtime="pyxis", image="nvcr.io/nvidia/pytorch:latest"
+                )
+            ),
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(
+            template_path, job, temp_dir, extra_srun_args="--cpu-bind=cores"
+        )
+        content = Path(script_path).read_text()
+        # Should contain both the container ARGS and user extra
+        assert "CONTAINER_ARGS" in content
+        assert "--cpu-bind=cores" in content
+
+    def test_no_extra_args_unchanged(self, temp_dir):
+        """Without extra args, behavior should be unchanged."""
+        template_path = temp_dir / "test.jinja"
+        template_path.write_text("srun {{ srun_args }} {{ command }}\n")
+        job = Job(
+            name="test_no_extra",
+            command=["echo", "hello"],
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        assert "echo hello" in content
+
+
+class TestPerJobTemplate:
+    """Test that the base template produces expected script content."""
+
+    def test_base_template_has_world_size(self, temp_dir):
+        """Base template should set WORLD_SIZE."""
+        template_path = (
+            Path(__file__).resolve().parent.parent
+            / "src"
+            / "srunx"
+            / "templates"
+            / "base.slurm.jinja"
+        )
+        job = Job(name="adv", command=["python", "train.py"], log_dir="", work_dir="")
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        assert "WORLD_SIZE" in content

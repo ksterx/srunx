@@ -5,33 +5,9 @@ from importlib.resources import files
 TEMPLATES = {
     "base": {
         "name": "base",
-        "description": "Basic SLURM job template",
+        "description": "SLURM job template with full resource control and inter-job outputs",
         "path": "base.slurm.jinja",
-        "use_case": "Simple single-node jobs",
-    },
-    "advanced": {
-        "name": "advanced",
-        "description": "Advanced SLURM job template with all features",
-        "path": "advanced.slurm.jinja",
-        "use_case": "Complex jobs with custom resource requirements",
-    },
-    "pytorch-ddp": {
-        "name": "pytorch-ddp",
-        "description": "PyTorch Distributed Data Parallel (DDP)",
-        "path": "pytorch_ddp.slurm.jinja",
-        "use_case": "Multi-node/multi-GPU PyTorch distributed training",
-    },
-    "tensorflow-multiworker": {
-        "name": "tensorflow-multiworker",
-        "description": "TensorFlow MultiWorkerMirroredStrategy",
-        "path": "tensorflow_multiworker.slurm.jinja",
-        "use_case": "Multi-node/multi-GPU TensorFlow distributed training",
-    },
-    "horovod": {
-        "name": "horovod",
-        "description": "Horovod distributed training framework",
-        "path": "horovod.slurm.jinja",
-        "use_case": "Multi-framework distributed training (PyTorch, TensorFlow, etc.)",
+        "use_case": "All job types including distributed training",
     },
 }
 
@@ -49,7 +25,7 @@ def get_template_path(template_name: str) -> str:
     """Get the path to a template file.
 
     Args:
-        template_name: Name of the template (e.g., 'pytorch-ddp')
+        template_name: Name of the template (e.g., 'base')
 
     Returns:
         Path to the template file.
