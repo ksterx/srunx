@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,13 +11,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from srunx.logging import get_logger
+
 from .config import get_web_config
 from .deps import set_adapter
 from .routers import files, history, jobs, resources, workflows
 from .ssh_adapter import SlurmSSHAdapter
 
 _FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
-_logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @asynccontextmanager
@@ -40,7 +41,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         current = cm.get_current_profile_name()
         if current:
             profile_name = current
-            _logger.info("Using current SSH profile: %s", current)
+            logger.info("Using current SSH profile: %s", current)
 
     has_ssh_config = profile_name or (config.ssh_hostname and config.ssh_username)
 
@@ -53,22 +54,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 key_filename=config.ssh_key_filename,
                 port=config.ssh_port,
             )
-            _logger.info("Connecting to SLURM server via SSH...")
+            logger.info("Connecting to SLURM server via SSH...")
             if adapter.connect():
-                _logger.info("SSH connection established")
+                logger.info("SSH connection established")
                 set_adapter(adapter, profile_name=profile_name)
             else:
-                _logger.warning(
+                logger.warning(
                     "SSH connection failed — SLURM endpoints will be unavailable"
                 )
                 adapter = None
         except Exception as e:
-            _logger.warning(
+            logger.warning(
                 "SSH setup failed: %s — SLURM endpoints will be unavailable", e
             )
             adapter = None
     else:
-        _logger.info(
+        logger.info(
             "No SSH configuration provided. Set SRUNX_SSH_PROFILE or "
             "SRUNX_SSH_HOSTNAME + SRUNX_SSH_USERNAME to connect to a SLURM cluster."
         )
@@ -92,7 +93,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             pass
         if current_adapter is not None:
-            _logger.info(
+            logger.info(
                 "Closing SSH connection (profile: %s)...",
                 get_active_profile_name(),
             )

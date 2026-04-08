@@ -7,16 +7,16 @@ does not natively support.
 
 from __future__ import annotations
 
-import logging
 import re
 from datetime import UTC, datetime
 from typing import Any
 
+from srunx.logging import get_logger
 from srunx.ssh.core.client import SSHSlurmClient
 from srunx.ssh.core.config import ConfigManager
 from srunx.ssh.core.ssh_config import SSHConfigParser  # noqa: F811
 
-_logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Strict pattern for SLURM identifiers (user, partition) to prevent injection
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z0-9_.\-]+$")
@@ -161,12 +161,12 @@ class SlurmSSHAdapter:
             needs_reconnect = transport is None or not transport.is_active()
 
         if needs_reconnect:
-            _logger.warning("SSH connection lost, reconnecting...")
+            logger.warning("SSH connection lost, reconnecting...")
             self._client.disconnect()
             if not self._client.connect():
                 raise RuntimeError("SSH reconnection failed")
             self._set_keepalive()
-            _logger.info("SSH reconnection successful")
+            logger.info("SSH reconnection successful")
 
     def __enter__(self) -> SlurmSSHAdapter:
         self.connect()
@@ -297,7 +297,7 @@ class SlurmSSHAdapter:
                     }
                 )
         except Exception:
-            _logger.warning(
+            logger.warning(
                 "sacct query failed; returning squeue results only", exc_info=True
             )
 
@@ -414,7 +414,7 @@ class SlurmSSHAdapter:
             try:
                 results.append(self._get_partition_resources(p))
             except Exception as e:
-                _logger.warning("Failed to get resources for partition %s: %s", p, e)
+                logger.warning("Failed to get resources for partition %s: %s", p, e)
                 continue
         return results
 

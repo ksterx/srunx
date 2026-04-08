@@ -99,16 +99,50 @@ def _get_ssh_client() -> Any:
         raise RuntimeError(f"SSH profile '{profile_name}' not found")
 
     from srunx.ssh.core.client import SSHSlurmClient
+    from srunx.ssh.core.ssh_config import SSHConfigParser
 
-    client = SSHSlurmClient(
-        hostname=profile.hostname,
-        username=profile.username,
-        key_filename=profile.key_filename,
-        port=profile.port,
-        proxy_jump=profile.proxy_jump,
-        ssh_config_path=None,
-        env_vars=profile.env_vars,
-    )
+    # Resolve connection params: ssh_host (via ~/.ssh/config) or direct fields
+    if profile.ssh_host:
+        parser = SSHConfigParser()
+        ssh_host = parser.get_host(profile.ssh_host)
+        if not ssh_host:
+            raise RuntimeError(
+                f"SSH host '{profile.ssh_host}' not found in ~/.ssh/config"
+            )
+        client = SSHSlurmClient(
+            hostname=ssh_host.hostname or profile.ssh_host,
+            username=ssh_host.user or "",
+            key_filename=ssh_host.identity_file,
+            port=ssh_host.port or 22,
+            proxy_jump=ssh_host.proxy_jump,
+            env_vars=dict(profile.env_vars) if profile.env_vars else None,
+        )
+    else:
+        # Resolve hostname via ~/.ssh/config if it's an alias
+        resolved_hostname = profile.hostname
+        resolved_key = profile.key_filename
+        resolved_port = profile.port
+        resolved_proxy = profile.proxy_jump
+
+        parser = SSHConfigParser()
+        ssh_host = parser.get_host(profile.hostname)
+        if ssh_host and ssh_host.hostname:
+            resolved_hostname = ssh_host.hostname
+            if ssh_host.identity_file and not resolved_key:
+                resolved_key = ssh_host.identity_file
+            if ssh_host.port:
+                resolved_port = ssh_host.port
+            if ssh_host.proxy_jump and not resolved_proxy:
+                resolved_proxy = ssh_host.proxy_jump
+
+        client = SSHSlurmClient(
+            hostname=resolved_hostname,
+            username=profile.username,
+            key_filename=resolved_key,
+            port=resolved_port,
+            proxy_jump=resolved_proxy,
+            env_vars=dict(profile.env_vars) if profile.env_vars else None,
+        )
     return client
 
 
