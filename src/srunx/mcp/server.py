@@ -460,6 +460,16 @@ def create_workflow(
         from srunx.models import Workflow
         from srunx.runner import WorkflowRunner
 
+        # Reject python: args for security (arbitrary code execution)
+        if args:
+            for arg_key, arg_val in args.items():
+                if isinstance(arg_val, str) and "python:" in arg_val.lower():
+                    return _err(
+                        f"Arg '{arg_key}' contains 'python:' prefix which is not "
+                        "allowed for security reasons. Use plain values or Jinja2 "
+                        "templates instead."
+                    )
+
         # Validate the workflow structure before writing.
         # Skip job parsing validation when args are present (Jinja templates
         # in job fields would fail parse before rendering).

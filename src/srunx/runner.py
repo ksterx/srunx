@@ -1,5 +1,6 @@
 """Workflow runner for executing YAML-defined workflows with SLURM"""
 
+import re
 import time
 from collections import defaultdict
 from collections.abc import Sequence
@@ -28,6 +29,72 @@ from srunx.models import (
 )
 
 logger = get_logger(__name__)
+
+# Restricted namespace for python: arg evaluation — no access to os, subprocess,
+# __import__, open, etc.  Only safe, side-effect-free builtins are exposed.
+_SAFE_BUILTINS: dict[str, Any] = {
+    # Types / constructors
+    "int": int,
+    "float": float,
+    "str": str,
+    "bool": bool,
+    "list": list,
+    "dict": dict,
+    "tuple": tuple,
+    "set": set,
+    "frozenset": frozenset,
+    # Math helpers
+    "abs": abs,
+    "round": round,
+    "min": min,
+    "max": max,
+    "sum": sum,
+    "len": len,
+    "range": range,
+    "sorted": sorted,
+    "reversed": reversed,
+    "enumerate": enumerate,
+    "zip": zip,
+    "map": map,
+    "filter": filter,
+    # String / formatting
+    "format": format,
+    "repr": repr,
+    # Boolean
+    "True": True,
+    "False": False,
+    "None": None,
+    "isinstance": isinstance,
+    "type": type,
+    # Allowed modules (read-only, no I/O)
+    "datetime": __import__("datetime"),
+    "math": __import__("math"),
+    "re": __import__("re"),
+}
+
+
+def _safe_eval(code: str, local_vars: dict[str, Any]) -> Any:
+    """Evaluate a Python expression in a restricted namespace."""
+    return eval(code, {"__builtins__": _SAFE_BUILTINS}, local_vars)  # noqa: S307
+
+
+def _safe_exec(code: str, local_vars: dict[str, Any]) -> dict[str, Any]:
+    """Execute Python code in a restricted namespace. Returns the local namespace."""
+    ns: dict[str, Any] = {**local_vars}
+    exec(code, {"__builtins__": _SAFE_BUILTINS}, ns)  # noqa: S102
+    return ns
+
+
+def _has_python_prefix(value: str) -> bool:
+    """Check if a string value has a 'python:' prefix (case-insensitive)."""
+    return value.lstrip().lower().startswith("python:")
+
+
+def _strip_python_prefix(value: str) -> str:
+    """Strip the 'python:' prefix (case-insensitive) and leading whitespace."""
+    stripped = value.lstrip()
+    # Remove the prefix preserving the original case length
+    return stripped[len("python:") :].lstrip()
 
 
 class WorkflowRunner:
@@ -131,7 +198,6 @@ class WorkflowRunner:
         used_variables = set()
 
         # Extract variable names from Jinja templates in the jobs YAML
-        import re
 
         jinja_pattern = r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}"
         matches = re.findall(jinja_pattern, jobs_yaml)
@@ -195,19 +261,19 @@ class WorkflowRunner:
         if args:
             evaluated_args: dict[str, Any] = {}
 
-            # Separate Python and non-Python variables
+            # Separate Python and non-Python variables (case-insensitive prefix)
             python_vars = {
                 k: v
                 for k, v in args.items()
                 if isinstance(v, str)
-                and v.startswith("python:")
+                and _has_python_prefix(v)
                 and k in required_variables
             }
             non_python_vars = {
                 k: v
                 for k, v in args.items()
                 if k in required_variables
-                and not (isinstance(v, str) and v.startswith("python:"))
+                and not (isinstance(v, str) and _has_python_prefix(v))
             }
 
             # First, evaluate Python variables that don't depend on other variables or have simple dependencies
@@ -227,20 +293,18 @@ class WorkflowRunner:
             for key in python_vars_needed_by_non_python:
                 if key in python_vars:
                     value = python_vars[key]
-                    code = value[len("python:") :].lstrip()
+                    code = _strip_python_prefix(value)
                     try:
-                        # Simple evaluation for variables that don't depend on others
                         code = jinja2.Template(
                             code, undefined=jinja2.DebugUndefined
                         ).render(**evaluated_args)
                         code = dedent(code).lstrip()
 
                         try:
-                            evaluated = eval(code, globals(), {"args": evaluated_args})
+                            evaluated = _safe_eval(code, {"args": evaluated_args})
                         except SyntaxError:
-                            exec_ns: dict[str, Any] = {"args": evaluated_args}
-                            exec(code, globals(), exec_ns)
-                            evaluated = exec_ns.get("result")
+                            ns = _safe_exec(code, {"args": evaluated_args})
+                            evaluated = ns.get("result")
 
                         evaluated_args[key] = evaluated
                         processed_python.add(key)
@@ -308,7 +372,7 @@ class WorkflowRunner:
             while remaining_python_vars:
                 made_progress = False
                 for key, value in list(remaining_python_vars.items()):
-                    code = value[len("python:") :].lstrip()
+                    code = _strip_python_prefix(value)
 
                     # Check if this code depends on other variables
                     depends_on = set()
@@ -317,27 +381,20 @@ class WorkflowRunner:
                             depends_on.add(other_key)
 
                     # Can evaluate if all dependencies are already evaluated
-                    # Check both python variables and non-python variables
                     required_deps = depends_on & required_variables
                     available_vars = set(evaluated_args.keys())
                     if required_deps.issubset(available_vars):
                         try:
-                            # Allow {{ ... }} inside "python:" by rendering with Jinja first
                             code = jinja2.Template(
                                 code, undefined=jinja2.StrictUndefined
                             ).render(**evaluated_args)
                             code = dedent(code).lstrip()
 
                             try:
-                                evaluated = eval(
-                                    code, globals(), {"args": evaluated_args}
-                                )
+                                evaluated = _safe_eval(code, {"args": evaluated_args})
                             except SyntaxError:
-                                exec_ns_remaining: dict[str, Any] = {
-                                    "args": evaluated_args
-                                }
-                                exec(code, globals(), exec_ns_remaining)
-                                evaluated = exec_ns_remaining.get("result")
+                                ns = _safe_exec(code, {"args": evaluated_args})
+                                evaluated = ns.get("result")
 
                             evaluated_args[key] = evaluated
                             del remaining_python_vars[key]
@@ -351,19 +408,16 @@ class WorkflowRunner:
                     # Circular dependency or other issue, try to evaluate remaining
                     for key, value in remaining_python_vars.items():
                         try:
-                            code = value[len("python:") :].lstrip()
+                            code = _strip_python_prefix(value)
                             code = jinja2.Template(
                                 code, undefined=jinja2.DebugUndefined
                             ).render(**evaluated_args)
                             code = dedent(code).lstrip()
                             try:
-                                evaluated = eval(
-                                    code, globals(), {"args": evaluated_args}
-                                )
+                                evaluated = _safe_eval(code, {"args": evaluated_args})
                             except SyntaxError:
-                                exec_ns2: dict[str, Any] = {"args": evaluated_args}
-                                exec(code, globals(), exec_ns2)
-                                evaluated = exec_ns2.get("result")
+                                ns = _safe_exec(code, {"args": evaluated_args})
+                                evaluated = ns.get("result")
                             evaluated_args[key] = evaluated
                         except Exception:
                             # Skip variables that can't be evaluated

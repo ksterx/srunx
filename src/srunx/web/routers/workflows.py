@@ -217,7 +217,8 @@ def _find_yaml(name: str, mount_name: str) -> Path:
 
 
 def _reject_python_args(yaml_content: str) -> None:
-    if "python:" in yaml_content:
+    """Reject YAML containing python: args (case-insensitive) for security."""
+    if "python:" in yaml_content.lower():
         raise HTTPException(
             status_code=422,
             detail="Workflow YAML contains 'python:' args which are not allowed via web for security reasons",
@@ -433,9 +434,9 @@ async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
                 detail=f"Workflow '{name}' already exists",
             )
 
-    # Reject python: args from web for security
+    # Reject python: args from web for security (case-insensitive)
     for val in body.args.values():
-        if isinstance(val, str) and "python:" in val:
+        if isinstance(val, str) and "python:" in val.lower():
             raise HTTPException(
                 status_code=422,
                 detail="Args with 'python:' values are not allowed via web for security reasons",
