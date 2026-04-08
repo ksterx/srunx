@@ -176,7 +176,21 @@ export function LogViewer() {
           </div>
         </div>
 
-        <button className="btn btn-ghost">
+        <button
+          className="btn btn-ghost"
+          onClick={() => {
+            const lines = activeTab === "stdout" ? stdoutLines : stderrLines;
+            const blob = new Blob([lines.join("\n")], {
+              type: "text/plain",
+            });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `job-${id}-${activeTab}.log`;
+            a.click();
+            URL.revokeObjectURL(url);
+          }}
+        >
           <Download size={14} />
           Download
         </button>

@@ -62,7 +62,9 @@ export function WorkflowDetail() {
   /* ── Run state ──────────────────────────────── */
   const [runData, setRunData] = useState<WorkflowRun | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
-  const [showRunDialog, setShowRunDialog] = useState(false);
+  const [showRunDialog, setShowRunDialog] = useState(
+    searchParams.get("run") === "1",
+  );
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const {
