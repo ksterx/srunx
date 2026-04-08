@@ -15,14 +15,12 @@ from srunx.logging import get_logger
 from srunx.ssh.core.client import SSHSlurmClient
 from srunx.ssh.core.config import ConfigManager
 from srunx.ssh.core.ssh_config import SSHConfigParser  # noqa: F811
+from srunx.utils import GPU_TRES_RE  # noqa: E402
 
 logger = get_logger(__name__)
 
 # Strict pattern for SLURM identifiers (user, partition) to prevent injection
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z0-9_.\-]+$")
-
-# GPU count regex matching core ResourceMonitor pattern
-_GPU_RE = re.compile(r"gpu[:/=](?:[^:]+:)?(\d+)", re.IGNORECASE)
 
 # Node states that should be excluded from available counts
 _UNAVAILABLE_STATES = {"down", "drain", "maint", "reserved"}
@@ -205,7 +203,7 @@ class SlurmSSHAdapter:
             num_nodes = int(parts[7]) if parts[7].strip().isdigit() else 1
             gpus_per_node = 0
             if len(parts) >= 10:
-                gpu_match = _GPU_RE.search(parts[9])
+                gpu_match = GPU_TRES_RE.search(parts[9])
                 if gpu_match:
                     gpus_per_node = int(gpu_match.group(1))
 
@@ -453,7 +451,7 @@ class SlurmSSHAdapter:
             # Parse GPU count using shared regex (handles gpu:NVIDIA-A100:8 etc.)
             if gres and gres != "(null)":
                 for entry in gres.split(","):
-                    gpu_match = _GPU_RE.search(entry)
+                    gpu_match = GPU_TRES_RE.search(entry)
                     if gpu_match:
                         total_gpus += int(gpu_match.group(1))
 
@@ -472,7 +470,7 @@ class SlurmSSHAdapter:
                 continue
             jobs_running += 1
             if len(parts) >= 3:
-                gpu_match = _GPU_RE.search(parts[2])
+                gpu_match = GPU_TRES_RE.search(parts[2])
                 if gpu_match:
                     per_node_gpus = int(gpu_match.group(1))
                     # Multiply by node count for multi-node jobs

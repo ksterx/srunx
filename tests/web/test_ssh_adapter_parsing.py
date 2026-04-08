@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
+from srunx.utils import GPU_TRES_RE
 from srunx.web.ssh_adapter import (
-    _GPU_RE,
     _UNAVAILABLE_STATES,
     SlurmSSHAdapter,
     _validate_identifier,
@@ -51,34 +51,34 @@ class TestValidateIdentifier:
 
 class TestGPURegex:
     def test_simple_gpu_count(self) -> None:
-        match = _GPU_RE.search("gpu:4")
+        match = GPU_TRES_RE.search("gpu:4")
         assert match and match.group(1) == "4"
 
     def test_gpu_with_model(self) -> None:
-        match = _GPU_RE.search("gpu:NVIDIA-A100:8")
+        match = GPU_TRES_RE.search("gpu:NVIDIA-A100:8")
         assert match and match.group(1) == "8"
 
     def test_gpu_with_slash(self) -> None:
-        match = _GPU_RE.search("gpu/4")
+        match = GPU_TRES_RE.search("gpu/4")
         assert match and match.group(1) == "4"
 
     def test_gpu_with_equals(self) -> None:
-        match = _GPU_RE.search("gpu=4")
+        match = GPU_TRES_RE.search("gpu=4")
         assert match and match.group(1) == "4"
 
     def test_no_gpu(self) -> None:
-        assert _GPU_RE.search("cpu:16") is None
+        assert GPU_TRES_RE.search("cpu:16") is None
 
     def test_null_gres(self) -> None:
-        assert _GPU_RE.search("(null)") is None
+        assert GPU_TRES_RE.search("(null)") is None
 
     def test_case_insensitive(self) -> None:
-        match = _GPU_RE.search("GPU:A100:2")
+        match = GPU_TRES_RE.search("GPU:A100:2")
         assert match and match.group(1) == "2"
 
     def test_tres_format(self) -> None:
         """TRES format from sacct: billing=8,cpu=8,gres/gpu=8,mem=200G"""
-        match = _GPU_RE.search("gres/gpu=8")
+        match = GPU_TRES_RE.search("gres/gpu=8")
         assert match and match.group(1) == "8"
 
 

@@ -1,6 +1,5 @@
 """Resource monitoring implementation for SLURM."""
 
-import re
 import subprocess
 from typing import Any
 
@@ -9,6 +8,7 @@ from loguru import logger
 from srunx.callbacks import Callback
 from srunx.monitor.base import BaseMonitor
 from srunx.monitor.types import MonitorConfig, ResourceSnapshot
+from srunx.utils import GPU_TRES_RE
 
 
 class ResourceMonitor(BaseMonitor):
@@ -44,40 +44,39 @@ class ResourceMonitor(BaseMonitor):
         self.min_gpus = min_gpus
         self.partition = partition
         self._was_available: bool | None = None  # None = uninitialized
+        self._cached_snapshot: ResourceSnapshot | None = None
 
         logger.debug(
             f"ResourceMonitor initialized for min_gpus={min_gpus}, "
             f"partition={partition or 'all'}"
         )
 
+    def _get_snapshot(self) -> ResourceSnapshot:
+        """Get partition resources, using per-cycle cache.
+
+        First call per cycle fetches from SLURM; subsequent calls
+        within the same cycle return the cached result.
+        """
+        if self._cached_snapshot is not None:
+            return self._cached_snapshot
+        self._cached_snapshot = self.get_partition_resources()
+        return self._cached_snapshot
+
     def check_condition(self) -> bool:
         """Check if resource availability threshold is met.
 
-        Returns:
-            True if available GPUs >= min_gpus threshold, False otherwise.
-
-        Raises:
-            SlurmError: If SLURM command fails.
+        Invalidates the per-cycle cache so fresh data is fetched.
         """
-        snapshot = self.get_partition_resources()
-        return snapshot.meets_threshold(self.min_gpus)
+        self._cached_snapshot = None
+        return self._get_snapshot().meets_threshold(self.min_gpus)
 
     def get_current_state(self) -> dict[str, Any]:
         """Get current resource state for comparison and logging.
 
-        Returns:
-            Dictionary with current resource state.
-            Format: {
-                "partition": str | None,
-                "gpus_available": int,
-                "gpus_total": int,
-                "meets_threshold": bool
-            }
-
-        Raises:
-            SlurmError: If SLURM command fails.
+        Invalidates the per-cycle cache so fresh data is fetched.
         """
-        snapshot = self.get_partition_resources()
+        self._cached_snapshot = None
+        snapshot = self._get_snapshot()
         return {
             "partition": snapshot.partition,
             "gpus_available": snapshot.gpus_available,
@@ -182,9 +181,8 @@ class ResourceMonitor(BaseMonitor):
                     logger.debug(f"Skipping {parts[0]} (state: {state})")
                     continue
 
-                # Parse GPU count from gres using robust pattern
-                # Matches: "gpu:8", "gres/gpu=8", "gpu:NVIDIA-A100:8", etc.
-                match = re.search(r"gpu[:/=](?:[^:]+:)?(\d+)", gres, re.IGNORECASE)
+                # Parse GPU count from gres using shared pattern
+                match = GPU_TRES_RE.search(gres)
                 if match:
                     gpu_count = int(match.group(1))
                     logger.debug(f"Found {gpu_count} GPUs on {parts[0]}")
@@ -255,9 +253,8 @@ class ResourceMonitor(BaseMonitor):
 
                 jobs_running += 1
 
-                # Parse GPU count from tres using robust pattern
-                # Matches: "gpu:8", "gres:gpu=8", "gres:gpu:NVIDIA-A100:8", etc.
-                match = re.search(r"gpu[:/=](?:[^:]+:)?(\d+)", tres, re.IGNORECASE)
+                # Parse GPU count from tres using shared pattern
+                match = GPU_TRES_RE.search(tres)
                 if match:
                     gpu_count = int(match.group(1))
                     logger.debug(
@@ -291,7 +288,7 @@ class ResourceMonitor(BaseMonitor):
         Raises:
             SlurmError: If SLURM command fails.
         """
-        snapshot = self.get_partition_resources()
+        snapshot = self._get_snapshot()
         is_available = snapshot.meets_threshold(self.min_gpus)
 
         # Initialize state on first check
