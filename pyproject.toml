@@ -50,6 +50,15 @@ exclude = [
     "src/srunx/web/frontend/.gitignore",
 ]
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/srunx",
+    "hatch_build.py",
+]
+
+[tool.hatch.build.targets.sdist.force-include]
+"src/srunx/web/frontend/src/lib" = "src/srunx/web/frontend/src/lib"
+
 [tool.hatch.build.hooks.custom]
 
 [tool.hatch.build.targets.wheel.sources]
