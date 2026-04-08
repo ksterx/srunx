@@ -27,6 +27,17 @@ _GPU_RE = re.compile(r"gpu[:/=](?:[^:]+:)?(\d+)", re.IGNORECASE)
 # Node states that should be excluded from available counts
 _UNAVAILABLE_STATES = {"down", "drain", "maint", "reserved"}
 
+# SLURM terminal job states (used to filter sacct output)
+_TERMINAL_STATES = {
+    "COMPLETED",
+    "FAILED",
+    "CANCELLED",
+    "TIMEOUT",
+    "NODE_FAIL",
+    "PREEMPTED",
+    "OUT_OF_MEMORY",
+}
+
 
 def _validate_identifier(value: str, name: str) -> None:
     """Validate a SLURM identifier to prevent shell injection."""
@@ -167,7 +178,8 @@ class SlurmSSHAdapter:
     # ── Job Operations ────────────────────────────
 
     def list_jobs(self, user: str | None = None) -> list[dict[str, Any]]:
-        """List SLURM jobs via squeue."""
+        """List SLURM jobs via squeue + recent completed/failed jobs via sacct."""
+        # --- Active jobs from squeue ---
         fmt = "%.18i %.9P %.30j %.12u %.8T %.10M %.9l %.6D %R %b"
         cmd = f'squeue --format "{fmt}" --noheader'
         if user:
@@ -176,6 +188,7 @@ class SlurmSSHAdapter:
 
         output = _run_slurm_cmd(self, cmd)
         jobs: list[dict[str, Any]] = []
+        seen_ids: set[int] = set()
 
         for line in output.strip().splitlines():
             parts = line.split()
@@ -196,6 +209,7 @@ class SlurmSSHAdapter:
                 if gpu_match:
                     gpus_per_node = int(gpu_match.group(1))
 
+            seen_ids.add(job_id)
             jobs.append(
                 {
                     "name": parts[2].strip(),
@@ -214,6 +228,77 @@ class SlurmSSHAdapter:
                     "gpus": gpus_per_node * num_nodes,
                     "elapsed_time": parts[5].strip(),
                 }
+            )
+
+        # --- Recently finished jobs from sacct (last 6 hours) ---
+        # NOTE: --state filter is omitted because some SLURM versions
+        # return empty output when --state is combined with --parsable2.
+        # We filter by status in Python instead.
+        try:
+            sacct_cmd = (
+                "sacct -S now-6hours "
+                "--format=JobID,JobName,State,Partition,NNodes,Elapsed,TimelimitRaw,AllocTRES "
+                "--noheader --parsable2"
+            )
+            if user:
+                sacct_cmd += f" --user {user}"
+
+            sacct_output = _run_slurm_cmd(self, sacct_cmd)
+
+            for line in sacct_output.strip().splitlines():
+                parts = line.split("|")
+                if len(parts) < 6:
+                    continue
+                # Skip sub-steps (e.g., "12345.batch", "12345.extern")
+                if "." in parts[0]:
+                    continue
+
+                try:
+                    job_id = int(parts[0].strip())
+                except ValueError:
+                    continue
+
+                if job_id in seen_ids:
+                    continue
+
+                # sacct may return e.g. "CANCELLED by 1000" — take first word only
+                # Skip non-terminal states (already covered by squeue)
+                raw_state = parts[2].strip()
+                status = raw_state.split()[0] if raw_state else "UNKNOWN"
+                if status not in _TERMINAL_STATES:
+                    continue
+
+                gpus = 0
+                if len(parts) >= 8:
+                    gpu_match = re.search(r"gpu=(\d+)", parts[7], re.IGNORECASE)
+                    if gpu_match:
+                        gpus = int(gpu_match.group(1))
+
+                num_nodes = int(parts[4]) if parts[4].strip().isdigit() else 1
+
+                seen_ids.add(job_id)
+                jobs.append(
+                    {
+                        "name": parts[1].strip(),
+                        "job_id": job_id,
+                        "status": status,
+                        "depends_on": [],
+                        "command": [],
+                        "resources": {
+                            "nodes": num_nodes,
+                            "gpus_per_node": gpus,
+                            "partition": parts[3].strip(),
+                            "time_limit": parts[6].strip() if len(parts) > 6 else None,
+                        },
+                        "partition": parts[3].strip(),
+                        "nodes": num_nodes,
+                        "gpus": gpus * num_nodes,
+                        "elapsed_time": parts[5].strip(),
+                    }
+                )
+        except Exception:
+            _logger.warning(
+                "sacct query failed; returning squeue results only", exc_info=True
             )
 
         return jobs

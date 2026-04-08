@@ -111,6 +111,19 @@ export function LogStream({
           counterReset: "line",
         }}
       >
+        {lines.length === 0 && loading && (
+          <div
+            style={{
+              padding: "40px 16px",
+              textAlign: "center",
+              color: "var(--text-muted)",
+              fontFamily: "var(--font-body)",
+              fontSize: "0.85rem",
+            }}
+          >
+            Loading logs...
+          </div>
+        )}
         {lines.length === 0 && !loading && (
           <div
             style={{

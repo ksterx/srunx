@@ -25,7 +25,7 @@ export function Jobs() {
     error,
     refetch,
   } = useApi(() => jobsApi.list(), [], {
-    pollInterval: 5000,
+    pollInterval: 10000,
   });
 
   const filtered = (jobList ?? []).filter((job) => {
