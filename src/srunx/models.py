@@ -607,10 +607,11 @@ class Workflow:
         self.jobs = jobs
 
     def add(self, job: RunnableJobType) -> None:
-        # Check if job already exists
+        # Check that all dependency jobs exist in the workflow
         if job.depends_on:
+            job_names = {j.name for j in self.jobs}
             for dep in job.depends_on:
-                if dep not in self.jobs:
+                if dep not in job_names:
                     raise WorkflowValidationError(
                         f"Job '{job.name}' depends on unknown job '{dep}'"
                     )
