@@ -5,6 +5,7 @@ import type {
   BuilderJob,
   BuilderContainer,
   ContainerRuntime,
+  JobTemplate,
 } from "../lib/types.ts";
 import { FileBrowser } from "./FileBrowser.tsx";
 import { KeyValueEditor, type KVEntry } from "./KeyValueEditor.tsx";
@@ -183,10 +184,31 @@ export function JobPropertyPanel({
       onUpdate({ container: null });
     } else {
       onUpdate({
-        container: { runtime: "pyxis", image: "", mounts: "", workdir: "" },
+        container: {
+          runtime: "pyxis",
+          image: "",
+          mounts: "",
+          workdir: "",
+          nv: false,
+          rocm: false,
+          cleanenv: false,
+          fakeroot: false,
+          writable_tmpfs: false,
+          overlay: "",
+          env: "",
+        },
       });
     }
   }
+
+  function handleContainerBool(field: keyof BuilderContainer, value: boolean) {
+    if (!job.container) return;
+    onUpdate({ container: { ...job.container, [field]: value } });
+  }
+
+  const isApptainerLike =
+    job.container?.runtime === "apptainer" ||
+    job.container?.runtime === "singularity";
 
   function handleContainerField(field: keyof BuilderContainer, value: string) {
     if (!job.container) return;
@@ -332,6 +354,23 @@ export function JobPropertyPanel({
               <FolderOpen size={14} />
             </button>
           </div>
+        </div>
+
+        <div style={fieldStyle}>
+          <label style={labelStyle}>Template</label>
+          <select
+            className="input"
+            value={job.template}
+            onChange={(e) =>
+              onUpdate({ template: e.target.value as JobTemplate })
+            }
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "0.8rem",
+            }}
+          >
+            <option value="base">Base</option>
+          </select>
         </div>
 
         <div style={gridStyle}>
@@ -657,6 +696,83 @@ export function JobPropertyPanel({
                 placeholder="/data:/data, /models:/models"
               />
             </div>
+
+            {/* Apptainer/Singularity-specific options */}
+            {isApptainerLike && (
+              <>
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "var(--sp-3)",
+                    marginTop: 4,
+                  }}
+                >
+                  {(
+                    [
+                      ["nv", "NVIDIA GPU (--nv)"],
+                      ["rocm", "AMD GPU (--rocm)"],
+                      ["cleanenv", "--cleanenv"],
+                      ["fakeroot", "--fakeroot"],
+                      ["writable_tmpfs", "--writable-tmpfs"],
+                    ] as const
+                  ).map(([field, label]) => (
+                    <label
+                      key={field}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 4,
+                        fontFamily: "var(--font-mono)",
+                        fontSize: "0.7rem",
+                        color: "var(--text-secondary)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={job.container?.[field] ?? false}
+                        onChange={(e) =>
+                          handleContainerBool(field, e.target.checked)
+                        }
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+
+                <div style={fieldStyle}>
+                  <label style={labelStyle}>Overlay</label>
+                  <input
+                    className="input"
+                    type="text"
+                    value={job.container.overlay}
+                    onChange={(e) =>
+                      handleContainerField("overlay", e.target.value)
+                    }
+                    placeholder="/path/to/overlay.img"
+                  />
+                </div>
+
+                <div style={fieldStyle}>
+                  <label style={labelStyle}>Container Env</label>
+                  <textarea
+                    className="input"
+                    rows={2}
+                    value={job.container.env}
+                    onChange={(e) =>
+                      handleContainerField("env", e.target.value)
+                    }
+                    placeholder={"CUDA_HOME=/usr/local/cuda\nMY_VAR=value"}
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: "0.75rem",
+                      resize: "vertical",
+                    }}
+                  />
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
@@ -690,6 +806,37 @@ export function JobPropertyPanel({
               placeholder="60"
             />
           </div>
+        </div>
+      </div>
+
+      {/* ── Advanced ─────────────────────────── */}
+      <div style={sectionDividerStyle}>
+        <div style={sectionTitleStyle}>Advanced</div>
+
+        <div style={fieldStyle}>
+          <label style={labelStyle}>srun Args</label>
+          <input
+            className="input"
+            type="text"
+            value={job.srun_args ?? ""}
+            onChange={(e) =>
+              handleTextChange("srun_args", e.target.value, false)
+            }
+            placeholder="--mpi=pmix --cpu-bind=cores"
+          />
+        </div>
+
+        <div style={fieldStyle}>
+          <label style={labelStyle}>Launch Prefix</label>
+          <input
+            className="input"
+            type="text"
+            value={job.launch_prefix ?? ""}
+            onChange={(e) =>
+              handleTextChange("launch_prefix", e.target.value, false)
+            }
+            placeholder="torchrun --nproc_per_node=4"
+          />
         </div>
       </div>
 

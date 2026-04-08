@@ -13,6 +13,7 @@ import {
 import type {
   BuilderJob,
   DependencyType,
+  JobTemplate,
   RunnableJob,
   Workflow,
   WorkflowCreateRequest,
@@ -33,6 +34,7 @@ function makeDefaultJob(id: string, name: string): BuilderJob {
     id,
     name,
     command: "",
+    template: "base",
     nodes: null,
     gpus_per_node: null,
     ntasks_per_node: null,
@@ -50,6 +52,8 @@ function makeDefaultJob(id: string, name: string): BuilderJob {
     log_dir: null,
     retry: null,
     retry_delay: null,
+    srun_args: null,
+    launch_prefix: null,
   };
 }
 
@@ -119,10 +123,16 @@ function workflowJobToBuilderJob(job: RunnableJob, id: string): BuilderJob {
         .join("\n")
     : "";
 
+  // Recover template from raw job data if available
+  const rawTemplate = (job as Record<string, unknown>).template as
+    | JobTemplate
+    | undefined;
+
   return {
     id,
     name: job.name,
     command: "command" in job ? job.command.join(" ") : job.script_path,
+    template: rawTemplate ?? "base",
     nodes: job.resources?.nodes ?? null,
     gpus_per_node: job.resources?.gpus_per_node ?? null,
     ntasks_per_node: null,
@@ -140,6 +150,8 @@ function workflowJobToBuilderJob(job: RunnableJob, id: string): BuilderJob {
     log_dir: null,
     retry: null,
     retry_delay: null,
+    srun_args: null,
+    launch_prefix: null,
   };
 }
 
@@ -414,6 +426,28 @@ export function useWorkflowBuilder() {
             .filter(Boolean);
           if (mounts.length > 0) c.mounts = mounts;
           if (job.container.workdir) c.workdir = job.container.workdir;
+          // Apptainer/Singularity-specific fields
+          if (
+            job.container.runtime === "apptainer" ||
+            job.container.runtime === "singularity"
+          ) {
+            if (job.container.nv) c.nv = true;
+            if (job.container.rocm) c.rocm = true;
+            if (job.container.cleanenv) c.cleanenv = true;
+            if (job.container.fakeroot) c.fakeroot = true;
+            if (job.container.writable_tmpfs) c.writable_tmpfs = true;
+            if (job.container.overlay) c.overlay = job.container.overlay;
+            if (job.container.env.trim()) {
+              const envMap: Record<string, string> = {};
+              for (const line of job.container.env.split("\n")) {
+                const eq = line.indexOf("=");
+                if (eq > 0) {
+                  envMap[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+                }
+              }
+              if (Object.keys(envMap).length > 0) c.env = envMap;
+            }
+          }
           environment.container = c;
         }
         if (job.env_vars.trim()) {
@@ -432,6 +466,10 @@ export function useWorkflowBuilder() {
           command,
           depends_on: dependsOn,
         };
+
+        if (job.template !== "base") {
+          entry.template = job.template;
+        }
 
         if (Object.keys(resources).length > 0) {
           entry.resources = resources;
@@ -455,6 +493,8 @@ export function useWorkflowBuilder() {
         if (job.log_dir !== null) entry.log_dir = job.log_dir;
         if (job.retry !== null) entry.retry = job.retry;
         if (job.retry_delay !== null) entry.retry_delay = job.retry_delay;
+        if (job.srun_args !== null) entry.srun_args = job.srun_args;
+        if (job.launch_prefix !== null) entry.launch_prefix = job.launch_prefix;
 
         return entry;
       });

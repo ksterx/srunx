@@ -26,7 +26,7 @@ from srunx.models import (
 
 def _get_default_template() -> str:
     """Get the default job template path."""
-    return str(files("srunx.templates").joinpath("advanced.slurm.jinja"))
+    return str(files("srunx.templates").joinpath("base.slurm.jinja"))
 
 
 class TestTemplateRendering:
@@ -55,8 +55,8 @@ class TestTemplateRendering:
             assert "#SBATCH --job-name=basic_job" in content
             assert "python train_model.py" in content
 
-    def test_render_advanced_job_script(self):
-        """Test rendering an advanced job script with full configuration."""
+    def test_render_full_job_script(self):
+        """Test rendering a full-featured job script with all configuration."""
         job = Job(
             name="ml_training",
             command=["python", "train.py", "--epochs", "100"],
@@ -372,8 +372,8 @@ class TestContainerRenderIntegration:
         """Get a template path by name."""
         return str(files("srunx.templates").joinpath(f"{name}.slurm.jinja"))
 
-    def test_advanced_pyxis_output(self):
-        """Test advanced template + Pyxis output contains --container-image, --container-mounts (AC-4)."""
+    def test_base_pyxis_output(self):
+        """Test base template + Pyxis output contains --container-image, --container-mounts (AC-4)."""
         container = ContainerResource.model_validate(
             {
                 "runtime": "pyxis",
@@ -391,7 +391,7 @@ class TestContainerRenderIntegration:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = render_job_script(
-                template_path=self._get_template("advanced"),
+                template_path=self._get_template("base"),
                 job=job,
                 output_dir=temp_dir,
             )
@@ -407,8 +407,8 @@ class TestContainerRenderIntegration:
             assert "CONTAINER_ARGS" in content
             assert "srun" in content
 
-    def test_advanced_apptainer_output(self):
-        """Test advanced template + Apptainer output contains apptainer exec --nv --bind (AC-1, AC-2, AC-3)."""
+    def test_base_apptainer_output_with_nv(self):
+        """Test base template + Apptainer output contains apptainer exec --nv --bind (AC-1, AC-2, AC-3)."""
         container = ContainerResource.model_validate(
             {
                 "runtime": "apptainer",
@@ -426,7 +426,7 @@ class TestContainerRenderIntegration:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = render_job_script(
-                template_path=self._get_template("advanced"),
+                template_path=self._get_template("base"),
                 job=job,
                 output_dir=temp_dir,
             )
@@ -466,8 +466,8 @@ class TestContainerRenderIntegration:
             assert "test.sif" in content
             assert "srun" in content
 
-    def test_pytorch_ddp_apptainer_output(self):
-        """Test pytorch_ddp template + Apptainer output contains apptainer exec as launch_prefix (AC-7)."""
+    def test_base_apptainer_multi_gpu_output(self):
+        """Test base template + Apptainer with multi-GPU output contains apptainer exec as launch_prefix (AC-7)."""
         container = ContainerResource.model_validate(
             {
                 "runtime": "apptainer",
@@ -484,7 +484,7 @@ class TestContainerRenderIntegration:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = render_job_script(
-                template_path=self._get_template("pytorch_ddp"),
+                template_path=self._get_template("base"),
                 job=job,
                 output_dir=temp_dir,
             )
@@ -494,8 +494,7 @@ class TestContainerRenderIntegration:
             assert "apptainer exec" in content
             assert "--nv" in content
             assert "test.sif" in content
-            # pytorch_ddp uses launch_prefix directly, not srun
-            assert "apptainer exec --nv test.sif python train.py" in content
+            assert "srun" in content
 
     def test_conda_container_coexistence(self):
         """Test conda + container coexistence: both conda activate AND container in output (AC-14)."""
@@ -518,7 +517,7 @@ class TestContainerRenderIntegration:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = render_job_script(
-                template_path=self._get_template("advanced"),
+                template_path=self._get_template("base"),
                 job=job,
                 output_dir=temp_dir,
             )
@@ -531,8 +530,8 @@ class TestContainerRenderIntegration:
             assert "--nv" in content
             assert "test.sif" in content
 
-    def test_advanced_pyxis_no_container(self):
-        """Test advanced template without container has plain srun."""
+    def test_base_pyxis_no_container(self):
+        """Test base template without container has plain srun."""
         job = Job(
             name="no_container_job",
             command=["python", "train.py"],
@@ -542,7 +541,7 @@ class TestContainerRenderIntegration:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = render_job_script(
-                template_path=self._get_template("advanced"),
+                template_path=self._get_template("base"),
                 job=job,
                 output_dir=temp_dir,
             )

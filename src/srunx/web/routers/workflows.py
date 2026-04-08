@@ -42,6 +42,7 @@ class WorkflowJobInput(BaseModel):
     name: str
     command: list[str]
     depends_on: list[str] = []
+    template: str | None = None
     outputs: dict[str, str] = Field(default_factory=dict)
     resources: dict[str, Any] | None = None
     environment: dict[str, Any] | None = None
@@ -49,6 +50,8 @@ class WorkflowJobInput(BaseModel):
     log_dir: str | None = None
     retry: int | None = None
     retry_delay: int | None = None
+    srun_args: str | None = None
+    launch_prefix: str | None = None
 
 
 class WorkflowCreateRequest(BaseModel):
@@ -141,6 +144,8 @@ def _workflow_to_yaml(
             entry["environment"] = environment
 
         # Job-level optional fields
+        if jd.get("template"):
+            entry["template"] = jd["template"]
         if jd.get("work_dir"):
             entry["work_dir"] = jd["work_dir"]
         if jd.get("log_dir"):
@@ -149,6 +154,10 @@ def _workflow_to_yaml(
             entry["retry"] = jd["retry"]
         if jd.get("retry_delay") is not None:
             entry["retry_delay"] = jd["retry_delay"]
+        if jd.get("srun_args"):
+            entry["srun_args"] = jd["srun_args"]
+        if jd.get("launch_prefix"):
+            entry["launch_prefix"] = jd["launch_prefix"]
 
         serialized_jobs.append(entry)
 
@@ -215,8 +224,17 @@ def _reject_python_args(yaml_content: str) -> None:
         )
 
 
-def _serialize_workflow(runner: WorkflowRunner) -> dict[str, Any]:
+def _serialize_workflow(
+    runner: WorkflowRunner,
+    raw_yaml_jobs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     wf = runner.workflow
+    # Build lookup for extra YAML fields not stored in Job model
+    raw_by_name: dict[str, dict[str, Any]] = {}
+    if raw_yaml_jobs:
+        for rj in raw_yaml_jobs:
+            raw_by_name[rj.get("name", "")] = rj
+
     jobs: list[dict[str, Any]] = []
     for job in wf.jobs:
         d: dict[str, Any] = {
@@ -226,6 +244,9 @@ def _serialize_workflow(runner: WorkflowRunner) -> dict[str, Any]:
             "depends_on": job.depends_on,
             "outputs": job.outputs,
         }
+        raw_job = raw_by_name.get(job.name, {})
+        if raw_job.get("template"):
+            d["template"] = raw_job["template"]
         if hasattr(job, "command"):
             cmd = job.command  # type: ignore[union-attr]
             d["command"] = [cmd] if isinstance(cmd, str) else cmd
@@ -260,10 +281,16 @@ async def list_workflows(mount: str) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for p in sorted(d.glob("*.y*ml")):
         try:
-            runner = await anyio.to_thread.run_sync(
-                lambda _p=p: WorkflowRunner.from_yaml(_p)  # type: ignore[misc]
-            )
-            results.append(_serialize_workflow(runner))
+
+            def _load(_p=p):
+                import yaml as _yaml
+
+                runner = WorkflowRunner.from_yaml(_p)
+                raw = _yaml.safe_load(_p.read_text(encoding="utf-8"))
+                return runner, raw.get("jobs", [])
+
+            runner, raw_jobs = await anyio.to_thread.run_sync(_load)
+            results.append(_serialize_workflow(runner, raw_yaml_jobs=raw_jobs))
         except Exception:
             continue
     return results
@@ -627,11 +654,29 @@ async def run_workflow(
     if run_id:
         run_registry.update_status(run_id, "submitting")
 
-    template_path = (
-        Path(__file__).resolve().parent.parent.parent
-        / "templates"
-        / "advanced.slurm.jinja"
+    # Read raw YAML to extract per-job template names
+    import yaml as _yaml
+
+    raw_yaml = await anyio.to_thread.run_sync(
+        lambda: yaml_path.read_text(encoding="utf-8")
     )
+    raw_data = _yaml.safe_load(raw_yaml)
+    raw_jobs = raw_data.get("jobs", [])
+    job_template_map: dict[str, str] = {}
+    job_extra_args: dict[str, dict[str, str]] = {}
+    for rj in raw_jobs:
+        rj_name = rj.get("name", "")
+        if rj.get("template"):
+            job_template_map[rj_name] = rj["template"]
+        extras: dict[str, str] = {}
+        if rj.get("srun_args"):
+            extras["srun_args"] = rj["srun_args"]
+        if rj.get("launch_prefix"):
+            extras["launch_prefix"] = rj["launch_prefix"]
+        if extras:
+            job_extra_args[rj_name] = extras
+
+    templates_dir = Path(__file__).resolve().parent.parent.parent / "templates"
 
     # Only render Job instances (not ShellJob)
     job_map: dict[str, Job | ShellJob] = {job.name: job for job in workflow.jobs}
@@ -648,21 +693,34 @@ async def run_workflow(
     job_names_in_wf = {job.name for job in workflow.jobs}
 
     def _render_all_scripts() -> dict[str, str]:
+        from srunx.template import TEMPLATES
+
         scripts: dict[str, str] = {}
         with tempfile.TemporaryDirectory() as tmpdir:
             for job in workflow.jobs:
                 if isinstance(job, Job):
+                    # Resolve per-job template
+                    tpl_name = job_template_map.get(job.name, "base")
+                    tpl_info = TEMPLATES.get(tpl_name)
+                    if tpl_info:
+                        template_path = templates_dir / tpl_info["path"]
+                    else:
+                        template_path = templates_dir / "base.slurm.jinja"
+
                     dep_names = [
                         dep.job_name
                         for dep in job.parsed_dependencies
                         if dep.job_name in job_names_in_wf
                     ]
+                    extras = job_extra_args.get(job.name, {})
                     rendered_path = render_job_script(
                         template_path,
                         job,
                         output_dir=tmpdir,
                         outputs_dir=wf_outputs_dir,
                         dependency_names=dep_names if wf_outputs_dir else None,
+                        extra_srun_args=extras.get("srun_args"),
+                        extra_launch_prefix=extras.get("launch_prefix"),
                     )
                     scripts[job.name] = Path(rendered_path).read_text()
                 else:
@@ -812,9 +870,15 @@ async def get_workflow(name: str, mount: str) -> dict[str, Any]:
 
     yaml_path = _find_yaml(name, mount)
     try:
-        runner = await anyio.to_thread.run_sync(
-            lambda: WorkflowRunner.from_yaml(yaml_path)
-        )
-        return _serialize_workflow(runner)
+
+        def _load():
+            import yaml as _yaml
+
+            runner = WorkflowRunner.from_yaml(yaml_path)
+            raw = _yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+            return runner, raw.get("jobs", [])
+
+        runner, raw_jobs = await anyio.to_thread.run_sync(_load)
+        return _serialize_workflow(runner, raw_yaml_jobs=raw_jobs)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e)) from e

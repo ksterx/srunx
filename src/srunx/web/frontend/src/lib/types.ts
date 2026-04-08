@@ -111,17 +111,28 @@ export type LogData = {
 
 export type ContainerRuntime = "pyxis" | "apptainer" | "singularity";
 
+export type JobTemplate = "base";
+
 export type BuilderContainer = {
   runtime: ContainerRuntime;
   image: string;
   mounts: string; // comma-separated, split on save
   workdir: string;
+  // Apptainer/Singularity-specific
+  nv: boolean;
+  rocm: boolean;
+  cleanenv: boolean;
+  fakeroot: boolean;
+  writable_tmpfs: boolean;
+  overlay: string;
+  env: string; // "KEY=VAL" per line, parsed on save
 };
 
 export type BuilderJob = {
   id: string;
   name: string;
   command: string;
+  template: JobTemplate;
   // Resources
   nodes: number | null;
   gpus_per_node: number | null;
@@ -142,6 +153,9 @@ export type BuilderJob = {
   log_dir: string | null;
   retry: number | null;
   retry_delay: number | null;
+  // Advanced
+  srun_args: string | null;
+  launch_prefix: string | null;
 };
 
 export type DependencyType = "afterok" | "after" | "afterany" | "afternotok";
@@ -363,6 +377,7 @@ export type WorkflowCreateRequest = {
     name: string;
     command: string[];
     depends_on: string[];
+    template?: string;
     outputs?: Record<string, string>;
     resources?: {
       nodes?: number;
@@ -382,6 +397,13 @@ export type WorkflowCreateRequest = {
         image: string;
         mounts?: string[];
         workdir?: string;
+        nv?: boolean;
+        rocm?: boolean;
+        cleanenv?: boolean;
+        fakeroot?: boolean;
+        writable_tmpfs?: boolean;
+        overlay?: string;
+        env?: Record<string, string>;
       };
       env_vars?: Record<string, string>;
     };
@@ -389,5 +411,7 @@ export type WorkflowCreateRequest = {
     log_dir?: string;
     retry?: number;
     retry_delay?: number;
+    srun_args?: string;
+    launch_prefix?: string;
   }>;
 };

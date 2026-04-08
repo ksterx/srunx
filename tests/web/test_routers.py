@@ -999,7 +999,7 @@ class TestScriptPreview:
         assert resp.status_code == 200
         data = resp.json()
         assert "#!/bin/bash" in data["script"]
-        assert data["template_used"] == "advanced"
+        assert data["template_used"] == "base"
 
     def test_preview_with_resources_and_environment(self, client: TestClient) -> None:
         """Preview with resources and environment settings renders them in the script."""
@@ -1017,7 +1017,7 @@ class TestScriptPreview:
         script = data["script"]
         assert "gpu-train" in script
         assert "ml_env" in script
-        assert data["template_used"] == "advanced"
+        assert data["template_used"] == "base"
 
     def test_preview_with_specific_template(self, client: TestClient) -> None:
         """Preview with template_name='base' uses the base template."""
@@ -1088,10 +1088,9 @@ class TestTemplatesRouter:
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
-        assert len(data) >= 2  # at least base and advanced
+        assert len(data) == 1
         names = {t["name"] for t in data}
         assert "base" in names
-        assert "advanced" in names
         # Verify structure
         for t in data:
             assert "name" in t
@@ -1099,11 +1098,11 @@ class TestTemplatesRouter:
             assert "use_case" in t
 
     def test_get_known_template(self, client: TestClient) -> None:
-        """GET /api/templates/advanced returns template detail with raw content."""
-        resp = client.get("/api/templates/advanced")
+        """GET /api/templates/base returns template detail with raw content."""
+        resp = client.get("/api/templates/base")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["name"] == "advanced"
+        assert data["name"] == "base"
         assert data["description"]
         assert "content" in data
         # The raw content should be a Jinja2 template
@@ -1125,7 +1124,7 @@ class TestTemplatesRouter:
     def test_apply_preview_only(self, client: TestClient) -> None:
         """POST /api/templates/{name}/apply with preview_only=True returns rendered script."""
         resp = client.post(
-            "/api/templates/advanced/apply",
+            "/api/templates/base/apply",
             json={
                 "command": ["python", "train.py"],
                 "job_name": "preview-job",
@@ -1135,7 +1134,7 @@ class TestTemplatesRouter:
         assert resp.status_code == 200
         data = resp.json()
         assert "script" in data
-        assert data["template_used"] == "advanced"
+        assert data["template_used"] == "base"
         assert "#!/bin/bash" in data["script"]
 
     def test_apply_submits_job(
@@ -1172,7 +1171,7 @@ class TestTemplatesRouter:
         """When sbatch fails during apply, 502 is returned."""
         mock_adapter.submit_job.side_effect = RuntimeError("sbatch: error")
         resp = client.post(
-            "/api/templates/advanced/apply",
+            "/api/templates/base/apply",
             json={
                 "command": ["python", "train.py"],
                 "job_name": "fail-job",
