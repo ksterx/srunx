@@ -9,7 +9,7 @@ type WorkflowRunDialogProps = {
   mount: string;
   jobNames: string[];
   onClose: () => void;
-  onRunStarted: (runId: string) => void;
+  onRunStarted: (run: Record<string, unknown>) => void;
 };
 
 type ExecutionMode = "full" | "from" | "to" | "range" | "single";
@@ -72,8 +72,7 @@ export function WorkflowRunDialog({
       if ("dry_run" in result && result.dry_run) {
         setDryRunResult(result.jobs as DryRunJobInfo[]);
       } else {
-        const runId = (result as { id?: string }).id;
-        if (runId) onRunStarted(runId);
+        onRunStarted(result);
         onClose();
       }
     } catch (e) {

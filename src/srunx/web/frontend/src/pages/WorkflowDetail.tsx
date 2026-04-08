@@ -127,15 +127,8 @@ export function WorkflowDetail() {
   }, [runData?.id, runData?.status]);
 
   /* ── Run handler (via dialog) ────────────── */
-  const handleRunStarted = useCallback(async (runId: string) => {
-    try {
-      const run = await workflowsApi.getRun(runId);
-      setRunData(run);
-    } catch (err) {
-      setRunError(
-        err instanceof Error ? err.message : "Failed to fetch run status",
-      );
-    }
+  const handleRunStarted = useCallback((run: Record<string, unknown>) => {
+    setRunData(run as unknown as WorkflowRun);
   }, []);
 
   /* ── Delete handler ────────────────────────── */
@@ -662,9 +655,9 @@ export function WorkflowDetail() {
           mount={mount}
           jobNames={workflow.jobs.map((j) => j.name)}
           onClose={() => setShowRunDialog(false)}
-          onRunStarted={(runId) => {
+          onRunStarted={(run) => {
             setShowRunDialog(false);
-            handleRunStarted(runId);
+            handleRunStarted(run);
           }}
         />
       )}
