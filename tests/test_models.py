@@ -617,7 +617,7 @@ class TestRenderJobScript:
         assert "#SBATCH --job-name=test_job" in content
         assert "#SBATCH --nodes=1" in content
         assert "python test.py" in content
-        assert "conda activate test_env" in content
+        assert "conda activate 'test_env'" in content
 
     def test_render_base_template_empty_log_dir(self, temp_dir):
         """Empty log_dir should produce relative paths, not /%x_%j.log."""

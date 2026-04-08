@@ -859,22 +859,25 @@ def _build_environment_setup(
 
     setup_lines: list[str] = []
 
-    # 1. Environment variables
+    # 1. Environment variables (single-quoted to prevent shell injection)
     for key, value in environment.env_vars.items():
-        setup_lines.append(f"export {key}={value}")
+        escaped_value = str(value).replace("'", "'\\''")
+        setup_lines.append(f"export {key}='{escaped_value}'")
 
     # 2. Conda/venv activation (independent of container)
     if environment.conda:
         home_dir = Path.home()
+        escaped_conda = environment.conda.replace("'", "'\\''")
         setup_lines.extend(
             [
                 f"source {str(home_dir)}/miniconda3/bin/activate",
                 "conda deactivate",
-                f"conda activate {environment.conda}",
+                f"conda activate '{escaped_conda}'",
             ]
         )
     elif environment.venv:
-        setup_lines.append(f"source {environment.venv}/bin/activate")
+        escaped_venv = environment.venv.replace("'", "'\\''")
+        setup_lines.append(f"source '{escaped_venv}'/bin/activate")
 
     # 3. Container setup (independent of conda/venv)
     # Only process container if it has an image — a runtime-only container

@@ -745,7 +745,7 @@ class WorkflowRunner:
                     # Check if this job has "after" dependency on the started job
                     has_after_dep = any(
                         dep.job_name == job_name
-                        and dep.dep_type == DependencyType.AFTER
+                        and dep.dep_type == DependencyType.AFTER.value
                         for dep in dependent_job.parsed_dependencies
                     )
 
