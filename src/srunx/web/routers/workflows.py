@@ -59,6 +59,7 @@ class WorkflowCreateRequest(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
     jobs: list[WorkflowJobInput]
     default_project: str | None = None
+    overwrite: bool = False
 
 
 # ── Shared helpers ───────────────────────────────────
@@ -429,12 +430,13 @@ async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
 
     # Check for existing workflow with the same name
     d = _ensure_workflow_dir(mount_name)
-    for ext in (".yaml", ".yml"):
-        if (d / f"{name}{ext}").exists():
-            raise HTTPException(
-                status_code=409,
-                detail=f"Workflow '{name}' already exists",
-            )
+    if not body.overwrite:
+        for ext in (".yaml", ".yml"):
+            if (d / f"{name}{ext}").exists():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Workflow '{name}' already exists",
+                )
 
     # Reject python: args from web for security (case-insensitive)
     for val in body.args.values():

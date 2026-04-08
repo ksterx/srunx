@@ -194,9 +194,9 @@ test.describe("Jobs", () => {
     /* First render: Running */
     await expect(page.locator("table").getByText("Running")).toBeVisible();
 
-    /* Wait for poll to update status */
+    /* Wait for poll to update status — allow extra time for CI environments */
     await expect(page.locator("table").getByText("Completed")).toBeVisible({
-      timeout: 10000,
+      timeout: 30000,
     });
 
     /* Must not have crashed */

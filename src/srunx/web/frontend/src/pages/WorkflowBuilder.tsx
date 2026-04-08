@@ -411,7 +411,7 @@ export function WorkflowBuilder() {
     return () => {
       cancelled = true;
     };
-  }, [editName, loadWorkflow]);
+  }, [editName, loadWorkflow, mountFromUrl]);
 
   const nodeTypes = useMemo(() => ({ builderNode: BuilderJobNode }), []);
 
@@ -534,6 +534,7 @@ export function WorkflowBuilder() {
       if (isEditMode && originalName) {
         const editMount = mountFromUrl ?? defaultProject;
         if (trimmedName !== originalName) {
+          // Rename: create new, then delete old (safe — old preserved on failure)
           await workflowsApi.create(request);
           try {
             await workflowsApi.delete(originalName, editMount);
@@ -541,8 +542,8 @@ export function WorkflowBuilder() {
             // Old workflow deletion failed, but new one was created -- acceptable
           }
         } else {
-          await workflowsApi.delete(originalName, editMount);
-          await workflowsApi.create(request);
+          // Same name: atomic overwrite via backend overwrite flag
+          await workflowsApi.create({ ...request, overwrite: true });
         }
       } else {
         await workflowsApi.create(request);
@@ -568,6 +569,8 @@ export function WorkflowBuilder() {
     navigate,
     isEditMode,
     originalName,
+    argsEntries,
+    mountFromUrl,
   ]);
 
   /* ── Edge dep type for selector ───────────── */

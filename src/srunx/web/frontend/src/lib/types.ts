@@ -387,6 +387,7 @@ export type WorkflowCreateRequest = {
   name: string;
   args?: Record<string, string>;
   default_project?: string | null;
+  overwrite?: boolean;
   jobs: Array<{
     name: string;
     command: string[];
