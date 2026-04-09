@@ -22,7 +22,7 @@ Submit with conda environment:
 
 .. code-block:: bash
 
-   srunx submit python process.py --conda ml_env --memory-per-node 32GB
+   srunx submit python process.py --conda ml_env --memory 32GB
 
 Job Management
 --------------

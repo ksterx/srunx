@@ -25,7 +25,7 @@ srunx provides fine-grained control over resource allocation:
 - ``--tasks-per-node``: Tasks per node
 - ``--cpus-per-task``: CPUs per task
 - ``--gpus-per-node``: GPUs per node
-- ``--memory-per-node``: Memory per node
+- ``--memory`` / ``--mem``: Memory per node
 - ``--time-limit``: Maximum execution time
 
 Environment Management
@@ -168,7 +168,7 @@ With resource specification:
      --name "training_job" \
      --nodes 2 \
      --gpus-per-node 2 \
-     --memory-per-node "64GB" \
+     --memory "64GB" \
      --time-limit "8:00:00" \
      --conda ml_env
 
