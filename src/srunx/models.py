@@ -320,6 +320,7 @@ class BaseJob(BaseModel):
     _status: JobStatus = PrivateAttr(default=JobStatus.PENDING)
     _parsed_dependencies: list[JobDependency] = PrivateAttr(default_factory=list)
     _retry_count: int = PrivateAttr(default=0)
+    _last_refresh: float = PrivateAttr(default=0.0)
 
     def model_post_init(self, __context) -> None:
         """Parse string dependencies into JobDependency objects after initialization."""
@@ -337,11 +338,15 @@ class BaseJob(BaseModel):
             ]
         return self._parsed_dependencies
 
+    # Minimum seconds between automatic sacct queries via the status property.
+    _REFRESH_INTERVAL: float = 5.0
+
     @property
     def status(self) -> JobStatus:
         """
-        Accessing ``job.status`` always triggers a lightweight refresh
-        (only if we have a ``job_id`` and the status isn't terminal).
+        Accessing ``job.status`` triggers a sacct refresh only when the job
+        is non-terminal and at least ``_REFRESH_INTERVAL`` seconds have
+        elapsed since the last query, preventing excessive subprocess calls.
         """
         if self.job_id is not None and self._status not in {
             JobStatus.COMPLETED,
@@ -349,7 +354,9 @@ class BaseJob(BaseModel):
             JobStatus.CANCELLED,
             JobStatus.TIMEOUT,
         }:
-            self.refresh()
+            now = time.time()
+            if now - self._last_refresh >= self._REFRESH_INTERVAL:
+                self.refresh()
         return self._status
 
     @status.setter
@@ -360,6 +367,7 @@ class BaseJob(BaseModel):
         """Query sacct and update ``_status`` in-place."""
         if self.job_id is None:
             return self
+        self._last_refresh = time.time()
 
         try:
             for retry in range(retries):

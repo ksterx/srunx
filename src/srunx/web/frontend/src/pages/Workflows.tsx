@@ -390,13 +390,15 @@ function WorkflowCard({ workflow, mount, index, onDelete }: WorkflowCardProps) {
             <Pencil size={13} />
             Edit
           </Link>
-          <button
+          <Link
+            to={`/workflows/${encodeURIComponent(workflow.name)}?mount=${encodeURIComponent(mount)}&run=1`}
             className="btn btn-primary"
             style={{ flex: 1, justifyContent: "center" }}
+            onClick={(e) => e.stopPropagation()}
           >
             <Play size={13} />
             Run
-          </button>
+          </Link>
         </div>
       </div>
     </motion.div>

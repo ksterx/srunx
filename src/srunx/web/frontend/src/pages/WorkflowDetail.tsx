@@ -62,7 +62,9 @@ export function WorkflowDetail() {
   /* ── Run state ──────────────────────────────── */
   const [runData, setRunData] = useState<WorkflowRun | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
-  const [showRunDialog, setShowRunDialog] = useState(false);
+  const [showRunDialog, setShowRunDialog] = useState(
+    searchParams.get("run") === "1",
+  );
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const {
@@ -75,16 +77,6 @@ export function WorkflowDetail() {
     [name, mount],
     { pollInterval: 10000 },
   );
-
-  if (!name || !mount) {
-    return (
-      <div
-        style={{ padding: 48, textAlign: "center", color: "var(--text-muted)" }}
-      >
-        {!name ? "Invalid workflow name" : "No mount specified"}
-      </div>
-    );
-  }
 
   /* ── Stop polling on unmount ──────────────── */
   useEffect(() => {
@@ -140,7 +132,7 @@ export function WorkflowDetail() {
     if (!window.confirm(`Delete workflow "${name}"? This cannot be undone.`))
       return;
     try {
-      await workflowsApi.delete(name, mount);
+      await workflowsApi.delete(name, mount ?? "");
       navigate("/workflows");
     } catch (err) {
       setRunError(
@@ -175,6 +167,16 @@ export function WorkflowDetail() {
       };
     });
   }, [workflow, runData]);
+
+  if (!name || !mount) {
+    return (
+      <div
+        style={{ padding: 48, textAlign: "center", color: "var(--text-muted)" }}
+      >
+        {!name ? "Invalid workflow name" : "No mount specified"}
+      </div>
+    );
+  }
 
   const selected = liveJobs.find((j) => j.name === selectedJob);
 

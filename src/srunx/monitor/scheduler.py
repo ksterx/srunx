@@ -240,16 +240,11 @@ class ScheduledReporter:
             )
 
         # Count by status
-        pending = sum(1 for j in all_jobs if j.status == JobStatus.PENDING)
-        running = sum(1 for j in all_jobs if j.status == JobStatus.RUNNING)
+        pending = sum(1 for j in all_jobs if j._status == JobStatus.PENDING)
+        running = sum(1 for j in all_jobs if j._status == JobStatus.RUNNING)
 
-        # Get completed/failed/cancelled jobs within timeframe
-        # Note: This requires sacct which may not be available in all environments
-        # For now, we'll return 0 for historical stats
-        # TODO: Implement sacct-based historical job queries
-        completed = 0
-        failed = 0
-        cancelled = 0
+        # Query sacct for historical completed/failed/cancelled counts
+        completed, failed, cancelled = self._get_historical_counts()
 
         return JobStats(
             pending=pending,
@@ -258,6 +253,54 @@ class ScheduledReporter:
             failed=failed,
             cancelled=cancelled,
         )
+
+    def _get_historical_counts(self, user: str | None = None) -> tuple[int, int, int]:
+        """Query sacct for completed/failed/cancelled job counts within timeframe.
+
+        Args:
+            user: Optional username to filter results.
+
+        Returns:
+            Tuple of (completed, failed, cancelled) counts.
+        """
+        import subprocess
+
+        try:
+            cmd = [
+                "sacct",
+                "--starttime",
+                f"now-{self.config.timeframe}",
+                "--format",
+                "State",
+                "--noheader",
+                "--parsable2",
+                "--state",
+                "COMPLETED,FAILED,CANCELLED",
+            ]
+            if user:
+                cmd.extend(["--user", user])
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if result.returncode != 0:
+                return 0, 0, 0
+
+            completed = failed = cancelled = 0
+            for line in result.stdout.strip().splitlines():
+                state = line.strip().split("+")[0]  # strip SLURM truncation indicator
+                if state == "COMPLETED":
+                    completed += 1
+                elif state == "FAILED":
+                    failed += 1
+                elif state.startswith("CANCELLED"):
+                    cancelled += 1
+            return completed, failed, cancelled
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            logger.debug("sacct not available for historical job counts")
+            return 0, 0, 0
 
     def _get_resource_stats(self) -> ResourceStats:
         """Get GPU and node resource statistics.
@@ -317,13 +360,11 @@ class ScheduledReporter:
             )
 
         # Count by status
-        pending = sum(1 for j in user_jobs if j.status == JobStatus.PENDING)
-        running = sum(1 for j in user_jobs if j.status == JobStatus.RUNNING)
+        pending = sum(1 for j in user_jobs if j._status == JobStatus.PENDING)
+        running = sum(1 for j in user_jobs if j._status == JobStatus.RUNNING)
 
-        # Historical stats not yet implemented
-        completed = 0
-        failed = 0
-        cancelled = 0
+        # Historical counts from sacct
+        completed, failed, cancelled = self._get_historical_counts(user=target_user)
 
         return JobStats(
             pending=pending,
@@ -348,7 +389,7 @@ class ScheduledReporter:
             active_jobs = [
                 j
                 for j in all_jobs
-                if j.status in (JobStatus.RUNNING, JobStatus.PENDING)
+                if j._status in (JobStatus.RUNNING, JobStatus.PENDING)
             ]
             logger.debug(
                 f"Filtered to {len(active_jobs)} active jobs (RUNNING/PENDING)"
@@ -356,7 +397,10 @@ class ScheduledReporter:
 
             # Sort by status (running first) then by job_id
             active_jobs.sort(
-                key=lambda j: (0 if j.status == JobStatus.RUNNING else 1, j.job_id or 0)
+                key=lambda j: (
+                    0 if j._status == JobStatus.RUNNING else 1,
+                    j.job_id or 0,
+                )
             )
 
             # Limit to max_jobs
@@ -368,7 +412,7 @@ class ScheduledReporter:
             for job in active_jobs:
                 # Calculate runtime for running jobs
                 runtime = None
-                if job.status == JobStatus.RUNNING and job.elapsed_time:
+                if job._status == JobStatus.RUNNING and job.elapsed_time:
                     # elapsed_time is a string like "1-02:03:04" or "02:03:04"
                     runtime = self._parse_elapsed_time(job.elapsed_time)
 
@@ -377,7 +421,7 @@ class ScheduledReporter:
                         job_id=job.job_id or 0,
                         name=job.name,
                         user=job.user or "unknown",
-                        status=job.status.value,
+                        status=job._status.value,
                         partition=job.partition,
                         runtime=runtime,
                         nodes=job.nodes or 1,

@@ -1022,3 +1022,59 @@ class TestWorkflowAdd:
         job = Job(name="job1", command=["echo", "1"], depends_on=["nonexistent"])
         with pytest.raises(WorkflowValidationError, match="unknown job 'nonexistent'"):
             wf.add(job)
+
+
+class TestStatusThrottle:
+    """Test BaseJob.status throttle behavior (M1)."""
+
+    def test_throttle_skips_refresh_within_interval(self):
+        """Status access within _REFRESH_INTERVAL should not call refresh."""
+        import time
+
+        job = BaseJob(name="test", job_id=123)
+        job._status = JobStatus.RUNNING
+
+        # Simulate a recent refresh
+        job._last_refresh = time.time()
+
+        with patch.object(BaseJob, "refresh", wraps=lambda self: self) as mock_refresh:
+            _ = job.status
+            mock_refresh.assert_not_called()
+
+    def test_throttle_allows_refresh_after_interval(self):
+        """Status access after _REFRESH_INTERVAL should call refresh."""
+        job = BaseJob(name="test", job_id=123)
+        job._status = JobStatus.RUNNING
+
+        # Simulate stale refresh timestamp
+        job._last_refresh = 0.0
+
+        with patch.object(BaseJob, "refresh", return_value=job) as mock_refresh:
+            _ = job.status
+            mock_refresh.assert_called_once()
+
+    def test_terminal_status_never_refreshes(self):
+        """Terminal statuses should never trigger refresh regardless of time."""
+        for terminal in [
+            JobStatus.COMPLETED,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+            JobStatus.TIMEOUT,
+        ]:
+            job = BaseJob(name="test", job_id=123)
+            job._status = terminal
+            job._last_refresh = 0.0  # stale, but should not matter
+
+            with patch.object(BaseJob, "refresh") as mock_refresh:
+                assert job.status == terminal
+                mock_refresh.assert_not_called()
+
+    def test_no_job_id_never_refreshes(self):
+        """Jobs without a job_id should never trigger refresh."""
+        job = BaseJob(name="test")
+        job._status = JobStatus.RUNNING
+        job._last_refresh = 0.0
+
+        with patch.object(BaseJob, "refresh") as mock_refresh:
+            assert job.status == JobStatus.RUNNING
+            mock_refresh.assert_not_called()

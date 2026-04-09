@@ -22,16 +22,6 @@ export function LogViewer() {
 
   const [activeTab, setActiveTab] = useState<"stdout" | "stderr">("stdout");
 
-  if (!isValidId) {
-    return (
-      <div
-        style={{ padding: 48, textAlign: "center", color: "var(--text-muted)" }}
-      >
-        Invalid job ID
-      </div>
-    );
-  }
-
   /* ── Incremental (offset-based) log polling ───── */
   const isRunning = job?.status === "RUNNING";
   const [stdoutLines, setStdoutLines] = useState<string[]>([]);
@@ -41,6 +31,7 @@ export function LogViewer() {
   const mountedRef = useRef(true);
 
   const fetchLogs = useCallback(async () => {
+    if (!isValidId) return;
     try {
       const data = await jobsApi.logs(id, {
         stdout_offset: offsetRef.current.stdout,
@@ -63,11 +54,10 @@ export function LogViewer() {
     } finally {
       if (mountedRef.current) setInitialLoading(false);
     }
-  }, [id]);
+  }, [id, isValidId]);
 
   useEffect(() => {
     mountedRef.current = true;
-    // Initial full fetch
     setInitialLoading(true);
     fetchLogs();
     return () => {
@@ -80,6 +70,16 @@ export function LogViewer() {
     const timer = setInterval(fetchLogs, 3000);
     return () => clearInterval(timer);
   }, [isRunning, fetchLogs]);
+
+  if (!isValidId) {
+    return (
+      <div
+        style={{ padding: 48, textAlign: "center", color: "var(--text-muted)" }}
+      >
+        Invalid job ID
+      </div>
+    );
+  }
 
   if (jobError) {
     return (
@@ -176,7 +176,21 @@ export function LogViewer() {
           </div>
         </div>
 
-        <button className="btn btn-ghost">
+        <button
+          className="btn btn-ghost"
+          onClick={() => {
+            const lines = activeTab === "stdout" ? stdoutLines : stderrLines;
+            const blob = new Blob([lines.join("\n")], {
+              type: "text/plain",
+            });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `job-${id}-${activeTab}.log`;
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 100);
+          }}
+        >
           <Download size={14} />
           Download
         </button>
