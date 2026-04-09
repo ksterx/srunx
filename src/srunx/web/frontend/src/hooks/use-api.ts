@@ -20,12 +20,14 @@ export function useApi<T>(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  const dataRef = useRef<T | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
-      setLoading((prev) => (data === null ? true : prev));
+      setLoading((prev) => (dataRef.current === null ? true : prev));
       const result = await fetcher();
       if (mountedRef.current) {
+        dataRef.current = result;
         setData(result);
         setError(null);
       }

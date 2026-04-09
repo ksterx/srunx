@@ -200,7 +200,7 @@ export function Sidebar({
               : "2px solid transparent",
             border: "none",
             cursor: "pointer",
-            transition: "all 150ms cubic-bezier(0.16,1,0.3,1)",
+            transition: "all var(--duration-fast) var(--ease-out)",
             width: "100%",
           }}
           onMouseEnter={(e) => {
@@ -262,7 +262,7 @@ export function Sidebar({
                 borderLeft: active
                   ? "2px solid var(--accent)"
                   : "2px solid transparent",
-                transition: "all 150ms cubic-bezier(0.16,1,0.3,1)",
+                transition: "all var(--duration-fast) var(--ease-out)",
               };
             }}
           >
@@ -336,7 +336,7 @@ export function Sidebar({
               style={{
                 flexShrink: 0,
                 transform: profileOpen ? "rotate(180deg)" : "rotate(0deg)",
-                transition: "transform 150ms",
+                transition: "transform var(--duration-fast)",
               }}
             />
           </button>
@@ -463,7 +463,7 @@ export function Sidebar({
           borderTopStyle: "solid",
           borderTopWidth: 1,
           borderTopColor: "var(--border-ghost)",
-          transition: "color 150ms",
+          transition: "color var(--duration-fast)",
         }}
         onMouseEnter={(e) =>
           (e.currentTarget.style.color = "var(--text-secondary)")

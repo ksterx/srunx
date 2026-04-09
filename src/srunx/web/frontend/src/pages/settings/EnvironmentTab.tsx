@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { Variable } from "lucide-react";
 import { config as configApi } from "../../lib/api.ts";
 import type { EnvVarInfo } from "../../lib/types.ts";
+import { ErrorBanner } from "../../components/ErrorBanner.tsx";
 
 export function EnvironmentTab() {
   const [vars, setVars] = useState<EnvVarInfo[]>([]);
@@ -33,21 +34,7 @@ export function EnvironmentTab() {
     <div
       style={{ display: "flex", flexDirection: "column", gap: "var(--sp-4)" }}
     >
-      {error && (
-        <div
-          style={{
-            padding: "var(--sp-3) var(--sp-4)",
-            background: "var(--st-failed-dim)",
-            border: "1px solid rgba(244,63,94,0.3)",
-            borderRadius: "var(--radius-md)",
-            color: "var(--st-failed)",
-            fontFamily: "var(--font-mono)",
-            fontSize: "0.8rem",
-          }}
-        >
-          {error}
-        </div>
-      )}
+      <ErrorBanner error={error} />
 
       <div className="panel">
         <div className="panel-header">

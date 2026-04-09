@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Play, Eye, Loader2, X, ChevronDown, ChevronUp } from "lucide-react";
 import { workflows as workflowsApi } from "../lib/api.ts";
+import { ErrorBanner } from "./ErrorBanner.tsx";
 import type { WorkflowRunOptions, DryRunJobInfo } from "../lib/types.ts";
 
 type WorkflowRunDialogProps = {
@@ -294,21 +295,7 @@ export function WorkflowRunDialog({
             Dry run (preview scripts without submitting)
           </label>
 
-          {error && (
-            <div
-              style={{
-                padding: "var(--sp-3) var(--sp-4)",
-                background: "var(--st-failed-dim)",
-                border: "1px solid rgba(244,63,94,0.3)",
-                borderRadius: "var(--radius-md)",
-                color: "var(--st-failed)",
-                fontFamily: "var(--font-mono)",
-                fontSize: "0.8rem",
-              }}
-            >
-              {error}
-            </div>
-          )}
+          <ErrorBanner error={error} />
 
           {/* Dry run results */}
           {dryRunResult && (

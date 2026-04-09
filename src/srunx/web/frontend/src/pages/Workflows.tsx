@@ -14,6 +14,7 @@ import {
 import { useApi } from "../hooks/use-api.ts";
 import { workflows as workflowsApi, files as filesApi } from "../lib/api.ts";
 import type { Mount, Workflow } from "../lib/types.ts";
+import { ErrorBanner } from "../components/ErrorBanner.tsx";
 
 export function Workflows() {
   const [mounts, setMounts] = useState<Mount[]>([]);
@@ -138,21 +139,7 @@ export function Workflows() {
         </div>
       </motion.div>
 
-      {(error || uploadError) && (
-        <div
-          style={{
-            padding: "var(--sp-3) var(--sp-4)",
-            background: "var(--st-failed-dim)",
-            border: "1px solid rgba(244,63,94,0.3)",
-            borderRadius: "var(--radius-md)",
-            color: "var(--st-failed)",
-            fontFamily: "var(--font-mono)",
-            fontSize: "0.8rem",
-          }}
-        >
-          {uploadError ?? error}
-        </div>
-      )}
+      <ErrorBanner error={uploadError ?? error} />
 
       {/* Workflow cards grid */}
       <div
