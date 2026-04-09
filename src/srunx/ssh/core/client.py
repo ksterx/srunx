@@ -103,6 +103,7 @@ class SSHSlurmClient:
             proxy_jump=proxy_jump,
             ssh_config_path=ssh_config_path,
             verbose=verbose,
+            temp_dir=self.temp_dir,
             env_vars=env_vars,
         )
         self.files = RemoteFileManager(self.connection)
