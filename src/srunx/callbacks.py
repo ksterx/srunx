@@ -1,7 +1,6 @@
 """Callback system for job state notifications."""
 
 import re
-from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 from slack_sdk import WebhookClient
@@ -195,15 +194,11 @@ class SlackCallback(Callback):
             ],
         )
 
-    def on_job_completed(self, job: JobType) -> None:
-        """Send completion notification to Slack.
-
-        Args:
-            job: Job that completed.
-        """
+    def _send_job_status(self, job: JobType, label: str) -> None:
+        """Send a job status notification to Slack."""
         safe_message = self._sanitize_text(job_status_msg(job))
         self.client.send(
-            text="Job completed",
+            text=label,
             blocks=[
                 {
                     "type": "section",
@@ -211,57 +206,18 @@ class SlackCallback(Callback):
                 }
             ],
         )
+
+    def on_job_completed(self, job: JobType) -> None:
+        self._send_job_status(job, "Job completed")
 
     def on_job_failed(self, job: JobType) -> None:
-        """Send failure notification to Slack.
-
-        Args:
-            job: Job that failed.
-        """
-        safe_message = self._sanitize_text(job_status_msg(job))
-        self.client.send(
-            text="Job failed",
-            blocks=[
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"`{safe_message}`"},
-                }
-            ],
-        )
+        self._send_job_status(job, "Job failed")
 
     def on_job_running(self, job: JobType) -> None:
-        """Send running notification to Slack.
-
-        Args:
-            job: Job that started running.
-        """
-        safe_message = self._sanitize_text(job_status_msg(job))
-        self.client.send(
-            text="Job running",
-            blocks=[
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"`{safe_message}`"},
-                }
-            ],
-        )
+        self._send_job_status(job, "Job running")
 
     def on_job_cancelled(self, job: JobType) -> None:
-        """Send cancellation notification to Slack.
-
-        Args:
-            job: Job that was cancelled.
-        """
-        safe_message = self._sanitize_text(job_status_msg(job))
-        self.client.send(
-            text="Job cancelled",
-            blocks=[
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"`{safe_message}`"},
-                }
-            ],
-        )
+        self._send_job_status(job, "Job cancelled")
 
     def on_workflow_completed(self, workflow: Workflow) -> None:
         """Send completion notification to Slack.
@@ -349,13 +305,13 @@ class SlackCallback(Callback):
         else:
             logger.info("No running jobs to display in report")
 
-        # Convert dataclasses to dicts for formatter
-        job_stats_dict = asdict(report.job_stats) if report.job_stats else None
+        # Convert models to dicts for formatter
+        job_stats_dict = report.job_stats.model_dump() if report.job_stats else None
         resource_stats_dict = (
-            asdict(report.resource_stats) if report.resource_stats else None
+            report.resource_stats.model_dump() if report.resource_stats else None
         )
         running_jobs_list = (
-            [asdict(job) for job in report.running_jobs]
+            [job.model_dump() for job in report.running_jobs]
             if report.running_jobs
             else None
         )

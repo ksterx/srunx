@@ -1,25 +1,25 @@
 """Data types for scheduled reporting."""
 
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+from pydantic import BaseModel, Field, model_validator
 
-@dataclass
-class ReportConfig:
+
+class ReportConfig(BaseModel):
     """Configuration for scheduled reporting."""
 
     schedule: str
-    include: list[str] = field(
+    include: list[str] = Field(
         default_factory=lambda: ["jobs", "resources", "user", "running"]
     )
     partition: str | None = None
     user: str | None = None
     timeframe: str = "24h"
     daemon: bool = True
-    max_jobs: int = 10  # Maximum number of jobs to show in detail
+    max_jobs: int = 10
 
-    def __post_init__(self) -> None:
-        """Validate configuration."""
+    @model_validator(mode="after")
+    def _validate(self) -> "ReportConfig":
         valid_include = {"jobs", "resources", "user", "running"}
         invalid = set(self.include) - valid_include
         if invalid:
@@ -28,14 +28,14 @@ class ReportConfig:
             raise ValueError("Schedule must be specified")
         if self.max_jobs < 1:
             raise ValueError("max_jobs must be at least 1")
+        return self
 
     def is_cron_format(self) -> bool:
         """Check if schedule is in cron format."""
         return " " in self.schedule
 
 
-@dataclass
-class JobStats:
+class JobStats(BaseModel):
     """Job queue statistics."""
 
     pending: int
@@ -49,8 +49,7 @@ class JobStats:
         return self.pending + self.running
 
 
-@dataclass
-class ResourceStats:
+class ResourceStats(BaseModel):
     """GPU and node resource statistics."""
 
     partition: str | None
@@ -68,8 +67,7 @@ class ResourceStats:
         return (self.gpus_in_use / self.total_gpus) * 100
 
 
-@dataclass
-class RunningJob:
+class RunningJob(BaseModel):
     """Information about a running or pending job."""
 
     job_id: int
@@ -77,17 +75,16 @@ class RunningJob:
     user: str
     status: str
     partition: str | None
-    runtime: timedelta | None  # None for pending jobs
+    runtime: timedelta | None = None
     nodes: int
     gpus: int
 
 
-@dataclass
-class Report:
+class Report(BaseModel):
     """Generated report containing requested statistics."""
 
     timestamp: datetime
     job_stats: JobStats | None = None
     resource_stats: ResourceStats | None = None
     user_stats: JobStats | None = None
-    running_jobs: list[RunningJob] = field(default_factory=list)
+    running_jobs: list[RunningJob] = Field(default_factory=list)

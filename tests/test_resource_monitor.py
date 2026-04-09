@@ -195,10 +195,14 @@ class TestResourceMonitor:
         )
         monitor.get_partition_resources = MagicMock(return_value=snapshot_available)
 
+        # Invalidate cache before each direct _notify_callbacks call (in production,
+        # check_condition/get_current_state do this automatically per cycle).
+        monitor._cached_snapshot = None
         monitor._notify_callbacks("state_changed")
         assert callback.on_resources_available.call_count == 1  # Notifies on first call
 
         # Second call: still available (should not notify)
+        monitor._cached_snapshot = None
         monitor._notify_callbacks("state_changed")
         assert callback.on_resources_available.call_count == 1
 
@@ -214,6 +218,7 @@ class TestResourceMonitor:
         )
         monitor.get_partition_resources = MagicMock(return_value=snapshot_exhausted)
 
+        monitor._cached_snapshot = None
         monitor._notify_callbacks("state_changed")
         assert callback.on_resources_exhausted.call_count == 1
 
@@ -239,6 +244,7 @@ class TestResourceMonitor:
         monitor.get_partition_resources = MagicMock(return_value=snapshot)
 
         # Should not raise exception
+        monitor._cached_snapshot = None
         monitor._notify_callbacks("state_changed")
 
     @patch("subprocess.run")

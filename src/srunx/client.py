@@ -22,7 +22,7 @@ from srunx.models import (
     render_job_script,
     render_shell_job_script,
 )
-from srunx.utils import get_job_status, job_status_msg
+from srunx.utils import GPU_TRES_RE, get_job_status, job_status_msg  # noqa: E402
 
 logger = get_logger(__name__)
 
@@ -249,8 +249,7 @@ class Slurm:
                 # Parse GPU count from TRES (e.g., "gpu:8" or "billing=8,cpu=8,gres/gpu=8,mem=100G,node=1")
                 gpus = 0
                 if tres and "gpu" in tres.lower():
-                    # Match patterns like "gpu:8", "gres/gpu=8", "gpu:NVIDIA-A100:8"
-                    gpu_match = re.search(r"gpu[:/=](?:[^:]+:)?(\d+)", tres.lower())
+                    gpu_match = GPU_TRES_RE.search(tres)
                     if gpu_match:
                         gpus = int(gpu_match.group(1))
 
