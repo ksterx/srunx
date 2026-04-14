@@ -126,6 +126,10 @@ app.add_typer(template_app, name="template")
 def ui(
     host: Annotated[str, typer.Option(help="Host to bind")] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="Port to bind")] = 8000,
+    verbose: Annotated[
+        bool,
+        typer.Option("--verbose", "-v", help="Show FastAPI/uvicorn logs"),
+    ] = False,
 ) -> None:
     """Launch the srunx Web UI."""
     try:
@@ -142,12 +146,19 @@ def ui(
     config = get_web_config()
     config.host = host
     config.port = port
+    config.verbose = verbose
+
+    # Quiet mode: silence uvicorn access logs and demote srunx loguru to WARNING.
+    if not verbose:
+        configure_cli_logging(level="WARNING")
 
     uvicorn.run(
         "srunx.web.app:create_app",
         factory=True,
         host=host,
         port=port,
+        log_level="info" if verbose else "warning",
+        access_log=verbose,
     )
 
 

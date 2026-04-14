@@ -22,6 +22,115 @@ _FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
 logger = get_logger(__name__)
 
 
+def _print_ui_banner(
+    *, host: str, port: int, profile: str | None, status: str, verbose: bool
+) -> None:
+    """Print a rich banner after SSH setup so users see actual connection state."""
+    from rich.console import Console, ConsoleRenderable, Group
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+
+    try:
+        from srunx import __version__ as _version
+    except Exception:
+        _version = "?"
+
+    url = f"http://{host}:{port}"
+
+    # Resolve profile details when available.
+    host_str: str | None = None
+    mounts: list[tuple[str, str]] = []
+    if profile:
+        try:
+            from srunx.ssh.core.config import ConfigManager
+
+            sp = ConfigManager().get_profile(profile)
+            if sp is not None:
+                host_str = f"{sp.username}@{sp.hostname}"
+                mounts = [(m.local, m.remote) for m in sp.mounts]
+        except Exception:
+            pass
+
+    if status == "connected":
+        status_badge = "[bold green]● connected[/bold green]"
+    elif status == "failed":
+        status_badge = "[bold red]● failed[/bold red]"
+    else:
+        status_badge = "[bold yellow]○ no profile[/bold yellow]"
+
+    # Main info grid — label / value, with optional right-aligned badge.
+    info = Table.grid(padding=(0, 2), expand=True)
+    info.add_column(style="dim", justify="right", no_wrap=True)
+    info.add_column(ratio=1)
+    info.add_column(justify="right", no_wrap=True)
+
+    info.add_row(
+        "URL", f"[cyan underline][link={url}]{url}[/link][/cyan underline]", ""
+    )
+    if profile:
+        info.add_row("Profile", f"[bold]{profile}[/bold]", status_badge)
+        if host_str:
+            info.add_row("Host", f"[cyan]{host_str}[/cyan]", "")
+    elif status == "failed":
+        info.add_row("Profile", "[dim]—[/dim]", status_badge)
+    else:
+        info.add_row(
+            "Profile",
+            "[dim]none configured — set via `srunx ssh profile`[/dim]",
+            status_badge,
+        )
+
+    # Mounts — expanded list aligned on the arrow.
+    home = str(Path.home())
+
+    def _abbr(p: str) -> str:
+        return "~" + p[len(home) :] if p.startswith(home) else p
+
+    mounts_block: Text | None = None
+    if mounts:
+        mounts_block = Text()
+        for i, (local, remote) in enumerate(mounts):
+            if i > 0:
+                mounts_block.append("\n")
+            mounts_block.append("  • ", style="dim")
+            mounts_block.append(_abbr(local), style="magenta")
+            mounts_block.append("\n       → ", style="dim")
+            mounts_block.append(remote, style="cyan")
+    elif profile:
+        mounts_block = Text("  no mounts configured", style="dim")
+
+    # Assemble body: info grid, blank line, mounts section (if any).
+    body_parts: list[ConsoleRenderable] = [info]
+    if mounts_block is not None:
+        body_parts.append(Text(""))
+        body_parts.append(Text("Mounts", style="dim"))
+        body_parts.append(mounts_block)
+    body = Group(*body_parts)
+
+    title = Text()
+    title.append(" ▲ srunx ", style="bold black on bright_cyan")
+    title.append(f" v{_version} ", style="dim")
+
+    subtitle_parts = ["[dim]ctrl+c[/dim] quit"]
+    if not verbose:
+        subtitle_parts.append("[dim]-v[/dim] verbose logs")
+    subtitle = "   ·   ".join(subtitle_parts)
+
+    Console().print(
+        Panel(
+            body,
+            title=title,
+            title_align="left",
+            subtitle=subtitle,
+            subtitle_align="right",
+            border_style="bright_cyan",
+            expand=False,
+            padding=(1, 2),
+        )
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage SSH connection lifecycle.
@@ -31,6 +140,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     config = get_web_config()
     adapter: SlurmSSHAdapter | None = None
+    connection_status: str  # "connected" | "failed" | "none"
 
     # Resolve SSH profile: explicit config > current profile > none
     profile_name = config.ssh_profile
@@ -41,7 +151,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         current = cm.get_current_profile_name()
         if current:
             profile_name = current
-            logger.info("Using current SSH profile: %s", current)
+            logger.info(f"Using current SSH profile: {current}")
 
     has_ssh_config = profile_name or (config.ssh_hostname and config.ssh_username)
 
@@ -58,21 +168,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             if adapter.connect():
                 logger.info("SSH connection established")
                 set_adapter(adapter, profile_name=profile_name)
+                connection_status = "connected"
             else:
                 logger.warning(
                     "SSH connection failed — SLURM endpoints will be unavailable"
                 )
                 adapter = None
+                connection_status = "failed"
         except Exception as e:
             logger.warning(
-                "SSH setup failed: %s — SLURM endpoints will be unavailable", e
+                f"SSH setup failed: {e} — SLURM endpoints will be unavailable"
             )
             adapter = None
+            connection_status = "failed"
     else:
         logger.info(
             "No SSH configuration provided. Set SRUNX_SSH_PROFILE or "
             "SRUNX_SSH_HOSTNAME + SRUNX_SSH_USERNAME to connect to a SLURM cluster."
         )
+        connection_status = "none"
+
+    _print_ui_banner(
+        host=config.host,
+        port=config.port,
+        profile=profile_name,
+        status=connection_status,
+        verbose=config.verbose,
+    )
 
     import anyio
 
@@ -94,8 +216,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             pass
         if current_adapter is not None:
             logger.info(
-                "Closing SSH connection (profile: %s)...",
-                get_active_profile_name(),
+                f"Closing SSH connection (profile: {get_active_profile_name()})..."
             )
             current_adapter.disconnect()
 

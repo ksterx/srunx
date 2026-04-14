@@ -29,6 +29,9 @@ class WebConfig(BaseModel):
         default_factory=lambda: int(os.getenv("SRUNX_SSH_PORT", "22"))
     )
 
+    # UI verbosity — when False, lifespan suppresses info logs in favour of a banner.
+    verbose: bool = Field(default=False)
+
 
 _config: WebConfig | None = None
 _config_lock = __import__("threading").Lock()
