@@ -30,28 +30,59 @@ Stop juggling `sbatch` scripts, `squeue` loops, and SSH sessions.
 Requires Python 3.12+ and access to a SLURM cluster (local or via SSH).
 
 ```bash
-uv add srunx
+uv add srunx             # with uv (recommended)
+pip install srunx        # or with pip
 ```
 
-For the web dashboard:
+Optional extras:
 
-```bash
-uv add "srunx[web]"
-```
+| Extra | Adds |
+|-------|------|
+| `srunx[web]` | Web dashboard (FastAPI + React UI) |
+| `srunx[mcp]` | MCP server for AI agent integration |
+
+Slack notifications are included in the base install — just set `SLACK_WEBHOOK_URL`.
 
 ## Quick Start
 
+Submit a job, wait for it, and view the logs — end to end:
+
 ```bash
-# Submit a job
-srunx submit python train.py --name training --gpus-per-node 2 --conda ml_env
+# 1. Submit (use -- to separate srunx flags from the command)
+$ srunx submit --name training --gpus-per-node 2 --conda ml_env -- python train.py
+✓ Submitted job training (id=847291)
 
-# Check status and resources
-srunx list --show-gpus
-srunx resources
+# 2. Follow until completion
+$ srunx monitor jobs 847291
+⠋ 847291 training  PENDING  →  RUNNING  →  COMPLETED (4m 12s)
 
-# Run a YAML workflow
+# 3. Inspect output
+$ srunx logs 847291 -n 20
+```
+
+Or describe the whole pipeline once and let srunx drive it:
+
+```bash
 srunx flow run workflow.yaml
 ```
+
+## Why srunx?
+
+Instead of stitching together `sbatch`, `squeue`, SSH, and a pipeline runner, srunx offers one coherent surface that covers the day-to-day SLURM loop.
+
+| Capability | srunx | submitit | simple-slurm | Snakemake |
+|---|:---:|:---:|:---:|:---:|
+| CLI for submit / status / cancel | ✓ | — | — | partial |
+| Python API | ✓ | ✓ | ✓ | ✓ |
+| Web dashboard | ✓ | — | — | — |
+| Workflow DAG with dependencies | ✓ | — | — | ✓ |
+| Inter-job runtime variable passing | ✓ | — | — | via files |
+| GPU availability monitoring | ✓ | — | — | — |
+| SSH remote submit + file sync | ✓ | — | — | — |
+| Container support (Pyxis / Apptainer / Singularity) | ✓ | limited | — | via rules |
+| Slack notifications | ✓ | — | — | plugin |
+
+If you need full-featured scientific workflow tooling, Snakemake / Nextflow are still the right call. srunx targets the sweet spot of *"SLURM + a few dependencies + a nice UI"* without Airflow-scale infrastructure.
 
 ## CLI
 
@@ -81,25 +112,33 @@ srunx ui                # -> http://127.0.0.1:8000
 srunx ui --port 3000    # custom port
 ```
 
-**Jobs** — Browse, search, filter, and cancel jobs.
+### Jobs
+
+Browse, search, filter, and cancel jobs.
 
 <img src="https://raw.githubusercontent.com/ksterx/srunx/main/public/screenshots/jobs.png" width="800" alt="Jobs page">
 
-**Workflow DAG** — Visualize job dependencies. Run workflows directly from the UI.
+### Workflow DAG
+
+Visualize job dependencies. Run workflows directly from the UI.
 
 <img src="https://raw.githubusercontent.com/ksterx/srunx/main/public/screenshots/workflow_dag.png" width="800" alt="Workflow DAG visualization">
 
-**Resources** — GPU and node availability per partition.
+### Resources
+
+GPU and node availability per partition.
 
 <img src="https://raw.githubusercontent.com/ksterx/srunx/main/public/screenshots/resources.png" width="800" alt="Resources page">
 
-**Explorer** — Browse remote files via SSH mounts. Shell scripts can be submitted as sbatch jobs directly from the file tree.
+### Explorer
+
+Browse remote files via SSH mounts. Shell scripts can be submitted as sbatch jobs directly from the file tree.
 
 <img src="https://raw.githubusercontent.com/ksterx/srunx/main/public/screenshots/explorer_sbatch.gif" width="800" alt="Explorer sbatch submission">
 
 ## Workflow Orchestration
 
-Define pipelines in YAML with dependency graphs and Jinja2-parameterized variables:
+Define pipelines in YAML. Jobs run as soon as their dependencies complete — independent branches execute in parallel automatically.
 
 ```yaml
 name: experiment
@@ -109,25 +148,43 @@ args:
 
 jobs:
   - name: preprocess
-    command: ["python", "preprocess.py"]
-    nodes: 1
+    command: ["python", "preprocess.py", "--out", "{{ output_dir }}/data"]
+    outputs:
+      DATA_PATH: "{{ output_dir }}/data/processed.parquet"
 
   - name: train
-    command: ["python", "train.py", "--model", "{{ model }}"]
+    command: ["python", "train.py", "--model", "{{ model }}", "--data", "$DATA_PATH"]
     depends_on: [preprocess]
     gpus_per_node: 2
-    conda: ml_env
+    environment:
+      container:
+        image: nvcr.io/nvidia/pytorch:24.01-py3
+        mounts:
+          - /data:/data
+    outputs:
+      MODEL_PATH: "{{ output_dir }}/models/best.pt"
 
   - name: evaluate
-    command: ["python", "eval.py", "--output", "{{ output_dir }}"]
+    command: ["python", "eval.py", "--model", "$MODEL_PATH"]
     depends_on: [train]
 ```
 
-Jobs run as soon as their dependencies complete — independent branches execute in parallel automatically.
+**What this shows off:**
 
-- `args` with Jinja2 templates for reusable, parameterized pipelines
-- Retry support with configurable delay
-- Dry-run mode and partial execution (`--from`, `--to`, `--job`)
+- **`args` with Jinja2** — reusable, parameterized pipelines (`{{ model }}`, `{{ output_dir }}`)
+- **Inter-job outputs** — downstream jobs read `$DATA_PATH` / `$MODEL_PATH` at runtime; you can also append from the job with `echo "key=value" >> $SRUNX_OUTPUTS`
+- **Containers per job** — Pyxis / Apptainer / Singularity are first-class (`environment.container`)
+- **Dependency-driven scheduling** — `evaluate` blocks on `train`; parallel branches run automatically
+
+Run it:
+
+```bash
+srunx flow run workflow.yaml              # execute
+srunx flow run workflow.yaml --dry-run    # show plan only
+srunx flow run workflow.yaml --from train # resume / partial execution
+```
+
+Retry with `retry: N` and `retry_delay: <seconds>` per job.
 
 ## Monitoring
 
@@ -166,15 +223,22 @@ srunx ssh sync
 
 ## Slack Notifications
 
+Get notified when jobs finish — set `SLACK_WEBHOOK_URL` (or configure it in the web dashboard), then append `--slack` to any `srunx flow run` command. In Python, pass `SlackCallback` to the runner (see the Python API section below).
+
 <div align="center">
   <img src="https://raw.githubusercontent.com/ksterx/srunx/main/public/slack_screenshot.png" width="400" alt="Slack notification">
 </div>
 
 ```bash
+export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
 srunx flow run workflow.yaml --slack
 ```
 
 ## Python API
+
+The full CLI surface is available as a Python library. Use it inside notebooks, existing Python pipelines, or custom tooling.
+
+**Submit and wait:**
 
 ```python
 from srunx import Job, JobResource, JobEnvironment, Slurm
@@ -187,12 +251,30 @@ job = Job(
 )
 
 client = Slurm()
-completed = client.run(job)  # submit and wait for completion
+completed = client.run(job)  # submit, poll, and return when terminal
+print(completed.status, completed.job_id)
 ```
 
-## Why srunx?
+**Fire-and-track:**
 
-Tools like `submitit` and `simple-slurm` handle job submission, and workflow engines like Snakemake or Nextflow handle pipelines. srunx covers both — plus monitoring, SSH remote access, a web dashboard, and container support — in a single, lightweight package. If you want one tool that covers the full SLURM workflow without heavyweight infrastructure, srunx is a good fit.
+```python
+submitted = client.submit(job)                 # returns Job with job_id populated
+info = client.retrieve(submitted.job_id)       # poll status on demand
+client.cancel(submitted.job_id)                # if you change your mind
+```
+
+**Run a YAML workflow programmatically, with callbacks:**
+
+```python
+from srunx.callbacks import SlackCallback
+from srunx.runner import WorkflowRunner
+
+runner = WorkflowRunner.from_yaml(
+    "workflow.yaml",
+    callbacks=[SlackCallback(webhook_url="...")],
+)
+runner.run()                                    # blocks until the DAG finishes
+```
 
 ## Documentation
 
@@ -204,8 +286,12 @@ Full documentation at **[ksterx.github.io/srunx](https://ksterx.github.io/srunx/
 git clone https://github.com/ksterx/srunx.git
 cd srunx
 uv sync --dev
-uv run pytest
+
+# Full pre-commit quality gate
+uv run pytest && uv run mypy . && uv run ruff check .
 ```
+
+Contributions welcome — please open an issue or PR on [GitHub](https://github.com/ksterx/srunx).
 
 ## License
 
