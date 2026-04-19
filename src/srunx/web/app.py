@@ -15,7 +15,13 @@ from srunx.logging import get_logger
 
 from .config import get_web_config
 from .deps import set_adapter
-from .routers import files, history, jobs, resources, workflows
+from .routers import (
+    files,
+    history,
+    jobs,
+    resources,
+    workflows,
+)
 from .ssh_adapter import SlurmSSHAdapter
 
 _FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
@@ -133,11 +139,33 @@ def _print_ui_banner(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Manage SSH connection lifecycle.
+    """Manage SSH connection lifecycle + background pollers.
 
-    If no SSH configuration is provided, the server starts without
-    a SLURM connection (API endpoints will return 503).
+    Steps (in order):
+      1. Initialize the srunx SQLite DB (schema migration + 0600 perms)
+      2. Bootstrap legacy ``slack_webhook_url`` → ``endpoints`` table (once)
+      3. Resolve SSH profile and connect to SLURM (if configured)
+      4. Start the ``PollerSupervisor`` with ActiveWatchPoller / DeliveryPoller /
+         ResourceSnapshotter — each gated by its own ``SRUNX_DISABLE_*`` env var
+         and all collectively disabled under ``uvicorn --reload``.
     """
+    from srunx.config import get_config as get_srunx_config
+    from srunx.db.connection import init_db, open_connection
+    from srunx.db.migrations import bootstrap_from_config
+
+    # 1. DB bootstrap (always — cheap + idempotent).
+    try:
+        init_db(delete_legacy=False)
+        conn = open_connection()
+        try:
+            bootstrap_from_config(conn, get_srunx_config())
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning(
+            "DB initialization failed; persistence may be degraded", exc_info=True
+        )
+
     config = get_web_config()
     adapter: SlurmSSHAdapter | None = None
     connection_status: str  # "connected" | "failed" | "none"
@@ -196,12 +224,71 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         verbose=config.verbose,
     )
 
+    import os
+
     import anyio
+
+    from srunx.pollers.active_watch_poller import ActiveWatchPoller
+    from srunx.pollers.delivery_poller import DeliveryPoller
+    from srunx.pollers.reload_guard import should_start_pollers
+    from srunx.pollers.resource_snapshotter import ResourceSnapshotter
+    from srunx.pollers.supervisor import Poller, PollerSupervisor
+
+    # 4. Background pollers. All skipped in --reload dev mode or when
+    # SRUNX_DISABLE_POLLER=1. Each poller is also individually toggleable.
+    supervisor: PollerSupervisor | None = None
+    if should_start_pollers():
+        pollers: list[Poller] = []
+        if os.environ.get("SRUNX_DISABLE_ACTIVE_WATCH_POLLER") != "1":
+            if adapter is not None:
+                pollers.append(ActiveWatchPoller(slurm_client=adapter))
+            else:
+                logger.info("Skipping ActiveWatchPoller: no SLURM client is available")
+        if os.environ.get("SRUNX_DISABLE_DELIVERY_POLLER") != "1":
+            pollers.append(DeliveryPoller(worker_id=f"delivery-{os.getpid()}"))
+        if os.environ.get("SRUNX_DISABLE_RESOURCE_SNAPSHOTTER") != "1":
+            # ResourceSnapshotter needs a resource_monitor; if the SLURM
+            # adapter is down we skip it to avoid hammering a missing backend.
+            if adapter is not None:
+                try:
+                    from srunx.monitor.resource_monitor import ResourceMonitor
+
+                    # min_gpus=0 because we're observing, not waiting on a threshold.
+                    pollers.append(
+                        ResourceSnapshotter(
+                            resource_monitor=ResourceMonitor(min_gpus=0),
+                        )
+                    )
+                except Exception:
+                    logger.warning(
+                        "Skipping ResourceSnapshotter: init failed",
+                        exc_info=True,
+                    )
+            else:
+                logger.info(
+                    "Skipping ResourceSnapshotter: no SLURM client is available"
+                )
+
+        if pollers:
+            supervisor = PollerSupervisor(pollers)
+            logger.info("Starting %d background poller(s)", len(pollers))
+    else:
+        logger.info(
+            "Background pollers disabled (reload mode or SRUNX_DISABLE_POLLER=1)"
+        )
 
     try:
         async with anyio.create_task_group() as tg:
             app.state.task_group = tg
+            app.state.poller_supervisor = supervisor
+            if supervisor is not None:
+                tg.start_soon(supervisor.start_all)
             yield
+            if supervisor is not None:
+                try:
+                    await supervisor.shutdown(grace_seconds=5.0)
+                except Exception:
+                    logger.warning("Poller shutdown raised", exc_info=True)
             tg.cancel_scope.cancel()
     finally:
         # Disconnect the *current* adapter (may differ from startup adapter after profile switch)
