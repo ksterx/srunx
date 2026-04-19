@@ -70,6 +70,14 @@ def open_connection(db_path: Path | None = None) -> sqlite3.Connection:
 
     On first creation, the DB file is chmod'd to ``0o600``. Caller owns the
     returned connection and must close it (or use a ``with`` block).
+
+    ``check_same_thread=False`` is set so the same connection can be
+    passed across the FastAPI request-handler thread ↔ anyio worker
+    thread boundary within a single request (``get_db_conn`` yields per
+    request; writes run inside ``anyio.to_thread.run_sync`` blocks).
+    srunx's access pattern serialises calls on any given connection —
+    one request owns it at a time — so the relaxed thread check is
+    safe. sqlite itself still serialises writers via the WAL lock.
     """
     path = db_path or get_db_path()
     created = not path.exists()
@@ -79,7 +87,7 @@ def open_connection(db_path: Path | None = None) -> sqlite3.Connection:
     # is required for the outbox claim pattern (BEGIN IMMEDIATE ... COMMIT)
     # because the default "deferred" mode auto-starts a transaction on
     # the first DML and then refuses BEGIN.
-    conn = sqlite3.connect(path, isolation_level=None)
+    conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     _apply_pragmas(conn)
     if created:
