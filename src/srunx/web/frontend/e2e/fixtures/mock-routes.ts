@@ -225,6 +225,62 @@ export async function setupMockRoutes(page: Page) {
 
   /* ── Notifications (endpoints / watches / subscriptions / deliveries) ── */
   await setupNotificationMocks(page);
+
+  /* ── Config (needed for Settings page + submit-dialog notify logic) ── */
+  // P3-10: Settings.tsx and FileExplorer both hit ``/api/config`` and
+  // ``/api/config/paths`` on mount. Without these mocks the Settings
+  // page stays in its loading skeleton forever and no tab buttons
+  // appear. Individual tests can still override these routes with
+  // their own handlers if they need richer behaviour.
+  await page.route("**/api/config", (route) => {
+    if (route.request().method() === "PATCH") {
+      return route.fulfill({ status: 200, json: { ok: true } });
+    }
+    return route.fulfill({
+      json: {
+        resources: {
+          nodes: 1,
+          gpus_per_node: 0,
+          ntasks_per_node: 1,
+          cpus_per_task: 1,
+          memory_per_node: null,
+          time_limit: null,
+          nodelist: null,
+          partition: null,
+        },
+        environment: {
+          conda: null,
+          venv: null,
+          container: null,
+          env_vars: {},
+        },
+        notifications: {
+          slack_webhook_url: null,
+          default_endpoint_name: null,
+          default_preset: "terminal",
+        },
+        log_dir: "logs",
+        work_dir: null,
+      },
+    });
+  });
+  await page.route("**/api/config/paths", (route) => {
+    return route.fulfill({ json: [] });
+  });
+  await page.route("**/api/config/env", (route) => {
+    return route.fulfill({ json: { items: [] } });
+  });
+  await page.route("**/api/config/projects", (route) => {
+    return route.fulfill({ json: [] });
+  });
+  await page.route("**/api/config/ssh/status*", (route) => {
+    return route.fulfill({
+      json: { available: false, profile: null, hostname: null },
+    });
+  });
+  await page.route("**/api/config/ssh/profiles*", (route) => {
+    return route.fulfill({ json: { profiles: {}, current: null } });
+  });
 }
 
 /**
@@ -301,6 +357,16 @@ export async function setupNotificationMocks(page: Page) {
     ],
   };
 
+  // Matches both ``/api/endpoints`` (POST) and ``/api/endpoints?include_disabled=true``
+  // (GET with query string). ``/api/endpoints/123`` is handled by the
+  // next route below because ``*`` in Playwright globs doesn't cross
+  // path separators.
+  await page.route("**/api/endpoints?*", (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({ json: state.endpoints });
+    }
+    return route.continue();
+  });
   await page.route("**/api/endpoints", (route) => {
     if (route.request().method() === "GET") {
       return route.fulfill({ json: state.endpoints });
@@ -321,7 +387,10 @@ export async function setupNotificationMocks(page: Page) {
     return route.continue();
   });
 
-  await page.route("**/api/endpoints/*", (route) => {
+  // Also matches ``/api/endpoints/<id>/disable`` and ``/enable`` — the
+  // single-segment ``*`` doesn't cross ``/``, so we need ``**`` to
+  // cover both ``/api/endpoints/1`` and ``/api/endpoints/1/enable``.
+  await page.route("**/api/endpoints/**", (route) => {
     const method = route.request().method();
     const url = route.request().url();
     const idMatch = url.match(/\/api\/endpoints\/(\d+)/);
