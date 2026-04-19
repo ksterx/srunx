@@ -1128,21 +1128,32 @@ async def run_workflow(
         await anyio.to_thread.run_sync(functools.partial(_fail, reason))
         raise
 
-    # Phase 5: Mark running + create workflow_run watch so the poller
-    # can aggregate child statuses into the workflow run going forward.
-    def _activate() -> None:
-        run_repo.update_status(run_id, "running")  # type: ignore[arg-type]
+    # Phase 5: open the workflow_run watch so the poller can drive
+    # status transitions going forward. We deliberately do NOT set
+    # ``workflow_runs.status='running'`` here: the run record stays
+    # ``pending`` (as created above) until ActiveWatchPoller observes a
+    # child job in RUNNING state.
+    #
+    # Rationale (R/Codex P1-1): the poller's aggregation rules say
+    # "any child RUNNING → running; otherwise pending". Pre-emptively
+    # writing ``running`` here meant the very first poll cycle — while
+    # all children are still PENDING in SLURM — would aggregate to
+    # ``pending`` and emit a spurious ``running → pending`` transition,
+    # complete with a ``workflow_run.status_changed`` event to every
+    # subscriber. Letting the poller own the lifecycle keeps transitions
+    # monotonic: ``pending → running → completed/failed/cancelled``.
+    def _open_watch() -> None:
         watch_repo.create(
             kind="workflow_run",
             target_ref=f"workflow_run:{run_id}",
         )
 
-    await anyio.to_thread.run_sync(_activate)
+    await anyio.to_thread.run_sync(_open_watch)
 
     def _load_final() -> dict[str, Any]:
         final_run = run_repo.get(run_id)  # type: ignore[arg-type]
         if final_run is None:
-            return {"id": str(run_id), "status": "running"}
+            return {"id": str(run_id), "status": "pending"}
         return _build_run_response(conn, final_run)
 
     return await anyio.to_thread.run_sync(_load_final)

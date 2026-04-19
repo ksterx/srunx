@@ -379,6 +379,52 @@ class TestWorkflowAggregation:
         assert watch is not None
         assert watch.closed_at is not None
 
+    def test_pending_run_with_all_pending_children_is_quiet(
+        self,
+        tmp_srunx_db: tuple[sqlite3.Connection, Path],
+    ) -> None:
+        """Regression: P1-1 (#E).
+
+        A just-submitted workflow run sits at ``status='pending'`` with
+        every child job at ``PENDING``. Rule 5 (Otherwise → pending) of
+        the aggregator should match the current status and emit
+        nothing. Pre-P1-1 the router wrote ``running`` eagerly here, so
+        this cycle emitted a spurious ``running → pending`` transition.
+        """
+        conn, db_path = tmp_srunx_db
+
+        run_id = WorkflowRunRepository(conn).create(
+            workflow_name="pipeline",
+            yaml_path=None,
+            args=None,
+            triggered_by="web",
+        )
+        # Leave the run at its default 'pending' — exactly what the
+        # fixed /run endpoint yields now.
+        _seed_job(conn, 601, status="PENDING")
+        _seed_job(conn, 602, status="PENDING")
+        WorkflowRunJobRepository(conn).create(
+            workflow_run_id=run_id, job_name="a", job_id=601
+        )
+        WorkflowRunJobRepository(conn).create(
+            workflow_run_id=run_id, job_name="b", job_id=602
+        )
+        WatchRepository(conn).create(
+            kind="workflow_run", target_ref=f"workflow_run:{run_id}"
+        )
+
+        _run_once(ActiveWatchPoller(StubSlurmClient({}), db_path=db_path))
+
+        run = WorkflowRunRepository(conn).get(run_id)
+        assert run is not None
+        assert run.status == "pending"
+        wf_events = [
+            e
+            for e in EventRepository(conn).list_recent()
+            if e.kind == "workflow_run.status_changed"
+        ]
+        assert wf_events == []
+
     def test_running_child_leaves_run_running_no_event(
         self,
         tmp_srunx_db: tuple[sqlite3.Connection, Path],
