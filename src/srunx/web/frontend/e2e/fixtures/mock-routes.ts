@@ -357,7 +357,28 @@ export async function setupNotificationMocks(page: Page) {
 
   await page.route("**/api/subscriptions*", (route) => {
     if (route.request().method() !== "GET") return route.continue();
-    return route.fulfill({ json: state.subscriptions });
+    const url = new URL(route.request().url());
+    const watchId = url.searchParams.get("watch_id");
+    const endpointId = url.searchParams.get("endpoint_id");
+    const limit = url.searchParams.get("limit");
+
+    // R9: honour scoped filters and limit so tests fail if the
+    // frontend ever stops sending them or the router's contract drifts.
+    let rows = state.subscriptions;
+    if (watchId !== null) {
+      rows = rows.filter((s) => s.watch_id === Number(watchId));
+    }
+    if (endpointId !== null) {
+      rows = rows.filter((s) => s.endpoint_id === Number(endpointId));
+    }
+    if (limit !== null) {
+      const n = Number(limit);
+      if (!Number.isFinite(n) || n < 1 || n > 500) {
+        return route.fulfill({ status: 422, json: { detail: "bad limit" } });
+      }
+      rows = rows.slice(0, n);
+    }
+    return route.fulfill({ json: rows });
   });
 
   await page.route("**/api/deliveries/stuck*", (route) => {
@@ -371,9 +392,30 @@ export async function setupNotificationMocks(page: Page) {
     if (route.request().method() !== "GET") return route.continue();
     const url = new URL(route.request().url());
     const status = url.searchParams.get("status");
-    const rows = status
-      ? state.deliveries.filter((d) => d.status === status)
-      : state.deliveries;
+    const subscriptionId = url.searchParams.get("subscription_id");
+    const limit = url.searchParams.get("limit");
+
+    // R9: enforce contracts. ``limit`` is validated to [1, 500] on
+    // the backend; surface that here so a regression in either side
+    // surfaces in E2E. ``subscription_id`` switches to the scoped
+    // list-by-subscription code path.
+    if (limit !== null) {
+      const n = Number(limit);
+      if (!Number.isFinite(n) || n < 1 || n > 500) {
+        return route.fulfill({ status: 422, json: { detail: "bad limit" } });
+      }
+    }
+
+    let rows = state.deliveries;
+    if (subscriptionId !== null) {
+      rows = rows.filter((d) => d.subscription_id === Number(subscriptionId));
+    }
+    if (status) {
+      rows = rows.filter((d) => d.status === status);
+    }
+    if (limit !== null) {
+      rows = rows.slice(0, Number(limit));
+    }
     return route.fulfill({ json: rows });
   });
 }
