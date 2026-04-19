@@ -60,9 +60,25 @@ def _ensure_parent_dir(path: Path) -> None:
 
 
 def _apply_pragmas(conn: sqlite3.Connection) -> None:
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
+    # busy_timeout must be set BEFORE any other write-side PRAGMA.
     conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA foreign_keys = ON")
+    # journal_mode=WAL on the very first opener rewrites the DB header,
+    # which needs exclusive access. Concurrent openers on a cold DB
+    # can both attempt it and one receives "database is locked"
+    # *without* busy_timeout kicking in for this specific PRAGMA.
+    # Retry with a short backoff so losers just observe WAL already
+    # set after the winner commits.
+    import time as _time
+
+    for attempt in range(10):
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            break
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc) or attempt == 9:
+                raise
+            _time.sleep(0.05 * (attempt + 1))
 
 
 def open_connection(db_path: Path | None = None) -> sqlite3.Connection:

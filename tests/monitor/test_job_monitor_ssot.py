@@ -204,7 +204,14 @@ def test_multiple_jobs_tracked_independently(
 def test_no_repo_injected_no_writes_no_errors(
     db_conn: sqlite3.Connection, repo: JobStateTransitionRepository
 ) -> None:
-    """Default ``transition_repo=None`` path performs no DB writes."""
+    """Default ``transition_repo=None`` is safe; only the terminal transition is mirrored.
+
+    Without explicit ``transition_repo`` injection, intermediate
+    PENDING / RUNNING transitions are not recorded. The terminal
+    state, however, is mirrored into the SSOT via
+    :class:`srunx.history.JobHistory.update_job_completion` — see the
+    dual-write migration in :mod:`srunx.history`.
+    """
     job_id = 5555
     _seed_job(db_conn, job_id)
 
@@ -219,8 +226,12 @@ def test_no_repo_injected_no_writes_no_errors(
         iter([JobStatus.PENDING, JobStatus.RUNNING, JobStatus.COMPLETED]),
     )
 
-    # Repo bound to the same DB sees no rows for this job.
-    assert repo.history_for_job(job_id) == []
+    # Only the terminal transition is mirrored by the history dual-write.
+    history = repo.history_for_job(job_id)
+    assert [(t.from_status, t.to_status) for t in history] == [
+        (None, "COMPLETED"),
+    ]
+    assert all(t.source == "cli_monitor" for t in history)
 
 
 # ---------------------------------------------------------------------------

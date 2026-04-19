@@ -234,19 +234,34 @@ def _applied_names(conn: sqlite3.Connection) -> set[str]:
 def apply_migrations(conn: sqlite3.Connection) -> list[str]:
     """Apply every pending migration in :data:`MIGRATIONS` order.
 
-    Each migration runs inside its own transaction; on failure the whole
-    migration is rolled back and no ``schema_version`` row is written.
-    Returns the list of migration names that were applied in this call.
+    Each migration runs inside its own ``BEGIN IMMEDIATE`` transaction;
+    on failure the whole migration is rolled back and no
+    ``schema_version`` row is written. Returns the list of migration
+    names that were applied in this call.
+
+    Concurrency safety: the ``applied`` set is re-read **after**
+    acquiring the IMMEDIATE write lock. Without that re-check, two
+    concurrent callers on a cold DB both see an empty ``applied`` set
+    outside the lock; one wins the BEGIN, runs the CREATE TABLE
+    scripts, commits; the other then acquires the lock and attempts
+    the same CREATE TABLE statements on tables that now exist — which
+    fails because ``SCHEMA_V1`` uses bare ``CREATE TABLE`` (not
+    ``IF NOT EXISTS``) for the real domain tables.
     """
-    applied_already = _applied_names(conn)
     newly_applied: list[str] = []
 
     for mig in MIGRATIONS:
-        if mig.name in applied_already:
+        if mig.name in _applied_names(conn):
             continue
         logger.info("Applying migration %s (v%d)", mig.name, mig.version)
         try:
             conn.execute("BEGIN IMMEDIATE")
+            # Re-check inside the write lock. If a peer has applied the
+            # same migration between our initial check and the BEGIN we
+            # just acquired, skip the DDL to avoid duplicate CREATE TABLE.
+            if mig.name in _applied_names(conn):
+                conn.rollback()
+                continue
             conn.executescript(mig.sql)
             # v1_initial creates schema_version itself; the IF NOT EXISTS
             # guard earlier ensures the insert below always succeeds.

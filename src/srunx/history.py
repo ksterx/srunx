@@ -1,4 +1,13 @@
-"""Job execution history tracking with SQLite."""
+"""Job execution history tracking with SQLite.
+
+.. deprecated:: 2026-Q2
+    The legacy ``~/.srunx/history.db`` is being phased out in favour of
+    the unified ``~/.config/srunx/srunx.db`` (see :mod:`srunx.db`).
+    :class:`JobHistory` now *dual-writes* to both DBs so the new
+    :class:`~srunx.db.repositories.jobs.JobRepository` receives every
+    CLI-submitted job and every monitor-observed completion. Read paths
+    continue to hit the legacy DB until a follow-up migration lands.
+"""
 
 import json
 import sqlite3
@@ -10,6 +19,111 @@ from srunx.logging import get_logger
 from srunx.models import JobStatus, JobType
 
 logger = get_logger(__name__)
+
+
+def _dual_write_record_submission(job: JobType, workflow_name: str | None) -> None:
+    """Mirror a job submission into the new SQLite state DB.
+
+    Best-effort: any failure is logged and swallowed so the legacy CLI
+    path is never broken by new-DB issues. Used by :meth:`JobHistory.record_job`.
+    """
+    try:
+        from srunx.db.connection import init_db, open_connection
+        from srunx.db.repositories.job_state_transitions import (
+            JobStateTransitionRepository,
+        )
+        from srunx.db.repositories.jobs import JobRepository
+
+        if job.job_id is None:
+            return
+
+        # Ensure the DB + schema exist (idempotent; cheap on repeat).
+        init_db(delete_legacy=False)
+        conn = open_connection()
+        try:
+            resources = getattr(job, "resources", None)
+            environment = getattr(job, "environment", None)
+            command_val = getattr(job, "command", None)
+            JobRepository(conn).record_submission(
+                job_id=int(job.job_id),
+                name=job.name,
+                status=(job._status.value if hasattr(job, "_status") else "PENDING"),
+                submission_source=("workflow" if workflow_name else "cli"),
+                command=command_val if isinstance(command_val, list) else None,
+                nodes=getattr(resources, "nodes", None) if resources else None,
+                gpus_per_node=(
+                    getattr(resources, "gpus_per_node", None) if resources else None
+                ),
+                memory_per_node=(
+                    getattr(resources, "memory_per_node", None) if resources else None
+                ),
+                time_limit=(
+                    getattr(resources, "time_limit", None) if resources else None
+                ),
+                partition=(
+                    getattr(resources, "partition", None) if resources else None
+                ),
+                nodelist=(getattr(resources, "nodelist", None) if resources else None),
+                conda=(getattr(environment, "conda", None) if environment else None),
+                venv=(getattr(environment, "venv", None) if environment else None),
+                env_vars=(
+                    getattr(environment, "env_vars", None) if environment else None
+                ),
+            )
+            # Seed a baseline transition so the active-watch poller's first
+            # observation is treated as a real state change.
+            JobStateTransitionRepository(conn).insert(
+                job_id=int(job.job_id),
+                from_status=None,
+                to_status="PENDING",
+                source="webhook",
+            )
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 — best-effort mirror
+        logger.debug(f"dual-write (new DB) of job submission skipped: {exc}")
+
+
+def _dual_write_update_completion(job_id: int, status: JobStatus) -> None:
+    """Mirror a terminal-status observation into the new SQLite state DB."""
+    try:
+        from srunx.db.connection import init_db, open_connection, transaction
+        from srunx.db.repositories.job_state_transitions import (
+            JobStateTransitionRepository,
+        )
+        from srunx.db.repositories.jobs import JobRepository
+
+        init_db(delete_legacy=False)
+        conn = open_connection()
+        try:
+            repo = JobRepository(conn)
+            # Only update rows that already exist (CLI jobs recorded at submit).
+            if repo.get(job_id) is None:
+                return
+            transition_repo = JobStateTransitionRepository(conn)
+            # R5: two observers (CLI monitor + poller, or two CLIs) can
+            # race the read-modify-write and both append a terminal
+            # transition for the same (job_id, to_status) pair. Wrap
+            # the latest-then-insert pair inside BEGIN IMMEDIATE so
+            # only one caller's re-check sees ``latest_status != status``
+            # and writes; the other sees its own insert reflected and
+            # skips.
+            with transaction(conn, "IMMEDIATE"):
+                latest = transition_repo.latest_for_job(job_id)
+                latest_status = latest.to_status if latest is not None else None
+                if latest_status != status.value:
+                    transition_repo.insert(
+                        job_id=job_id,
+                        from_status=latest_status,
+                        to_status=status.value,
+                        source="cli_monitor",
+                    )
+                repo.update_completion(job_id, status.value)
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 — best-effort mirror
+        logger.debug(f"dual-write (new DB) of job completion skipped: {exc}")
+
 
 # Current schema version
 SCHEMA_VERSION = 1
@@ -241,6 +355,9 @@ class JobHistory:
         except Exception as e:
             logger.warning(f"Failed to record job history: {e}")
 
+        # Mirror into the new state DB so JobRepository stays the SSOT.
+        _dual_write_record_submission(job, workflow_name)
+
     def update_job_completion(
         self, job_id: int, status: JobStatus, completed_at: datetime | None = None
     ) -> None:
@@ -284,6 +401,9 @@ class JobHistory:
 
         except Exception as e:
             logger.warning(f"Failed to update job completion: {e}")
+
+        # Mirror terminal status into the new state DB.
+        _dual_write_update_completion(job_id, status)
 
     def get_recent_jobs(self, limit: int = 100) -> list[dict[str, Any]]:
         """Get recent job executions.

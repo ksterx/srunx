@@ -43,6 +43,57 @@ def test_apply_migrations_is_idempotent(tmp_path: Path) -> None:
     assert count == 1
 
 
+def test_apply_migrations_concurrent_callers_do_not_duplicate(
+    tmp_path: Path,
+) -> None:
+    """Regression: two threads racing on a cold DB.
+
+    Before the fix, `applied_names` was read outside the IMMEDIATE
+    lock; both racers saw an empty set, one created the tables, the
+    other then tried `CREATE TABLE` on tables that already existed
+    (SCHEMA_V1 uses bare CREATE TABLE for most of the domain tables).
+
+    The fix re-reads `applied_names` *inside* the transaction; the
+    loser's re-check sees `v1_initial` already applied and skips the
+    DDL. This test runs two real threads against the same DB file —
+    each with its own connection — and asserts neither raises AND
+    `schema_version` has exactly one `v1_initial` row.
+    """
+    import threading
+
+    db = tmp_path / "srunx.db"
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(2)
+
+    def apply_once() -> None:
+        try:
+            barrier.wait(timeout=5)
+            conn = open_connection(db)
+            try:
+                apply_migrations(conn)
+            finally:
+                conn.close()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=apply_once) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not errors, f"concurrent migration raised: {[repr(e) for e in errors]}"
+
+    verify = open_connection(db)
+    try:
+        count = verify.execute(
+            "SELECT COUNT(*) FROM schema_version WHERE name = 'v1_initial'"
+        ).fetchone()[0]
+    finally:
+        verify.close()
+    assert count == 1
+
+
 def test_apply_migrations_creates_all_tables(tmp_path: Path) -> None:
     db = tmp_path / "srunx.db"
     conn = open_connection(db)
