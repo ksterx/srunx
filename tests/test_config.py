@@ -194,18 +194,43 @@ class TestConfigLoading:
 class TestConfigPaths:
     """Test configuration path functions."""
 
-    def test_get_config_paths(self):
+    def test_get_config_paths(self, monkeypatch):
         """Test getting configuration paths."""
+        # Drop XDG_CONFIG_HOME so the default POSIX/Windows branch runs
+        # — this test asserts shape, not the XDG override.
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         paths = get_config_paths()
         assert len(paths) == 3  # system, user, project (srunx.json)
         assert all(isinstance(path, Path) for path in paths)
 
     @patch("os.name", "posix")
-    def test_get_config_paths_posix(self):
+    def test_get_config_paths_posix(self, monkeypatch):
         """Test getting configuration paths on POSIX systems."""
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         paths = get_config_paths()
         assert str(paths[0]).startswith("/etc/srunx/")
         assert ".config/srunx/" in str(paths[1])
+
+    def test_get_config_paths_honours_xdg_config_home(self, tmp_path, monkeypatch):
+        """``$XDG_CONFIG_HOME`` overrides the default user config dir.
+
+        Matches the XDG base-directory spec and the state DB's resolver
+        in ``srunx.db.connection.get_config_dir``. Without this, flipping
+        ``XDG_CONFIG_HOME`` for tests/containers/multi-tenant setups would
+        isolate the DB but silently land the JSON config in ``~/.config``.
+        """
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        paths = get_config_paths()
+        # User config now lives under the override dir.
+        assert paths[1] == tmp_path / "srunx" / "config.json"
+
+    def test_get_config_paths_falls_back_when_xdg_unset(self, monkeypatch):
+        """Empty env var is treated the same as unset (no override)."""
+        monkeypatch.setenv("XDG_CONFIG_HOME", "")
+        paths = get_config_paths()
+        # Empty string is falsy → default path resolution.
+        if Path("/etc").exists():  # POSIX branch; Windows skipped
+            assert ".config/srunx/" in str(paths[1])
 
     # Skipping Windows test as it's complex to mock across platforms
 

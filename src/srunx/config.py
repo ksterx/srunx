@@ -93,6 +93,27 @@ class SrunxConfig(BaseModel):
     work_dir: str | None = Field(default=None, description="Default working directory")
 
 
+def _user_config_dir() -> Path:
+    """Return the XDG-compliant per-user srunx config directory.
+
+    Resolution order:
+
+    1. ``$XDG_CONFIG_HOME/srunx`` when the env var is set (POSIX spec).
+    2. ``~/.config/srunx`` on POSIX fallback.
+    3. ``~/AppData/Roaming/srunx`` on Windows.
+
+    Matches :func:`srunx.db.connection.get_config_dir` so that the
+    state DB and the JSON config land under the same root — flipping
+    ``XDG_CONFIG_HOME`` isolates both in one go (tests rely on this).
+    """
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg).expanduser() / "srunx"
+    if os.name == "posix":
+        return Path.home() / ".config" / "srunx"
+    return Path.home() / "AppData" / "Roaming" / "srunx"
+
+
 def get_config_paths() -> list[Path]:
     """Get configuration file paths in order of precedence (lowest to highest)."""
     paths = []
@@ -105,14 +126,8 @@ def get_config_paths() -> list[Path]:
     else:
         paths.append(Path("C:/ProgramData/srunx/config.json"))
 
-    # User-wide config
-    # On Unix: ~/.config/srunx/config.json
-    # On Windows: ~/AppData/Roaming/srunx/config.json
-    if os.name == "posix":
-        user_config_dir = Path.home() / ".config" / "srunx"
-    else:
-        user_config_dir = Path.home() / "AppData" / "Roaming" / "srunx"
-    paths.append(user_config_dir / "config.json")
+    # User-wide config (honours XDG_CONFIG_HOME on POSIX)
+    paths.append(_user_config_dir() / "config.json")
 
     # Project-wide config (current working directory)
     paths.append(Path.cwd() / "srunx.json")
