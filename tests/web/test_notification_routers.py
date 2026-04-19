@@ -99,6 +99,31 @@ def test_subscriptions_rejects_invalid_preset(
     assert r.status_code == 422
 
 
+def test_subscriptions_rejects_digest_preset(
+    app_client_and_db: tuple[TestClient, Path],
+) -> None:
+    """P1-3: ``digest`` is schema-valid but not yet implemented.
+
+    Accepting a new subscription under ``preset='digest'`` would
+    silently deliver zero notifications because
+    ``should_deliver('digest', ...)`` returns False. Reject the create
+    with a 422 that explains the accepted presets.
+    """
+    client, db_path = app_client_and_db
+    endpoint_id, watch_id = _seed_endpoint_and_watch(db_path)
+
+    r = client.post(
+        "/api/subscriptions",
+        json={
+            "watch_id": watch_id,
+            "endpoint_id": endpoint_id,
+            "preset": "digest",
+        },
+    )
+    assert r.status_code == 422
+    assert "not implemented" in r.json()["detail"]
+
+
 # --- watches router ---
 
 

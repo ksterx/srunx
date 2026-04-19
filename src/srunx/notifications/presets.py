@@ -44,9 +44,14 @@ def should_deliver(
         delivery for this event, ``False`` otherwise.
 
     Notes:
-        - ``'digest'`` is reserved for Phase 2; this function always
-          returns ``False`` for it so the flag may be stored without
-          producing immediate deliveries.
+        - ``'digest'`` batching is not yet implemented. This function
+          always returns ``False`` for it. The ``/api/subscriptions``
+          router refuses to create *new* rows with this preset (see
+          ``_ACCEPTED_PRESETS_FOR_CREATE`` in
+          ``srunx.web.routers.subscriptions``), so the only way to
+          reach this branch today is on rows that pre-date the
+          enforcement — they are read-through but produce zero
+          deliveries. (P1-3)
         - ``job.submitted``, ``resource.threshold_crossed`` and
           ``scheduled_report.due`` only deliver under preset ``'all'``.
     """
