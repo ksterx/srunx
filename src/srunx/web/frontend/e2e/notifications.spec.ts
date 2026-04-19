@@ -74,4 +74,54 @@ test.describe("Notifications Center", () => {
       subsPanel.getByText("slack_webhook:primary").first(),
     ).toBeVisible();
   });
+
+  test("frontend sends the correct query params to the deliveries API", async ({
+    page,
+  }) => {
+    // R9: verify the exact contract the dashboard relies on. The
+    // request captures here guard against the frontend silently
+    // dropping ``limit`` / ``status`` query params (which would slip
+    // past our purely-visual assertions above).
+    const deliveryRequests: string[] = [];
+    await page.route("**/api/deliveries*", (route, request) => {
+      const url = new URL(request.url());
+      // Skip /stuck — captured separately
+      if (!url.pathname.endsWith("/deliveries")) return route.continue();
+      deliveryRequests.push(url.search);
+      return route.fulfill({ json: [] });
+    });
+
+    await page.goto("/notifications");
+    // Wait for the initial all-status fetch to have fired
+    await expect
+      .poll(() => deliveryRequests.length, { timeout: 5000 })
+      .toBeGreaterThan(0);
+
+    // The initial "all" filter omits status but must still cap via limit.
+    const first = new URLSearchParams(deliveryRequests[0]);
+    expect(first.get("limit")).toBe("100");
+    expect(first.get("status")).toBeNull();
+
+    // Click the delivered filter pill to exercise the dep-change path.
+    await page
+      .locator(".panel", { hasText: "Recent deliveries" })
+      .getByRole("button", { name: "delivered", exact: true })
+      .click();
+
+    // New request arrives with status=delivered AND limit=100.
+    await expect
+      .poll(
+        () => {
+          const last = deliveryRequests[deliveryRequests.length - 1];
+          const p = new URLSearchParams(last);
+          return p.get("status");
+        },
+        { timeout: 5000 },
+      )
+      .toBe("delivered");
+    const last = new URLSearchParams(
+      deliveryRequests[deliveryRequests.length - 1],
+    );
+    expect(last.get("limit")).toBe("100");
+  });
 });
