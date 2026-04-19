@@ -42,8 +42,9 @@ def attach_notification_watch(
 
     Args:
         job_id: SLURM job id. Must already be recorded in the new state
-            DB (``jobs`` table) — the :class:`srunx.history.JobHistory`
-            dual-write path handles that for CLI submits.
+            DB (``jobs`` table) —
+            :func:`srunx.db.cli_helpers.record_submission_from_job`
+            handles that for CLI submits.
         endpoint_name: Name of the endpoint to notify. Must exist, not
             be disabled, and be of ``endpoint_kind``.
         preset: Subscription preset — ``terminal`` (default),

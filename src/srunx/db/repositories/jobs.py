@@ -1,8 +1,8 @@
 """Repository for the ``jobs`` table.
 
-Replaces the legacy ``srunx.history.JobHistory`` pair (``record_job`` +
-``update_job_completion``) with a narrower, typed API that the new DB
-stack uses. See design.md § JobRepository.
+Replaces the legacy ``record_job`` / ``update_job_completion`` pair
+that used to live in the removed ``srunx.history`` module (see
+P2-4 #A cutover) with a narrower, typed API.
 """
 
 from __future__ import annotations
@@ -242,11 +242,12 @@ class JobRepository(BaseRepository):
     # Display-shaped readers (history cutover — P2-4 #A)
     # ------------------------------------------------------------------
     #
-    # These helpers return dicts with legacy ``JobHistory`` keys so that
-    # the ``/api/history`` router and the ``srunx history`` / ``srunx
-    # report`` CLI commands can migrate off the legacy
-    # ``~/.srunx/history.db`` without churning their response/display
-    # formats. Column renames + dropped columns are handled here:
+    # These helpers return dicts with the historical ``JobHistory`` key
+    # shape so that the ``/api/history`` router and the
+    # ``srunx history`` / ``srunx report`` CLI commands migrated off
+    # the legacy ``~/.srunx/history.db`` without churning their
+    # response/display formats. Column renames + dropped columns are
+    # handled here:
     #
     #   legacy key            → new schema source
     #   --------------------  --------------------------------------
@@ -266,8 +267,8 @@ class JobRepository(BaseRepository):
         """Return the ``limit`` most recent jobs in the legacy dict shape.
 
         Used by the ``/api/history`` router + ``srunx history`` CLI to
-        keep the response/display formats stable across the cutover from
-        :class:`~srunx.history.JobHistory`.
+        keep the response/display formats stable across the cutover
+        from the removed ``srunx.history`` module (P2-4 #A).
         """
         rows = self.conn.execute(
             """
