@@ -269,6 +269,64 @@ def test_count_by_status_in_range_filters_statuses(repo: JobRepository) -> None:
     assert counts == {"COMPLETED": 1}
 
 
+def test_count_by_status_in_range_uses_timestamp_field(repo: JobRepository) -> None:
+    """``timestamp_field='completed_at'`` counts by terminal ts, not submit.
+
+    Exercises the P2-6 follow-up: the scheduler windows by when jobs
+    *finished*, so a row submitted before the window but completed inside
+    it must count, and vice versa.
+    """
+    # Submitted long ago, completed inside the window → counted under
+    # completed_at, missed under submitted_at.
+    repo.record_submission(
+        job_id=901,
+        name="long_running",
+        status="COMPLETED",
+        submission_source="cli",
+        submitted_at="2026-01-01T00:00:00Z",
+    )
+    repo.update_status(
+        901, "COMPLETED", completed_at="2026-04-19T12:00:00Z", duration_secs=1
+    )
+    # Submitted inside the window, not yet completed → excluded under
+    # completed_at because ``completed_at >= ?`` is false when it's NULL.
+    repo.record_submission(
+        job_id=902,
+        name="still_running",
+        status="RUNNING",
+        submission_source="cli",
+        submitted_at="2026-04-19T11:00:00Z",
+    )
+
+    by_completed = repo.count_by_status_in_range(
+        "2026-04-19T00:00:00Z",
+        "2026-04-20T00:00:00Z",
+        statuses=["COMPLETED"],
+        timestamp_field="completed_at",
+    )
+    assert by_completed == {"COMPLETED": 1}
+
+    by_submitted = repo.count_by_status_in_range(
+        "2026-04-19T00:00:00Z",
+        "2026-04-20T00:00:00Z",
+        statuses=["RUNNING"],
+        timestamp_field="submitted_at",
+    )
+    assert by_submitted == {"RUNNING": 1}
+
+
+def test_count_by_status_in_range_rejects_bad_field(repo: JobRepository) -> None:
+    """Column names are interpolated, so only whitelisted values are allowed."""
+    import pytest
+
+    with pytest.raises(ValueError, match="timestamp_field"):
+        repo.count_by_status_in_range(
+            "2026-04-19T00:00:00Z",
+            "2026-04-20T00:00:00Z",
+            timestamp_field="status; DROP TABLE jobs;--",  # noqa: S608 — negative test
+        )
+
+
 def test_delete_existing_returns_true(repo: JobRepository) -> None:
     repo.record_submission(
         job_id=901, name="t", status="PENDING", submission_source="cli"

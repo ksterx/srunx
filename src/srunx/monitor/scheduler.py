@@ -323,12 +323,16 @@ class ScheduledReporter:
             return 0, 0, 0
 
     def _db_historical_counts(self) -> tuple[int, int, int] | None:
-        """Count terminal jobs submitted in timeframe via JobRepository.
+        """Count terminal jobs *completed* in timeframe via JobRepository.
 
-        ``submitted_at`` is used (not ``completed_at``) because that's
-        what ``count_by_status_in_range`` supports; for short reporter
-        timeframes (1h / 24h) the overlap with sacct's ``--starttime``
-        semantics is practically total.
+        Filters on ``completed_at`` — the terminal timestamp — so the
+        windowing matches ``sacct --starttime now-<timeframe>`` as
+        closely as the state DB can. Using ``submitted_at`` would miss
+        jobs that queued before the window but finished inside it, and
+        would over-count jobs submitted inside the window that are
+        still running. ``count_by_status_in_range`` accepts
+        ``timestamp_field`` (P3/#C follow-up) to make this column
+        choice explicit.
 
         Returns ``None`` on any error so the caller can fall back to
         ``sacct`` without the DB outage surfacing as zero-counts.
@@ -353,6 +357,7 @@ class ScheduledReporter:
                     from_at,
                     to_at,
                     statuses=["COMPLETED", "FAILED", "CANCELLED"],
+                    timestamp_field="completed_at",
                 )
             finally:
                 conn.close()
