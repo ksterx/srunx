@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -12,9 +14,17 @@ from srunx.db.repositories.jobs import JobRepository
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> JobRepository:
-    conn = open_connection(tmp_path / "t.db")
-    apply_migrations(conn)
+def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
+    connection = open_connection(tmp_path / "t.db")
+    apply_migrations(connection)
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
+@pytest.fixture
+def repo(conn: sqlite3.Connection) -> JobRepository:
     return JobRepository(conn)
 
 
@@ -49,19 +59,71 @@ def test_record_submission_roundtrip(repo: JobRepository) -> None:
     assert job.metadata == {"run_id": "abc"}
 
 
-def test_record_submission_is_idempotent_on_same_job_id(
+def test_record_submission_duplicate_job_id_is_noop(
     repo: JobRepository,
 ) -> None:
-    repo.record_submission(
+    """P1-2: duplicate record_submission must NOT overwrite.
+
+    ``INSERT OR REPLACE`` would ``DELETE`` the existing row (cascading
+    ``ON DELETE SET NULL`` to ``workflow_run_jobs.job_id`` and
+    ``job_state_transitions.job_id``) before inserting the new one —
+    silently orphaning every prior transition and membership. With
+    ``INSERT OR IGNORE`` the first call wins, subsequent callers get
+    ``lastrowid=0`` and can decide explicitly what to do.
+    """
+    first_row_id = repo.record_submission(
         job_id=202, name="first", status="PENDING", submission_source="web"
     )
-    # Re-submission replaces the record via INSERT OR REPLACE.
-    repo.record_submission(
-        job_id=202, name="second", status="PENDING", submission_source="web"
+    assert first_row_id > 0
+
+    second_row_id = repo.record_submission(
+        job_id=202,
+        name="second",
+        status="RUNNING",
+        submission_source="workflow",
     )
+    assert second_row_id == 0  # INSERT OR IGNORE → no row inserted
+
     job = repo.get(202)
     assert job is not None
-    assert job.name == "second"
+    # Original fields preserved — not clobbered to "second" / RUNNING.
+    assert job.name == "first"
+    assert job.status == "PENDING"
+    assert job.submission_source == "web"
+
+
+def test_record_submission_ignore_preserves_fk_references(
+    repo: JobRepository, conn: sqlite3.Connection
+) -> None:
+    """P1-2: ensure the FK references survive a duplicate call.
+
+    ``INSERT OR REPLACE`` would have cascaded a ``SET NULL`` through the
+    ``job_state_transitions.job_id`` FK; ``INSERT OR IGNORE`` preserves.
+    """
+    repo.record_submission(
+        job_id=210, name="fk-test", status="PENDING", submission_source="web"
+    )
+    # Simulate a prior transition observed by the poller.
+    conn.execute(
+        "INSERT INTO job_state_transitions (job_id, to_status, observed_at, source) "
+        "VALUES (?, 'RUNNING', '2026-04-19T00:00:00Z', 'poller')",
+        (210,),
+    )
+    conn.commit()
+
+    # A second (spurious) record_submission for the same job_id.
+    repo.record_submission(
+        job_id=210,
+        name="fk-test",
+        status="PENDING",
+        submission_source="web",
+    )
+
+    # The prior transition still references the jobs row — not SET NULL.
+    rows = conn.execute(
+        "SELECT job_id FROM job_state_transitions WHERE to_status='RUNNING'"
+    ).fetchall()
+    assert [r[0] for r in rows] == [210]
 
 
 def test_update_status_fills_optional_fields(repo: JobRepository) -> None:
