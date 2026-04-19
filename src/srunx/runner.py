@@ -605,6 +605,28 @@ class WorkflowRunner:
         # Get the jobs to execute based on options
         jobs_to_execute = self._get_jobs_to_execute(from_job, to_job, single_job)
 
+        # Persist a ``workflow_runs`` row so CLI-submitted jobs share
+        # the same identity model the Web UI uses. Without this,
+        # ``srunx report --workflow`` (which JOINs jobs to workflow_runs
+        # on ``workflow_run_id``) returns zero rows for every CLI run.
+        # Best-effort: a DB outage must not block the workflow itself.
+        from srunx.db.cli_helpers import (
+            create_cli_workflow_run,
+            mark_workflow_run_status,
+        )
+
+        workflow_run_id = create_cli_workflow_run(
+            workflow_name=self.workflow.name,
+            args=self.args or None,
+        )
+        if workflow_run_id is not None:
+            # Flip from the default ``pending`` to ``running`` up-front so
+            # ``workflow_runs`` reflects the live state; the final
+            # completed/failed transition is recorded at the exit points
+            # below. Terminal-status is cheap to re-mark, so a missed
+            # update here is not fatal.
+            mark_workflow_run_status(workflow_run_id, "running")
+
         # Generate shared outputs directory for inter-job variable passing
         any_job_has_outputs = any(
             getattr(job, "outputs", None) for job in jobs_to_execute
@@ -721,6 +743,7 @@ class WorkflowRunner:
                 result = self.slurm.run(
                     job,
                     workflow_name=self.workflow.name,
+                    workflow_run_id=workflow_run_id,
                     outputs_dir=outputs_dir,
                     dependency_names=dep_names,
                 )
@@ -802,9 +825,18 @@ class WorkflowRunner:
 
                 if result.status == JobStatus.FAILED:
                     logger.error(f"❌ Job {single_job} failed")
+                    if workflow_run_id is not None:
+                        mark_workflow_run_status(
+                            workflow_run_id,
+                            "failed",
+                            error=f"Job {single_job} failed",
+                        )
                     raise RuntimeError(f"Job {single_job} failed")
 
                 logger.success(f"🎉 Job {single_job} completed!!")
+
+                if workflow_run_id is not None:
+                    mark_workflow_run_status(workflow_run_id, "completed")
 
                 for callback in self.callbacks:
                     callback.on_workflow_completed(self.workflow)
@@ -813,6 +845,8 @@ class WorkflowRunner:
 
             except Exception as e:
                 logger.error(f"❌ Job {single_job} failed: {e}")
+                if workflow_run_id is not None:
+                    mark_workflow_run_status(workflow_run_id, "failed", error=str(e))
                 raise
 
         # Build reverse dependency map for efficient lookups (only for jobs we're executing)
@@ -1008,13 +1042,28 @@ class WorkflowRunner:
 
         if failed_jobs:
             logger.error(f"❌ Jobs failed: {failed_jobs}")
+            if workflow_run_id is not None:
+                mark_workflow_run_status(
+                    workflow_run_id,
+                    "failed",
+                    error=f"Jobs failed: {failed_jobs}",
+                )
             raise RuntimeError(f"Workflow execution failed: {failed_jobs}")
 
         if incomplete_jobs:
             logger.error(f"❌ Jobs did not complete: {incomplete_jobs}")
+            if workflow_run_id is not None:
+                mark_workflow_run_status(
+                    workflow_run_id,
+                    "failed",
+                    error=f"Jobs did not complete: {incomplete_jobs}",
+                )
             raise RuntimeError(f"Workflow execution incomplete: {incomplete_jobs}")
 
         logger.success(f"🎉 Workflow {self.workflow.name} completed!!")
+
+        if workflow_run_id is not None:
+            mark_workflow_run_status(workflow_run_id, "completed")
 
         for callback in self.callbacks:
             callback.on_workflow_completed(self.workflow)

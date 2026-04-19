@@ -25,12 +25,17 @@ def record_submission_from_job(
     job: JobType,
     *,
     workflow_name: str | None = None,
+    workflow_run_id: int | None = None,
 ) -> None:
     """Insert a ``jobs`` row + seed a ``PENDING`` transition for ``job``.
 
-    ``workflow_name`` is used to pick the ``submission_source``:
-    ``'workflow'`` when given, ``'cli'`` otherwise. Matches the
-    historical ``JobHistory.record_job`` invariants.
+    ``workflow_name`` picks the ``submission_source`` (``'workflow'``
+    vs ``'cli'``). ``workflow_run_id`` — when provided — links the job
+    back to its ``workflow_runs`` row so ``compute_workflow_stats``
+    and the Web ``/api/workflows/runs`` history JOIN on
+    ``workflow_run_id`` actually pick up CLI-launched workflow jobs.
+    Passing ``None`` preserves the pre-existing behaviour for plain
+    ``srunx submit`` + standalone ``Slurm.submit`` callers.
 
     Fails closed — any exception is logged at debug and silently
     swallowed. The caller must NOT depend on a non-None return.
@@ -83,6 +88,7 @@ def record_submission_from_job(
                 env_vars=(
                     getattr(environment, "env_vars", None) if environment else None
                 ),
+                workflow_run_id=workflow_run_id,
             )
             # Seed a baseline transition only when we actually inserted
             # the row. INSERT OR IGNORE returns 0 when the row already
@@ -99,6 +105,79 @@ def record_submission_from_job(
             conn.close()
     except Exception as exc:  # noqa: BLE001 — best-effort
         logger.debug(f"record_submission_from_job failed: {exc}")
+
+
+def create_cli_workflow_run(
+    workflow_name: str,
+    *,
+    yaml_path: str | None = None,
+    args: dict[str, Any] | None = None,
+) -> int | None:
+    """Insert a ``workflow_runs`` row for a CLI-launched workflow.
+
+    Called at the start of :meth:`srunx.runner.WorkflowRunner.run` so
+    CLI workflow submissions carry the same ``workflow_run_id`` that
+    the Web UI path creates. Without this row, ``compute_workflow_stats``
+    (``JOIN workflow_runs ON workflow_run_id``) reports zero CLI jobs
+    per workflow even though they're in ``jobs``.
+
+    Returns the new row id, or ``None`` on any error so the caller
+    treats the link as best-effort and keeps submitting.
+    """
+    try:
+        from srunx.db.connection import init_db, open_connection
+        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+
+        init_db(delete_legacy=True)
+        conn = open_connection()
+        try:
+            return WorkflowRunRepository(conn).create(
+                workflow_name=workflow_name,
+                yaml_path=yaml_path,
+                args=args,
+                triggered_by="cli",
+            )
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.debug(f"create_cli_workflow_run failed: {exc}")
+        return None
+
+
+def mark_workflow_run_status(
+    workflow_run_id: int,
+    status: str,
+    *,
+    error: str | None = None,
+) -> None:
+    """Best-effort ``workflow_runs.status`` update for CLI flows.
+
+    Used by :class:`srunx.runner.WorkflowRunner` to flip the row
+    through ``running`` → ``completed`` / ``failed`` / ``cancelled``
+    as the CLI workflow progresses. Mirrors the Web router's
+    ``update_status`` calls. Silently swallows DB errors.
+    """
+    try:
+        from srunx.db.connection import init_db, open_connection
+        from srunx.db.repositories.base import now_iso
+        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+
+        init_db(delete_legacy=True)
+        conn = open_connection()
+        try:
+            completed_at = (
+                now_iso() if status in {"completed", "failed", "cancelled"} else None
+            )
+            WorkflowRunRepository(conn).update_status(
+                workflow_run_id,
+                status,  # type: ignore[arg-type]
+                error=error,
+                completed_at=completed_at,
+            )
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.debug(f"mark_workflow_run_status failed: {exc}")
 
 
 def record_completion(job_id: int, status: JobStatus) -> None:

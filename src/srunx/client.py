@@ -56,6 +56,7 @@ class Slurm:
         verbose: bool = False,
         record_history: bool = True,
         workflow_name: str | None = None,
+        workflow_run_id: int | None = None,
         outputs_dir: str | None = None,
         dependency_names: list[str] | None = None,
     ) -> RunnableJobType:
@@ -68,6 +69,10 @@ class Slurm:
             verbose: Whether to print the rendered content.
             record_history: Whether to record job in history database.
             workflow_name: Name of the workflow if part of a workflow.
+            workflow_run_id: ``workflow_runs.id`` when the job was
+                submitted from a workflow; persisted on the ``jobs`` row
+                so reports (``srunx report --workflow``, the Web history
+                JOIN) actually pick up CLI-launched workflow jobs.
             outputs_dir: Shared directory for inter-job output variables.
             dependency_names: Names of dependency jobs whose outputs should be sourced.
 
@@ -156,7 +161,11 @@ class Slurm:
         if record_history:
             from srunx.db.cli_helpers import record_submission_from_job
 
-            record_submission_from_job(job, workflow_name=workflow_name)
+            record_submission_from_job(
+                job,
+                workflow_name=workflow_name,
+                workflow_run_id=workflow_run_id,
+            )
 
         all_callbacks = self.callbacks[:]
         if callbacks:
@@ -464,6 +473,7 @@ class Slurm:
         poll_interval: int = 5,
         verbose: bool = False,
         workflow_name: str | None = None,
+        workflow_run_id: int | None = None,
         outputs_dir: str | None = None,
         dependency_names: list[str] | None = None,
     ) -> RunnableJobType:
@@ -474,6 +484,7 @@ class Slurm:
             callbacks=callbacks,
             verbose=verbose,
             workflow_name=workflow_name,
+            workflow_run_id=workflow_run_id,
             outputs_dir=outputs_dir,
             dependency_names=dependency_names,
         )
