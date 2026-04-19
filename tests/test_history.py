@@ -10,8 +10,14 @@ from srunx.models import Job, JobEnvironment, JobResource, JobStatus, ShellJob
 
 
 @pytest.fixture
-def history(tmp_path):
-    """Create a JobHistory backed by a temp SQLite file."""
+def history(tmp_path, monkeypatch):
+    """Create a JobHistory backed by a temp SQLite file.
+
+    Also isolates ``XDG_CONFIG_HOME`` so the dual-write mirror into the
+    new srunx state DB does not pollute the user's real
+    ``~/.config/srunx/srunx.db``.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     return JobHistory(db_path=tmp_path / "test_history.db")
 
 
@@ -398,3 +404,102 @@ class TestEdgeCases:
         history.record_job(_make_job())
         rows = history.get_recent_jobs(limit=0)
         assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# Dual-write mirror into the new srunx state DB
+# ---------------------------------------------------------------------------
+
+
+class TestDualWriteToNewDb:
+    """Verify legacy :class:`JobHistory` writes also populate the new DB.
+
+    The dual-write path is best-effort and silent on failure, so these
+    tests assert the happy-path only. The ``history`` fixture already
+    isolates ``XDG_CONFIG_HOME`` to a tmp dir, so the mirror lands in a
+    per-test ``srunx.db`` under that tmp dir.
+    """
+
+    def test_record_job_mirrors_to_new_jobs_table(self, history):
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.jobs import JobRepository
+
+        history.record_job(_make_job(job_id=42, name="mirror-me"))
+
+        conn = open_connection()
+        try:
+            row = JobRepository(conn).get(42)
+        finally:
+            conn.close()
+
+        assert row is not None
+        assert row.name == "mirror-me"
+        assert row.submission_source == "cli"
+        assert row.status == "PENDING"
+
+    def test_record_job_with_workflow_sets_source_to_workflow(self, history):
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.jobs import JobRepository
+
+        history.record_job(
+            _make_job(job_id=43, name="wf-child"),
+            workflow_name="ml_pipeline",
+        )
+
+        conn = open_connection()
+        try:
+            row = JobRepository(conn).get(43)
+        finally:
+            conn.close()
+
+        assert row is not None
+        assert row.submission_source == "workflow"
+
+    def test_update_job_completion_mirrors_terminal_state(self, history):
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.job_state_transitions import (
+            JobStateTransitionRepository,
+        )
+        from srunx.db.repositories.jobs import JobRepository
+
+        history.record_job(_make_job(job_id=44, name="to-complete"))
+        history.update_job_completion(44, JobStatus.COMPLETED)
+
+        conn = open_connection()
+        try:
+            row = JobRepository(conn).get(44)
+            latest = JobStateTransitionRepository(conn).latest_for_job(44)
+        finally:
+            conn.close()
+
+        assert row is not None
+        assert row.status == "COMPLETED"
+        assert latest is not None
+        assert latest.to_status == "COMPLETED"
+        assert latest.source == "cli_monitor"
+
+    def test_update_completion_skips_unknown_job_in_new_db(self, history):
+        """Update on a job that only exists in legacy DB is a silent no-op."""
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.jobs import JobRepository
+
+        # Directly write to legacy DB only — bypass dual-write for setup.
+        with sqlite3.connect(history.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO jobs (job_id, job_name, status, submitted_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (999, "only-legacy", "PENDING", datetime.now().isoformat()),
+            )
+            conn.commit()
+
+        history.update_job_completion(999, JobStatus.COMPLETED)
+
+        conn = open_connection()
+        try:
+            row = JobRepository(conn).get(999)
+        finally:
+            conn.close()
+        # No mirror row was created since the job wasn't in the new DB.
+        assert row is None
