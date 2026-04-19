@@ -10,6 +10,7 @@ import { Templates } from "./pages/Templates.tsx";
 import { Resources } from "./pages/Resources.tsx";
 import { Settings } from "./pages/Settings.tsx";
 import { LogViewer } from "./pages/LogViewer.tsx";
+import { NotificationsCenter } from "./pages/NotificationsCenter.tsx";
 
 export function App() {
   return (
@@ -25,6 +26,7 @@ export function App() {
           <Route path="workflows/:name" element={<WorkflowDetail />} />
           <Route path="templates" element={<Templates />} />
           <Route path="resources" element={<Resources />} />
+          <Route path="notifications" element={<NotificationsCenter />} />
           <Route path="settings" element={<Settings />} />
         </Route>
       </Routes>

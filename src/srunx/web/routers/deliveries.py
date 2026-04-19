@@ -30,17 +30,25 @@ def _serialize(delivery: Any) -> dict[str, Any]:
 async def list_deliveries(
     subscription_id: int | None = Query(default=None),
     status: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
     conn: sqlite3.Connection = Depends(get_db_conn),
 ) -> list[dict[str, Any]]:
+    """List deliveries — scoped to a subscription, or recent across all.
+
+    - ``subscription_id`` + optional ``status`` → per-subscription view.
+    - ``subscription_id`` omitted → most recent deliveries across every
+      subscription (bounded by ``limit``, max 500). Used by the
+      NotificationsCenter dashboard.
+    """
     repo = get_delivery_repo(conn)
     if subscription_id is None:
-        raise HTTPException(
-            status_code=400,
-            detail="subscription_id query parameter required (global listings are disabled)",
+        rows = await anyio.to_thread.run_sync(
+            lambda: repo.list_recent(status=status, limit=limit)
         )
-    rows = await anyio.to_thread.run_sync(
-        lambda: repo.list_by_subscription(subscription_id, status=status)
-    )
+    else:
+        rows = await anyio.to_thread.run_sync(
+            lambda: repo.list_by_subscription(subscription_id, status=status)
+        )
     return [_serialize(r) for r in rows]
 
 

@@ -267,6 +267,21 @@ export type Subscription = {
   created_at: string;
 };
 
+export type WatchKind =
+  | "job"
+  | "workflow_run"
+  | "resource_threshold"
+  | "scheduled_report";
+
+export type Watch = {
+  id: number;
+  kind: WatchKind;
+  target_ref: string;
+  filter: Record<string, unknown> | null;
+  created_at: string;
+  closed_at: string | null;
+};
+
 export type DeliveryStatus = "pending" | "sending" | "delivered" | "abandoned";
 
 export type Delivery = {
