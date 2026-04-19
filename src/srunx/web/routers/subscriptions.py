@@ -35,8 +35,16 @@ def _serialize(sub: Any) -> dict[str, Any]:
 async def list_subscriptions(
     watch_id: int | None = Query(default=None),
     endpoint_id: int | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
     conn: sqlite3.Connection = Depends(get_db_conn),
 ) -> list[dict[str, Any]]:
+    """List subscriptions.
+
+    - With ``watch_id`` or ``endpoint_id`` → scoped listing (newest first).
+    - Without either → recent subscriptions across all watches/endpoints,
+      bounded by ``limit`` (default 200, max 500). Used by the
+      NotificationsCenter dashboard.
+    """
     repo = get_subscription_repo(conn)
     if watch_id is not None:
         rows = await anyio.to_thread.run_sync(lambda: repo.list_by_watch(watch_id))
@@ -45,10 +53,7 @@ async def list_subscriptions(
             lambda: repo.list_by_endpoint(endpoint_id)
         )
     else:
-        raise HTTPException(
-            status_code=400,
-            detail="watch_id or endpoint_id query parameter required",
-        )
+        rows = await anyio.to_thread.run_sync(lambda: repo.list_recent(limit=limit))
     return [_serialize(r) for r in rows]
 
 

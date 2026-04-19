@@ -190,6 +190,19 @@ CREATE INDEX idx_deliveries_lease_active ON deliveries(leased_until) WHERE statu
 """
 
 
+# v2: non-schema index additions to support the NotificationsCenter
+# dashboard queries. ``list_recent`` does ``ORDER BY created_at DESC``
+# with an optional ``WHERE status = ?``; without these indexes the
+# 10-second dashboard poll degenerates into a full scan + sort on a
+# growing outbox.
+SCHEMA_V2_DASHBOARD_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_deliveries_created_at
+    ON deliveries(created_at);
+CREATE INDEX IF NOT EXISTS idx_deliveries_status_created_at
+    ON deliveries(status, created_at);
+"""
+
+
 # ---------------------------------------------------------------------------
 # Migration registry
 # ---------------------------------------------------------------------------
@@ -204,6 +217,11 @@ class Migration:
 
 MIGRATIONS: list[Migration] = [
     Migration(version=1, name="v1_initial", sql=SCHEMA_V1),
+    Migration(
+        version=2,
+        name="v2_dashboard_indexes",
+        sql=SCHEMA_V2_DASHBOARD_INDEXES,
+    ),
 ]
 
 

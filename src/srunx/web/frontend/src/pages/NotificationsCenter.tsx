@@ -113,6 +113,24 @@ export function NotificationsCenter() {
     return m;
   }, [watches]);
 
+  // "Active" subscriptions = those whose watch is still open. The
+  // underlying API returns recent-first bounded by limit=200 and
+  // includes closed-watch rows; a naive count would double-report
+  // inactive subscriptions AND silently truncate at 200. Filter
+  // client-side so the headline reflects reality for the typical
+  // single-user outbox; large installs should call the scoped
+  // endpoints instead.
+  const activeSubscriptions = useMemo(() => {
+    if (!subscriptions) return null;
+    return subscriptions.filter((s) => watchById.has(s.watch_id));
+  }, [subscriptions, watchById]);
+  const activeSubsCount: number | string =
+    activeSubscriptions === null
+      ? "—"
+      : subscriptions && subscriptions.length >= 200
+        ? `${activeSubscriptions.length}+`
+        : activeSubscriptions.length;
+
   const anyError = deliveriesError || watchesError || subscriptionsError;
 
   return (
@@ -148,7 +166,7 @@ export function NotificationsCenter() {
         />
         <StatCard
           label="Active subscriptions"
-          value={subscriptions?.length ?? "—"}
+          value={activeSubsCount}
           icon={<Bell size={16} />}
         />
         <StatCard
