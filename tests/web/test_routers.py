@@ -503,6 +503,102 @@ class TestWorkflowsRouter:
         dep = second_call_kwargs.get("dependency", "")
         assert "afterok:10001" in dep
 
+    def test_run_workflow_persists_all_db_rows(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """End-to-end DB verification — the refactor's real contract.
+
+        The old run_registry hid state in-memory. The new flow must
+        write *atomically* to workflow_runs + workflow_run_jobs + jobs
+        + job_state_transitions, and open a workflow_run watch, so
+        ActiveWatchPoller can aggregate child statuses after we return.
+        """
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.job_state_transitions import (
+            JobStateTransitionRepository,
+        )
+        from srunx.db.repositories.jobs import JobRepository
+        from srunx.db.repositories.watches import WatchRepository
+        from srunx.db.repositories.workflow_run_jobs import (
+            WorkflowRunJobRepository,
+        )
+        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+
+        create_payload = {
+            "name": "integration-run",
+            "default_project": MOUNT,
+            "jobs": [
+                {"name": "a", "command": ["echo", "a"]},
+                {"name": "b", "command": ["echo", "b"], "depends_on": ["a"]},
+            ],
+        }
+        resp = client.post("/api/workflows/create", json=create_payload)
+        assert resp.status_code == 200
+
+        call_count = 0
+
+        def mock_submit(script_content, job_name=None, dependency=None):
+            nonlocal call_count
+            call_count += 1
+            return {
+                "name": job_name or "job",
+                "job_id": 20000 + call_count,
+                "status": "PENDING",
+                "depends_on": [],
+                "command": [],
+                "resources": {},
+            }
+
+        mock_adapter.submit_job.side_effect = mock_submit
+
+        resp = client.post(
+            "/api/workflows/integration-run/run", params={"mount": MOUNT}
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        run_id = int(data["id"])
+
+        # Verify every DB invariant the refactor committed to.
+        conn = open_connection()
+        try:
+            run = WorkflowRunRepository(conn).get(run_id)
+            assert run is not None
+            assert run.workflow_name == "integration-run"
+            assert run.status == "running"
+            assert run.triggered_by == "web"
+
+            memberships = WorkflowRunJobRepository(conn).list_by_run(run_id)
+            assert len(memberships) == 2
+            membership_names = {m.job_name for m in memberships}
+            assert membership_names == {"a", "b"}
+            # FK: each membership's job_id points at a real jobs row.
+            for m in memberships:
+                assert m.job_id is not None
+                job = JobRepository(conn).get(m.job_id)
+                assert job is not None
+                assert job.status == "PENDING"
+                assert job.submission_source == "workflow"
+                assert job.workflow_run_id == run_id
+
+            # Seeded PENDING transitions exist for both jobs — without
+            # them ActiveWatchPoller would skip the first observation.
+            for m in memberships:
+                assert m.job_id is not None
+                latest = JobStateTransitionRepository(conn).latest_for_job(m.job_id)
+                assert latest is not None
+                assert latest.to_status == "PENDING"
+                assert latest.source == "webhook"
+
+            # An OPEN workflow_run watch exists so the poller can
+            # aggregate child statuses.
+            open_watches = [
+                w for w in WatchRepository(conn).list_open() if w.kind == "workflow_run"
+            ]
+            assert len(open_watches) == 1
+            assert open_watches[0].target_ref == f"workflow_run:{run_id}"
+        finally:
+            conn.close()
+
     def test_run_workflow_not_found(self, client: TestClient) -> None:
         resp = client.post("/api/workflows/nonexistent-wf/run", params={"mount": MOUNT})
         assert resp.status_code == 404
