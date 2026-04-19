@@ -189,14 +189,19 @@ export function NotificationsCenter() {
             justifyContent: "space-between",
           }}
         >
-          <h3>Recent deliveries</h3>
-          <div style={{ display: "flex", gap: 6 }}>
+          <h3 id="recent-deliveries-heading">Recent deliveries</h3>
+          <div
+            role="group"
+            aria-label="Filter deliveries by status"
+            style={{ display: "flex", gap: 6 }}
+          >
             {STATUS_FILTERS.map((s) => {
               const active = s === statusFilter;
               return (
                 <button
                   key={s}
                   onClick={() => setStatusFilter(s)}
+                  aria-pressed={active}
                   style={{
                     padding: "4px 10px",
                     borderRadius: 4,
