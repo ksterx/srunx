@@ -8,7 +8,8 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
-from srunx.callbacks import SlackCallback
+from srunx.callbacks import Callback, NotificationWatchCallback, SlackCallback
+from srunx.config import get_config
 from srunx.logging import configure_workflow_logging, get_logger
 from srunx.models import Job, ShellJob
 from srunx.runner import WorkflowRunner
@@ -83,6 +84,27 @@ def execute_yaml(
     slack: Annotated[
         bool, typer.Option("--slack", help="Send notifications to Slack")
     ] = False,
+    endpoint: Annotated[
+        str | None,
+        typer.Option(
+            "--endpoint",
+            help=(
+                "Name of a configured notification endpoint (see "
+                "`/api/endpoints` / Settings UI). Attaches a watch per "
+                "submitted job via the poller pipeline."
+            ),
+        ),
+    ] = None,
+    preset: Annotated[
+        str | None,
+        typer.Option(
+            "--preset",
+            help=(
+                "Subscription preset for --endpoint: terminal (default), "
+                "running_and_terminal, or all."
+            ),
+        ),
+    ] = None,
     from_job: Annotated[
         str | None,
         typer.Option(
@@ -118,6 +140,8 @@ def execute_yaml(
         dry_run=dry_run,
         log_level=log_level,
         slack=slack,
+        endpoint=endpoint,
+        preset=preset,
         from_job=from_job,
         to_job=to_job,
         job=job,
@@ -130,6 +154,8 @@ def _execute_workflow(
     dry_run: bool = False,
     log_level: str = "INFO",
     slack: bool = False,
+    endpoint: str | None = None,
+    preset: str | None = None,
     from_job: str | None = None,
     to_job: str | None = None,
     job: str | None = None,
@@ -149,9 +175,28 @@ def _execute_workflow(
             logger.error(f"Workflow file not found: {yaml_file}")
             sys.exit(1)
 
-        # Setup callbacks if requested
-        callbacks = []
+        # Setup callbacks if requested.
+        #
+        # Resolution order mirrors ``srunx submit``:
+        #   --endpoint → durable watch per submitted job (poller pipeline)
+        #   --slack    → in-process SlackCallback fallback (deprecated)
+        # Both may be set; the deprecated path keeps firing so users who
+        # opt in always get *some* notification even if the endpoint
+        # lookup fails.
+        callbacks: list[Callback] = []
+        effective_preset = preset or get_config().notifications.default_preset
+        if endpoint:
+            callbacks.append(
+                NotificationWatchCallback(
+                    endpoint_name=endpoint,
+                    preset=effective_preset,
+                )
+            )
         if slack:
+            logger.warning(
+                "`--slack` is deprecated; configure an endpoint via "
+                "Settings → Notifications and pass `--endpoint <name>`."
+            )
             webhook_url = os.getenv("SLACK_WEBHOOK_URL")
             if not webhook_url:
                 raise ValueError("SLACK_WEBHOOK_URL environment variable is not set")
@@ -269,6 +314,27 @@ def run_command(
     slack: Annotated[
         bool, typer.Option("--slack", help="Send notifications to Slack")
     ] = False,
+    endpoint: Annotated[
+        str | None,
+        typer.Option(
+            "--endpoint",
+            help=(
+                "Name of a configured notification endpoint (see "
+                "`/api/endpoints` / Settings UI). Attaches a watch per "
+                "submitted job via the poller pipeline."
+            ),
+        ),
+    ] = None,
+    preset: Annotated[
+        str | None,
+        typer.Option(
+            "--preset",
+            help=(
+                "Subscription preset for --endpoint: terminal (default), "
+                "running_and_terminal, or all."
+            ),
+        ),
+    ] = None,
     from_job: Annotated[
         str | None,
         typer.Option(
@@ -288,7 +354,16 @@ def run_command(
 ) -> None:
     """Execute workflow from YAML file."""
     _execute_workflow(
-        yaml_file, validate, dry_run, log_level, slack, from_job, to_job, job
+        yaml_file=yaml_file,
+        validate=validate,
+        dry_run=dry_run,
+        log_level=log_level,
+        slack=slack,
+        endpoint=endpoint,
+        preset=preset,
+        from_job=from_job,
+        to_job=to_job,
+        job=job,
     )
 
 
