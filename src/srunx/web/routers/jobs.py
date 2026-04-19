@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Any
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
+from srunx.db.repositories.deliveries import DeliveryRepository
+from srunx.db.repositories.endpoints import EndpointRepository
+from srunx.db.repositories.events import EventRepository
+from srunx.db.repositories.job_state_transitions import (
+    JobStateTransitionRepository,
+)
+from srunx.db.repositories.jobs import JobRepository
+from srunx.db.repositories.subscriptions import SubscriptionRepository
+from srunx.db.repositories.watches import WatchRepository
 from srunx.logging import get_logger
+from srunx.notifications.service import NotificationService
 
-from ..deps import get_adapter
+from ..deps import get_adapter, get_db_conn
 from ..ssh_adapter import SlurmSSHAdapter
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -71,23 +82,142 @@ async def preview_script(req: ScriptPreviewRequest) -> ScriptPreviewResponse:
 
 
 class JobSubmitRequest(BaseModel):
+    """Request body for submitting a job via the Web UI.
+
+    ``notify_slack`` (DEPRECATED) is retained for backward compatibility with
+    older frontend builds but has no effect beyond logging a warning. Prefer
+    the ``notify`` + ``endpoint_id`` + ``preset`` triplet.
+    """
+
     name: str
     script_content: str
     job_name: str | None = None
     mount_name: str | None = None
+
+    # DEPRECATED: keep for API backward-compat but behaviour is a no-op.
     notify_slack: bool = False
+
+    # New notification-watch fields (optional; all three must be present
+    # together for a watch to be created on submit).
+    notify: bool = False
+    endpoint_id: int | None = Field(default=None, gt=0)
+    preset: str = "terminal"
+
+    @model_validator(mode="after")
+    def _check_notify(self) -> JobSubmitRequest:
+        if self.notify and self.endpoint_id is None:
+            raise ValueError("notify=true requires endpoint_id")
+        return self
+
+
+def _validate_notify_endpoint(conn: sqlite3.Connection, req: JobSubmitRequest) -> None:
+    """Validate the notification endpoint BEFORE SLURM submission.
+
+    Called on the request path so that a bad ``endpoint_id`` fails the
+    request without leaking a SLURM job.
+    """
+    if not req.notify or req.endpoint_id is None:
+        return
+    endpoint = EndpointRepository(conn).get(req.endpoint_id)
+    if endpoint is None:
+        raise HTTPException(
+            status_code=404, detail=f"endpoint {req.endpoint_id} not found"
+        )
+    if endpoint.disabled_at is not None:
+        raise HTTPException(
+            status_code=422, detail=f"endpoint {req.endpoint_id} is disabled"
+        )
+
+
+def _record_and_watch(
+    conn: sqlite3.Connection,
+    *,
+    job_id: int,
+    job_name: str,
+    req: JobSubmitRequest,
+) -> None:
+    """Persist the submission record and (optionally) create a notification watch.
+
+    Executes inside a single IMMEDIATE transaction so the ``jobs`` insert,
+    watch/subscription rows, initial ``job_state_transitions`` seed, and
+    ``job.submitted`` event (plus fan-out) appear atomically.
+
+    Endpoint validation is done BEFORE this function is called (in the
+    request path, pre-sbatch) so that a 4xx never strands a SLURM job.
+    """
+    job_repo = JobRepository(conn)
+    watch_repo = WatchRepository(conn)
+    sub_repo = SubscriptionRepository(conn)
+    event_repo = EventRepository(conn)
+    transition_repo = JobStateTransitionRepository(conn)
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # R5.1 bug fix: web-submitted jobs now hit the history.
+        job_repo.record_submission(
+            job_id=job_id,
+            name=job_name,
+            status="PENDING",
+            submission_source="web",
+        )
+        # Seed baseline transition so ActiveWatchPoller's first observation
+        # produces a real transition (from_status='PENDING') rather than
+        # being skipped as a "first observation". (Codex-flagged critical.)
+        transition_repo.insert(
+            job_id=job_id,
+            from_status=None,
+            to_status="PENDING",
+            source="webhook",
+        )
+        if req.notify and req.endpoint_id is not None:
+            watch_id = watch_repo.create(kind="job", target_ref=f"job:{job_id}")
+            sub_repo.create(watch_id, req.endpoint_id, req.preset)
+            event_id = event_repo.insert(
+                kind="job.submitted",
+                source_ref=f"job:{job_id}",
+                payload={"job_id": job_id, "job_name": job_name},
+            )
+            # Fan out the job.submitted event so ``preset='all'`` subscribers
+            # receive the notification.
+            if event_id is not None:
+                event = event_repo.get(event_id)
+                if event is not None:
+                    NotificationService(
+                        watch_repo=watch_repo,
+                        subscription_repo=sub_repo,
+                        event_repo=event_repo,
+                        delivery_repo=DeliveryRepository(conn),
+                        endpoint_repo=EndpointRepository(conn),
+                    ).fan_out(event, conn)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 @router.post("", status_code=201)
 async def submit_job(
     req: JobSubmitRequest,
     adapter: SlurmSSHAdapter = Depends(get_adapter),
+    conn: sqlite3.Connection = Depends(get_db_conn),
 ) -> dict[str, Any]:
     """Submit a new job to SLURM via SSH.
 
     If *mount_name* is provided, the corresponding mount is synced
     via rsync before submission.
     """
+    # Legacy-flag diagnostic: surface a soft warning if the frontend still
+    # ships ``notify_slack`` without the new trio.
+    if req.notify_slack and not req.notify:
+        logger.warning(
+            "Request sent deprecated `notify_slack=True`; field has no effect. "
+            "Use notify/endpoint_id/preset instead."
+        )
+
+    # Validate the notification endpoint BEFORE sbatch so a bad ID never
+    # results in a leaked SLURM job. (Codex-flagged.)
+    _validate_notify_endpoint(conn, req)
+
     # Sync mount before submission if requested
     if req.mount_name:
         from ..sync_utils import get_current_profile, sync_mount_by_name
@@ -122,25 +252,26 @@ async def submit_job(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"sbatch failed: {e}") from e
 
-    # Send Slack notification if requested
-    if req.notify_slack and result.get("job_id"):
+    # Persist the submission + (optionally) create a notification watch.
+    job_id = result.get("job_id")
+    if job_id:
         try:
-            from srunx.callbacks import SlackCallback
-            from srunx.config import get_config
-            from srunx.models import Job
-
-            cfg = get_config()
-            webhook_url = cfg.notifications.slack_webhook_url
-            if webhook_url:
-                job = Job(
-                    name=req.job_name or req.name,
-                    job_id=result["job_id"],
-                    command=[],
+            await anyio.to_thread.run_sync(
+                lambda: _record_and_watch(
+                    conn,
+                    job_id=int(job_id),
+                    job_name=req.job_name or req.name,
+                    req=req,
                 )
-                slack = SlackCallback(webhook_url=webhook_url)
-                await anyio.to_thread.run_sync(lambda: slack.on_job_submitted(job))
+            )
+        except HTTPException:
+            raise
         except Exception:
-            logger.warning("Failed to send Slack notification", exc_info=True)
+            logger.warning(
+                "Failed to record submission / create watch for job %s",
+                job_id,
+                exc_info=True,
+            )
 
     return result
 

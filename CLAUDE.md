@@ -96,19 +96,36 @@ uv run srunx resources --partition gpu
 src/srunx/
 ├── models.py          # Data models and validation
 ├── client.py          # SLURM client for job operations
+├── client_protocol.py # SlurmClientProtocol (unified queue_by_ids) + JobStatusInfo
 ├── runner.py          # Workflow execution engine
 ├── callbacks.py       # Callback system for job notifications
 ├── config.py          # Configuration management and defaults
 ├── exceptions.py      # Custom exceptions
 ├── logging.py         # Centralized logging configuration
 ├── utils.py           # Utility functions
+├── db/                # DB-backed state persistence (SQLite, ~/.config/srunx/srunx.db)
+│   ├── connection.py  # XDG path resolution, open_connection, init_db, transaction
+│   ├── migrations.py  # SCHEMA_V1 DDL + apply_migrations + bootstrap_from_config
+│   ├── models.py      # Pydantic row models (Endpoint/Watch/.../Delivery, WorkflowRun, Job...)
+│   └── repositories/  # Thin CRUD per table (JobRepository, DeliveryRepository, ...)
+├── notifications/     # Notification domain
+│   ├── sanitize.py    # sanitize_slack_text (shared with callbacks.SlackCallback)
+│   ├── presets.py     # should_deliver(preset, event_kind, to_status) filter
+│   ├── service.py     # NotificationService.fan_out (events → deliveries)
+│   └── adapters/      # DeliveryAdapter + SlackWebhookDeliveryAdapter + registry
+├── pollers/           # Long-running lifespan tasks
+│   ├── reload_guard.py      # is_reload_mode, should_start_pollers (pure functions)
+│   ├── supervisor.py        # PollerSupervisor (anyio task group + crash/grace)
+│   ├── active_watch_poller.py  # producer: SLURM → events → deliveries
+│   ├── delivery_poller.py   # consumer: claim → send → mark_delivered/retry
+│   └── resource_snapshotter.py # periodic ResourceSnapshot writes
 ├── cli/               # Command-line interfaces
 │   ├── main.py        # Main CLI commands (submit, status, list, cancel, resources)
 │   ├── monitor.py     # Monitor subcommands (jobs, resources, cluster)
 │   └── workflow.py    # Workflow CLI
 ├── monitor/           # Job and resource monitoring
 │   ├── base.py        # BaseMonitor abstract class
-│   ├── job_monitor.py # JobMonitor for job state tracking
+│   ├── job_monitor.py # JobMonitor for job state tracking (also writes to job_state_transitions for SSOT)
 │   ├── resource_monitor.py  # ResourceMonitor for GPU availability
 │   └── types.py       # MonitorConfig, ResourceSnapshot, WatchMode
 ├── ssh/               # SSH integration for remote SLURM
@@ -304,6 +321,37 @@ jobs:
 - **Resource Management**: Full SLURM resource specification
 - **Workflow Validation**: Dependency checking and cycle detection
 - **Inter-Job Communication**: Runtime variable passing between workflow jobs via shared outputs directory
+
+### Notification + State Persistence (new in 2026-Q2)
+
+srunx stores durable state in a SQLite DB at **`$XDG_CONFIG_HOME/srunx/srunx.db`** (or `~/.config/srunx/srunx.db` when the env var is unset). Schema lives in `src/srunx/db/migrations.py` (`SCHEMA_V1`).
+
+Tables (abbreviated):
+- `jobs` — every SLURM submission, annotated with `submission_source` (`cli` / `web` / `workflow`) and `workflow_run_id`.
+- `workflow_runs` + `workflow_run_jobs` — Web UI workflow runs, replacing the former in-memory `RunRegistry`.
+- `job_state_transitions` — single source of truth for observed state changes, fed by both `ActiveWatchPoller` (`source='poller'`) and `JobMonitor` (`source='cli_monitor'`).
+- `resource_snapshots` — periodic GPU/node stats; `gpu_utilization` is a STORED generated column (NULL when `gpus_total=0`).
+- `endpoints` + `watches` + `subscriptions` + `events` + `deliveries` — the notification 5-concept outbox. `events` has a UNIQUE `(kind, source_ref, payload_hash)` dedup index; `deliveries` has UNIQUE `(endpoint_id, idempotency_key)`. `deliveries` uses a SELECT-then-UPDATE claim pattern inside `BEGIN IMMEDIATE` (stock Python `sqlite3` lacks `UPDATE ... LIMIT RETURNING`).
+
+Background pollers (lifespan tasks managed by `PollerSupervisor`):
+- `ActiveWatchPoller` (producer) — polls SLURM every 15 s, writes `job_state_transitions`, `jobs` status, `events`, and fan-outs into `deliveries`.
+- `DeliveryPoller` (consumer) — claims `pending` deliveries every 10 s, sends via `SlackWebhookDeliveryAdapter` (or future channels), handles retry/abandon with exponential backoff (base 10 s, cap 1 h, max 5 attempts).
+- `ResourceSnapshotter` — every 5 min, writes one `resource_snapshots` row.
+
+All pollers are crash-resilient via a lease mechanism (`leased_until`, `worker_id`) and a `reclaim_expired_leases()` sweep at the start of every `DeliveryPoller` cycle.
+
+Legacy ``~/.srunx/history.db`` is preserved during Phase 1 rollout; a future cleanup will delete it.
+
+**Environment variables** that affect poller startup:
+- `SRUNX_DISABLE_POLLER=1` — disable ALL pollers (also applied automatically in `uvicorn --reload` dev mode).
+- `SRUNX_DISABLE_ACTIVE_WATCH_POLLER=1` — skip the SLURM → events producer.
+- `SRUNX_DISABLE_DELIVERY_POLLER=1` — skip the outbox consumer.
+- `SRUNX_DISABLE_RESOURCE_SNAPSHOTTER=1` — skip resource time-series capture.
+- `UVICORN_RELOAD` — anything truthy enables dev-mode reload detection in `pollers.reload_guard`.
+
+Notification settings UI lives in `Settings → Notifications`; Phase 1 supports endpoint CRUD for `slack_webhook` only. Webhook URL validation (both UI and backend): `^https://hooks\.slack\.com/services/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$`.
+
+See `.claude/specs/notification-and-state-persistence/` for full requirements, design, and task list.
 
 ## Dependencies
 - **Jinja2**: Template rendering

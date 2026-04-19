@@ -2,6 +2,8 @@ import type {
   BrowseResult,
   CommandJob,
   ConfigPathInfo,
+  Delivery,
+  Endpoint,
   EnvVarInfo,
   HistoryStats,
   LogData,
@@ -19,6 +21,7 @@ import type {
   SSHProfilesResponse,
   SSHTestResult,
   SrunxConfig,
+  Subscription,
   SyncResult,
   TemplateCreateRequest,
   TemplateDetail,
@@ -75,17 +78,32 @@ export const jobs = {
     jobName: string,
     mountName?: string,
     notifySlack?: boolean,
+    notifyOpts?: {
+      notify?: boolean;
+      endpointId?: number | null;
+      preset?: string;
+    },
   ): Promise<{ name: string; job_id: number | null; status: string }> => {
+    const body: Record<string, unknown> = {
+      name: jobName,
+      script_content: scriptContent,
+      job_name: jobName,
+      mount_name: mountName,
+      // DEPRECATED: retained for backward compatibility with the legacy
+      // slack-only notification path; new endpoint/subscription fields below
+      // supersede it when provided.
+      notify_slack: notifySlack ?? false,
+    };
+    if (notifyOpts) {
+      if (notifyOpts.notify !== undefined) body.notify = notifyOpts.notify;
+      if (notifyOpts.endpointId !== undefined && notifyOpts.endpointId !== null)
+        body.endpoint_id = notifyOpts.endpointId;
+      if (notifyOpts.preset !== undefined) body.preset = notifyOpts.preset;
+    }
     const res = await fetch("/api/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: jobName,
-        script_content: scriptContent,
-        job_name: jobName,
-        mount_name: mountName,
-        notify_slack: notifySlack ?? false,
-      }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       const err = await res.json();
@@ -633,5 +651,166 @@ export const templates = {
       const err = await res.json();
       throw new Error(extractDetail(err, "Failed to delete template"));
     }
+  },
+};
+
+/* ── Endpoints ──────────────────────────────── */
+
+export const endpoints = {
+  list: async (opts?: {
+    include_disabled?: boolean;
+  }): Promise<Endpoint[]> => {
+    const params = new URLSearchParams();
+    if (opts?.include_disabled) params.set("include_disabled", "true");
+    const qs = params.toString();
+    const res = await fetch(`/api/endpoints${qs ? `?${qs}` : ""}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to fetch endpoints"));
+    }
+    return res.json();
+  },
+
+  create: async (body: {
+    kind: string;
+    name: string;
+    config: object;
+  }): Promise<Endpoint> => {
+    const res = await fetch("/api/endpoints", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to create endpoint"));
+    }
+    return res.json();
+  },
+
+  update: async (
+    id: number,
+    body: { name?: string; config?: object },
+  ): Promise<Endpoint> => {
+    const res = await fetch(`/api/endpoints/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to update endpoint"));
+    }
+    return res.json();
+  },
+
+  disable: async (id: number): Promise<Endpoint> => {
+    const res = await fetch(`/api/endpoints/${id}/disable`, { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to disable endpoint"));
+    }
+    return res.json();
+  },
+
+  enable: async (id: number): Promise<Endpoint> => {
+    const res = await fetch(`/api/endpoints/${id}/enable`, { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to enable endpoint"));
+    }
+    return res.json();
+  },
+
+  delete: async (id: number): Promise<void> => {
+    const res = await fetch(`/api/endpoints/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to delete endpoint"));
+    }
+  },
+};
+
+/* ── Subscriptions ──────────────────────────── */
+
+export const subscriptions = {
+  list: async (opts: {
+    watch_id?: number;
+    endpoint_id?: number;
+  }): Promise<Subscription[]> => {
+    const params = new URLSearchParams();
+    if (opts.watch_id !== undefined)
+      params.set("watch_id", String(opts.watch_id));
+    if (opts.endpoint_id !== undefined)
+      params.set("endpoint_id", String(opts.endpoint_id));
+    const qs = params.toString();
+    const res = await fetch(`/api/subscriptions${qs ? `?${qs}` : ""}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to fetch subscriptions"));
+    }
+    return res.json();
+  },
+
+  create: async (body: {
+    watch_id: number;
+    endpoint_id: number;
+    preset: string;
+  }): Promise<Subscription> => {
+    const res = await fetch("/api/subscriptions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to create subscription"));
+    }
+    return res.json();
+  },
+
+  delete: async (id: number): Promise<void> => {
+    const res = await fetch(`/api/subscriptions/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to delete subscription"));
+    }
+  },
+};
+
+/* ── Deliveries ─────────────────────────────── */
+
+export const deliveries = {
+  listBySubscription: async (
+    subscriptionId: number,
+    status?: string,
+  ): Promise<Delivery[]> => {
+    const params = new URLSearchParams({
+      subscription_id: String(subscriptionId),
+    });
+    if (status) params.set("status", status);
+    const res = await fetch(`/api/deliveries?${params.toString()}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to fetch deliveries"));
+    }
+    return res.json();
+  },
+
+  countStuck: async (
+    olderThanSec?: number,
+  ): Promise<{ count: number; older_than_sec: number }> => {
+    const params = new URLSearchParams();
+    if (olderThanSec !== undefined)
+      params.set("older_than_sec", String(olderThanSec));
+    const qs = params.toString();
+    const res = await fetch(
+      `/api/deliveries/stuck-count${qs ? `?${qs}` : ""}`,
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to fetch stuck count"));
+    }
+    return res.json();
   },
 };
