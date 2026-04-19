@@ -62,6 +62,20 @@ class SubscriptionRepository(BaseRepository):
         ).fetchall()
         return [self._row_to_model(r, Subscription) for r in rows if r is not None]  # type: ignore[misc]
 
+    def list_recent(self, limit: int = 200) -> list[Subscription]:
+        """Return every subscription, newest first, bounded by ``limit``.
+
+        Powers the NotificationsCenter dashboard. Scoped paths
+        (:meth:`list_by_watch` / :meth:`list_by_endpoint`) remain the
+        preferred call on the hot path.
+        """
+        rows = self.conn.execute(
+            f"SELECT {', '.join(self._COLUMNS)} FROM subscriptions "
+            "ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [self._row_to_model(r, Subscription) for r in rows if r is not None]  # type: ignore[misc]
+
     def delete(self, id: int) -> bool:
         cur = self.conn.execute("DELETE FROM subscriptions WHERE id = ?", (id,))
         return cur.rowcount > 0
