@@ -12,10 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from srunx.cli.notification_setup import (
-    attach_notification_watch,
-    resolve_endpoint_name,
-)
+from srunx.cli.notification_setup import attach_notification_watch
 
 
 @pytest.fixture
@@ -57,12 +54,6 @@ def _seed_endpoint_and_job(
         return endpoint_id, job_id
     finally:
         conn.close()
-
-
-def test_resolve_endpoint_name_explicit_wins() -> None:
-    assert resolve_endpoint_name("cli", "config") == "cli"
-    assert resolve_endpoint_name(None, "config") == "config"
-    assert resolve_endpoint_name(None, None) is None
 
 
 def test_attach_watch_happy_path(isolated_db: Path) -> None:

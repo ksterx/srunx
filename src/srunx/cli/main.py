@@ -454,19 +454,22 @@ def submit(
 
     job = Job.model_validate(job_data)
 
-    # Resolve the endpoint name for the new watch+subscription pipeline.
-    # --endpoint always wins; otherwise fall back to
-    # notifications.default_endpoint_name from config (if any).
-    from srunx.cli.notification_setup import resolve_endpoint_name
+    # Resolve the endpoint for the new watch+subscription pipeline.
+    #
+    # IMPORTANT: the CLI honours ``--endpoint`` ONLY. We deliberately
+    # do NOT consult ``config.notifications.default_endpoint_name`` —
+    # that field is a Web UI submit-dialog pre-selection and adopting
+    # it here would silently opt users into CLI notifications. (R10)
+    effective_endpoint: str | None = endpoint
+    effective_preset: str = preset or config.notifications.default_preset
 
-    effective_endpoint = resolve_endpoint_name(
-        endpoint, config.notifications.default_endpoint_name
-    )
-    effective_preset = preset or config.notifications.default_preset
-
-    if slack and effective_endpoint is None:
-        # Legacy in-process callback path — retained for backward compat
-        # until every install has migrated endpoints. Prefer --endpoint.
+    if slack:
+        # Legacy in-process callback path — kept as a fallback even when
+        # --endpoint is also set so users who ask for notifications
+        # always get *some* notification pipe. Without this fallback,
+        # an attach failure (endpoint missing/disabled/DB error) would
+        # silently drop every notification for a run the user explicitly
+        # opted into. (R11)
         logger.warning(
             "`--slack` is deprecated; configure an endpoint via "
             "Settings → Notifications and pass `--endpoint <name>`."

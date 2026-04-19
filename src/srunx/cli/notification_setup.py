@@ -5,8 +5,9 @@ Call sites (:mod:`srunx.cli.main` / :mod:`srunx.cli.workflow`) invoke
 :func:`attach_notification_watch` after :meth:`srunx.client.Slurm.submit`
 returns so the job lands in the notification pipeline:
 
-1. Resolves an endpoint by name (either explicit ``--endpoint`` or the
-   ``notifications.default_endpoint_name`` fallback from config).
+1. Resolves the endpoint by ``(kind, name)`` — the DB's uniqueness
+   guarantee is ``UNIQUE(kind, name)``, so name alone is ambiguous
+   once more than one endpoint kind is enabled.
 2. Creates a ``kind='job'`` watch targeting the submitted job.
 3. Creates the subscription with the chosen preset.
 4. Seeds a PENDING ``job_state_transitions`` row so the active-watch
@@ -22,12 +23,20 @@ from srunx.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Default kind — Phase 1 of the notification stack only wires up
+# slack_webhook. When other kinds (email / generic_webhook / slack_bot)
+# ship we'll expose a ``--endpoint-kind`` CLI flag; until then we keep
+# the API narrow so ``(kind, name)`` can always be resolved without
+# ambiguity.
+DEFAULT_ENDPOINT_KIND = "slack_webhook"
+
 
 def attach_notification_watch(
     *,
     job_id: int,
     endpoint_name: str,
     preset: str = "terminal",
+    endpoint_kind: str = DEFAULT_ENDPOINT_KIND,
 ) -> int | None:
     """Attach an endpoint-backed notification watch to a SLURM job.
 
@@ -35,10 +44,12 @@ def attach_notification_watch(
         job_id: SLURM job id. Must already be recorded in the new state
             DB (``jobs`` table) — the :class:`srunx.history.JobHistory`
             dual-write path handles that for CLI submits.
-        endpoint_name: Name of the endpoint to notify. Must exist and
-            not be disabled.
+        endpoint_name: Name of the endpoint to notify. Must exist, not
+            be disabled, and be of ``endpoint_kind``.
         preset: Subscription preset — ``terminal`` (default),
             ``running_and_terminal``, ``all``, or ``digest``.
+        endpoint_kind: Endpoint kind to disambiguate name lookups.
+            Defaults to ``slack_webhook`` (the only enabled Phase 1 kind).
 
     Returns:
         The new ``subscriptions.id`` on success, ``None`` on any
@@ -58,25 +69,23 @@ def attach_notification_watch(
         conn = open_connection()
         try:
             endpoint_repo = EndpointRepository(conn)
-            endpoint = next(
-                (
-                    ep
-                    for ep in endpoint_repo.list(include_disabled=True)
-                    if ep.name == endpoint_name
-                ),
-                None,
-            )
+            # R12: scope the lookup to (kind, name) since the DB's UNIQUE
+            # constraint is (kind, name); matching on name alone could
+            # return the wrong row once other kinds are enabled.
+            endpoint = endpoint_repo.get_by_name(endpoint_kind, endpoint_name)
             if endpoint is None:
                 logger.warning(
-                    "Endpoint %r not found; skipping watch creation. "
+                    "Endpoint %s:%s not found; skipping watch creation. "
                     "Create one via `Settings → Notifications` in the Web UI "
                     "or the /api/endpoints API.",
+                    endpoint_kind,
                     endpoint_name,
                 )
                 return None
             if endpoint.disabled_at is not None:
                 logger.warning(
-                    "Endpoint %r is disabled; skipping watch creation.",
+                    "Endpoint %s:%s is disabled; skipping watch creation.",
+                    endpoint_kind,
                     endpoint_name,
                 )
                 return None
@@ -112,12 +121,3 @@ def attach_notification_watch(
             exc,
         )
         return None
-
-
-def resolve_endpoint_name(
-    explicit: str | None, default_from_config: str | None
-) -> str | None:
-    """Pick the endpoint name to use — explicit CLI arg wins over config."""
-    if explicit:
-        return explicit
-    return default_from_config
