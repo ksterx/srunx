@@ -203,30 +203,49 @@ class JobRepository(BaseRepository):
         rows = self.conn.execute(sql, params).fetchall()
         return [self._row_to_model(r, Job) for r in rows if r is not None]  # type: ignore[misc]
 
+    _ALLOWED_RANGE_FIELDS = ("submitted_at", "started_at", "completed_at")
+
     def count_by_status_in_range(
         self,
         from_at: str,
         to_at: str,
         statuses: list[str] | None = None,
+        *,
+        timestamp_field: str = "submitted_at",
     ) -> dict[str, int]:
-        """Return per-status counts for jobs submitted in ``[from_at, to_at)``.
+        """Return per-status counts for jobs whose chosen timestamp is in ``[from_at, to_at)``.
 
-        Provided for the future ``ScheduledReporter`` replacement
-        (design.md § "Phase 1 で変更しない領域"). ``statuses=None`` counts
-        every distinct status.
+        ``timestamp_field`` picks the lifecycle column the range filters on.
+        ``submitted_at`` (default) matches "jobs queued in this window".
+        ``completed_at`` matches ``sacct --starttime`` + terminal-state
+        semantics more closely — used by
+        :class:`srunx.monitor.scheduler.ScheduledReporter` so a 24h
+        report counts what *finished* in the window, not what was merely
+        submitted.
+
+        Raises ``ValueError`` for an unsupported field rather than
+        injecting it into the SQL (this parameter is interpolated into
+        the query because sqlite can't bind column names).
         """
+        if timestamp_field not in self._ALLOWED_RANGE_FIELDS:
+            raise ValueError(
+                f"timestamp_field must be one of {self._ALLOWED_RANGE_FIELDS}; "
+                f"got {timestamp_field!r}"
+            )
+
         if statuses:
             placeholders = ",".join(["?"] * len(statuses))
             sql = (
                 "SELECT status, COUNT(*) AS c FROM jobs "
-                f"WHERE submitted_at >= ? AND submitted_at < ? AND status IN ({placeholders}) "
+                f"WHERE {timestamp_field} >= ? AND {timestamp_field} < ? "
+                f"AND status IN ({placeholders}) "
                 "GROUP BY status"
             )
             params: list[Any] = [from_at, to_at, *statuses]
         else:
             sql = (
                 "SELECT status, COUNT(*) AS c FROM jobs "
-                "WHERE submitted_at >= ? AND submitted_at < ? "
+                f"WHERE {timestamp_field} >= ? AND {timestamp_field} < ? "
                 "GROUP BY status"
             )
             params = [from_at, to_at]

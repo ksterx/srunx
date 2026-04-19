@@ -34,14 +34,21 @@ class TestHistoricalCountsDbFirst:
     """Preferred DB path introduced in P2-6 #C."""
 
     def test_db_path_returns_counts_when_rows_exist(self, tmp_srunx_db, monkeypatch):
-        from srunx.db.repositories.base import now_iso
+        from datetime import UTC, datetime, timedelta
+
         from srunx.db.repositories.jobs import JobRepository
 
         conn, _db_path = tmp_srunx_db
         repo = JobRepository(conn)
 
-        # Seed three rows inside the 24h window — submitted_at = now.
-        ts = now_iso()
+        # Seed with completed_at one minute ago so the reporter's
+        # half-open ``[from_at, now)`` range picks them up regardless
+        # of how fast the test runs.
+        ts = (
+            (datetime.now(UTC) - timedelta(minutes=1))
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
         for i, status in enumerate(["COMPLETED", "COMPLETED", "FAILED"], start=1000):
             repo.record_submission(
                 job_id=i,
@@ -50,7 +57,8 @@ class TestHistoricalCountsDbFirst:
                 submission_source="cli",
                 submitted_at=ts,
             )
-        # One CANCELLED row.
+            repo.update_status(i, status, completed_at=ts)
+        # One CANCELLED row, also finished in-window.
         repo.record_submission(
             job_id=2000,
             name="cancelled_job",
@@ -58,6 +66,7 @@ class TestHistoricalCountsDbFirst:
             submission_source="cli",
             submitted_at=ts,
         )
+        repo.update_status(2000, "CANCELLED", completed_at=ts)
 
         reporter = _make_reporter()
         assert reporter._get_historical_counts() == (2, 1, 1)
@@ -70,7 +79,7 @@ class TestHistoricalCountsDbFirst:
         conn, _db_path = tmp_srunx_db
         repo = JobRepository(conn)
 
-        # Row submitted 30 hours ago — outside the 24h window.
+        # Row that *completed* 30 hours ago — outside the 24h window.
         stale = (
             (datetime.now(UTC) - timedelta(hours=30))
             .isoformat(timespec="milliseconds")
@@ -83,9 +92,54 @@ class TestHistoricalCountsDbFirst:
             submission_source="cli",
             submitted_at=stale,
         )
+        repo.update_status(3000, "COMPLETED", completed_at=stale)
 
         reporter = _make_reporter(timeframe="24h")
         assert reporter._get_historical_counts() == (0, 0, 0)
+
+    def test_db_path_counts_jobs_completed_in_window_regardless_of_submit(
+        self, tmp_srunx_db
+    ):
+        """Regression guard: jobs submitted *before* the window but
+        completed *inside* it must still count.
+
+        This is the difference between ``submitted_at`` and
+        ``completed_at`` semantics — the scheduler now uses
+        ``completed_at`` to match ``sacct --starttime`` intent.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        from srunx.db.repositories.jobs import JobRepository
+
+        conn, _db_path = tmp_srunx_db
+        repo = JobRepository(conn)
+
+        stale_submit = (
+            (datetime.now(UTC) - timedelta(hours=30))
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+        # completed_at one minute ago — definitively inside the 24h
+        # window, but also < now so the half-open range ``[from_at, to_at)``
+        # picks it up (the scheduler recomputes ``to_at = now_iso()``
+        # at query time; using exactly ``now`` here would race the
+        # upper-bound comparison).
+        recent_complete = (
+            (datetime.now(UTC) - timedelta(minutes=1))
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+        repo.record_submission(
+            job_id=4000,
+            name="long_running",
+            status="COMPLETED",
+            submission_source="cli",
+            submitted_at=stale_submit,  # outside the 24h window
+        )
+        repo.update_status(4000, "COMPLETED", completed_at=recent_complete)
+
+        reporter = _make_reporter(timeframe="24h")
+        assert reporter._get_historical_counts() == (1, 0, 0)
 
     def test_db_path_skipped_when_user_given(self, tmp_srunx_db):
         """``user`` forces sacct — the state DB has no user column."""
