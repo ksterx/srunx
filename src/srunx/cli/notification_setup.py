@@ -30,6 +30,13 @@ logger = get_logger(__name__)
 # ambiguity.
 DEFAULT_ENDPOINT_KIND = "slack_webhook"
 
+# Presets that actually produce deliveries today. ``digest`` is a
+# documented schema value but no delivery-time aggregator exists yet —
+# letting it through here reproduces the footgun the POST subscriptions
+# router closes (P1-3 #D): a subscription with ``preset='digest'`` is
+# created silently and nothing ever ships.
+_IMPLEMENTED_PRESETS = ("terminal", "running_and_terminal", "all")
+
 
 def attach_notification_watch(
     *,
@@ -57,6 +64,22 @@ def attach_notification_watch(
         failure (endpoint missing / disabled / DB error). All failure
         paths log a warning so ``srunx submit`` never aborts.
     """
+    # Reject presets that don't have a delivery implementation today.
+    # Silently accepting ``digest`` here would write a subscription the
+    # delivery poller never fans out — the same footgun P1-3 closes at
+    # the POST ``/api/subscriptions`` endpoint. Keep the guard narrow:
+    # we still accept anything else in case a test config or future
+    # preset lands ahead of the lookup constant.
+    if preset not in _IMPLEMENTED_PRESETS:
+        logger.warning(
+            "Preset %r is not implemented for delivery; skipping watch "
+            "creation for job %s. Use one of: %s.",
+            preset,
+            job_id,
+            ", ".join(_IMPLEMENTED_PRESETS),
+        )
+        return None
+
     try:
         from srunx.db.connection import init_db, open_connection
         from srunx.db.repositories.endpoints import EndpointRepository
@@ -96,6 +119,34 @@ def attach_notification_watch(
             watch_repo = WatchRepository(conn)
             sub_repo = SubscriptionRepository(conn)
             transition_repo = JobStateTransitionRepository(conn)
+
+            # Dedup: ``WatchRepository`` has no ``(kind, target_ref)``
+            # uniqueness constraint, so a second ``srunx monitor jobs
+            # 123 --endpoint foo`` would otherwise spawn a duplicate
+            # watch + subscription for the same (job, endpoint, preset)
+            # triple. Deliveries stay idempotent via their own
+            # ``idempotency_key`` uniqueness, but the DB would still
+            # accumulate zombie rows. Reuse an existing open watch +
+            # subscription when one already exists.
+            existing = watch_repo.list_by_target(
+                kind="job",
+                target_ref=f"job:{job_id}",
+                only_open=True,
+            )
+            for w in existing:
+                if w.id is None:
+                    continue
+                for sub in sub_repo.list_by_watch(w.id):
+                    if sub.endpoint_id == endpoint.id and sub.preset == preset:
+                        logger.debug(
+                            "Existing watch+subscription for job %s on "
+                            "%s:%s (preset=%s); skipping.",
+                            job_id,
+                            endpoint_kind,
+                            endpoint_name,
+                            preset,
+                        )
+                        return sub.id
 
             watch_id = watch_repo.create(kind="job", target_ref=f"job:{job_id}")
             subscription_id = sub_repo.create(
