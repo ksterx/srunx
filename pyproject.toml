@@ -114,6 +114,7 @@ markers = [
 [tool.coverage.run]
 source = ["src"]
 omit = ["tests/*", "*/__init__.py"]
+branch = true
 
 [tool.coverage.report]
 exclude_lines = [

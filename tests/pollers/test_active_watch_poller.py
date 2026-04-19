@@ -126,6 +126,10 @@ class TestJobTransitions:
         assert event.source_ref == f"job:{job_id}"
         assert event.payload.get("from_status") == "PENDING"
         assert event.payload.get("to_status") == "RUNNING"
+        # Payload is enriched with job_id + job_name so adapters do not
+        # have to re-query the DB or parse source_ref.
+        assert event.payload.get("job_id") == job_id
+        assert event.payload.get("job_name") == f"job_{job_id}"
 
         job_row = JobRepository(conn).get(job_id)
         assert job_row is not None
@@ -324,6 +328,9 @@ class TestWorkflowAggregation:
         assert len(wf_events) == 1
         assert wf_events[0].payload.get("to_status") == "completed"
         assert wf_events[0].payload.get("from_status") == "running"
+        # Payload is enriched with workflow_run_id + workflow_name.
+        assert wf_events[0].payload.get("workflow_run_id") == run_id
+        assert wf_events[0].payload.get("workflow_name") == "pipeline"
 
         # Delivery row should exist (preset=terminal + terminal status).
         deliveries = DeliveryRepository(conn).list_by_subscription(
