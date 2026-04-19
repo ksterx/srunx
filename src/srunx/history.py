@@ -87,7 +87,7 @@ def _dual_write_record_submission(job: JobType, workflow_name: str | None) -> No
 def _dual_write_update_completion(job_id: int, status: JobStatus) -> None:
     """Mirror a terminal-status observation into the new SQLite state DB."""
     try:
-        from srunx.db.connection import init_db, open_connection
+        from srunx.db.connection import init_db, open_connection, transaction
         from srunx.db.repositories.job_state_transitions import (
             JobStateTransitionRepository,
         )
@@ -100,18 +100,25 @@ def _dual_write_update_completion(job_id: int, status: JobStatus) -> None:
             # Only update rows that already exist (CLI jobs recorded at submit).
             if repo.get(job_id) is None:
                 return
-            # Append to SSOT transitions if it's a real change vs the last.
             transition_repo = JobStateTransitionRepository(conn)
-            latest = transition_repo.latest_for_job(job_id)
-            latest_status = latest.to_status if latest is not None else None
-            if latest_status != status.value:
-                transition_repo.insert(
-                    job_id=job_id,
-                    from_status=latest_status,
-                    to_status=status.value,
-                    source="cli_monitor",
-                )
-            repo.update_completion(job_id, status.value)
+            # R5: two observers (CLI monitor + poller, or two CLIs) can
+            # race the read-modify-write and both append a terminal
+            # transition for the same (job_id, to_status) pair. Wrap
+            # the latest-then-insert pair inside BEGIN IMMEDIATE so
+            # only one caller's re-check sees ``latest_status != status``
+            # and writes; the other sees its own insert reflected and
+            # skips.
+            with transaction(conn, "IMMEDIATE"):
+                latest = transition_repo.latest_for_job(job_id)
+                latest_status = latest.to_status if latest is not None else None
+                if latest_status != status.value:
+                    transition_repo.insert(
+                        job_id=job_id,
+                        from_status=latest_status,
+                        to_status=status.value,
+                        source="cli_monitor",
+                    )
+                repo.update_completion(job_id, status.value)
         finally:
             conn.close()
     except Exception as exc:  # noqa: BLE001 — best-effort mirror

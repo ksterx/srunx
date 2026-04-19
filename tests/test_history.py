@@ -503,3 +503,67 @@ class TestDualWriteToNewDb:
             conn.close()
         # No mirror row was created since the job wasn't in the new DB.
         assert row is None
+
+    def test_concurrent_terminal_updates_dedupe_transitions(self, history):
+        """R5: two observers racing the same terminal must insert once.
+
+        Before the fix the ``latest_for_job`` → ``insert`` pair ran
+        without a transaction; both threads could see
+        ``latest_status == 'RUNNING'`` simultaneously and each insert
+        their own ``(RUNNING, COMPLETED)`` row. The fix wraps the
+        read + write in ``BEGIN IMMEDIATE`` so the loser's re-check
+        sees the winner's row and skips the insert.
+        """
+        import threading
+
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.job_state_transitions import (
+            JobStateTransitionRepository,
+        )
+
+        history.record_job(_make_job(job_id=501, name="race"))
+
+        # Seed a RUNNING transition so both observers will think the
+        # next step is RUNNING -> COMPLETED.
+        from srunx.db.repositories.jobs import JobRepository  # noqa: F401
+
+        conn = open_connection()
+        try:
+            JobStateTransitionRepository(conn).insert(
+                job_id=501,
+                from_status="PENDING",
+                to_status="RUNNING",
+                source="cli_monitor",
+            )
+        finally:
+            conn.close()
+
+        errors: list[BaseException] = []
+        barrier = threading.Barrier(2)
+
+        def observe_terminal() -> None:
+            try:
+                barrier.wait(timeout=5)
+                history.update_job_completion(501, JobStatus.COMPLETED)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=observe_terminal) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert not errors, f"concurrent update raised: {[repr(e) for e in errors]}"
+
+        conn = open_connection()
+        try:
+            transitions = JobStateTransitionRepository(conn).history_for_job(501)
+        finally:
+            conn.close()
+
+        terminal_transitions = [t for t in transitions if t.to_status == "COMPLETED"]
+        assert len(terminal_transitions) == 1, (
+            f"expected exactly one COMPLETED transition, got "
+            f"{[(t.from_status, t.to_status) for t in transitions]}"
+        )
