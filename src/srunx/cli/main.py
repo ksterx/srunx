@@ -348,6 +348,27 @@ def submit(
     slack: Annotated[
         bool, typer.Option("--slack", help="Send notifications to Slack")
     ] = False,
+    endpoint: Annotated[
+        str | None,
+        typer.Option(
+            "--endpoint",
+            help=(
+                "Name of a configured notification endpoint (see "
+                "`/api/endpoints` / Settings UI). Takes precedence over "
+                "--slack when both are set."
+            ),
+        ),
+    ] = None,
+    preset: Annotated[
+        str | None,
+        typer.Option(
+            "--preset",
+            help=(
+                "Subscription preset for --endpoint: terminal (default), "
+                "running_and_terminal, all, or digest."
+            ),
+        ),
+    ] = None,
     template: Annotated[
         str | None, typer.Option("--template", help="Custom SLURM script template")
     ] = None,
@@ -433,7 +454,23 @@ def submit(
 
     job = Job.model_validate(job_data)
 
-    if slack:
+    # Resolve the endpoint name for the new watch+subscription pipeline.
+    # --endpoint always wins; otherwise fall back to
+    # notifications.default_endpoint_name from config (if any).
+    from srunx.cli.notification_setup import resolve_endpoint_name
+
+    effective_endpoint = resolve_endpoint_name(
+        endpoint, config.notifications.default_endpoint_name
+    )
+    effective_preset = preset or config.notifications.default_preset
+
+    if slack and effective_endpoint is None:
+        # Legacy in-process callback path — retained for backward compat
+        # until every install has migrated endpoints. Prefer --endpoint.
+        logger.warning(
+            "`--slack` is deprecated; configure an endpoint via "
+            "Settings → Notifications and pass `--endpoint <name>`."
+        )
         webhook_url = os.getenv("SLACK_WEBHOOK_URL")
         if not webhook_url:
             raise ValueError("SLACK_WEBHOOK_URL is not set")
@@ -461,6 +498,16 @@ def submit(
     # Submit job
     client = Slurm(callbacks=callbacks)
     submitted_job = client.submit(job, template_path=template, verbose=verbose)
+
+    # Attach a durable notification watch if the user asked for one.
+    if effective_endpoint and submitted_job.job_id is not None:
+        from srunx.cli.notification_setup import attach_notification_watch
+
+        attach_notification_watch(
+            job_id=int(submitted_job.job_id),
+            endpoint_name=effective_endpoint,
+            preset=effective_preset,
+        )
 
     console = Console()
     console.print(
