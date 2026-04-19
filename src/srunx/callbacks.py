@@ -6,12 +6,15 @@ from typing import TYPE_CHECKING
 from slack_sdk import WebhookClient
 
 from srunx.formatters import SlackNotificationFormatter
+from srunx.logging import get_logger
 from srunx.models import JobType, Workflow
 from srunx.utils import job_status_msg
 
 if TYPE_CHECKING:
     from srunx.monitor.report_types import Report
     from srunx.monitor.types import ResourceSnapshot
+
+_logger = get_logger(__name__)
 
 
 class Callback:
@@ -314,3 +317,47 @@ class SlackCallback(Callback):
                 }
             ],
         )
+
+
+class NotificationWatchCallback(Callback):
+    """Attach a durable notification watch every time a job is submitted.
+
+    This is the endpoint-watch bridge for CLI code paths that still
+    drive submission through :class:`~srunx.client.Slurm` + the
+    :class:`Callback` fan-out. On each ``on_job_submitted``, it calls
+    :func:`srunx.cli.notification_setup.attach_notification_watch` so
+    the poller pipeline takes over delivery — no in-process Slack send.
+
+    Failures are swallowed with a warning: a missing/disabled endpoint
+    must never break the submit (matches ``attach_notification_watch``'s
+    own best-effort contract).
+    """
+
+    def __init__(
+        self,
+        endpoint_name: str,
+        preset: str = "terminal",
+        endpoint_kind: str = "slack_webhook",
+    ) -> None:
+        self.endpoint_name = endpoint_name
+        self.preset = preset
+        self.endpoint_kind = endpoint_kind
+
+    def on_job_submitted(self, job: JobType) -> None:
+        if job.job_id is None:
+            return
+        from srunx.cli.notification_setup import attach_notification_watch
+
+        try:
+            attach_notification_watch(
+                job_id=int(job.job_id),
+                endpoint_name=self.endpoint_name,
+                preset=self.preset,
+                endpoint_kind=self.endpoint_kind,
+            )
+        except Exception as exc:
+            _logger.warning(
+                "NotificationWatchCallback: failed to attach watch for job %s: %s",
+                job.job_id,
+                exc,
+            )
