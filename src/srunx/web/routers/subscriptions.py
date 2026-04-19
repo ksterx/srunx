@@ -15,6 +15,14 @@ router = APIRouter(prefix="/api/subscriptions", tags=["subscriptions"])
 
 _VALID_PRESETS = ("terminal", "running_and_terminal", "all", "digest")
 
+# Presets that are accepted for NEW subscriptions. The schema CHECK
+# still allows ``'digest'`` (keeping any prior rows readable), but the
+# service layer drops every delivery under that preset
+# (``should_deliver('digest', ...) → False``), so new subscribers who
+# picked it would silently receive zero notifications. Reject it at
+# the API until digest batching is actually implemented. (P1-3)
+_ACCEPTED_PRESETS_FOR_CREATE = ("terminal", "running_and_terminal", "all")
+
 
 class SubscriptionCreate(BaseModel):
     watch_id: int = Field(..., gt=0)
@@ -66,6 +74,17 @@ async def create_subscription(
         raise HTTPException(
             status_code=422,
             detail=f"Invalid preset '{body.preset}'. Allowed: {_VALID_PRESETS}",
+        )
+    if body.preset not in _ACCEPTED_PRESETS_FOR_CREATE:
+        # Digest batching isn't implemented yet; accepting new
+        # subscriptions under that preset would silently deliver zero
+        # notifications.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Preset '{body.preset}' is not implemented yet. "
+                f"Accepted: {_ACCEPTED_PRESETS_FOR_CREATE}"
+            ),
         )
     repo = get_subscription_repo(conn)
     try:
