@@ -1,9 +1,18 @@
-"""Workflow management endpoints: /api/workflows/*"""
+"""Workflow management endpoints: /api/workflows/*
+
+Workflow runs are persisted in the ``workflow_runs`` + ``workflow_run_jobs``
+tables. Status transitions are driven by
+:class:`~srunx.pollers.active_watch_poller.ActiveWatchPoller`, which
+aggregates child job statuses into the workflow run via an internal
+``kind='workflow_run'`` watch created when the run starts.
+"""
 
 from __future__ import annotations
 
+import functools
 import os  # noqa: E402
 import re
+import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -13,6 +22,16 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from srunx.db.models import WorkflowRun as DBWorkflowRun
+from srunx.db.models import WorkflowRunJob
+from srunx.db.repositories.base import now_iso
+from srunx.db.repositories.job_state_transitions import (
+    JobStateTransitionRepository,
+)
+from srunx.db.repositories.jobs import JobRepository
+from srunx.db.repositories.watches import WatchRepository
+from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
+from srunx.db.repositories.workflow_runs import WorkflowRunRepository
 from srunx.exceptions import WorkflowValidationError
 from srunx.logging import get_logger
 from srunx.models import (
@@ -24,11 +43,14 @@ from srunx.models import (
 )
 from srunx.runner import WorkflowRunner
 
-from ..deps import get_adapter
+from ..deps import get_adapter, get_db_conn
 from ..ssh_adapter import SlurmSSHAdapter
-from ..state import run_registry
 
 logger = get_logger(__name__)
+
+_WORKFLOW_TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {"completed", "failed", "cancelled"}
+)
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
@@ -319,44 +341,143 @@ async def list_workflows(mount: str) -> list[dict[str, Any]]:
     return results
 
 
+def _parse_run_id(run_id: str) -> int:
+    """Parse a run_id string → int, raising 404 for non-integer ids.
+
+    The API accepts ``run_id`` as a string for historical compatibility
+    (the old UUID-keyed registry); internally we always store an int.
+    """
+    try:
+        return int(run_id)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Run '{run_id}' not found"
+        ) from exc
+
+
+def _serialize_run(
+    run: DBWorkflowRun,
+    memberships: list[WorkflowRunJob],
+    jobs_by_id: dict[int, str],
+) -> dict[str, Any]:
+    """Build the API response for a workflow run.
+
+    ``jobs_by_id`` maps SLURM job_id → observed status. Memberships with
+    no job_id (not yet submitted) are omitted from both ``job_ids`` and
+    ``job_statuses``.
+    """
+    job_ids: dict[str, str] = {}
+    job_statuses: dict[str, str] = {}
+    for wrj in memberships:
+        if wrj.job_id is None:
+            continue
+        job_ids[wrj.job_name] = str(wrj.job_id)
+        status = jobs_by_id.get(wrj.job_id)
+        if status is not None:
+            job_statuses[wrj.job_name] = status
+
+    return {
+        "id": str(run.id),
+        "workflow_name": run.workflow_name,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        "status": run.status,
+        "job_ids": job_ids,
+        "job_statuses": job_statuses,
+        "error": run.error,
+    }
+
+
+def _build_run_response(conn: sqlite3.Connection, run: DBWorkflowRun) -> dict[str, Any]:
+    """Load memberships + child job statuses and serialize."""
+    if run.id is None:
+        return _serialize_run(run, [], {})
+    memberships = WorkflowRunJobRepository(conn).list_by_run(run.id)
+    job_repo = JobRepository(conn)
+    jobs_by_id: dict[int, str] = {}
+    for m in memberships:
+        if m.job_id is None:
+            continue
+        job = job_repo.get(m.job_id)
+        if job is not None:
+            jobs_by_id[m.job_id] = job.status
+    return _serialize_run(run, memberships, jobs_by_id)
+
+
 @router.get("/runs")
-async def list_runs(name: str | None = None) -> list[dict[str, Any]]:
-    runs = run_registry.list_runs(name)
-    return [r.model_dump() for r in runs]
+async def list_runs(
+    name: str | None = None,
+    conn: sqlite3.Connection = Depends(get_db_conn),
+) -> list[dict[str, Any]]:
+    def _load() -> list[dict[str, Any]]:
+        runs = WorkflowRunRepository(conn).list_all()
+        if name is not None:
+            runs = [r for r in runs if r.workflow_name == name]
+        return [_build_run_response(conn, r) for r in runs]
+
+    return await anyio.to_thread.run_sync(_load)
 
 
 @router.get("/runs/{run_id}")
-async def get_run(run_id: str) -> dict[str, Any]:
+async def get_run(
+    run_id: str,
+    conn: sqlite3.Connection = Depends(get_db_conn),
+) -> dict[str, Any]:
     """Get the status and details of a single workflow run."""
-    run = run_registry.get(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-    return run.model_dump()
+    rid = _parse_run_id(run_id)
+
+    def _load() -> dict[str, Any]:
+        run = WorkflowRunRepository(conn).get(rid)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+        return _build_run_response(conn, run)
+
+    return await anyio.to_thread.run_sync(_load)
 
 
 @router.post("/runs/{run_id}/cancel")
 async def cancel_run(
     run_id: str,
     adapter: SlurmSSHAdapter = Depends(get_adapter),
+    conn: sqlite3.Connection = Depends(get_db_conn),
 ) -> dict[str, Any]:
     """Cancel all jobs in a running workflow."""
-    run = run_registry.get(run_id)
+    rid = _parse_run_id(run_id)
+    run_repo = WorkflowRunRepository(conn)
+    wrj_repo = WorkflowRunJobRepository(conn)
+    watch_repo = WatchRepository(conn)
+
+    run = await anyio.to_thread.run_sync(lambda: run_repo.get(rid))
     if run is None:
         raise HTTPException(404, f"Run '{run_id}' not found")
-    if run.status in ("completed", "failed", "cancelled"):
+    if run.status in _WORKFLOW_TERMINAL_STATUSES:
         raise HTTPException(422, f"Run is already {run.status}")
+
+    memberships = await anyio.to_thread.run_sync(lambda: wrj_repo.list_by_run(rid))
     errors: list[str] = []
-    for job_name, job_id in run.job_ids.items():
+    for m in memberships:
+        if m.job_id is None:
+            continue
         try:
             await anyio.to_thread.run_sync(
-                lambda jid=job_id: adapter.cancel_job(int(jid))  # type: ignore[misc]
+                lambda jid=m.job_id: adapter.cancel_job(int(jid))  # type: ignore[misc]
             )
         except Exception as e:
-            errors.append(f"{job_name}: {e}")
+            errors.append(f"{m.job_name}: {e}")
 
-    run_registry.complete_run(run_id, "cancelled")
+    def _finalize() -> None:
+        run_repo.update_status(rid, "cancelled", completed_at=now_iso())
+        for w in watch_repo.list_by_target(
+            kind="workflow_run",
+            target_ref=f"workflow_run:{rid}",
+            only_open=True,
+        ):
+            if w.id is not None:
+                watch_repo.close(w.id)
 
-    result: dict[str, Any] = {"status": "cancelled", "run_id": run_id}
+    await anyio.to_thread.run_sync(_finalize)
+
+    result: dict[str, Any] = {"status": "cancelled", "run_id": str(rid)}
     if errors:
         result["warnings"] = errors
     return result
@@ -500,49 +621,6 @@ async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
     return _serialize_workflow(runner)
 
 
-async def _monitor_run(
-    run_id: str, job_ids: dict[str, str], adapter: SlurmSSHAdapter
-) -> None:
-    """Background task: poll SLURM job statuses and update run registry."""
-    terminal = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"}
-    consecutive_errors = 0
-    MAX_ERRORS = 30  # ~5 minutes at 10s interval
-
-    while True:
-        all_terminal = True
-        for job_name, job_id in job_ids.items():
-            try:
-                status = await anyio.to_thread.run_sync(
-                    lambda jid=job_id: adapter.get_job_status(int(jid))  # type: ignore[misc]
-                )
-                run_registry.update_job_status(run_id, job_name, status)
-                if status not in terminal:
-                    all_terminal = False
-                consecutive_errors = 0  # reset on any success
-            except Exception:
-                consecutive_errors += 1
-                all_terminal = False  # keep polling on transient errors
-
-        if consecutive_errors >= MAX_ERRORS:
-            run_registry.fail_run(
-                run_id,
-                "Lost connection to SLURM cluster after repeated failures",
-            )
-            break
-
-        if all_terminal:
-            run = run_registry.get(run_id)
-            if run is not None:
-                statuses = set(run.job_statuses.values())
-                if statuses <= {"COMPLETED"}:
-                    run_registry.complete_run(run_id, "completed")
-                else:
-                    run_registry.complete_run(run_id, "failed")
-            break
-
-        await anyio.sleep(10)
-
-
 class WorkflowRunRequest(BaseModel):
     from_job: str | None = None
     to_job: str | None = None
@@ -594,9 +672,14 @@ def _filter_workflow_jobs(
 async def _sync_mounts(
     workflow: Workflow,
     runner: WorkflowRunner,
-    run_id: str | None,
+    *,
+    skip_sync: bool = False,
 ) -> Any:
-    """Sync SSH mounts for the workflow. Returns the SSH profile or None."""
+    """Sync SSH mounts for the workflow. Returns the SSH profile or None.
+
+    Raises :class:`HTTPException` on failure — the caller is responsible
+    for marking the owning workflow run as failed.
+    """
     from ..sync_utils import (
         get_current_profile,
         resolve_mounts_for_workflow,
@@ -604,7 +687,7 @@ async def _sync_mounts(
     )
 
     profile = await anyio.to_thread.run_sync(get_current_profile)
-    if profile is None or run_id is None:
+    if profile is None or skip_sync:
         return profile
 
     jobs_raw: list[dict[str, Any]] = []
@@ -623,9 +706,6 @@ async def _sync_mounts(
                 lambda mn=mount_name: sync_mount_by_name(profile, mn)  # type: ignore[misc]
             )
         except Exception as exc:
-            run_registry.fail_run(
-                run_id, f"Sync failed for mount '{mount_name}': {exc}"
-            )
             raise HTTPException(
                 status_code=502,
                 detail=f"Mount sync failed for '{mount_name}': {exc}",
@@ -734,12 +814,30 @@ def _render_scripts(
 async def _submit_jobs_bfs(
     workflow: Workflow,
     scripts: dict[str, str],
-    run_id: str,
     run_opts: WorkflowRunRequest,
     adapter: SlurmSSHAdapter,
+    *,
+    conn: sqlite3.Connection,
+    run_id: int,
 ) -> dict[str, str]:
-    """Submit jobs in topological order via BFS, returning {name: slurm_id}."""
+    """Submit jobs in topological order via BFS, returning {name: slurm_id}.
+
+    Each successful submit is persisted atomically:
+
+    1. ``jobs`` row via :meth:`JobRepository.record_submission` (with
+       ``submission_source='workflow'`` + ``workflow_run_id``).
+    2. Seed ``job_state_transitions`` with ``PENDING`` so the active
+       watch poller's first observation produces a real transition.
+    3. Link to the workflow via :meth:`WorkflowRunJobRepository.create`.
+
+    On sbatch failure we record a membership row with ``job_id=None`` so
+    the response can still reflect the attempted job set, then raise.
+    """
     from collections import deque
+
+    job_repo = JobRepository(conn)
+    wrj_repo = WorkflowRunJobRepository(conn)
+    transition_repo = JobStateTransitionRepository(conn)
 
     filtered_names = {job.name for job in workflow.jobs}
     job_map: dict[str, Job | ShellJob] = {job.name: job for job in workflow.jobs}
@@ -779,18 +877,70 @@ async def _submit_jobs_bfs(
                     adapter.submit_job(s, job_name=n, dependency=d)
                 )
             )
-            job_id_str = str(result["job_id"])
-            submitted[current_name] = job_id_str
+            slurm_id = int(result["job_id"])
+            submitted[current_name] = str(slurm_id)
         except Exception as exc:
-            run_registry.set_job_ids(run_id, submitted)
-            run_registry.fail_run(
-                run_id,
-                f"Submission failed for job '{current_name}': {exc}",
-            )
             raise HTTPException(
                 status_code=502,
                 detail=f"sbatch failed for '{current_name}': {exc}",
             ) from exc
+
+        depends_on = [
+            d.job_name
+            for d in current_job.parsed_dependencies
+            if d.job_name in filtered_names
+        ]
+
+        def _persist(
+            jid: int = slurm_id,
+            jname: str = current_name,
+            job_obj: Job | ShellJob = current_job,
+            deps: list[str] = depends_on,
+        ) -> None:
+            resources = getattr(job_obj, "resources", None)
+            environment = getattr(job_obj, "environment", None)
+            command_val = getattr(job_obj, "command", None)
+            job_repo.record_submission(
+                job_id=jid,
+                name=jname,
+                status="PENDING",
+                submission_source="workflow",
+                workflow_run_id=run_id,
+                command=command_val if isinstance(command_val, list) else None,
+                nodes=getattr(resources, "nodes", None) if resources else None,
+                gpus_per_node=(
+                    getattr(resources, "gpus_per_node", None) if resources else None
+                ),
+                memory_per_node=(
+                    getattr(resources, "memory_per_node", None) if resources else None
+                ),
+                time_limit=(
+                    getattr(resources, "time_limit", None) if resources else None
+                ),
+                partition=(
+                    getattr(resources, "partition", None) if resources else None
+                ),
+                nodelist=(getattr(resources, "nodelist", None) if resources else None),
+                conda=getattr(environment, "conda", None) if environment else None,
+                venv=getattr(environment, "venv", None) if environment else None,
+                env_vars=(
+                    getattr(environment, "env_vars", None) if environment else None
+                ),
+            )
+            transition_repo.insert(
+                job_id=jid,
+                from_status=None,
+                to_status="PENDING",
+                source="webhook",
+            )
+            wrj_repo.create(
+                workflow_run_id=run_id,
+                job_name=jname,
+                depends_on=deps or None,
+                job_id=jid,
+            )
+
+        await anyio.to_thread.run_sync(_persist)
 
         for dep_name in dependents[current_name]:
             in_degree[dep_name] -= 1
@@ -807,8 +957,16 @@ async def run_workflow(
     mount: str | None = None,
     body: WorkflowRunRequest | None = None,
     adapter: SlurmSSHAdapter = Depends(get_adapter),
+    conn: sqlite3.Connection = Depends(get_db_conn),
 ) -> dict[str, Any]:
-    """Run a workflow: sync mounts, submit jobs with SLURM dependencies."""
+    """Run a workflow: sync mounts, submit jobs with SLURM dependencies.
+
+    On success, creates a ``kind='workflow_run'`` watch that
+    :class:`~srunx.pollers.active_watch_poller.ActiveWatchPoller`
+    consumes to drive aggregate status transitions after the request
+    returns.
+    """
+    _ = request  # referenced for route-signature compatibility only
     if not _SAFE_NAME.match(name):
         raise HTTPException(status_code=422, detail="Invalid workflow name")
     if not mount:
@@ -826,20 +984,36 @@ async def run_workflow(
         )
         workflow = Workflow(name=workflow.name, jobs=filtered_jobs)
 
+    run_repo = WorkflowRunRepository(conn)
+    watch_repo = WatchRepository(conn)
+
     # Create run record (skip for dry runs)
-    run_id: str | None = None
+    run_id: int | None = None
     if not run_opts.dry_run:
-        run = run_registry.create(name)
-        run_id = run.id
-        run_registry.update_status(run_id, "syncing")
+        run_id = await anyio.to_thread.run_sync(
+            lambda: run_repo.create(
+                workflow_name=name,
+                yaml_path=str(yaml_path),
+                args=runner.args or None,
+                triggered_by="web",
+            )
+        )
+
+    def _fail(reason: str) -> None:
+        if run_id is not None:
+            run_repo.update_status(
+                run_id, "failed", error=reason, completed_at=now_iso()
+            )
 
     # Phase 1: Sync mounts
-    profile = await _sync_mounts(workflow, runner, run_id)
+    try:
+        profile = await _sync_mounts(workflow, runner, skip_sync=run_id is None)
+    except HTTPException as exc:
+        reason = f"Mount sync failed: {exc.detail}"
+        await anyio.to_thread.run_sync(functools.partial(_fail, reason))
+        raise
 
     # Phase 2: Prepare render context and render scripts
-    if run_id:
-        run_registry.update_status(run_id, "submitting")
-
     job_template_map, job_extra_args, wf_outputs_dir = await anyio.to_thread.run_sync(
         lambda: _prepare_render_context(yaml_path, workflow, name)
     )
@@ -856,11 +1030,9 @@ async def run_workflow(
             )
         )
     except Exception as exc:
-        if run_id:
-            run_registry.fail_run(run_id, f"Script rendering failed: {exc}")
-        raise HTTPException(
-            status_code=500, detail=f"Script rendering failed: {exc}"
-        ) from exc
+        reason = f"Script rendering failed: {exc}"
+        await anyio.to_thread.run_sync(functools.partial(_fail, reason))
+        raise HTTPException(status_code=500, detail=reason) from exc
 
     # Phase 3: Dry run early return
     if run_opts.dry_run:
@@ -885,21 +1057,39 @@ async def run_workflow(
             "execution_order": [job.name for job in workflow.jobs],
         }
 
-    # Phase 4: Submit and monitor
+    # Phase 4: Submit each job + persist + link to workflow_run + seed transition
     assert run_id is not None
-    submitted = await _submit_jobs_bfs(workflow, scripts, run_id, run_opts, adapter)
+    try:
+        await _submit_jobs_bfs(
+            workflow, scripts, run_opts, adapter, conn=conn, run_id=run_id
+        )
+    except HTTPException as exc:
+        reason = (
+            f"Submission failed: {exc.detail}"
+            if isinstance(exc.detail, str)
+            else "Submission failed"
+        )
+        await anyio.to_thread.run_sync(functools.partial(_fail, reason))
+        raise
 
-    run_registry.set_job_ids(run_id, submitted)
-    run_registry.update_status(run_id, "running")
-    for jname in submitted:
-        run_registry.update_job_status(run_id, jname, "PENDING")
+    # Phase 5: Mark running + create workflow_run watch so the poller
+    # can aggregate child statuses into the workflow run going forward.
+    def _activate() -> None:
+        run_repo.update_status(run_id, "running")  # type: ignore[arg-type]
+        watch_repo.create(
+            kind="workflow_run",
+            target_ref=f"workflow_run:{run_id}",
+        )
 
-    tg = getattr(request.app.state, "task_group", None)
-    if tg is not None:
-        tg.start_soon(_monitor_run, run_id, submitted, adapter)
+    await anyio.to_thread.run_sync(_activate)
 
-    final_run = run_registry.get(run_id)
-    return final_run.model_dump() if final_run else {"id": run_id, "status": "running"}
+    def _load_final() -> dict[str, Any]:
+        final_run = run_repo.get(run_id)  # type: ignore[arg-type]
+        if final_run is None:
+            return {"id": str(run_id), "status": "running"}
+        return _build_run_response(conn, final_run)
+
+    return await anyio.to_thread.run_sync(_load_final)
 
 
 @router.delete("/{name}")
