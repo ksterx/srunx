@@ -262,3 +262,84 @@ def test_cli_submit_with_unknown_endpoint_still_succeeds(
         assert WatchRepository(conn).list_open() == []
     finally:
         conn.close()
+
+
+def test_rejects_unimplemented_preset(isolated_db: Path) -> None:
+    """``digest`` is schema-valid but has no delivery implementation yet.
+
+    Silently accepting it would write a subscription the delivery
+    poller never fans out — the same footgun P1-3 closes at the
+    POST ``/api/subscriptions`` router. Guard the CLI path too.
+    """
+    endpoint_id, job_id = _seed_endpoint_and_job(endpoint_name="primary")
+
+    subscription_id = attach_notification_watch(
+        job_id=job_id, endpoint_name="primary", preset="digest"
+    )
+
+    assert subscription_id is None
+
+    from srunx.db.connection import open_connection
+    from srunx.db.repositories.watches import WatchRepository
+
+    conn = open_connection()
+    try:
+        # Nothing got written — no watch, no subscription.
+        assert WatchRepository(conn).list_open() == []
+    finally:
+        conn.close()
+
+
+def test_dedups_existing_watch_subscription(isolated_db: Path) -> None:
+    """Attaching twice for the same (job, endpoint, preset) reuses the row.
+
+    Before the dedup guard, running ``srunx monitor jobs 123 --endpoint
+    foo`` twice would spawn a second watch + subscription targeting the
+    same job. Deliveries stay idempotent via ``idempotency_key``, but
+    the DB would accumulate zombie rows.
+    """
+    endpoint_id, job_id = _seed_endpoint_and_job(endpoint_name="primary")
+
+    first = attach_notification_watch(
+        job_id=job_id, endpoint_name="primary", preset="terminal"
+    )
+    second = attach_notification_watch(
+        job_id=job_id, endpoint_name="primary", preset="terminal"
+    )
+
+    assert first is not None
+    # Second call returns the existing subscription id rather than
+    # creating a new one.
+    assert second == first
+
+    from srunx.db.connection import open_connection
+    from srunx.db.repositories.subscriptions import SubscriptionRepository
+    from srunx.db.repositories.watches import WatchRepository
+
+    conn = open_connection()
+    try:
+        open_watches = WatchRepository(conn).list_open()
+        # Exactly one watch, one subscription for the (job, endpoint, preset) triple.
+        assert len(open_watches) == 1
+        assert open_watches[0].id is not None
+        subs = SubscriptionRepository(conn).list_by_watch(open_watches[0].id)
+        assert len(subs) == 1
+    finally:
+        conn.close()
+
+
+def test_dedup_scoped_by_preset(isolated_db: Path) -> None:
+    """Different preset = different subscription (reasonable user intent)."""
+    endpoint_id, job_id = _seed_endpoint_and_job(endpoint_name="primary")
+
+    first = attach_notification_watch(
+        job_id=job_id, endpoint_name="primary", preset="terminal"
+    )
+    second = attach_notification_watch(
+        job_id=job_id, endpoint_name="primary", preset="all"
+    )
+
+    assert first is not None
+    assert second is not None
+    # Different presets create distinct subscription rows.
+    assert first != second
