@@ -260,6 +260,143 @@ class JobRepository(BaseRepository):
         cur = self.conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
         return cur.rowcount > 0
 
+    # ------------------------------------------------------------------
+    # Display-shaped readers (history cutover — P2-4 #A)
+    # ------------------------------------------------------------------
+    #
+    # These helpers return dicts with legacy ``JobHistory`` keys so that
+    # the ``/api/history`` router and the ``srunx history`` / ``srunx
+    # report`` CLI commands can migrate off the legacy
+    # ``~/.srunx/history.db`` without churning their response/display
+    # formats. Column renames + dropped columns are handled here:
+    #
+    #   legacy key            → new schema source
+    #   --------------------  --------------------------------------
+    #   job_name              → jobs.name
+    #   conda_env             → jobs.conda
+    #   duration_seconds      → jobs.duration_secs
+    #   workflow_name         → LEFT JOIN workflow_runs.workflow_name
+    #   cpus_per_task         → (absent; returned as None — the column
+    #                           was dropped from SCHEMA_V1)
+    #
+    # Keys that do exist under the same name (job_id, status, nodes,
+    # gpus_per_node, memory_per_node, time_limit, partition, command,
+    # submitted_at, completed_at, log_file, metadata) are passed
+    # through unchanged.
+
+    def list_recent_as_dict(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Return the ``limit`` most recent jobs in the legacy dict shape.
+
+        Used by the ``/api/history`` router + ``srunx history`` CLI to
+        keep the response/display formats stable across the cutover from
+        :class:`~srunx.history.JobHistory`.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT
+                j.job_id,
+                j.name           AS job_name,
+                j.command,
+                j.status,
+                j.nodes,
+                j.gpus_per_node,
+                NULL             AS cpus_per_task,
+                j.memory_per_node,
+                j.time_limit,
+                j.partition,
+                j.conda          AS conda_env,
+                j.submitted_at,
+                j.completed_at,
+                j.duration_secs  AS duration_seconds,
+                wr.workflow_name AS workflow_name,
+                j.log_file,
+                j.metadata
+            FROM jobs j
+            LEFT JOIN workflow_runs wr ON wr.id = j.workflow_run_id
+            ORDER BY j.submitted_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def compute_stats(
+        self,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Return aggregate stats in the legacy ``JobHistory.get_job_stats`` shape.
+
+        ``from_date`` / ``to_date`` are inclusive ISO-8601 dates (e.g.
+        ``"2026-04-01"``). ``to_date`` is interpreted as ``<= day-end``,
+        matching the legacy behaviour.
+        """
+        conditions: list[str] = []
+        params: list[Any] = []
+        if from_date:
+            conditions.append("submitted_at >= ?")
+            params.append(from_date)
+        if to_date:
+            conditions.append("submitted_at < ?")
+            # Match legacy behaviour: include the full ``to_date`` day.
+            params.append(to_date + "T23:59:59" if "T" not in to_date else to_date)
+        where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        total = int(
+            self.conn.execute(
+                f"SELECT COUNT(*) AS c FROM jobs{where_clause}", params
+            ).fetchone()["c"]
+        )
+
+        by_status_rows = self.conn.execute(
+            f"SELECT status, COUNT(*) AS c FROM jobs{where_clause} GROUP BY status",
+            params,
+        ).fetchall()
+        jobs_by_status = {r["status"]: int(r["c"]) for r in by_status_rows}
+
+        # Averaged / summed metrics only over rows that have the
+        # relevant columns populated.
+        avg_duration_row = self.conn.execute(
+            f"SELECT AVG(duration_secs) AS a FROM jobs{where_clause} "
+            "AND duration_secs IS NOT NULL"
+            if where_clause
+            else "SELECT AVG(duration_secs) AS a FROM jobs "
+            "WHERE duration_secs IS NOT NULL",
+            params,
+        ).fetchone()
+        avg_duration_seconds = (
+            float(avg_duration_row["a"]) if avg_duration_row["a"] is not None else None
+        )
+
+        total_gpu_hours_row = self.conn.execute(
+            (
+                f"SELECT SUM(duration_secs * gpus_per_node * nodes) / 3600.0 AS h "
+                f"FROM jobs{where_clause} "
+                "AND duration_secs IS NOT NULL AND gpus_per_node IS NOT NULL"
+            )
+            if where_clause
+            else (
+                "SELECT SUM(duration_secs * gpus_per_node * nodes) / 3600.0 AS h "
+                "FROM jobs "
+                "WHERE duration_secs IS NOT NULL AND gpus_per_node IS NOT NULL"
+            ),
+            params,
+        ).fetchone()
+        total_gpu_hours = (
+            float(total_gpu_hours_row["h"])
+            if total_gpu_hours_row["h"] is not None
+            else 0
+        )
+
+        return {
+            "total_jobs": total,
+            "jobs_by_status": jobs_by_status,
+            "avg_duration_seconds": avg_duration_seconds,
+            "total_gpu_hours": total_gpu_hours,
+            "from_date": from_date,
+            "to_date": to_date,
+        }
+
     # Convenience — for callers that hold the raw connection/cursor.
     def _raw(self) -> sqlite3.Connection:
         return self.conn
