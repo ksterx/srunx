@@ -431,9 +431,16 @@ class TestWorkflowRunner:
         assert len(results) == 1
         assert "test_job" in results
         assert results["test_job"] is job
-        mock_slurm.run.assert_called_once_with(
-            job, workflow_name="test", outputs_dir=None, dependency_names=None
-        )
+        # ``workflow_run_id`` is passed through from the state DB write
+        # P2-4 #A added — we don't assert its exact value (sqlite
+        # autoincrement) but it must be an int so ``compute_workflow_stats``
+        # can JOIN on it.
+        mock_slurm.run.assert_called_once()
+        call_kwargs = mock_slurm.run.call_args.kwargs
+        assert call_kwargs["workflow_name"] == "test"
+        assert call_kwargs["outputs_dir"] is None
+        assert call_kwargs["dependency_names"] is None
+        assert isinstance(call_kwargs["workflow_run_id"], int)
 
     @patch("srunx.runner.Slurm")
     def test_run_workflow_with_dependencies(self, mock_slurm_class):
