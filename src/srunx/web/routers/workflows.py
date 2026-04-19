@@ -22,6 +22,7 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from srunx.db.connection import transaction
 from srunx.db.models import WorkflowRun as DBWorkflowRun
 from srunx.db.models import WorkflowRunJob
 from srunx.db.repositories.base import now_iso
@@ -871,6 +872,12 @@ async def _submit_jobs_bfs(
                     dep_parts.append(f"{dep.dep_type}:{parent_id}")
         dependency = ",".join(dep_parts) if dep_parts else None
 
+        depends_on = [
+            d.job_name
+            for d in current_job.parsed_dependencies
+            if d.job_name in filtered_names
+        ]
+
         try:
             result = await anyio.to_thread.run_sync(
                 lambda s=scripts[current_name], n=current_name, d=dependency: (  # type: ignore[misc]
@@ -880,17 +887,39 @@ async def _submit_jobs_bfs(
             slurm_id = int(result["job_id"])
             submitted[current_name] = str(slurm_id)
         except Exception as exc:
+            # R3: record a membership row with ``job_id=None`` so the
+            # GET /runs/{id} response still shows the failed node.
+            # Best-effort — a write failure must not mask the original
+            # sbatch exception.
+            try:
+
+                def _record_failed(
+                    jname: str = current_name,
+                    deps: list[str] = depends_on,
+                ) -> None:
+                    wrj_repo.create(
+                        workflow_run_id=run_id,
+                        job_name=jname,
+                        depends_on=deps or None,
+                        job_id=None,
+                    )
+
+                await anyio.to_thread.run_sync(_record_failed)
+            except Exception:
+                logger.debug(
+                    "Failed to record membership for the failed job",
+                    exc_info=True,
+                )
             raise HTTPException(
                 status_code=502,
                 detail=f"sbatch failed for '{current_name}': {exc}",
             ) from exc
 
-        depends_on = [
-            d.job_name
-            for d in current_job.parsed_dependencies
-            if d.job_name in filtered_names
-        ]
-
+        # R1: persist the three related rows atomically. On autocommit
+        # connections (isolation_level=None) each ``execute`` would
+        # otherwise commit on its own — a mid-sequence failure would
+        # leave e.g. the jobs row inserted with no transition or
+        # membership to match it, breaking poller dedup downstream.
         def _persist(
             jid: int = slurm_id,
             jname: str = current_name,
@@ -900,45 +929,50 @@ async def _submit_jobs_bfs(
             resources = getattr(job_obj, "resources", None)
             environment = getattr(job_obj, "environment", None)
             command_val = getattr(job_obj, "command", None)
-            job_repo.record_submission(
-                job_id=jid,
-                name=jname,
-                status="PENDING",
-                submission_source="workflow",
-                workflow_run_id=run_id,
-                command=command_val if isinstance(command_val, list) else None,
-                nodes=getattr(resources, "nodes", None) if resources else None,
-                gpus_per_node=(
-                    getattr(resources, "gpus_per_node", None) if resources else None
-                ),
-                memory_per_node=(
-                    getattr(resources, "memory_per_node", None) if resources else None
-                ),
-                time_limit=(
-                    getattr(resources, "time_limit", None) if resources else None
-                ),
-                partition=(
-                    getattr(resources, "partition", None) if resources else None
-                ),
-                nodelist=(getattr(resources, "nodelist", None) if resources else None),
-                conda=getattr(environment, "conda", None) if environment else None,
-                venv=getattr(environment, "venv", None) if environment else None,
-                env_vars=(
-                    getattr(environment, "env_vars", None) if environment else None
-                ),
-            )
-            transition_repo.insert(
-                job_id=jid,
-                from_status=None,
-                to_status="PENDING",
-                source="webhook",
-            )
-            wrj_repo.create(
-                workflow_run_id=run_id,
-                job_name=jname,
-                depends_on=deps or None,
-                job_id=jid,
-            )
+            with transaction(conn, "IMMEDIATE"):
+                job_repo.record_submission(
+                    job_id=jid,
+                    name=jname,
+                    status="PENDING",
+                    submission_source="workflow",
+                    workflow_run_id=run_id,
+                    command=command_val if isinstance(command_val, list) else None,
+                    nodes=getattr(resources, "nodes", None) if resources else None,
+                    gpus_per_node=(
+                        getattr(resources, "gpus_per_node", None) if resources else None
+                    ),
+                    memory_per_node=(
+                        getattr(resources, "memory_per_node", None)
+                        if resources
+                        else None
+                    ),
+                    time_limit=(
+                        getattr(resources, "time_limit", None) if resources else None
+                    ),
+                    partition=(
+                        getattr(resources, "partition", None) if resources else None
+                    ),
+                    nodelist=(
+                        getattr(resources, "nodelist", None) if resources else None
+                    ),
+                    conda=getattr(environment, "conda", None) if environment else None,
+                    venv=getattr(environment, "venv", None) if environment else None,
+                    env_vars=(
+                        getattr(environment, "env_vars", None) if environment else None
+                    ),
+                )
+                transition_repo.insert(
+                    job_id=jid,
+                    from_status=None,
+                    to_status="PENDING",
+                    source="webhook",
+                )
+                wrj_repo.create(
+                    workflow_run_id=run_id,
+                    job_name=jname,
+                    depends_on=deps or None,
+                    job_id=jid,
+                )
 
         await anyio.to_thread.run_sync(_persist)
 
@@ -1069,6 +1103,28 @@ async def run_workflow(
             if isinstance(exc.detail, str)
             else "Submission failed"
         )
+
+        # R2: cancel any jobs that were already accepted by sbatch before
+        # the failure. Without this the workflow_run is marked failed
+        # but cluster resources keep running the orphan jobs (and any
+        # independent successors the DAG may have scheduled).
+        def _load_orphan_ids() -> list[int]:
+            memberships = WorkflowRunJobRepository(conn).list_by_run(run_id)
+            return [m.job_id for m in memberships if m.job_id is not None]
+
+        orphan_ids = await anyio.to_thread.run_sync(_load_orphan_ids)
+        for jid in orphan_ids:
+            try:
+                await anyio.to_thread.run_sync(
+                    lambda x=jid: adapter.cancel_job(int(x))  # type: ignore[misc]
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to cancel orphan SLURM job %s during workflow-run rollback",
+                    jid,
+                    exc_info=True,
+                )
+
         await anyio.to_thread.run_sync(functools.partial(_fail, reason))
         raise
 

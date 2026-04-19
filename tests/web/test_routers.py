@@ -629,6 +629,80 @@ class TestWorkflowsRouter:
         assert resp.status_code == 502
         assert "sbatch" in resp.json()["detail"]
 
+    def test_run_workflow_midway_failure_cancels_orphans_and_records(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """Covers R2 + R3 from the Codex review.
+
+        When sbatch fails on the Nth job after N-1 prior submits, we
+        must (a) cancel the orphan SLURM jobs so the cluster isn't
+        left running work the caller rolled back, and (b) still
+        persist the failed node as a membership row with
+        ``job_id=None`` so GET /runs/{id} faithfully reflects the DAG.
+        """
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.workflow_run_jobs import (
+            WorkflowRunJobRepository,
+        )
+        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+
+        create_payload = {
+            "name": "partial-fail",
+            "default_project": MOUNT,
+            "jobs": [
+                {"name": "a", "command": ["echo", "ok"]},
+                {"name": "b", "command": ["echo", "boom"], "depends_on": ["a"]},
+            ],
+        }
+        resp = client.post("/api/workflows/create", json=create_payload)
+        assert resp.status_code == 200
+
+        # First submit succeeds, second raises — mimicking a transient
+        # sbatch outage between siblings.
+        call_count = 0
+
+        def mock_submit(script_content, job_name=None, dependency=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {
+                    "name": job_name or "job",
+                    "job_id": 30001,
+                    "status": "PENDING",
+                    "depends_on": [],
+                    "command": [],
+                    "resources": {},
+                }
+            raise RuntimeError("sbatch hiccup")
+
+        mock_adapter.submit_job.side_effect = mock_submit
+
+        resp = client.post("/api/workflows/partial-fail/run", params={"mount": MOUNT})
+        assert resp.status_code == 502
+
+        # R2: the already-submitted job must have been cancelled.
+        mock_adapter.cancel_job.assert_any_call(30001)
+
+        # The run was marked failed with a useful error.
+        conn = open_connection()
+        try:
+            run_repo = WorkflowRunRepository(conn)
+            runs = [r for r in run_repo.list_all() if r.workflow_name == "partial-fail"]
+            assert runs, "workflow run was not created"
+            run = runs[0]
+            assert run.status == "failed"
+            assert run.error is not None and "Submission failed" in run.error
+
+            # R3: both nodes are represented in the DAG — the succeeded
+            # one with its slurm_id, the failed one with job_id=None.
+            assert run.id is not None
+            memberships = WorkflowRunJobRepository(conn).list_by_run(run.id)
+            by_name = {m.job_name: m for m in memberships}
+            assert by_name["a"].job_id == 30001
+            assert by_name["b"].job_id is None
+        finally:
+            conn.close()
+
     # ── DELETE /api/workflows/{name} ───────────────
 
     def test_delete_workflow(self, client: TestClient) -> None:
