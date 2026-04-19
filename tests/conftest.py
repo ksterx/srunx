@@ -18,6 +18,27 @@ def temp_dir():
 
 
 @pytest.fixture
+def tmp_srunx_db(tmp_path, monkeypatch):
+    """Yield an isolated, file-backed srunx SQLite DB.
+
+    Monkeypatches ``XDG_CONFIG_HOME`` so ``get_db_path()`` resolves under
+    the per-test tmp dir, bootstraps the schema via ``init_db``, and
+    yields an opened connection. **File-backed (NOT ``:memory:``)** so
+    that multi-connection + WAL semantics work correctly for the outbox
+    concurrency tests.
+    """
+    from srunx.db.connection import init_db, open_connection
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    db_path = init_db(delete_legacy=False)
+    conn = open_connection(db_path)
+    try:
+        yield conn, db_path
+    finally:
+        conn.close()
+
+
+@pytest.fixture
 def sample_job():
     """Create a sample job for testing."""
     return Job(

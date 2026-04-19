@@ -11,6 +11,11 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from srunx.client_protocol import (
+    JobStatusInfo,
+    parse_slurm_datetime,
+    parse_slurm_duration,
+)
 from srunx.logging import get_logger
 from srunx.ssh.core.client import SSHSlurmClient
 from srunx.ssh.core.config import ConfigManager
@@ -300,6 +305,88 @@ class SlurmSSHAdapter:
             )
 
         return jobs
+
+    def queue_by_ids(self, job_ids: list[int]) -> dict[int, JobStatusInfo]:
+        """Return a mapping of ``job_id`` -> :class:`JobStatusInfo` for active jobs.
+
+        Implements :class:`SlurmClientProtocol`. Active jobs are queried via
+        ``squeue --jobs=...``; jobs no longer in the queue fall back to
+        ``sacct``. Jobs found in neither source are omitted.
+        """
+        if not job_ids:
+            return {}
+
+        for jid in job_ids:
+            if jid <= 0:
+                raise ValueError(f"Invalid job_id: {jid}")
+
+        id_arg = ",".join(str(i) for i in job_ids)
+        results: dict[int, JobStatusInfo] = {}
+
+        # --- squeue: active jobs ---
+        try:
+            squeue_out = _run_slurm_cmd(
+                self,
+                f'squeue --jobs {id_arg} --format "%i|%T|%S|%M|%N" --noheader',
+            )
+        except RuntimeError:
+            # squeue may fail if NO job IDs are currently in the queue;
+            # this is normal when all queried jobs have already completed.
+            squeue_out = ""
+
+        for line in squeue_out.strip().splitlines():
+            parts = line.split("|")
+            if len(parts) < 5:
+                continue
+            try:
+                jid = int(parts[0].strip())
+            except ValueError:
+                continue
+            results[jid] = JobStatusInfo(
+                status=parts[1].strip(),
+                started_at=parse_slurm_datetime(parts[2]),
+                duration_secs=parse_slurm_duration(parts[3]),
+                nodelist=(parts[4].strip() or None),
+            )
+
+        # --- sacct fallback: terminal jobs ---
+        missing = [j for j in job_ids if j not in results]
+        if missing:
+            missing_arg = ",".join(str(i) for i in missing)
+            try:
+                sacct_out = _run_slurm_cmd(
+                    self,
+                    f"sacct --jobs {missing_arg} "
+                    f"--format=JobID,State,Start,End,Elapsed,NodeList "
+                    f"--noheader --parsable2",
+                )
+            except RuntimeError:
+                sacct_out = ""
+
+            for line in sacct_out.strip().splitlines():
+                parts = line.split("|")
+                if len(parts) < 6:
+                    continue
+                raw_id = parts[0].strip()
+                if "." in raw_id:
+                    continue
+                try:
+                    jid = int(raw_id)
+                except ValueError:
+                    continue
+                if jid in results:
+                    continue
+                raw_state = parts[1].strip()
+                status = raw_state.split()[0] if raw_state else "UNKNOWN"
+                results[jid] = JobStatusInfo(
+                    status=status,
+                    started_at=parse_slurm_datetime(parts[2]),
+                    completed_at=parse_slurm_datetime(parts[3]),
+                    duration_secs=parse_slurm_duration(parts[4]),
+                    nodelist=(parts[5].strip() or None),
+                )
+
+        return results
 
     def get_job(self, job_id: int) -> dict[str, Any]:
         """Get detailed job info via sacct."""
