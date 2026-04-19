@@ -15,6 +15,10 @@ Estimated wall time: **~15 minutes**.
   the test, so use a test channel.
 - Local Python env with the latest changes installed:
   `uv sync && uv run srunx --version`.
+- **This procedure assumes PR #84 (`srunx submit --endpoint`) and PR #85
+  (poller payload enrichment including `job_id` / `job_name`) are both
+  merged.** If they are not yet on `main`, skip to the
+  "Pre-#84 fallback" note below before running step 4.
 
 ## Procedure
 
@@ -39,22 +43,41 @@ Estimated wall time: **~15 minutes**.
    ```
    The banner should say `● connected`.
 
-4. **Submit a quick job via the CLI with an endpoint subscription:**
+4. **Submit a quick job via the CLI with an endpoint subscription.**
+   Use `--preset all` — the `job.submitted` event is only delivered
+   under `preset='all'` (see `srunx/notifications/presets.py`;
+   `terminal` and `running_and_terminal` will skip the first Slack
+   message and only deliver once the job reaches RUNNING / COMPLETED):
    ```bash
    uv run srunx submit \
      bash -c 'echo hi && sleep 10' \
-     --name smoke --endpoint smoke --preset running_and_terminal
+     --name smoke --endpoint smoke --preset all
    ```
    Verify in the server logs that
    `Starting 2 background poller(s)` appeared at startup.
 
-5. **Expected Slack messages** (Chronological, typically within ~30 s
-   each):
+   **Pre-#84 fallback.** If this branch hasn't merged yet, create the
+   watch + subscription manually instead of relying on `--endpoint`:
+   ```bash
+   # 4a. Submit with the legacy --slack flag (uses SLACK_WEBHOOK_URL env)
+   SLACK_WEBHOOK_URL='<YOUR_URL>' uv run srunx submit \
+     bash -c 'echo hi && sleep 10' --name smoke --slack
+   # 4b. Grab the returned SLURM job id and create a watch+sub:
+   curl -s http://127.0.0.1:8000/api/watches \
+     -H 'content-type: application/json' \
+     -d '{"kind":"job","target_ref":"job:<JOB_ID>"}'
+   # Then POST /api/subscriptions with the watch_id + endpoint_id + "all".
+   ```
 
-   | Event | Slack block | Payload keys |
+5. **Expected Slack messages** (chronological, typically within ~30 s
+   each). The `job_id` / `job_name` keys are only present once PR #85
+   has landed; before that, the Slack adapter falls back to parsing
+   the id out of `source_ref`, rendering `Name: ?`:
+
+   | Event | Slack block | Payload keys (post-#85) |
    |-------|------------|--------------|
    | `job.submitted`       | `*Job submitted*`         | `job_id`, `job_name` |
-   | `job.status_changed`  | `PENDING → *RUNNING*`     | `job_id`, `job_name`, `from_status`, `to_status` |
+   | `job.status_changed`  | `PENDING → *RUNNING*`     | `job_id`, `job_name`, `from_status`, `to_status`, `started_at`, `completed_at` |
    | `job.status_changed`  | `RUNNING → *COMPLETED*`   | same |
 
 6. **Verify persistence.** Before inspecting, stop the web server (Ctrl+C)
