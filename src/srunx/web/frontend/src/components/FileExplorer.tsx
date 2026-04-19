@@ -30,8 +30,27 @@ import xml from "highlight.js/lib/languages/xml";
 import ini from "highlight.js/lib/languages/ini";
 import dockerfile from "highlight.js/lib/languages/dockerfile";
 import "highlight.js/styles/github-dark.css";
-import { config, files, jobs } from "../lib/api.ts";
-import type { Mount, FileEntry, FileEntryType } from "../lib/types.ts";
+import { config, endpoints as endpointsApi, files, jobs } from "../lib/api.ts";
+import type {
+  Endpoint,
+  FileEntry,
+  FileEntryType,
+  Mount,
+} from "../lib/types.ts";
+
+/* ── Notification presets ───────────────────── */
+
+const NOTIFICATION_PRESETS = [
+  { value: "terminal", label: "Terminal (completed / failed)" },
+  { value: "running_and_terminal", label: "Running + terminal" },
+  { value: "all", label: "All state changes" },
+] as const;
+
+type NotificationPresetValue = (typeof NOTIFICATION_PRESETS)[number]["value"];
+
+function isKnownPreset(value: string): value is NotificationPresetValue {
+  return NOTIFICATION_PRESETS.some((p) => p.value === value);
+}
 
 /* ── highlight.js setup ────────────────────── */
 
@@ -242,26 +261,67 @@ function SubmitDialog({
   const [result, setResult] = useState<{ job_id: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Slack notification toggle
-  const [notifySlack, setNotifySlack] = useState(false);
-  const [slackAvailable, setSlackAvailable] = useState(false);
+  // Notification controls
+  const [notify, setNotify] = useState(false);
+  const [endpointList, setEndpointList] = useState<Endpoint[]>([]);
+  const [selectedEndpointId, setSelectedEndpointId] = useState<number | null>(
+    null,
+  );
+  const [preset, setPreset] = useState<NotificationPresetValue>("terminal");
+  const [endpointsLoading, setEndpointsLoading] = useState(true);
 
   // Script preview
   const [preview, setPreview] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
 
-  // Check if Slack webhook is configured
+  // Fetch endpoints + notification defaults from config.
   useEffect(() => {
-    config
-      .get()
-      .then((c) => {
-        const hasWebhook = !!c.notifications?.slack_webhook_url;
-        setSlackAvailable(hasWebhook);
-        setNotifySlack(hasWebhook);
-      })
-      .catch(() => {});
+    let cancelled = false;
+    async function loadNotificationState() {
+      try {
+        setEndpointsLoading(true);
+        const [fetched, cfg] = await Promise.all([
+          endpointsApi.list(),
+          config.get().catch(() => null),
+        ]);
+        if (cancelled) return;
+        setEndpointList(fetched);
+
+        const defaultName = cfg?.notifications?.default_endpoint_name ?? null;
+        const defaultPreset = cfg?.notifications?.default_preset;
+        if (defaultPreset && isKnownPreset(defaultPreset)) {
+          setPreset(defaultPreset);
+        }
+
+        if (fetched.length > 0) {
+          const match = defaultName
+            ? fetched.find((e) => e.name === defaultName)
+            : undefined;
+          setSelectedEndpointId((match ?? fetched[0]).id);
+          setNotify(true);
+        } else {
+          setSelectedEndpointId(null);
+          setNotify(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setEndpointList([]);
+          setSelectedEndpointId(null);
+          setNotify(false);
+        }
+      } finally {
+        if (!cancelled) setEndpointsLoading(false);
+      }
+    }
+    loadNotificationState();
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  const hasEndpoints = endpointList.length > 0;
+  const notifyEnabled = notify && hasEndpoints && selectedEndpointId !== null;
 
   // Load script preview on toggle
   useEffect(() => {
@@ -282,7 +342,18 @@ function SubmitDialog({
       // Reuse cached preview if available, otherwise fetch
       const content =
         preview ?? (await files.read(mountName, filePath)).content;
-      const res = await jobs.submit(content, jobName, mountName, notifySlack);
+      const res = await jobs.submit(
+        content,
+        jobName,
+        mountName,
+        // DEPRECATED `notify_slack` flag, retained for backward compatibility.
+        notifyEnabled,
+        {
+          notify: notifyEnabled,
+          endpointId: notifyEnabled ? selectedEndpointId : null,
+          preset,
+        },
+      );
       setResult(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Submission failed");
@@ -480,12 +551,12 @@ function SubmitDialog({
             />
           </div>
 
-          {/* Slack notification toggle */}
+          {/* Notification controls */}
           <div
             style={{
               display: "flex",
-              alignItems: "center",
-              gap: 8,
+              flexDirection: "column",
+              gap: "var(--sp-2)",
             }}
           >
             <label
@@ -493,23 +564,25 @@ function SubmitDialog({
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
-                cursor: slackAvailable ? "pointer" : "default",
-                opacity: slackAvailable ? 1 : 0.4,
+                cursor: hasEndpoints ? "pointer" : "default",
+                opacity: hasEndpoints ? 1 : 0.4,
               }}
               title={
-                slackAvailable
-                  ? "Send Slack notification on submission"
-                  : "Configure Slack webhook in Settings > Notifications"
+                hasEndpoints
+                  ? "Send a notification on job state changes"
+                  : "Add an endpoint in Settings → Notifications first."
               }
             >
               <input
                 type="checkbox"
-                checked={notifySlack}
-                onChange={(e) => setNotifySlack(e.target.checked)}
-                disabled={!slackAvailable || submitting || !!result}
+                checked={notify && hasEndpoints}
+                onChange={(e) => setNotify(e.target.checked)}
+                disabled={
+                  !hasEndpoints || endpointsLoading || submitting || !!result
+                }
                 style={{ accentColor: "var(--st-running)", margin: 0 }}
               />
-              {notifySlack ? (
+              {notify && hasEndpoints ? (
                 <Bell size={13} style={{ color: "var(--st-running)" }} />
               ) : (
                 <BellOff size={13} style={{ color: "var(--text-muted)" }} />
@@ -518,39 +591,128 @@ function SubmitDialog({
                 style={{
                   fontFamily: "var(--font-mono)",
                   fontSize: "0.75rem",
-                  color: slackAvailable
+                  color: hasEndpoints
                     ? "var(--text-secondary)"
                     : "var(--text-muted)",
                 }}
               >
-                Slack notification
+                Notify on state changes
               </span>
             </label>
-            {!slackAvailable && (
-              <a
-                href="/settings"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onClose();
-                }}
+
+            {!endpointsLoading && !hasEndpoints && (
+              <div
                 style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "var(--sp-2)",
+                  padding: "var(--sp-2) var(--sp-3)",
+                  background: "var(--bg-base)",
+                  border: "1px solid var(--border-subtle)",
+                  borderRadius: "var(--radius-md)",
                   fontFamily: "var(--font-mono)",
-                  fontSize: "0.65rem",
-                  color: "var(--st-running)",
-                  textDecoration: "none",
-                  opacity: 0.8,
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.textDecoration = "underline";
-                  e.currentTarget.style.opacity = "1";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.textDecoration = "none";
-                  e.currentTarget.style.opacity = "0.8";
+                  fontSize: "0.7rem",
+                  color: "var(--text-muted)",
                 }}
               >
-                Settings で設定
-              </a>
+                <AlertTriangle size={12} />
+                <span style={{ flex: 1 }}>
+                  Add an endpoint in Settings → Notifications first.
+                </span>
+                <a
+                  href="/settings"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onClose();
+                  }}
+                  style={{
+                    color: "var(--st-running)",
+                    textDecoration: "none",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.textDecoration = "underline";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.textDecoration = "none";
+                  }}
+                >
+                  Open Settings
+                </a>
+              </div>
+            )}
+
+            {hasEndpoints && notify && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: "var(--sp-2)",
+                }}
+              >
+                <div>
+                  <label
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: "0.65rem",
+                      color: "var(--text-muted)",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.06em",
+                      marginBottom: 4,
+                      display: "block",
+                    }}
+                  >
+                    Endpoint
+                  </label>
+                  <select
+                    className="input"
+                    style={{ width: "100%", fontSize: "0.75rem" }}
+                    value={selectedEndpointId ?? ""}
+                    onChange={(e) =>
+                      setSelectedEndpointId(
+                        e.target.value === "" ? null : Number(e.target.value),
+                      )
+                    }
+                    disabled={submitting || !!result}
+                  >
+                    {endpointList.map((ep) => (
+                      <option key={ep.id} value={ep.id}>
+                        {ep.name} ({ep.kind})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: "0.65rem",
+                      color: "var(--text-muted)",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.06em",
+                      marginBottom: 4,
+                      display: "block",
+                    }}
+                  >
+                    Preset
+                  </label>
+                  <select
+                    className="input"
+                    style={{ width: "100%", fontSize: "0.75rem" }}
+                    value={preset}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (isKnownPreset(v)) setPreset(v);
+                    }}
+                    disabled={submitting || !!result}
+                  >
+                    {NOTIFICATION_PRESETS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             )}
           </div>
 

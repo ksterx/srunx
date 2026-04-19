@@ -15,6 +15,8 @@ from srunx.logging import get_logger
 
 from .config import get_web_config
 from .deps import set_adapter
+from .routers import deliveries as deliveries_router
+from .routers import endpoints as endpoints_router
 from .routers import (
     files,
     history,
@@ -22,6 +24,8 @@ from .routers import (
     resources,
     workflows,
 )
+from .routers import subscriptions as subscriptions_router
+from .routers import watches as watches_router
 from .ssh_adapter import SlurmSSHAdapter
 
 _FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
@@ -338,6 +342,11 @@ def create_app() -> FastAPI:
     app.include_router(history.router)
     app.include_router(files.router)
     app.include_router(templates.router)
+    # New CRUD / observability routers for the notification + state overhaul
+    app.include_router(endpoints_router.router)
+    app.include_router(subscriptions_router.router)
+    app.include_router(watches_router.router)
+    app.include_router(deliveries_router.router)
 
     # Serve frontend static files (production) with SPA fallback
     if _FRONTEND_DIST.exists():

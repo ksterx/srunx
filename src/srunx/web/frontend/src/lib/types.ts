@@ -232,6 +232,57 @@ export type SrunxConfig = {
 
 export type NotificationConfig = {
   slack_webhook_url: string | null;
+  default_endpoint_name?: string | null;
+  default_preset?: string;
+};
+
+/* ── Notification endpoints / subscriptions / deliveries ─── */
+
+export type EndpointKind =
+  | "slack_webhook"
+  | "generic_webhook"
+  | "email"
+  | "slack_bot";
+
+export type Endpoint = {
+  id: number;
+  kind: EndpointKind;
+  name: string;
+  config: Record<string, unknown>;
+  created_at: string;
+  disabled_at: string | null;
+};
+
+export type NotificationPreset =
+  | "terminal"
+  | "running_and_terminal"
+  | "all"
+  | "digest";
+
+export type Subscription = {
+  id: number;
+  watch_id: number;
+  endpoint_id: number;
+  preset: NotificationPreset;
+  created_at: string;
+};
+
+export type DeliveryStatus = "pending" | "sending" | "delivered" | "abandoned";
+
+export type Delivery = {
+  id: number;
+  event_id: number;
+  subscription_id: number;
+  endpoint_id: number;
+  idempotency_key: string;
+  status: DeliveryStatus;
+  attempt_count: number;
+  next_attempt_at: string;
+  leased_until: string | null;
+  worker_id: string | null;
+  last_error: string | null;
+  delivered_at: string | null;
+  created_at: string;
 };
 
 export type ConfigPathInfo = {
