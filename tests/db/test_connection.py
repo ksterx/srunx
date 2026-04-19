@@ -171,3 +171,43 @@ def test_init_db_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     finally:
         conn.close()
     assert rows[0] == 1
+
+
+def test_connection_usable_from_another_thread(tmp_path: Path) -> None:
+    """Regression: FastAPI routes pass the request-bound connection into
+    ``anyio.to_thread.run_sync`` worker threads. The stock ``sqlite3``
+    driver rejects cross-thread use unless ``check_same_thread=False``
+    was set at open time — which a real uvicorn run would hit on every
+    /api/endpoints, /api/deliveries, /api/subscriptions, /api/watches
+    call.
+
+    This test exercises the exact cross-thread pattern (connection
+    opened on thread A, read on thread B) to prevent the bug from
+    regressing.
+    """
+    import threading
+
+    db = tmp_path / "srunx.db"
+    conn = open_connection(db)
+    try:
+        conn.execute("CREATE TABLE t (id INTEGER)")
+        conn.execute("INSERT INTO t VALUES (1)")
+
+        result: list[int] = []
+        error: list[BaseException] = []
+
+        def read_on_other_thread() -> None:
+            try:
+                row = conn.execute("SELECT id FROM t").fetchone()
+                result.append(row[0])
+            except BaseException as exc:  # noqa: BLE001
+                error.append(exc)
+
+        t = threading.Thread(target=read_on_other_thread)
+        t.start()
+        t.join(timeout=5)
+
+        assert not error, f"cross-thread read raised: {error[0]!r}"
+        assert result == [1]
+    finally:
+        conn.close()
