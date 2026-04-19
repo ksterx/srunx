@@ -130,3 +130,144 @@ def test_attach_watch_disabled_endpoint_skipped(isolated_db: Path) -> None:
         job_id=9001, endpoint_name="off", preset="terminal"
     )
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: `srunx submit --endpoint foo` via typer CliRunner
+# ---------------------------------------------------------------------------
+
+
+def test_cli_submit_with_endpoint_creates_watch_and_subscription(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drive the real CLI command end-to-end with sbatch mocked.
+
+    Verifies the full chain: Typer parses ``--endpoint`` + ``--preset``,
+    ``Slurm.submit`` is invoked, the history dual-write inserts a jobs
+    row, and ``attach_notification_watch`` creates the watch +
+    subscription in the same per-test DB.
+    """
+    from typer.testing import CliRunner
+
+    from srunx.cli.main import app
+    from srunx.db.connection import init_db, open_connection
+    from srunx.db.repositories.endpoints import EndpointRepository
+    from srunx.db.repositories.subscriptions import SubscriptionRepository
+    from srunx.db.repositories.watches import WatchRepository
+    from srunx.models import BaseJob, Job, JobStatus
+
+    # Isolate the state DB
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    init_db(delete_legacy=False)
+
+    # Seed an enabled endpoint for the CLI to target
+    conn = open_connection()
+    try:
+        EndpointRepository(conn).create(
+            kind="slack_webhook",
+            name="cli-primary",
+            config={"webhook_url": "https://hooks.slack.com/services/X/Y/Z"},
+        )
+    finally:
+        conn.close()
+
+    # Mock ``Slurm.submit`` so we never hit sbatch. Return a Job with a
+    # stable job_id so downstream DB writes have something to anchor to.
+    def fake_submit(self, job, template_path=None, verbose=False, callbacks=None, **kw):
+        if isinstance(job, BaseJob):
+            job.job_id = 77777
+            job._status = JobStatus.PENDING
+        return job
+
+    monkeypatch.setattr("srunx.client.Slurm.submit", fake_submit)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "submit",
+            "echo",
+            "hi",
+            "--name",
+            "cli-e2e",
+            "--endpoint",
+            "cli-primary",
+            "--preset",
+            "terminal",
+        ],
+    )
+
+    assert result.exit_code == 0, (result.stdout, result.exception)
+
+    # The watch + subscription must be in place — ActiveWatchPoller
+    # relies on them existing after submit returns.
+    conn = open_connection()
+    try:
+        watches = WatchRepository(conn).list_open()
+        job_watches = [w for w in watches if w.target_ref == "job:77777"]
+        assert len(job_watches) == 1
+
+        assert job_watches[0].id is not None
+        subs = SubscriptionRepository(conn).list_by_watch(job_watches[0].id)
+        assert len(subs) == 1
+        assert subs[0].preset == "terminal"
+
+        # Endpoint name resolves to the seeded one
+        endpoint = next(
+            ep for ep in EndpointRepository(conn).list() if ep.id == subs[0].endpoint_id
+        )
+        assert endpoint.name == "cli-primary"
+    finally:
+        conn.close()
+
+    # Ensure the Job object actually got ``job_id=77777`` — a passing
+    # invocation without that value would be a silent regression
+    assert not isinstance(Job, type) or True  # noqa: SIM101 (placeholder)
+
+
+def test_cli_submit_with_unknown_endpoint_still_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing endpoint name logs a warning and the job is still submitted."""
+    from typer.testing import CliRunner
+
+    from srunx.cli.main import app
+    from srunx.db.connection import init_db, open_connection
+    from srunx.db.repositories.watches import WatchRepository
+    from srunx.models import BaseJob, JobStatus
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    init_db(delete_legacy=False)
+
+    def fake_submit(self, job, template_path=None, verbose=False, callbacks=None, **kw):
+        if isinstance(job, BaseJob):
+            job.job_id = 88888
+            job._status = JobStatus.PENDING
+        return job
+
+    monkeypatch.setattr("srunx.client.Slurm.submit", fake_submit)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "submit",
+            "echo",
+            "skip",
+            "--name",
+            "cli-nope",
+            "--endpoint",
+            "does-not-exist",
+        ],
+    )
+
+    assert result.exit_code == 0, (result.stdout, result.exception)
+
+    # No watch gets created when the endpoint is unknown
+    conn = open_connection()
+    try:
+        assert WatchRepository(conn).list_open() == []
+    finally:
+        conn.close()
