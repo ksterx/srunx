@@ -9,6 +9,7 @@ import time
 from collections.abc import Sequence
 from importlib.resources import files
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from srunx.callbacks import Callback
 from srunx.logging import get_logger
@@ -23,6 +24,9 @@ from srunx.models import (
     render_shell_job_script,
 )
 from srunx.utils import GPU_TRES_RE, get_job_status, job_status_msg  # noqa: E402
+
+if TYPE_CHECKING:
+    from srunx.client_protocol import JobStatusInfo
 
 logger = get_logger(__name__)
 
@@ -266,6 +270,108 @@ class Slurm:
                 jobs.append(job)
 
         return jobs
+
+    def queue_by_ids(self, job_ids: list[int]) -> dict[int, "JobStatusInfo"]:
+        """Return a mapping of ``job_id`` -> :class:`JobStatusInfo` for active jobs.
+
+        Active jobs are read from ``squeue``. Jobs that have already left
+        the queue are looked up via ``sacct``. Jobs found in neither source
+        are omitted from the returned dict.
+
+        Args:
+            job_ids: SLURM job IDs to query. An empty list yields ``{}``.
+
+        Returns:
+            Dict keyed by job_id. Missing jobs are absent from the dict.
+        """
+        from srunx.client_protocol import (
+            JobStatusInfo,
+            parse_slurm_datetime,
+            parse_slurm_duration,
+        )
+
+        if not job_ids:
+            return {}
+
+        results: dict[int, JobStatusInfo] = {}
+        id_arg = ",".join(str(i) for i in job_ids)
+
+        # --- squeue: active (PENDING / RUNNING / etc.) ---
+        squeue_cmd = [
+            "squeue",
+            "--jobs",
+            id_arg,
+            "--format",
+            "%i|%T|%S|%M|%N",
+            "--noheader",
+        ]
+        try:
+            squeue_res = subprocess.run(
+                squeue_cmd, capture_output=True, text=True, check=False
+            )
+        except FileNotFoundError:
+            squeue_res = None
+
+        if squeue_res and squeue_res.returncode == 0:
+            for line in squeue_res.stdout.strip().splitlines():
+                parts = line.split("|")
+                if len(parts) < 5:
+                    continue
+                try:
+                    jid = int(parts[0].strip())
+                except ValueError:
+                    continue
+                results[jid] = JobStatusInfo(
+                    status=parts[1].strip(),
+                    started_at=parse_slurm_datetime(parts[2]),
+                    duration_secs=parse_slurm_duration(parts[3]),
+                    nodelist=(parts[4].strip() or None),
+                )
+
+        # --- sacct fallback: terminal jobs ---
+        missing = [j for j in job_ids if j not in results]
+        if missing:
+            sacct_cmd = [
+                "sacct",
+                "--jobs",
+                ",".join(str(i) for i in missing),
+                "--format=JobID,State,Start,End,Elapsed,NodeList",
+                "--noheader",
+                "--parsable2",
+            ]
+            try:
+                sacct_res = subprocess.run(
+                    sacct_cmd, capture_output=True, text=True, check=False
+                )
+            except FileNotFoundError:
+                sacct_res = None
+
+            if sacct_res and sacct_res.returncode == 0:
+                for line in sacct_res.stdout.strip().splitlines():
+                    parts = line.split("|")
+                    if len(parts) < 6:
+                        continue
+                    # Skip sub-steps like "12345.batch"
+                    raw_id = parts[0].strip()
+                    if "." in raw_id:
+                        continue
+                    try:
+                        jid = int(raw_id)
+                    except ValueError:
+                        continue
+                    if jid in results:
+                        continue
+                    raw_state = parts[1].strip()
+                    status = raw_state.split()[0] if raw_state else "UNKNOWN"
+                    results[jid] = JobStatusInfo(
+                        status=status,
+                        started_at=parse_slurm_datetime(parts[2]),
+                        completed_at=parse_slurm_datetime(parts[3]),
+                        duration_secs=parse_slurm_duration(parts[4]),
+                        nodelist=(parts[5].strip() or None),
+                    )
+
+        return results
 
     def monitor(
         self,
