@@ -125,7 +125,12 @@ class SlackWebhookDeliveryAdapter:
                 source_ref, "workflow_run"
             )
             run_id = sanitize_slack_text(
-                str(payload.get("run_id") or fallback_id or "?")
+                str(
+                    payload.get("workflow_run_id")
+                    or payload.get("run_id")
+                    or fallback_id
+                    or "?"
+                )
             )
             name = sanitize_slack_text(str(payload.get("workflow_name", "?")))
             from_status = sanitize_slack_text(str(payload.get("from_status", "?")))

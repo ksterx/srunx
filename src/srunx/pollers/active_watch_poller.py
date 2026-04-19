@@ -358,6 +358,13 @@ class ActiveWatchPoller:
             started_iso = _dt_to_iso(status_info.started_at)
             completed_iso = _dt_to_iso(status_info.completed_at)
 
+            # Look up the job's human-friendly name so downstream adapters
+            # (Slack, email, generic webhooks) can render informative
+            # messages without having to re-query the DB or parse
+            # source_ref themselves.
+            existing_job = job_repo.get(job_id)
+            job_name = existing_job.name if existing_job is not None else None
+
             with transaction(conn, "IMMEDIATE"):
                 transition_repo.insert(
                     job_id=job_id,
@@ -376,6 +383,8 @@ class ActiveWatchPoller:
                 transitions_count += 1
 
                 payload: dict[str, object] = {
+                    "job_id": job_id,
+                    "job_name": job_name,
                     "from_status": from_status,
                     "to_status": current_status,
                     "started_at": started_iso,
@@ -459,6 +468,8 @@ class ActiveWatchPoller:
                 transitions_count += 1
 
                 payload: dict[str, object] = {
+                    "workflow_run_id": run_id,
+                    "workflow_name": run.workflow_name,
                     "from_status": run.status,
                     "to_status": new_status,
                 }
