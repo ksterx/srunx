@@ -486,10 +486,10 @@ class TestWorkflowsRouter:
         assert resp.status_code == 202
         data = resp.json()
         assert data["workflow_name"] == "run-test"
-        # Status stays 'pending' until ActiveWatchPoller observes a child
-        # job in RUNNING state. Pre-emptively writing 'running' here
-        # caused a spurious 'running → pending' regression on the first
-        # poll cycle (see P1-1 in the Codex review triage).
+        # Status stays ``pending`` until ``ActiveWatchPoller`` observes
+        # the first child transition (P1-1). Pre-emptively writing
+        # ``running`` here caused a spurious ``running → pending``
+        # transition on the first poll cycle.
         assert data["status"] == "pending"
         assert "10001" in data["job_ids"].values()
         assert "10002" in data["job_ids"].values()
@@ -568,8 +568,8 @@ class TestWorkflowsRouter:
             run = WorkflowRunRepository(conn).get(run_id)
             assert run is not None
             assert run.workflow_name == "integration-run"
-            # P1-1: the run stays 'pending' until the poller observes a
-            # RUNNING child. See the phase-5 comment in workflows.py.
+            # P1-1: the run stays ``pending`` until the poller observes
+            # a RUNNING child. See the phase-5 comment in workflows.py.
             assert run.status == "pending"
             assert run.triggered_by == "web"
 
@@ -727,7 +727,13 @@ class TestWorkflowsRouter:
     def test_run_workflow_invalid_preset_is_rejected(
         self, client: TestClient, mock_adapter: MagicMock
     ) -> None:
-        """Bogus preset → 422, before we touch the watch/subscription step."""
+        """Bogus preset → 422, **before** any sbatch submission.
+
+        Guards against the "422 with orphan jobs" shape: validating
+        preset after ``_submit_jobs_bfs`` would leave already-queued
+        SLURM jobs running on the cluster with no accompanying
+        workflow_run record and no way for the user to find them.
+        """
         resp = client.post(
             "/api/workflows/create",
             json={
@@ -754,6 +760,19 @@ class TestWorkflowsRouter:
         )
         assert resp.status_code == 422
         assert "preset" in resp.json()["detail"].lower()
+
+        # The early reject must short-circuit BEFORE phase 4: no sbatch
+        # calls, and no ``workflow_runs`` row for the aborted run.
+        mock_adapter.submit_job.assert_not_called()
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+
+        conn = open_connection()
+        try:
+            all_runs = WorkflowRunRepository(conn).list_all()
+            assert not any(r.workflow_name == "bad-preset-run" for r in all_runs)
+        finally:
+            conn.close()
 
     def test_run_workflow_not_found(self, client: TestClient) -> None:
         resp = client.post("/api/workflows/nonexistent-wf/run", params={"mount": MOUNT})
@@ -1745,8 +1764,8 @@ class TestWorkflowExecutionControl:
         )
         assert resp.status_code == 202
         data = resp.json()
-        # P1-1: newly-created runs start at 'pending' and the poller
-        # promotes them to 'running' on the first RUNNING child.
+        # P1-1: newly-created runs start at ``pending`` and the poller
+        # promotes them to ``running`` on the first RUNNING child.
         assert data["status"] == "pending"
         # All 3 jobs should be submitted
         assert mock_adapter.submit_job.call_count == 3

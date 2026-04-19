@@ -1019,6 +1019,21 @@ async def run_workflow(
         raise HTTPException(status_code=422, detail="mount query parameter is required")
 
     run_opts = body or WorkflowRunRequest()
+
+    # Validate preset up-front — before mounting, rendering, and
+    # ``sbatch``ing. Deferring this check until Phase 5 (post-submit)
+    # means a bogus preset returns 422 with jobs already queued on
+    # the cluster, leaving orphans behind. The implementation set
+    # matches ``SubscriptionRepository`` + the subscriptions router
+    # guard (P1-3) — ``digest`` has no delivery pipeline yet.
+    if run_opts.notify and run_opts.preset not in _WORKFLOW_RUN_PRESETS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid preset '{run_opts.preset}'. Allowed: {_WORKFLOW_RUN_PRESETS}"
+            ),
+        )
+
     yaml_path = _find_yaml(name, mount)
 
     # Load and optionally filter workflow
@@ -1141,10 +1156,14 @@ async def run_workflow(
         raise
 
     # Phase 5: open the workflow_run watch so the poller can drive
-    # status transitions going forward. We deliberately do NOT set
-    # ``workflow_runs.status='running'`` here: the run record stays
-    # ``pending`` (as created above) until ActiveWatchPoller observes a
-    # child job in RUNNING state (P1-1).
+    # status transitions going forward. ``workflow_runs.status='running'``
+    # is deliberately NOT written here — the run record stays ``pending``
+    # (as created above) until ``ActiveWatchPoller`` observes a child
+    # job in RUNNING state (P1-1). Writing ``running`` eagerly would
+    # race the poller's "otherwise→pending" rule and emit a spurious
+    # ``running → pending`` transition (+ a
+    # ``workflow_run.status_changed`` event to every subscriber) on the
+    # very first cycle, while all children are still PENDING in SLURM.
     #
     # When ``notify`` is requested, also pair the watch with a
     # subscription for the chosen endpoint; the delivery poller then
@@ -1160,11 +1179,10 @@ async def run_workflow(
 
             endpoint = EndpointRepository(conn).get(run_opts.endpoint_id)
             if endpoint is None or endpoint.disabled_at is not None:
-                # Non-fatal: the watch still exists, the run is running,
-                # the user just won't get external notifications. We log
-                # a warning instead of 4xx'ing because the run already
-                # submitted jobs — returning a failure now would be
-                # misleading.
+                # Non-fatal: the watch still exists, the run is open,
+                # the user just won't get external notifications. Jobs
+                # are already queued on the cluster — 4xx'ing here
+                # would be misleading.
                 logger.warning(
                     "workflow_run %s: requested endpoint_id=%s not usable "
                     "(missing or disabled); skipping subscription",
@@ -1178,18 +1196,6 @@ async def run_workflow(
                 preset=run_opts.preset,
             )
         return new_watch_id
-
-    # Validate preset up-front so a bogus value aborts before we mark
-    # the run running (we can still refuse here without orphaning jobs
-    # — Phase 4 already submitted them, but the watch/subscription step
-    # is still cheap to reject). Mirrors the guard in subscriptions router.
-    if run_opts.notify and run_opts.preset not in _WORKFLOW_RUN_PRESETS:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"Invalid preset '{run_opts.preset}'. Allowed: {_WORKFLOW_RUN_PRESETS}"
-            ),
-        )
 
     await anyio.to_thread.run_sync(_open_watch)
 
