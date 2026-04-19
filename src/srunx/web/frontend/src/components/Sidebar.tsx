@@ -5,6 +5,7 @@ import {
   GitFork,
   FileCode2,
   Cpu,
+  Bell,
   Settings,
   Terminal,
   ChevronLeft,
@@ -31,6 +32,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/workflows", icon: <GitFork size={18} />, label: "Workflows" },
   { to: "/templates", icon: <FileCode2 size={18} />, label: "Templates" },
   { to: "/resources", icon: <Cpu size={18} />, label: "Resources" },
+  { to: "/notifications", icon: <Bell size={18} />, label: "Notifications" },
   { to: "/settings", icon: <Settings size={18} />, label: "Settings" },
 ];
 

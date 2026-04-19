@@ -111,9 +111,18 @@ def test_delete_endpoint(app_client: TestClient) -> None:
 # --- subscriptions CRUD (requires endpoint + watch) ---
 
 
-def test_subscription_requires_filter(app_client: TestClient) -> None:
+def test_subscription_list_recent_empty(app_client: TestClient) -> None:
+    """Without ``watch_id`` / ``endpoint_id`` the endpoint returns recent subs globally."""
     r = app_client.get("/api/subscriptions")
-    assert r.status_code == 400
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_subscription_list_recent_limit_validated(app_client: TestClient) -> None:
+    r = app_client.get("/api/subscriptions?limit=0")
+    assert r.status_code == 422
+    r = app_client.get("/api/subscriptions?limit=501")
+    assert r.status_code == 422
 
 
 # --- deliveries observability ---
@@ -127,9 +136,19 @@ def test_deliveries_stuck_count(app_client: TestClient) -> None:
     assert "older_than_sec" in body
 
 
-def test_deliveries_list_requires_subscription_id(app_client: TestClient) -> None:
+def test_deliveries_list_recent_empty(app_client: TestClient) -> None:
+    """Without ``subscription_id`` the endpoint returns recent deliveries globally."""
     r = app_client.get("/api/deliveries")
-    assert r.status_code == 400
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_deliveries_list_recent_limit_validated(app_client: TestClient) -> None:
+    """``limit`` must stay within [1, 500]."""
+    r = app_client.get("/api/deliveries?limit=0")
+    assert r.status_code == 422
+    r = app_client.get("/api/deliveries?limit=501")
+    assert r.status_code == 422
 
 
 # --- watches observability ---

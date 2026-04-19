@@ -23,6 +23,7 @@ import type {
   SrunxConfig,
   Subscription,
   SyncResult,
+  Watch,
   TemplateCreateRequest,
   TemplateDetail,
   TemplateListItem,
@@ -778,6 +779,28 @@ export const subscriptions = {
   },
 };
 
+/* ── Watches ────────────────────────────────── */
+
+export const watches = {
+  list: async (opts?: {
+    open?: boolean;
+    kind?: string;
+    target_ref?: string;
+  }): Promise<Watch[]> => {
+    const params = new URLSearchParams();
+    if (opts?.open !== undefined) params.set("open", String(opts.open));
+    if (opts?.kind) params.set("kind", opts.kind);
+    if (opts?.target_ref) params.set("target_ref", opts.target_ref);
+    const qs = params.toString();
+    const res = await fetch(`/api/watches${qs ? `?${qs}` : ""}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to fetch watches"));
+    }
+    return res.json();
+  },
+};
+
 /* ── Deliveries ─────────────────────────────── */
 
 export const deliveries = {
@@ -797,6 +820,22 @@ export const deliveries = {
     return res.json();
   },
 
+  listRecent: async (opts?: {
+    status?: string;
+    limit?: number;
+  }): Promise<Delivery[]> => {
+    const params = new URLSearchParams();
+    if (opts?.status) params.set("status", opts.status);
+    if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    const res = await fetch(`/api/deliveries${qs ? `?${qs}` : ""}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to fetch deliveries"));
+    }
+    return res.json();
+  },
+
   countStuck: async (
     olderThanSec?: number,
   ): Promise<{ count: number; older_than_sec: number }> => {
@@ -804,9 +843,7 @@ export const deliveries = {
     if (olderThanSec !== undefined)
       params.set("older_than_sec", String(olderThanSec));
     const qs = params.toString();
-    const res = await fetch(
-      `/api/deliveries/stuck-count${qs ? `?${qs}` : ""}`,
-    );
+    const res = await fetch(`/api/deliveries/stuck${qs ? `?${qs}` : ""}`);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(extractDetail(err, "Failed to fetch stuck count"));

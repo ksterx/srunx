@@ -275,6 +275,46 @@ def test_list_by_subscription_filters_and_orders(
     assert delivered_rows == []
 
 
+def test_list_recent_returns_all_subscriptions(
+    repo: DeliveryRepository,
+    setup_fks: dict[str, int],
+    conn: sqlite3.Connection,
+) -> None:
+    """``list_recent`` returns deliveries across subscriptions, newest first."""
+    repo.insert(
+        setup_fks["event_id"],
+        setup_fks["subscription_id"],
+        setup_fks["endpoint_id"],
+        "k1",
+    )
+    time.sleep(0.02)
+    other_event = _seed_event(conn, source_ref="job:99", payload_hash="hash-99")
+    other_watch = _seed_watch(conn, target_ref="job:99")
+    other_sub = _seed_subscription(conn, other_watch, setup_fks["endpoint_id"])
+    repo.insert(other_event, other_sub, setup_fks["endpoint_id"], "k2")
+
+    rows = repo.list_recent()
+    assert len(rows) == 2
+    assert rows[0].idempotency_key == "k2"  # newest first
+    assert rows[1].idempotency_key == "k1"
+
+
+def test_list_recent_respects_status_and_limit(
+    repo: DeliveryRepository,
+    setup_fks: dict[str, int],
+) -> None:
+    for i in range(5):
+        repo.insert(
+            setup_fks["event_id"],
+            setup_fks["subscription_id"],
+            setup_fks["endpoint_id"],
+            f"key-{i}",
+        )
+    assert len(repo.list_recent(limit=3)) == 3
+    assert repo.list_recent(status="delivered") == []
+    assert len(repo.list_recent(status="pending")) == 5
+
+
 # ---------------------------------------------------------------------------
 # claim_one
 # ---------------------------------------------------------------------------

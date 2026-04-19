@@ -148,6 +148,35 @@ class DeliveryRepository(BaseRepository):
         rows: list[sqlite3.Row] = self.conn.execute(sql, params).fetchall()
         return [self._row_to_model(r, Delivery) for r in rows if r is not None]  # type: ignore[misc]
 
+    def list_recent(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[Delivery]:
+        """Return the most recent deliveries across all subscriptions.
+
+        Powers the NotificationsCenter dashboard — a read-only
+        observability view of the outbox. Callers must bound ``limit``
+        to avoid pulling the full table during incidents.
+        """
+        if status is None:
+            sql = (
+                f"SELECT {', '.join(self._COLUMNS)} FROM deliveries "
+                "ORDER BY created_at DESC LIMIT ?"
+            )
+            params: list[Any] = [limit]
+        else:
+            sql = (
+                f"SELECT {', '.join(self._COLUMNS)} FROM deliveries "
+                "WHERE status = ? "
+                "ORDER BY created_at DESC LIMIT ?"
+            )
+            params = [status, limit]
+
+        rows: list[sqlite3.Row] = self.conn.execute(sql, params).fetchall()
+        return [self._row_to_model(r, Delivery) for r in rows if r is not None]  # type: ignore[misc]
+
     # -- lease mechanics ---------------------------------------------------
 
     def reclaim_expired_leases(self) -> int:
