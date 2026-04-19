@@ -300,6 +300,14 @@ class JobRepository(BaseRepository):
                 j.status,
                 j.nodes,
                 j.gpus_per_node,
+                -- ``gpus`` is the total allocation the ``/api/history``
+                -- serializer expects (``serialize_history_entry`` reads
+                -- ``entry.get('gpus')``). Compute nodes * gpus_per_node
+                -- here so the field is populated; legacy JobHistory
+                -- stored only ``gpus_per_node`` and the serializer was
+                -- getting None for every row — surfaced under P3-10
+                -- review, fixed inline with the cutover.
+                (COALESCE(j.nodes, 0) * COALESCE(j.gpus_per_node, 0)) AS gpus,
                 NULL             AS cpus_per_task,
                 j.memory_per_node,
                 j.time_limit,

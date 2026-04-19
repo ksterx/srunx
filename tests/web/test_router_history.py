@@ -181,6 +181,14 @@ class TestHistoryRecent:
         # workflow_name comes from the LEFT JOIN
         workflow_entry = next(e for e in data if e["job_id"] == 101)
         assert workflow_entry["workflow_name"] == "ml_pipeline"
+        # ``gpus`` = nodes * gpus_per_node so ``serialize_history_entry``
+        # (which reads ``entry.get('gpus')``) doesn't return null.
+        # Job 100: 1 node × 4 gpus/node = 4. Job 101: 2 × 4 = 8.
+        # Job 102: missing nodes/gpus → COALESCE(0, 0) = 0.
+        train_entry = next(e for e in data if e["job_id"] == 100)
+        assert train_entry["gpus"] == 4
+        assert workflow_entry["gpus"] == 8
+        assert data[0]["gpus"] == 0
 
     def test_get_recent_respects_limit(
         self, client_and_db: tuple[TestClient, Path]
