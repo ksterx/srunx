@@ -385,6 +385,12 @@ export type WorkflowRunOptions = {
   to_job?: string;
   single_job?: string;
   dry_run?: boolean;
+  // Notification subscription wiring (P3-7). When ``notify`` is true
+  // and ``endpoint_id`` resolves to an enabled endpoint, the workflow
+  // run's auto-created watch is paired with a subscription.
+  notify?: boolean;
+  endpoint_id?: number | null;
+  preset?: string;
 };
 
 export type DryRunJobInfo = {

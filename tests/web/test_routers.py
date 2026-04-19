@@ -605,6 +605,156 @@ class TestWorkflowsRouter:
         finally:
             conn.close()
 
+    def test_run_workflow_with_notify_creates_subscription(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """``notify=True`` + valid endpoint_id → one subscription on the run watch.
+
+        P3-7 #H wires the workflow-run dialog's notification toggle
+        through the API: the auto-created ``kind='workflow_run'`` watch
+        must be paired with a subscription when the caller opts in, so
+        the delivery poller fans ``workflow_run.status_changed`` events
+        out to Slack/etc.
+        """
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.endpoints import EndpointRepository
+        from srunx.db.repositories.subscriptions import SubscriptionRepository
+        from srunx.db.repositories.watches import WatchRepository
+
+        # Seed an endpoint row — real FK target.
+        conn = open_connection()
+        try:
+            endpoint_id = EndpointRepository(conn).create(
+                kind="slack_webhook",
+                name="ops",
+                config={"webhook_url": "https://hooks.slack.com/services/T/B/X"},
+            )
+        finally:
+            conn.close()
+
+        resp = client.post(
+            "/api/workflows/create",
+            json={
+                "name": "notify-run",
+                "default_project": MOUNT,
+                "jobs": [{"name": "a", "command": ["echo", "a"]}],
+            },
+        )
+        assert resp.status_code == 200
+
+        mock_adapter.submit_job.return_value = {
+            "name": "a",
+            "job_id": 30000,
+            "status": "PENDING",
+            "depends_on": [],
+            "command": [],
+            "resources": {},
+        }
+
+        resp = client.post(
+            "/api/workflows/notify-run/run",
+            params={"mount": MOUNT},
+            json={
+                "notify": True,
+                "endpoint_id": endpoint_id,
+                "preset": "all",
+            },
+        )
+        assert resp.status_code == 202
+        run_id = int(resp.json()["id"])
+
+        conn = open_connection()
+        try:
+            watch = next(
+                w
+                for w in WatchRepository(conn).list_open()
+                if w.target_ref == f"workflow_run:{run_id}"
+            )
+            assert watch.id is not None
+            subs = SubscriptionRepository(conn).list_by_watch(watch.id)
+            assert len(subs) == 1
+            assert subs[0].endpoint_id == endpoint_id
+            assert subs[0].preset == "all"
+        finally:
+            conn.close()
+
+    def test_run_workflow_without_notify_creates_no_subscription(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """Default path — watch is created, but no subscription."""
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.subscriptions import SubscriptionRepository
+        from srunx.db.repositories.watches import WatchRepository
+
+        resp = client.post(
+            "/api/workflows/create",
+            json={
+                "name": "no-notify-run",
+                "default_project": MOUNT,
+                "jobs": [{"name": "a", "command": ["echo", "a"]}],
+            },
+        )
+        assert resp.status_code == 200
+
+        mock_adapter.submit_job.return_value = {
+            "name": "a",
+            "job_id": 30100,
+            "status": "PENDING",
+            "depends_on": [],
+            "command": [],
+            "resources": {},
+        }
+
+        resp = client.post(
+            "/api/workflows/no-notify-run/run",
+            params={"mount": MOUNT},
+        )
+        assert resp.status_code == 202
+        run_id = int(resp.json()["id"])
+
+        conn = open_connection()
+        try:
+            watch = next(
+                w
+                for w in WatchRepository(conn).list_open()
+                if w.target_ref == f"workflow_run:{run_id}"
+            )
+            assert watch.id is not None
+            assert SubscriptionRepository(conn).list_by_watch(watch.id) == []
+        finally:
+            conn.close()
+
+    def test_run_workflow_invalid_preset_is_rejected(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """Bogus preset → 422, before we touch the watch/subscription step."""
+        resp = client.post(
+            "/api/workflows/create",
+            json={
+                "name": "bad-preset-run",
+                "default_project": MOUNT,
+                "jobs": [{"name": "a", "command": ["echo", "a"]}],
+            },
+        )
+        assert resp.status_code == 200
+
+        mock_adapter.submit_job.return_value = {
+            "name": "a",
+            "job_id": 30200,
+            "status": "PENDING",
+            "depends_on": [],
+            "command": [],
+            "resources": {},
+        }
+
+        resp = client.post(
+            "/api/workflows/bad-preset-run/run",
+            params={"mount": MOUNT},
+            json={"notify": True, "endpoint_id": 1, "preset": "digest"},
+        )
+        assert resp.status_code == 422
+        assert "preset" in resp.json()["detail"].lower()
+
     def test_run_workflow_not_found(self, client: TestClient) -> None:
         resp = client.post("/api/workflows/nonexistent-wf/run", params={"mount": MOUNT})
         assert resp.status_code == 404
