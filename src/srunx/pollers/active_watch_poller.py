@@ -1,0 +1,547 @@
+"""Active-watch producer poller.
+
+The :class:`ActiveWatchPoller` walks every open row in ``watches``, asks
+the SLURM backend for the current state of the referenced job(s), and
+translates observed transitions into:
+
+1. an append-only row in ``job_state_transitions`` (SSOT for status
+   history, R6.1),
+2. an ``UPDATE`` on ``jobs`` with the lifecycle timestamps,
+3. a new row in ``events`` (``INSERT OR IGNORE`` on
+   ``(kind, source_ref, payload_hash)`` — producer-side dedup),
+4. zero-or-more rows in ``deliveries`` via
+   :meth:`srunx.notifications.service.NotificationService.fan_out`,
+5. an automatic ``watches.close()`` once the job reaches a terminal
+   state (so subsequent cycles do not re-query SLURM for jobs that
+   have already finished).
+
+Workflow-run watches are aggregated from their child jobs per R2
+(any CANCELLED → ``cancelled``; any FAILED/TIMEOUT/NODE_FAIL →
+``failed``; all COMPLETED → ``completed``; any RUNNING → ``running``;
+otherwise ``pending``).
+
+Connection ownership
+--------------------
+The poller owns a short-lived sqlite3 connection per cycle. It opens
+one at the top of :meth:`run_cycle`, routes all reads and writes
+through it, and closes it in ``finally`` — this isolates the
+producer from FastAPI request connections and keeps WAL fsyncs off
+the hot web path.
+
+See ``.claude/specs/notification-and-state-persistence/design.md``
+§ ActiveWatchPoller.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import time
+from collections.abc import Callable
+from pathlib import Path
+
+import anyio
+
+from srunx.client_protocol import JobStatusInfo, SlurmClientProtocol
+from srunx.db.connection import open_connection, transaction
+from srunx.db.models import WorkflowRunJob
+from srunx.db.repositories.base import now_iso
+from srunx.db.repositories.deliveries import DeliveryRepository
+from srunx.db.repositories.endpoints import EndpointRepository
+from srunx.db.repositories.events import EventRepository
+from srunx.db.repositories.job_state_transitions import (
+    JobStateTransitionRepository,
+)
+from srunx.db.repositories.jobs import JobRepository
+from srunx.db.repositories.subscriptions import SubscriptionRepository
+from srunx.db.repositories.watches import WatchRepository
+from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
+from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+from srunx.logging import get_logger
+from srunx.notifications.service import NotificationService
+
+logger = get_logger(__name__)
+
+
+# Terminal job statuses per SLURM conventions. Kept in lock-step with
+# ``srunx.notifications.presets._TERMINAL_JOB_STATUSES`` — the poller
+# uses this set to decide when to close the owning watch.
+_TERMINAL_JOB_STATUSES: frozenset[str] = frozenset(
+    {
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED",
+        "TIMEOUT",
+        "NODE_FAIL",
+        "PREEMPTED",
+        "OUT_OF_MEMORY",
+    }
+)
+
+# Terminal workflow_run statuses per our own domain model.
+_TERMINAL_WORKFLOW_RUN_STATUSES: frozenset[str] = frozenset(
+    {"completed", "failed", "cancelled"}
+)
+
+
+NotificationServiceFactory = Callable[
+    [
+        WatchRepository,
+        SubscriptionRepository,
+        EventRepository,
+        DeliveryRepository,
+        EndpointRepository,
+    ],
+    NotificationService,
+]
+
+
+def _default_notification_service_factory(
+    watch_repo: WatchRepository,
+    subscription_repo: SubscriptionRepository,
+    event_repo: EventRepository,
+    delivery_repo: DeliveryRepository,
+    endpoint_repo: EndpointRepository,
+) -> NotificationService:
+    return NotificationService(
+        watch_repo=watch_repo,
+        subscription_repo=subscription_repo,
+        event_repo=event_repo,
+        delivery_repo=delivery_repo,
+        endpoint_repo=endpoint_repo,
+    )
+
+
+def _dt_to_iso(value: object) -> str | None:
+    """Return an ISO string for a ``datetime`` (or ``None``).
+
+    ``JobStatusInfo`` fields may be ``None`` or ``datetime`` — both
+    the repository writes and the event payload need ``str | None``.
+    """
+    if value is None:
+        return None
+    # datetime has .isoformat(); any other type is coerced via str().
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return str(isoformat())
+    return str(value)
+
+
+def _parse_target_id(target_ref: str, expected_prefix: str) -> int | None:
+    """Return the integer id encoded in ``"<expected_prefix>:<id>"``.
+
+    Returns ``None`` if the prefix does not match or the id portion
+    cannot be parsed — unexpected rows are simply skipped (logged at
+    debug by the caller) so a malformed watch never takes the cycle
+    down.
+    """
+    prefix, _, remainder = target_ref.partition(":")
+    if prefix != expected_prefix or not remainder:
+        return None
+    try:
+        return int(remainder)
+    except ValueError:
+        return None
+
+
+class ActiveWatchPoller:
+    """Producer side of the notification Outbox.
+
+    One instance is registered with :class:`~srunx.pollers.supervisor.PollerSupervisor`
+    at web-server start-up. Each ``run_cycle`` iteration:
+
+    1. Opens a dedicated sqlite3 connection (caller-owned for the
+       lifetime of the cycle).
+    2. Loads every open watch.
+    3. Batches a single ``queue_by_ids`` call against the SLURM backend.
+    4. For each observed transition, writes the transition row,
+       updates ``jobs``, inserts the event, fans out to ``deliveries``,
+       and closes the watch on terminal states — all inside a single
+       ``BEGIN IMMEDIATE`` transaction.
+    5. Closes the connection.
+    """
+
+    name: str = "active_watch_poller"
+
+    def __init__(
+        self,
+        slurm_client: SlurmClientProtocol,
+        *,
+        db_path: Path | None = None,
+        notification_service_factory: NotificationServiceFactory | None = None,
+        interval_seconds: float = 15.0,
+    ) -> None:
+        """Initialise the poller.
+
+        Args:
+            slurm_client: Any implementation of :class:`SlurmClientProtocol`
+                (local :class:`~srunx.client.Slurm` or the SSH adapter).
+                ``queue_by_ids`` is invoked from a worker thread via
+                ``anyio.to_thread.run_sync``.
+            db_path: Absolute path to the srunx state DB. ``None``
+                resolves to :func:`srunx.db.connection.get_db_path` at
+                connection time.
+            notification_service_factory: Override the constructor
+                used to build the per-cycle :class:`NotificationService`.
+                Useful for tests that need to spy on fan-out; in
+                production the default factory is sufficient.
+            interval_seconds: Sleep between cycles. Default 15 s per
+                R10.1 (``DeliveryPoller`` uses 10 s so the producer
+                stays slower than the consumer to avoid hammering
+                ``squeue``).
+        """
+        self._slurm_client = slurm_client
+        self._db_path = db_path
+        self._notification_service_factory = (
+            notification_service_factory or _default_notification_service_factory
+        )
+        self.interval_seconds = interval_seconds
+
+    # ------------------------------------------------------------------
+    # Poller protocol entry point
+    # ------------------------------------------------------------------
+
+    async def run_cycle(self) -> None:
+        """Execute one cycle end-to-end.
+
+        The method re-raises any exception it encounters so that
+        :class:`~srunx.pollers.supervisor.PollerSupervisor` can apply
+        exponential backoff. Every handled path writes a structured
+        log entry summarising the cycle.
+        """
+        started_at = time.monotonic()
+        open_watches = 0
+        transitions_detected = 0
+        events_emitted = 0
+
+        conn = open_connection(self._db_path)
+        try:
+            watch_repo = WatchRepository(conn)
+            subscription_repo = SubscriptionRepository(conn)
+            event_repo = EventRepository(conn)
+            delivery_repo = DeliveryRepository(conn)
+            endpoint_repo = EndpointRepository(conn)
+            job_repo = JobRepository(conn)
+            transition_repo = JobStateTransitionRepository(conn)
+            workflow_run_repo = WorkflowRunRepository(conn)
+            workflow_run_job_repo = WorkflowRunJobRepository(conn)
+
+            notification_service = self._notification_service_factory(
+                watch_repo,
+                subscription_repo,
+                event_repo,
+                delivery_repo,
+                endpoint_repo,
+            )
+
+            watches = watch_repo.list_open()
+            open_watches = len(watches)
+
+            job_watches: list[tuple[int, int]] = []  # (watch_id, job_id)
+            workflow_watches: list[tuple[int, int]] = []  # (watch_id, run_id)
+
+            for watch in watches:
+                if watch.id is None:
+                    continue
+                if watch.kind == "job":
+                    job_id = _parse_target_id(watch.target_ref, "job")
+                    if job_id is not None:
+                        job_watches.append((watch.id, job_id))
+                elif watch.kind == "workflow_run":
+                    run_id = _parse_target_id(watch.target_ref, "workflow_run")
+                    if run_id is not None:
+                        workflow_watches.append((watch.id, run_id))
+                # Other kinds (resource_threshold, scheduled_report) are
+                # TBD — Phase 1 ignores them here and lets the owning
+                # pollers handle them once they land.
+
+            # Batch SLURM query — a single round-trip covering every
+            # job-watch in one shot.
+            queue_result: dict[int, JobStatusInfo] = {}
+            job_ids = [job_id for _, job_id in job_watches]
+            if job_ids:
+                queue_result = await anyio.to_thread.run_sync(
+                    self._slurm_client.queue_by_ids, job_ids
+                )
+
+            # -- Job transitions ------------------------------------------------
+            job_transitions, job_events = self._process_job_watches(
+                conn=conn,
+                job_watches=job_watches,
+                queue_result=queue_result,
+                job_repo=job_repo,
+                transition_repo=transition_repo,
+                event_repo=event_repo,
+                watch_repo=watch_repo,
+                notification_service=notification_service,
+            )
+            transitions_detected += job_transitions
+            events_emitted += job_events
+
+            # -- Workflow-run aggregation --------------------------------------
+            wf_transitions, wf_events = self._process_workflow_watches(
+                conn=conn,
+                workflow_watches=workflow_watches,
+                workflow_run_repo=workflow_run_repo,
+                workflow_run_job_repo=workflow_run_job_repo,
+                job_repo=job_repo,
+                event_repo=event_repo,
+                watch_repo=watch_repo,
+                notification_service=notification_service,
+            )
+            transitions_detected += wf_transitions
+            events_emitted += wf_events
+        finally:
+            conn.close()
+
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        logger.bind(
+            poller=self.name,
+            open_watches=open_watches,
+            transitions_detected=transitions_detected,
+            events_emitted=events_emitted,
+            elapsed_ms=elapsed_ms,
+        ).info(f"active_watch_poller cycle complete: {open_watches} open watches")
+
+    # ------------------------------------------------------------------
+    # Job branch
+    # ------------------------------------------------------------------
+
+    def _process_job_watches(
+        self,
+        *,
+        conn: sqlite3.Connection,
+        job_watches: list[tuple[int, int]],
+        queue_result: dict[int, JobStatusInfo],
+        job_repo: JobRepository,
+        transition_repo: JobStateTransitionRepository,
+        event_repo: EventRepository,
+        watch_repo: WatchRepository,
+        notification_service: NotificationService,
+    ) -> tuple[int, int]:
+        """Process every job-kind watch. Returns (transitions, events)."""
+        transitions_count = 0
+        events_count = 0
+
+        # De-duplicate job_ids — multiple watches can target the same
+        # job, we only want to emit one transition/event per job per
+        # cycle, then close every matching watch when terminal.
+        seen_job_ids: set[int] = set()
+
+        for _watch_id, job_id in job_watches:
+            if job_id in seen_job_ids:
+                continue
+            seen_job_ids.add(job_id)
+
+            status_info = queue_result.get(job_id)
+            if status_info is None:
+                # Job not visible in queue/sacct — skip. Either it has
+                # not registered with SLURM yet, or it is older than
+                # sacct's retention window.
+                continue
+
+            current_status = status_info.status
+            latest = transition_repo.latest_for_job(job_id)
+
+            if latest is None:
+                # First observation of this job. Skip per design:
+                # submission-time transitions are captured by the
+                # submit router, not the poller, so the poller would
+                # only emit noise for jobs that started before watch
+                # creation.
+                continue
+
+            from_status = latest.to_status
+            if from_status == current_status:
+                continue
+
+            # Transition detected — commit everything atomically.
+            started_iso = _dt_to_iso(status_info.started_at)
+            completed_iso = _dt_to_iso(status_info.completed_at)
+
+            with transaction(conn, "IMMEDIATE"):
+                transition_repo.insert(
+                    job_id=job_id,
+                    from_status=from_status,
+                    to_status=current_status,
+                    source="poller",
+                )
+                job_repo.update_status(
+                    job_id,
+                    current_status,
+                    started_at=started_iso,
+                    completed_at=completed_iso,
+                    duration_secs=status_info.duration_secs,
+                    nodelist=status_info.nodelist,
+                )
+                transitions_count += 1
+
+                payload: dict[str, object] = {
+                    "from_status": from_status,
+                    "to_status": current_status,
+                    "started_at": started_iso,
+                    "completed_at": completed_iso,
+                }
+                source_ref = f"job:{job_id}"
+                event_id = event_repo.insert(
+                    kind="job.status_changed",
+                    source_ref=source_ref,
+                    payload=payload,
+                )
+                if event_id is not None:
+                    events_count += 1
+                    event = event_repo.get(event_id)
+                    if event is not None:
+                        notification_service.fan_out(event, conn)
+
+                # Close every matching watch once the job hits a
+                # terminal state — a batch of N watches on the same
+                # job collapses to a single transition + N closes.
+                if current_status in _TERMINAL_JOB_STATUSES:
+                    for closing_watch in watch_repo.list_by_target(
+                        kind="job",
+                        target_ref=source_ref,
+                        only_open=True,
+                    ):
+                        if closing_watch.id is not None:
+                            watch_repo.close(closing_watch.id)
+
+        return transitions_count, events_count
+
+    # ------------------------------------------------------------------
+    # Workflow-run branch
+    # ------------------------------------------------------------------
+
+    def _process_workflow_watches(
+        self,
+        *,
+        conn: sqlite3.Connection,
+        workflow_watches: list[tuple[int, int]],
+        workflow_run_repo: WorkflowRunRepository,
+        workflow_run_job_repo: WorkflowRunJobRepository,
+        job_repo: JobRepository,
+        event_repo: EventRepository,
+        watch_repo: WatchRepository,
+        notification_service: NotificationService,
+    ) -> tuple[int, int]:
+        """Process every workflow_run-kind watch. Returns (transitions, events)."""
+        transitions_count = 0
+        events_count = 0
+        seen_run_ids: set[int] = set()
+
+        for _watch_id, run_id in workflow_watches:
+            if run_id in seen_run_ids:
+                continue
+            seen_run_ids.add(run_id)
+
+            run = workflow_run_repo.get(run_id)
+            if run is None:
+                continue
+
+            memberships = workflow_run_job_repo.list_by_run(run_id)
+            new_status = self._aggregate_workflow_status(
+                memberships=memberships,
+                job_repo=job_repo,
+            )
+
+            if new_status == run.status:
+                continue
+
+            source_ref = f"workflow_run:{run_id}"
+            is_terminal = new_status in _TERMINAL_WORKFLOW_RUN_STATUSES
+            completed_iso: str | None = now_iso() if is_terminal else None
+
+            with transaction(conn, "IMMEDIATE"):
+                workflow_run_repo.update_status(
+                    run_id,
+                    new_status,
+                    completed_at=completed_iso,
+                )
+                transitions_count += 1
+
+                payload: dict[str, object] = {
+                    "from_status": run.status,
+                    "to_status": new_status,
+                }
+                event_id = event_repo.insert(
+                    kind="workflow_run.status_changed",
+                    source_ref=source_ref,
+                    payload=payload,
+                )
+                if event_id is not None:
+                    events_count += 1
+                    event = event_repo.get(event_id)
+                    if event is not None:
+                        notification_service.fan_out(event, conn)
+
+                if is_terminal:
+                    for closing_watch in watch_repo.list_by_target(
+                        kind="workflow_run",
+                        target_ref=source_ref,
+                        only_open=True,
+                    ):
+                        if closing_watch.id is not None:
+                            watch_repo.close(closing_watch.id)
+
+        return transitions_count, events_count
+
+    # ------------------------------------------------------------------
+    # Pure helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _aggregate_workflow_status(
+        *,
+        memberships: list[WorkflowRunJob],
+        job_repo: JobRepository,
+    ) -> str:
+        """Aggregate child-job statuses into a workflow-run status.
+
+        R2 rules, evaluated in order:
+
+        1. Any child CANCELLED → ``cancelled``.
+        2. Any child in ``{FAILED, TIMEOUT, NODE_FAIL}`` → ``failed``.
+        3. All children observed and COMPLETED → ``completed``.
+        4. Any child RUNNING → ``running``.
+        5. Otherwise → ``pending``.
+
+        Memberships whose SLURM ``job_id`` is still ``NULL`` (jobs
+        that haven't been submitted yet) count towards "not all
+        completed" but don't force ``pending`` on their own.
+        """
+        if not memberships:
+            return "pending"
+
+        child_statuses: list[str | None] = []
+        for membership in memberships:
+            job_id = getattr(membership, "job_id", None)
+            if job_id is None:
+                child_statuses.append(None)
+                continue
+            job = job_repo.get(job_id)
+            child_statuses.append(job.status if job is not None else None)
+
+        # Rule 1 — any CANCELLED wins.
+        if any(s == "CANCELLED" for s in child_statuses):
+            return "cancelled"
+
+        # Rule 2 — any hard failure (FAILED / TIMEOUT / NODE_FAIL /
+        # PREEMPTED / OUT_OF_MEMORY). The design.md wording is
+        # "FAILED/TIMEOUT" but the other SLURM terminal failures are
+        # semantically identical and already in
+        # ``_TERMINAL_JOB_STATUSES`` minus COMPLETED/CANCELLED.
+        if any(
+            s in {"FAILED", "TIMEOUT", "NODE_FAIL", "PREEMPTED", "OUT_OF_MEMORY"}
+            for s in child_statuses
+        ):
+            return "failed"
+
+        # Rule 3 — all COMPLETED (every membership resolved and every
+        # child is COMPLETED).
+        if all(s == "COMPLETED" for s in child_statuses):
+            return "completed"
+
+        # Rule 4 — any RUNNING child.
+        if any(s == "RUNNING" for s in child_statuses):
+            return "running"
+
+        return "pending"

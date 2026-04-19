@@ -84,6 +84,15 @@ class ResourceMonitor(BaseMonitor):
             "meets_threshold": snapshot.meets_threshold(self.min_gpus),
         }
 
+    def get_current_snapshot(self) -> ResourceSnapshot:
+        """Alias of :meth:`get_partition_resources` used by ``ResourceSnapshotter``.
+
+        Provides a stable, intent-revealing name that the poller stack can
+        depend on regardless of how the partition query happens to be named
+        internally.
+        """
+        return self.get_partition_resources()
+
     def get_partition_resources(self) -> ResourceSnapshot:
         """Query SLURM for GPU resource availability.
 

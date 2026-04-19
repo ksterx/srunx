@@ -1,6 +1,6 @@
 """Job monitoring implementation for SLURM."""
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -9,6 +9,11 @@ from srunx.client import Slurm
 from srunx.models import BaseJob, JobStatus
 from srunx.monitor.base import BaseMonitor
 from srunx.monitor.types import MonitorConfig
+
+if TYPE_CHECKING:
+    from srunx.db.repositories.job_state_transitions import (
+        JobStateTransitionRepository,
+    )
 
 
 class JobMonitor(BaseMonitor):
@@ -20,6 +25,12 @@ class JobMonitor(BaseMonitor):
     Uses per-cycle caching: jobs are fetched once per poll cycle and the result
     is reused by check_condition, get_current_state, and _notify_callbacks,
     reducing SLURM queries from 3*N to N per cycle.
+
+    When a :class:`JobStateTransitionRepository` is injected, observed
+    state changes are additionally persisted to the SSOT
+    ``job_state_transitions`` table with ``source='cli_monitor'``.
+    DB failures are logged but never propagated — the CLI monitor must
+    keep running even if the database is unavailable.
     """
 
     def __init__(
@@ -29,6 +40,7 @@ class JobMonitor(BaseMonitor):
         config: MonitorConfig | None = None,
         callbacks: list[Callback] | None = None,
         client: Slurm | None = None,
+        transition_repo: "JobStateTransitionRepository | None" = None,
     ) -> None:
         super().__init__(config=config, callbacks=callbacks)
 
@@ -43,6 +55,7 @@ class JobMonitor(BaseMonitor):
             JobStatus.TIMEOUT,
         ]
         self.client = client or Slurm()
+        self.transition_repo = transition_repo
         self._previous_states: dict[int, JobStatus] = {}
         self._cached_jobs: list[BaseJob] | None = None
 
@@ -111,6 +124,26 @@ class JobMonitor(BaseMonitor):
             previous_status = self._previous_states.get(job.job_id)
 
             if current_status != previous_status:
+                # Persist to SSOT (job_state_transitions) when a repo is
+                # injected. Skip the first observation (previous_status
+                # is None) per design: the CLI monitor records real
+                # transitions only, mirroring the poller's behavior.
+                # DB errors MUST NOT break the CLI monitor.
+                if self.transition_repo is not None and previous_status is not None:
+                    try:
+                        self.transition_repo.insert(
+                            job_id=job.job_id,
+                            from_status=previous_status.value,
+                            to_status=current_status.value,
+                            source="cli_monitor",
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to record transition for job "
+                            f"{job.job_id} ({previous_status.value} -> "
+                            f"{current_status.value}): {e}"
+                        )
+
                 self._notify_transition(job, current_status)
                 self._previous_states[job.job_id] = current_status
 

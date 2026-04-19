@@ -50,10 +50,36 @@ class EnvironmentDefaults(BaseModel):
 
 
 class NotificationConfig(BaseModel):
-    """Notification configuration."""
+    """Notification configuration.
+
+    ``slack_webhook_url`` is DEPRECATED starting with the notification-and-state
+    -persistence rewrite. On first startup after upgrade, its value is
+    bootstrapped into the ``endpoints`` table (kind='slack_webhook',
+    name='default') and thereafter ignored. New integrations should
+    manage endpoints via the ``/api/endpoints`` API or the Settings UI.
+    """
 
     slack_webhook_url: str | None = Field(
-        default=None, description="Slack webhook URL for notifications"
+        default=None,
+        description=(
+            "DEPRECATED: Slack webhook URL. Kept only for one-time migration "
+            "into the endpoints table; prefer Settings → Notifications."
+        ),
+    )
+    default_endpoint_name: str | None = Field(
+        default=None,
+        description=(
+            "Default endpoint name pre-selected in the submit dialog. Must "
+            "match an existing endpoint row's ``name`` column. Null = no "
+            "preselection."
+        ),
+    )
+    default_preset: str = Field(
+        default="terminal",
+        description=(
+            "Default subscription preset for new submissions. One of "
+            "'terminal', 'running_and_terminal', 'all', 'digest'."
+        ),
     )
 
 
