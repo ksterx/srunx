@@ -159,7 +159,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # 1. DB bootstrap (always — cheap + idempotent).
     try:
-        init_db(delete_legacy=False)
+        # Default ``delete_legacy=True`` since P2-4 #A phase 2 —
+        # the legacy ``~/.srunx/history.db`` is no longer used by any
+        # read path and gets cleaned up on first startup after upgrade.
+        init_db()
         conn = open_connection()
         try:
             bootstrap_from_config(conn, get_srunx_config())

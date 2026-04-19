@@ -170,8 +170,8 @@ def init_db(db_path: Path | None = None, *, delete_legacy: bool = True) -> Path:
     2. Create the DB file if missing, set permissions to ``0o600``.
     3. Apply PRAGMAs and run outstanding migrations.
     4. If ``delete_legacy`` is True (default), remove the legacy
-       ``~/.srunx/history.db``. Set to False during Phase 1 co-existence
-       where the old DB still serves CLI history via :mod:`srunx.history`.
+       ``~/.srunx/history.db``. Passing ``False`` is only used by tests
+       that want the helper to skip the legacy-cleanup path.
 
     Returns the resolved DB path for downstream callers.
     """

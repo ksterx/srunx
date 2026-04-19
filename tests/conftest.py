@@ -10,6 +10,23 @@ import pytest
 from srunx.models import Job, JobEnvironment, JobResource
 
 
+@pytest.fixture(autouse=True)
+def _isolate_legacy_history_db(tmp_path_factory, monkeypatch):
+    """Make sure no test can delete the user's real ``~/.srunx/history.db``.
+
+    After the Phase-2 history cutover, production code may call
+    ``init_db(delete_legacy=True)`` (the new default) which runs
+    :func:`srunx.db.connection._delete_legacy_history_db`. That
+    helper targets ``Path.home() / '.srunx' / 'history.db'`` — outside
+    any ``XDG_CONFIG_HOME`` isolation a test sets. Redirect the path
+    to a session-scoped tmp dir so the delete is always safe.
+    """
+    import srunx.db.connection as _conn
+
+    safe_legacy = tmp_path_factory.mktemp("legacy_history_safe") / "history.db"
+    monkeypatch.setattr(_conn, "LEGACY_HISTORY_DB_PATH", safe_legacy)
+
+
 @pytest.fixture
 def temp_dir():
     """Create a temporary directory for tests."""

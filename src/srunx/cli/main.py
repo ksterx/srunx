@@ -21,7 +21,6 @@ from srunx.config import (
     get_config,
     get_config_paths,
 )
-from srunx.history import get_history
 from srunx.logging import (
     configure_cli_logging,
     configure_workflow_logging,
@@ -1246,8 +1245,9 @@ def history(
 ) -> None:
     """Show job execution history."""
     try:
-        history_db = get_history()
-        jobs = history_db.get_recent_jobs(limit=limit)
+        from srunx.db.cli_helpers import list_recent_jobs
+
+        jobs = list_recent_jobs(limit=limit)
 
         if not jobs:
             console = Console()
@@ -1313,10 +1313,10 @@ def report(
 ) -> None:
     """Generate job execution report."""
     try:
-        history_db = get_history()
+        from srunx.db.cli_helpers import compute_job_stats, compute_workflow_stats
 
         if workflow:
-            stats = history_db.get_workflow_stats(workflow)
+            stats = compute_workflow_stats(workflow)
 
             console = Console()
             console.print(f"\n[bold cyan]Workflow Report: {workflow}[/bold cyan]")
@@ -1328,7 +1328,7 @@ def report(
             console.print(f"Last Submitted: {stats['last_submitted']}\n")
 
         else:
-            stats = history_db.get_job_stats(from_date=from_date, to_date=to_date)
+            stats = compute_job_stats(from_date=from_date, to_date=to_date)
 
             console = Console()
             console.print("\n[bold cyan]Job Execution Report[/bold cyan]")
