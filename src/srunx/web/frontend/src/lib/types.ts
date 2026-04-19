@@ -60,8 +60,7 @@ export type Workflow = {
 /* ── Workflow run ─────────────────────────────── */
 
 export type WorkflowRunStatus =
-  | "syncing"
-  | "submitting"
+  | "pending"
   | "running"
   | "completed"
   | "failed"

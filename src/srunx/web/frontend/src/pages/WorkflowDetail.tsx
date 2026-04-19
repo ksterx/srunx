@@ -34,8 +34,7 @@ const TERMINAL_STATUSES: ReadonlySet<WorkflowRunStatus> = new Set([
 ]);
 
 const RUN_STATUS_COLORS: Record<WorkflowRunStatus, string> = {
-  syncing: "var(--st-pending)",
-  submitting: "var(--st-pending)",
+  pending: "var(--st-pending)",
   running: "var(--st-running)",
   completed: "var(--st-completed)",
   failed: "var(--st-failed)",
@@ -43,8 +42,7 @@ const RUN_STATUS_COLORS: Record<WorkflowRunStatus, string> = {
 };
 
 const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
-  syncing: "Syncing...",
-  submitting: "Submitting...",
+  pending: "Pending",
   running: "Running",
   completed: "Completed",
   failed: "Failed",

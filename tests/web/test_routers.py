@@ -64,10 +64,18 @@ def mock_adapter() -> MagicMock:
 
 @pytest.fixture
 def client(  # type: ignore[misc]
-    mock_adapter: MagicMock, tmp_path: Path
+    mock_adapter: MagicMock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> TestClient:
     import srunx.web.config as config_mod
+    from srunx.db.connection import init_db
     from srunx.web.config import get_web_config
+
+    # Isolate the srunx DB to a tmp dir so workflow_runs don't leak
+    # between tests or into the user's real DB.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    init_db(delete_legacy=False)
 
     original = config_mod._config
     config_mod._config = None
@@ -93,11 +101,6 @@ def client(  # type: ignore[misc]
         mounts=[fake_mount],
     )
 
-    # Clear run registry to avoid cross-test state leakage
-    from srunx.web.state import run_registry
-
-    run_registry._runs.clear()
-
     app = create_app()
     app.dependency_overrides[get_adapter] = lambda: mock_adapter
 
@@ -107,7 +110,6 @@ def client(  # type: ignore[misc]
         yield TestClient(app, raise_server_exceptions=False)
 
     config_mod._config = original
-    run_registry._runs.clear()
 
 
 # Mount name used in all workflow tests
@@ -419,14 +421,25 @@ class TestWorkflowsRouter:
         assert resp.status_code == 404
 
     def test_get_run_returns_created_run(self, client: TestClient) -> None:
-        """Create a run via the registry, then fetch it by ID."""
-        from srunx.web.state import run_registry
+        """Create a run via the repo, then fetch it by ID."""
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
 
-        run = run_registry.create("test-wf")
-        resp = client.get(f"/api/workflows/runs/{run.id}")
+        conn = open_connection()
+        try:
+            run_id = WorkflowRunRepository(conn).create(
+                workflow_name="test-wf",
+                yaml_path=None,
+                args=None,
+                triggered_by="web",
+            )
+        finally:
+            conn.close()
+
+        resp = client.get(f"/api/workflows/runs/{run_id}")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["id"] == run.id
+        assert data["id"] == str(run_id)
         assert data["workflow_name"] == "test-wf"
 
     # ── POST /api/workflows/{name}/run ──────────────
@@ -490,6 +503,102 @@ class TestWorkflowsRouter:
         dep = second_call_kwargs.get("dependency", "")
         assert "afterok:10001" in dep
 
+    def test_run_workflow_persists_all_db_rows(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """End-to-end DB verification — the refactor's real contract.
+
+        The old run_registry hid state in-memory. The new flow must
+        write *atomically* to workflow_runs + workflow_run_jobs + jobs
+        + job_state_transitions, and open a workflow_run watch, so
+        ActiveWatchPoller can aggregate child statuses after we return.
+        """
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.job_state_transitions import (
+            JobStateTransitionRepository,
+        )
+        from srunx.db.repositories.jobs import JobRepository
+        from srunx.db.repositories.watches import WatchRepository
+        from srunx.db.repositories.workflow_run_jobs import (
+            WorkflowRunJobRepository,
+        )
+        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+
+        create_payload = {
+            "name": "integration-run",
+            "default_project": MOUNT,
+            "jobs": [
+                {"name": "a", "command": ["echo", "a"]},
+                {"name": "b", "command": ["echo", "b"], "depends_on": ["a"]},
+            ],
+        }
+        resp = client.post("/api/workflows/create", json=create_payload)
+        assert resp.status_code == 200
+
+        call_count = 0
+
+        def mock_submit(script_content, job_name=None, dependency=None):
+            nonlocal call_count
+            call_count += 1
+            return {
+                "name": job_name or "job",
+                "job_id": 20000 + call_count,
+                "status": "PENDING",
+                "depends_on": [],
+                "command": [],
+                "resources": {},
+            }
+
+        mock_adapter.submit_job.side_effect = mock_submit
+
+        resp = client.post(
+            "/api/workflows/integration-run/run", params={"mount": MOUNT}
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        run_id = int(data["id"])
+
+        # Verify every DB invariant the refactor committed to.
+        conn = open_connection()
+        try:
+            run = WorkflowRunRepository(conn).get(run_id)
+            assert run is not None
+            assert run.workflow_name == "integration-run"
+            assert run.status == "running"
+            assert run.triggered_by == "web"
+
+            memberships = WorkflowRunJobRepository(conn).list_by_run(run_id)
+            assert len(memberships) == 2
+            membership_names = {m.job_name for m in memberships}
+            assert membership_names == {"a", "b"}
+            # FK: each membership's job_id points at a real jobs row.
+            for m in memberships:
+                assert m.job_id is not None
+                job = JobRepository(conn).get(m.job_id)
+                assert job is not None
+                assert job.status == "PENDING"
+                assert job.submission_source == "workflow"
+                assert job.workflow_run_id == run_id
+
+            # Seeded PENDING transitions exist for both jobs — without
+            # them ActiveWatchPoller would skip the first observation.
+            for m in memberships:
+                assert m.job_id is not None
+                latest = JobStateTransitionRepository(conn).latest_for_job(m.job_id)
+                assert latest is not None
+                assert latest.to_status == "PENDING"
+                assert latest.source == "webhook"
+
+            # An OPEN workflow_run watch exists so the poller can
+            # aggregate child statuses.
+            open_watches = [
+                w for w in WatchRepository(conn).list_open() if w.kind == "workflow_run"
+            ]
+            assert len(open_watches) == 1
+            assert open_watches[0].target_ref == f"workflow_run:{run_id}"
+        finally:
+            conn.close()
+
     def test_run_workflow_not_found(self, client: TestClient) -> None:
         resp = client.post("/api/workflows/nonexistent-wf/run", params={"mount": MOUNT})
         assert resp.status_code == 404
@@ -519,6 +628,80 @@ class TestWorkflowsRouter:
         resp = client.post("/api/workflows/fail-run/run", params={"mount": MOUNT})
         assert resp.status_code == 502
         assert "sbatch" in resp.json()["detail"]
+
+    def test_run_workflow_midway_failure_cancels_orphans_and_records(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """Covers R2 + R3 from the Codex review.
+
+        When sbatch fails on the Nth job after N-1 prior submits, we
+        must (a) cancel the orphan SLURM jobs so the cluster isn't
+        left running work the caller rolled back, and (b) still
+        persist the failed node as a membership row with
+        ``job_id=None`` so GET /runs/{id} faithfully reflects the DAG.
+        """
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.workflow_run_jobs import (
+            WorkflowRunJobRepository,
+        )
+        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+
+        create_payload = {
+            "name": "partial-fail",
+            "default_project": MOUNT,
+            "jobs": [
+                {"name": "a", "command": ["echo", "ok"]},
+                {"name": "b", "command": ["echo", "boom"], "depends_on": ["a"]},
+            ],
+        }
+        resp = client.post("/api/workflows/create", json=create_payload)
+        assert resp.status_code == 200
+
+        # First submit succeeds, second raises — mimicking a transient
+        # sbatch outage between siblings.
+        call_count = 0
+
+        def mock_submit(script_content, job_name=None, dependency=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {
+                    "name": job_name or "job",
+                    "job_id": 30001,
+                    "status": "PENDING",
+                    "depends_on": [],
+                    "command": [],
+                    "resources": {},
+                }
+            raise RuntimeError("sbatch hiccup")
+
+        mock_adapter.submit_job.side_effect = mock_submit
+
+        resp = client.post("/api/workflows/partial-fail/run", params={"mount": MOUNT})
+        assert resp.status_code == 502
+
+        # R2: the already-submitted job must have been cancelled.
+        mock_adapter.cancel_job.assert_any_call(30001)
+
+        # The run was marked failed with a useful error.
+        conn = open_connection()
+        try:
+            run_repo = WorkflowRunRepository(conn)
+            runs = [r for r in run_repo.list_all() if r.workflow_name == "partial-fail"]
+            assert runs, "workflow run was not created"
+            run = runs[0]
+            assert run.status == "failed"
+            assert run.error is not None and "Submission failed" in run.error
+
+            # R3: both nodes are represented in the DAG — the succeeded
+            # one with its slurm_id, the failed one with job_id=None.
+            assert run.id is not None
+            memberships = WorkflowRunJobRepository(conn).list_by_run(run.id)
+            by_name = {m.job_name: m for m in memberships}
+            assert by_name["a"].job_id == 30001
+            assert by_name["b"].job_id is None
+        finally:
+            conn.close()
 
     # ── DELETE /api/workflows/{name} ───────────────
 
@@ -553,24 +736,57 @@ class TestWorkflowsRouter:
     # ── POST /api/workflows/runs/{run_id}/cancel ───
 
     def test_cancel_run(self, client: TestClient, mock_adapter: MagicMock) -> None:
-        """Create a run via registry, then cancel it."""
-        from srunx.web.state import run_registry
+        """Create a run + memberships via repos, then cancel it."""
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.jobs import JobRepository
+        from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
+        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
 
-        run = run_registry.create("cancel-test")
-        run_registry.set_job_ids(run.id, {"step1": "10001", "step2": "10002"})
-        run_registry.update_status(run.id, "running")
+        conn = open_connection()
+        try:
+            run_id = WorkflowRunRepository(conn).create(
+                workflow_name="cancel-test",
+                yaml_path=None,
+                args=None,
+                triggered_by="web",
+            )
+            WorkflowRunRepository(conn).update_status(run_id, "running")
+            job_repo = JobRepository(conn)
+            job_repo.record_submission(
+                job_id=10001,
+                name="step1",
+                status="RUNNING",
+                submission_source="workflow",
+                workflow_run_id=run_id,
+            )
+            job_repo.record_submission(
+                job_id=10002,
+                name="step2",
+                status="RUNNING",
+                submission_source="workflow",
+                workflow_run_id=run_id,
+            )
+            wrj_repo = WorkflowRunJobRepository(conn)
+            wrj_repo.create(run_id, "step1", job_id=10001)
+            wrj_repo.create(run_id, "step2", job_id=10002)
+        finally:
+            conn.close()
 
-        resp = client.post(f"/api/workflows/runs/{run.id}/cancel")
+        resp = client.post(f"/api/workflows/runs/{run_id}/cancel")
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "cancelled"
-        assert data["run_id"] == run.id
+        assert data["run_id"] == str(run_id)
 
         # Verify adapter.cancel_job was called for each job
         assert mock_adapter.cancel_job.call_count == 2
 
         # Verify the run is marked cancelled
-        updated = run_registry.get(run.id)
+        conn = open_connection()
+        try:
+            updated = WorkflowRunRepository(conn).get(run_id)
+        finally:
+            conn.close()
         assert updated is not None
         assert updated.status == "cancelled"
 
@@ -579,12 +795,24 @@ class TestWorkflowsRouter:
         assert resp.status_code == 404
 
     def test_cancel_run_already_terminal(self, client: TestClient) -> None:
-        from srunx.web.state import run_registry
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.base import now_iso
+        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
 
-        run = run_registry.create("done-test")
-        run_registry.complete_run(run.id, "completed")
+        conn = open_connection()
+        try:
+            repo = WorkflowRunRepository(conn)
+            run_id = repo.create(
+                workflow_name="done-test",
+                yaml_path=None,
+                args=None,
+                triggered_by="web",
+            )
+            repo.update_status(run_id, "completed", completed_at=now_iso())
+        finally:
+            conn.close()
 
-        resp = client.post(f"/api/workflows/runs/{run.id}/cancel")
+        resp = client.post(f"/api/workflows/runs/{run_id}/cancel")
         assert resp.status_code == 422
 
     # ── Workflow args and outputs ──────────────────────
