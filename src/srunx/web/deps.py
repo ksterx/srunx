@@ -17,7 +17,6 @@ from srunx.db.repositories.subscriptions import SubscriptionRepository
 from srunx.db.repositories.watches import WatchRepository
 from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
 from srunx.db.repositories.workflow_runs import WorkflowRunRepository
-from srunx.history import JobHistory, get_history
 
 from .ssh_adapter import SlurmSSHAdapter
 
@@ -68,10 +67,6 @@ def get_adapter_or_none() -> SlurmSSHAdapter | None:
 def get_active_profile_name() -> str | None:
     with _adapter_lock:
         return _active_profile_name
-
-
-def get_history_db() -> JobHistory:
-    return get_history()
 
 
 # ----- New DB connection + repository providers (PR 2/3) -----
