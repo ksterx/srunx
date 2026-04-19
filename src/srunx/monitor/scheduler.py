@@ -4,7 +4,7 @@ import os
 import re
 import signal
 import sys
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -255,14 +255,34 @@ class ScheduledReporter:
         )
 
     def _get_historical_counts(self, user: str | None = None) -> tuple[int, int, int]:
-        """Query sacct for completed/failed/cancelled job counts within timeframe.
+        """Return (completed, failed, cancelled) job counts within timeframe.
+
+        Resolution order:
+
+        1. **State DB** (``JobRepository.count_by_status_in_range``). Preferred
+           because it works on every platform — including remote SSH submit
+           flows that never have a local ``sacct`` — and avoids a 15-second
+           subprocess timeout on the schedule's critical path. Covers only
+           srunx-recorded submissions, which in single-user deployments
+           matches ``sacct`` closely. Skipped when ``user`` is specified
+           (the state DB has no ``user`` column; see migrations.py
+           ``CREATE TABLE jobs``).
+        2. **sacct fallback**. Used when ``user`` is set, or when the DB
+           query fails for any reason (missing DB, schema mismatch, etc.).
 
         Args:
-            user: Optional username to filter results.
+            user: Optional username to filter results. Forces the sacct path.
 
         Returns:
             Tuple of (completed, failed, cancelled) counts.
         """
+        if user is None:
+            db_counts = self._db_historical_counts()
+            if db_counts is not None:
+                return db_counts
+            # Fall through to sacct on DB miss so a missing/broken
+            # state DB never silently zeroes the report.
+
         import subprocess
 
         try:
@@ -301,6 +321,63 @@ class ScheduledReporter:
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             logger.debug("sacct not available for historical job counts")
             return 0, 0, 0
+
+    def _db_historical_counts(self) -> tuple[int, int, int] | None:
+        """Count terminal jobs submitted in timeframe via JobRepository.
+
+        ``submitted_at`` is used (not ``completed_at``) because that's
+        what ``count_by_status_in_range`` supports; for short reporter
+        timeframes (1h / 24h) the overlap with sacct's ``--starttime``
+        semantics is practically total.
+
+        Returns ``None`` on any error so the caller can fall back to
+        ``sacct`` without the DB outage surfacing as zero-counts.
+        """
+        try:
+            from srunx.db.connection import init_db, open_connection
+            from srunx.db.repositories.base import now_iso
+            from srunx.db.repositories.jobs import JobRepository
+
+            delta = self._parse_timeframe_to_delta(self.config.timeframe)
+            to_at = now_iso()
+            from_at = (
+                (datetime.now(UTC) - delta)
+                .isoformat(timespec="milliseconds")
+                .replace("+00:00", "Z")
+            )
+
+            init_db(delete_legacy=False)
+            conn = open_connection()
+            try:
+                counts = JobRepository(conn).count_by_status_in_range(
+                    from_at,
+                    to_at,
+                    statuses=["COMPLETED", "FAILED", "CANCELLED"],
+                )
+            finally:
+                conn.close()
+
+            return (
+                counts.get("COMPLETED", 0),
+                counts.get("FAILED", 0),
+                counts.get("CANCELLED", 0),
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort; caller falls back
+            logger.debug(f"State DB unavailable for historical counts: {exc}")
+            return None
+
+    @staticmethod
+    def _parse_timeframe_to_delta(timeframe: str) -> timedelta:
+        """Parse ``<number><unit>`` (e.g. ``24h``, ``30m``) into a ``timedelta``."""
+        match = re.match(r"^(\d+)([smhd])$", timeframe)
+        if not match:
+            raise ValueError(
+                f"Invalid timeframe: {timeframe}. Expected e.g. '24h', '30m', '1d'."
+            )
+        value = int(match.group(1))
+        unit = match.group(2)
+        unit_to_kwarg = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
+        return timedelta(**{unit_to_kwarg[unit]: value})
 
     def _get_resource_stats(self) -> ResourceStats:
         """Get GPU and node resource statistics.
