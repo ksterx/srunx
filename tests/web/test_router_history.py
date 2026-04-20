@@ -1,14 +1,24 @@
-"""Tests for history router: /api/history/*"""
+"""Tests for history router: /api/history/*
+
+Post-cutover (P2-4 #A) the router reads from
+:class:`~srunx.db.repositories.jobs.JobRepository` via a per-request
+SQLite connection, not the legacy ``JobHistory``. These tests seed
+the new DB directly so no dependency override is needed.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from srunx.db.connection import init_db, open_connection
+from srunx.db.repositories.jobs import JobRepository
 from srunx.web.app import create_app
-from srunx.web.deps import get_adapter, get_history_db
+from srunx.web.deps import get_adapter
 
 
 @pytest.fixture
@@ -17,47 +27,15 @@ def mock_adapter() -> MagicMock:
 
 
 @pytest.fixture
-def mock_history() -> MagicMock:
-    history = MagicMock()
-    history.get_job_stats.return_value = {
-        "total_jobs": 42,
-        "jobs_by_status": {"COMPLETED": 30, "FAILED": 10, "CANCELLED": 2},
-        "avg_duration_seconds": 3600.5,
-        "total_gpu_hours": 120.0,
-        "from_date": None,
-        "to_date": None,
-    }
-    history.get_recent_jobs.return_value = [
-        {
-            "job_id": 100,
-            "job_name": "train",
-            "command": "python train.py",
-            "status": "COMPLETED",
-            "submitted_at": "2026-01-01T00:00:00",
-            "completed_at": "2026-01-01T01:00:00",
-            "workflow_name": None,
-            "partition": "gpu",
-            "nodes": 1,
-            "gpus": 4,
-        },
-        {
-            "job_id": 101,
-            "job_name": "eval",
-            "command": "python eval.py",
-            "status": "FAILED",
-            "submitted_at": "2026-01-02T00:00:00",
-            "completed_at": None,
-            "workflow_name": "pipeline",
-            "partition": "gpu",
-            "nodes": 2,
-            "gpus": 8,
-        },
-    ]
-    return history
+def client_and_db(
+    mock_adapter: MagicMock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[tuple[TestClient, Path]]:
+    """Fresh app instance + tmp-isolated state DB."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    db_path = init_db(delete_legacy=False)
 
-
-@pytest.fixture
-def client(mock_adapter: MagicMock, mock_history: MagicMock):  # type: ignore[misc]
     import srunx.web.config as config_mod
 
     original = config_mod._config
@@ -66,68 +44,183 @@ def client(mock_adapter: MagicMock, mock_history: MagicMock):  # type: ignore[mi
 
     app = create_app()
     app.dependency_overrides[get_adapter] = lambda: mock_adapter
-    app.dependency_overrides[get_history_db] = lambda: mock_history
 
-    yield TestClient(app, raise_server_exceptions=False)
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        yield client, db_path
+    finally:
+        app.dependency_overrides.clear()
+        config_mod._config = original
 
-    app.dependency_overrides.clear()
-    config_mod._config = original
+
+def _seed(db_path: Path) -> None:
+    """Populate ``jobs`` + ``workflow_runs`` with a realistic mix."""
+    conn = open_connection(db_path)
+    try:
+        # A workflow_run so the LEFT JOIN on workflow_name has a match.
+        conn.execute(
+            "INSERT INTO workflow_runs (id, workflow_name, status, started_at, triggered_by) "
+            "VALUES (1, 'ml_pipeline', 'running', '2026-01-01T00:00:00Z', 'web')"
+        )
+        conn.commit()
+
+        repo = JobRepository(conn)
+        repo.record_submission(
+            job_id=100,
+            name="train",
+            status="COMPLETED",
+            submission_source="cli",
+            command=["python", "train.py"],
+            nodes=1,
+            gpus_per_node=4,
+            partition="gpu",
+            submitted_at="2026-01-01T00:00:00Z",
+        )
+        repo.update_status(
+            100,
+            "COMPLETED",
+            completed_at="2026-01-01T01:00:00Z",
+            duration_secs=3600,
+        )
+        repo.record_submission(
+            job_id=101,
+            name="eval",
+            status="FAILED",
+            submission_source="workflow",
+            workflow_run_id=1,
+            nodes=2,
+            gpus_per_node=4,
+            partition="gpu",
+            submitted_at="2026-01-02T00:00:00Z",
+        )
+        repo.record_submission(
+            job_id=102,
+            name="cancelled-job",
+            status="CANCELLED",
+            submission_source="cli",
+            submitted_at="2026-01-03T00:00:00Z",
+        )
+    finally:
+        conn.close()
 
 
 class TestHistoryStats:
-    def test_get_stats(self, client: TestClient, mock_history: MagicMock) -> None:
+    def test_get_stats_aggregates_from_jobs_table(
+        self, client_and_db: tuple[TestClient, Path]
+    ) -> None:
+        client, db_path = client_and_db
+        _seed(db_path)
+
         resp = client.get("/api/history/stats")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["total"] == 42
-        assert data["completed"] == 30
-        assert data["failed"] == 10
-        assert data["cancelled"] == 2
-        assert data["avg_runtime_seconds"] == 3600.5
-        mock_history.get_job_stats.assert_called_once_with(None, None)
+        assert data["total"] == 3
+        assert data["completed"] == 1
+        assert data["failed"] == 1
+        assert data["cancelled"] == 1
+        # avg_duration over only rows with duration_secs set (just job 100)
+        assert data["avg_runtime_seconds"] == 3600.0
 
-    def test_get_stats_with_date_range(
-        self, client: TestClient, mock_history: MagicMock
+    def test_get_stats_empty_db(self, client_and_db: tuple[TestClient, Path]) -> None:
+        client, _ = client_and_db
+        resp = client.get("/api/history/stats")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+    def test_get_stats_accepts_date_range_aliases(
+        self, client_and_db: tuple[TestClient, Path]
     ) -> None:
+        """``?from=`` / ``?to=`` are recognized (Python-keyword aliasing)."""
+        client, db_path = client_and_db
+        _seed(db_path)
+
         resp = client.get(
-            "/api/history/stats", params={"from": "2026-01-01", "to": "2026-01-31"}
+            "/api/history/stats",
+            params={"from": "2026-01-02", "to": "2026-01-02"},
         )
         assert resp.status_code == 200
-        mock_history.get_job_stats.assert_called_once_with("2026-01-01", "2026-01-31")
+        # Only job 101 (submitted 2026-01-02) matches [from, to+23:59:59).
+        # Jobs 100 (Jan 1) and 102 (Jan 3) fall outside.
+        assert resp.json()["total"] == 1
 
     def test_get_stats_error_returns_502(
-        self, client: TestClient, mock_history: MagicMock
+        self, client_and_db: tuple[TestClient, Path]
     ) -> None:
-        mock_history.get_job_stats.side_effect = RuntimeError("DB connection lost")
-        resp = client.get("/api/history/stats")
+        """DB-level failure surfaces as 502 with the upstream detail."""
+        client, db_path = client_and_db
+
+        import srunx.web.routers.history as history_router
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("DB connection lost")
+
+        original = history_router.JobRepository.compute_stats
+        history_router.JobRepository.compute_stats = boom  # type: ignore[assignment,method-assign]
+        try:
+            resp = client.get("/api/history/stats")
+        finally:
+            history_router.JobRepository.compute_stats = original  # type: ignore[method-assign]
         assert resp.status_code == 502
         assert "DB connection lost" in resp.json()["detail"]
 
 
 class TestHistoryRecent:
-    def test_get_recent(self, client: TestClient, mock_history: MagicMock) -> None:
+    def test_get_recent_returns_newest_first(
+        self, client_and_db: tuple[TestClient, Path]
+    ) -> None:
+        client, db_path = client_and_db
+        _seed(db_path)
+
         resp = client.get("/api/history")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 2
-        assert data[0]["job_id"] == 100
-        assert data[0]["job_name"] == "train"
-        assert data[0]["status"] == "COMPLETED"
-        assert data[1]["job_id"] == 101
-        assert data[1]["completed_at"] is None
-        mock_history.get_recent_jobs.assert_called_once_with(50)
+        assert len(data) == 3
+        assert data[0]["job_id"] == 102  # newest first
+        # name → job_name alias round-trips
+        assert data[0]["job_name"] == "cancelled-job"
+        # workflow_name comes from the LEFT JOIN
+        workflow_entry = next(e for e in data if e["job_id"] == 101)
+        assert workflow_entry["workflow_name"] == "ml_pipeline"
+        # ``gpus`` = nodes * gpus_per_node so ``serialize_history_entry``
+        # (which reads ``entry.get('gpus')``) doesn't return null.
+        # Job 100: 1 node × 4 gpus/node = 4. Job 101: 2 × 4 = 8.
+        # Job 102: missing nodes/gpus → COALESCE(0, 0) = 0.
+        train_entry = next(e for e in data if e["job_id"] == 100)
+        assert train_entry["gpus"] == 4
+        assert workflow_entry["gpus"] == 8
+        assert data[0]["gpus"] == 0
 
-    def test_get_recent_with_limit(
-        self, client: TestClient, mock_history: MagicMock
+    def test_get_recent_respects_limit(
+        self, client_and_db: tuple[TestClient, Path]
     ) -> None:
-        resp = client.get("/api/history", params={"limit": 10})
+        client, db_path = client_and_db
+        _seed(db_path)
+
+        resp = client.get("/api/history", params={"limit": 1})
         assert resp.status_code == 200
-        mock_history.get_recent_jobs.assert_called_once_with(10)
+        assert len(resp.json()) == 1
+
+    def test_get_recent_empty_db(self, client_and_db: tuple[TestClient, Path]) -> None:
+        client, _ = client_and_db
+        resp = client.get("/api/history")
+        assert resp.status_code == 200
+        assert resp.json() == []
 
     def test_get_recent_error_returns_502(
-        self, client: TestClient, mock_history: MagicMock
+        self, client_and_db: tuple[TestClient, Path]
     ) -> None:
-        mock_history.get_recent_jobs.side_effect = RuntimeError("disk full")
-        resp = client.get("/api/history")
+        client, _ = client_and_db
+
+        import srunx.web.routers.history as history_router
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("disk full")
+
+        original = history_router.JobRepository.list_recent_as_dict
+        history_router.JobRepository.list_recent_as_dict = boom  # type: ignore[assignment,method-assign]
+        try:
+            resp = client.get("/api/history")
+        finally:
+            history_router.JobRepository.list_recent_as_dict = original  # type: ignore[method-assign]
         assert resp.status_code == 502
         assert "disk full" in resp.json()["detail"]
