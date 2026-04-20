@@ -254,9 +254,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if os.environ.get("SRUNX_DISABLE_DELIVERY_POLLER") != "1":
             pollers.append(DeliveryPoller(worker_id=f"delivery-{os.getpid()}"))
         if os.environ.get("SRUNX_DISABLE_RESOURCE_SNAPSHOTTER") != "1":
-            # ResourceSnapshotter needs a resource_monitor; if the SLURM
-            # adapter is down we skip it to avoid hammering a missing backend.
-            if adapter is not None:
+            # ResourceSnapshotter needs a local ``sinfo`` because
+            # ``ResourceMonitor.get_current_snapshot`` shells out directly —
+            # it does NOT tunnel through the SSH adapter. On a developer
+            # laptop that only has SSH profiles pointing at a remote
+            # SLURM cluster this is a guaranteed ``FileNotFoundError``
+            # every ``interval_seconds``, spamming the log until the
+            # process is killed. Gate the poller on ``sinfo`` being on
+            # PATH so the boot-time log line explains the skip once,
+            # then stay quiet.
+            import shutil
+
+            if adapter is None:
+                logger.info(
+                    "Skipping ResourceSnapshotter: no SLURM client is available"
+                )
+            elif shutil.which("sinfo") is None:
+                logger.info(
+                    "Skipping ResourceSnapshotter: local 'sinfo' not found on PATH. "
+                    "The snapshotter shells out locally; remote SLURM via SSH is "
+                    "not supported yet. Set SRUNX_DISABLE_RESOURCE_SNAPSHOTTER=1 "
+                    "to silence this at startup."
+                )
+            else:
                 try:
                     from srunx.monitor.resource_monitor import ResourceMonitor
 
@@ -271,10 +291,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                         "Skipping ResourceSnapshotter: init failed",
                         exc_info=True,
                     )
-            else:
-                logger.info(
-                    "Skipping ResourceSnapshotter: no SLURM client is available"
-                )
 
         if pollers:
             supervisor = PollerSupervisor(pollers)
