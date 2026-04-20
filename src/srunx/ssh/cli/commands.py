@@ -9,7 +9,7 @@ replacing the mixed argparse/typer architecture.
 import os
 import time
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console, RenderableType
@@ -997,6 +997,42 @@ def mount_remove(
     remove_mount_impl(profile_name, name, config)
 
 
+def _resolve_direct_profile(profile_obj: Any, ssh_config: str | None) -> dict[str, Any]:
+    """Build connection params from a "direct" profile, honoring ~/.ssh/config.
+
+    Profiles created with a bare hostname like "pyxis" may rely on an
+    ssh_config(5) alias that sets HostName / IdentityFile / Port / ProxyJump.
+    paramiko does not consult ssh_config on its own, so look the alias up
+    explicitly and merge whatever the profile itself did not set.
+    """
+    hostname = profile_obj.hostname
+    key_filename = profile_obj.key_filename
+    port = profile_obj.port
+    proxy_jump = profile_obj.proxy_jump
+
+    ssh_host = get_ssh_config_host(profile_obj.hostname, ssh_config)
+    if ssh_host and ssh_host.hostname:
+        hostname = ssh_host.hostname
+        if ssh_host.identity_file and not key_filename:
+            key_filename = ssh_host.identity_file
+        if ssh_host.port and port == 22:
+            port = ssh_host.port
+        if ssh_host.proxy_jump and not proxy_jump:
+            proxy_jump = ssh_host.proxy_jump
+
+    # Tilde expansion — paramiko treats ~ as a literal filename character.
+    if isinstance(key_filename, str):
+        key_filename = os.path.expanduser(key_filename)
+
+    return {
+        "hostname": hostname,
+        "username": profile_obj.username,
+        "key_filename": key_filename,
+        "port": port,
+        "proxy_jump": proxy_jump,
+    }
+
+
 def _determine_connection_params(
     host: str | None,
     profile: str | None,
@@ -1051,14 +1087,11 @@ def _determine_connection_params(
             }
             display_host = f"{profile} ({profile_obj.ssh_host})"
         else:
-            # Profile uses direct connection
-            connection_params = {
-                "hostname": profile_obj.hostname,
-                "username": profile_obj.username,
-                "key_filename": profile_obj.key_filename,
-                "port": profile_obj.port,
-                "proxy_jump": profile_obj.proxy_jump,
-            }
+            # Profile uses direct connection. If hostname happens to be an
+            # ssh_config alias, resolve HostName/IdentityFile/Port/ProxyJump
+            # from ~/.ssh/config so the user doesn't need to duplicate fields
+            # already declared there.
+            connection_params = _resolve_direct_profile(profile_obj, ssh_config)
             display_host = profile
 
     elif all([hostname, username, key_file]):
@@ -1097,14 +1130,7 @@ def _determine_connection_params(
                 }
                 display_host = f"current ({profile_obj.ssh_host})"
             else:
-                # Profile uses direct connection
-                connection_params = {
-                    "hostname": profile_obj.hostname,
-                    "username": profile_obj.username,
-                    "key_filename": profile_obj.key_filename,
-                    "port": profile_obj.port,
-                    "proxy_jump": profile_obj.proxy_jump,
-                }
+                connection_params = _resolve_direct_profile(profile_obj, ssh_config)
                 display_host = "current"
         else:
             console.print("[red]Error: No connection method specified[/red]")
