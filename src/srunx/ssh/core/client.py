@@ -215,7 +215,11 @@ class SSHSlurmClient:
 
         try:
             if not self.connect():
-                result["error"] = "Failed to establish SSH connection"
+                cause = self._last_error
+                reason = (
+                    f"{type(cause).__name__}: {cause}" if cause else "unknown error"
+                )
+                result["error"] = f"Failed to establish SSH connection: {reason}"
                 return result
 
             result["ssh_connected"] = True
