@@ -35,32 +35,6 @@ set -euxo pipefail
 
 export WORLD_SIZE=${SLURM_NTASKS:-1}
 
-{% if outputs_dir -%}
-# ── Outputs setup ──────────────────────────────────
-export SRUNX_OUTPUTS_DIR="{{ outputs_dir }}"
-export SRUNX_OUTPUTS="${SRUNX_OUTPUTS_DIR}/{{ job_name }}.env"
-mkdir -p "${SRUNX_OUTPUTS_DIR}" && chmod 700 "${SRUNX_OUTPUTS_DIR}"
-touch "${SRUNX_OUTPUTS}"
-{% if job_outputs -%}
-# Static outputs declared in workflow
-{% for key, value in job_outputs.items() -%}
-echo '{{ key }}={{ value | replace("'", "'\\''") }}' >> "${SRUNX_OUTPUTS}"
-export {{ key }}='{{ value | replace("'", "'\\''") }}'
-{% endfor -%}
-{% endif -%}
-
-{% if dependency_names -%}
-# Source outputs from dependency jobs
-{% for dep_name in dependency_names -%}
-if [ -f "${SRUNX_OUTPUTS_DIR}/{{ dep_name }}.env" ]; then
-    set -a
-    source "${SRUNX_OUTPUTS_DIR}/{{ dep_name }}.env"
-    set +a
-fi
-{% endfor -%}
-{% endif -%}
-{% endif -%}
-
 # Environment setup
 {% if environment_setup -%}
 {{ environment_setup }}

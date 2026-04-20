@@ -48,7 +48,7 @@ function makeDefaultJob(id: string, name: string): BuilderJob {
     venv: null,
     container: null,
     env_vars: "",
-    outputs: "",
+    exports: "",
     work_dir: null,
     log_dir: null,
     retry: null,
@@ -111,15 +111,15 @@ function hasCycle(nodeIds: string[], edges: Edge[]): boolean {
 /* ── Workflow → Builder conversion ──────────────── */
 
 function workflowJobToBuilderJob(job: RunnableJob, id: string): BuilderJob {
-  // Convert outputs record to "KEY=value" per line string
-  const outputsRecord =
-    "outputs" in job
-      ? ((job as Record<string, unknown>).outputs as
+  // Convert exports record to "KEY=value" per line string
+  const exportsRecord =
+    "exports" in job
+      ? ((job as Record<string, unknown>).exports as
           | Record<string, string>
           | undefined)
       : undefined;
-  const outputsStr = outputsRecord
-    ? Object.entries(outputsRecord)
+  const exportsStr = exportsRecord
+    ? Object.entries(exportsRecord)
         .map(([k, v]) => `${k}=${v}`)
         .join("\n")
     : "";
@@ -146,7 +146,7 @@ function workflowJobToBuilderJob(job: RunnableJob, id: string): BuilderJob {
     venv: job.environment?.venv ?? null,
     container: null,
     env_vars: "",
-    outputs: outputsStr,
+    exports: exportsStr,
     work_dir: null,
     log_dir: null,
     retry: null,
@@ -448,16 +448,16 @@ export function useWorkflowBuilder() {
         if (Object.keys(environment).length > 0) {
           entry.environment = environment;
         }
-        // Build outputs
-        if (job.outputs.trim()) {
-          const outputs: Record<string, string> = {};
-          for (const line of job.outputs.split("\n")) {
+        // Build exports
+        if (job.exports.trim()) {
+          const exportsMap: Record<string, string> = {};
+          for (const line of job.exports.split("\n")) {
             const eq = line.indexOf("=");
             if (eq > 0) {
-              outputs[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+              exportsMap[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
             }
           }
-          if (Object.keys(outputs).length > 0) entry.outputs = outputs;
+          if (Object.keys(exportsMap).length > 0) entry.exports = exportsMap;
         }
 
         if (job.work_dir !== null) entry.work_dir = job.work_dir;

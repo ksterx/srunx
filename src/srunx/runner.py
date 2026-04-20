@@ -3,7 +3,6 @@
 import ast
 import datetime
 import math
-import os  # noqa: E402
 import re
 import time
 from collections import defaultdict
@@ -12,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from textwrap import dedent
 from typing import Any, Self
-from uuid import uuid4
 
 import jinja2
 import yaml  # type: ignore
@@ -261,6 +259,60 @@ def _find_jinja_refs(text: str) -> set[str]:
     return set(_JINJA_VAR_RE.findall(text))
 
 
+def _dependency_closure(jobs_data: list[dict[str, Any]], target: str) -> set[str]:
+    """Return *target* plus every job it transitively depends on."""
+    name_to_deps: dict[str, list[str]] = {
+        jd["name"]: list(jd.get("depends_on") or []) for jd in jobs_data if "name" in jd
+    }
+    closure: set[str] = set()
+    stack = [target]
+    while stack:
+        node = stack.pop()
+        if node in closure:
+            continue
+        if node not in name_to_deps:
+            continue
+        closure.add(node)
+        stack.extend(name_to_deps[node])
+    return closure
+
+
+class _DepsNamespace:
+    """Jinja-friendly wrapper for ``{{ deps.<job>.<key> }}`` access.
+
+    Plain dicts shadow user-declared keys with built-in methods — e.g.
+    ``{{ deps.a.items }}`` resolves to ``dict.items`` rather than the
+    user's export named ``items``. This wrapper forces attribute access
+    to go through dict lookup, wraps nested dict values recursively, and
+    raises ``AttributeError`` for missing keys so ``StrictUndefined``
+    can surface a clear error.
+    """
+
+    __slots__ = ("_data",)
+
+    def __init__(self, data: dict[str, Any]):
+        self._data = data
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            value = self._data[name]
+        except KeyError as exc:
+            raise AttributeError(
+                f"'deps' has no entry '{name}'. "
+                "Check that it is listed in this job's 'depends_on' "
+                "and that the referenced key is declared in the parent's 'exports'."
+            ) from exc
+        if isinstance(value, dict):
+            return _DepsNamespace(value)
+        return value
+
+    def __getitem__(self, name: str) -> Any:
+        return self.__getattr__(name)
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._data
+
+
 def _find_required_variables(jobs_yaml: str, args: dict[str, Any]) -> set[str]:
     """Return the set of arg keys that the jobs YAML transitively depends on.
 
@@ -438,19 +490,25 @@ class WorkflowRunner:
         default_project = data.get("default_project")
         jobs_data = data.get("jobs", [])
 
-        # If single_job is specified, filter jobs_data to only include that job
+        # For `single_job`, restrict rendering to the target and its
+        # transitive dependencies so unrelated broken jobs don't block
+        # a targeted re-run. Without single_job, render the full DAG.
         if single_job:
-            filtered_jobs_data = [
-                job for job in jobs_data if job.get("name") == single_job
-            ]
-            if not filtered_jobs_data:
+            if not any(jd.get("name") == single_job for jd in jobs_data):
                 raise WorkflowValidationError(
                     f"Job '{single_job}' not found in workflow"
                 )
-            jobs_data = filtered_jobs_data
+            closure_names = _dependency_closure(jobs_data, single_job)
+            render_input = [jd for jd in jobs_data if jd.get("name") in closure_names]
+        else:
+            render_input = jobs_data
 
-        # Render Jinja templates in jobs_data using args
-        rendered_jobs_data = cls._render_jobs_with_args(jobs_data, args)
+        rendered_jobs_data = cls._render_jobs_with_args_and_deps(render_input, args)
+
+        if single_job:
+            rendered_jobs_data = [
+                jd for jd in rendered_jobs_data if jd.get("name") == single_job
+            ]
 
         jobs = []
         for job_data in rendered_jobs_data:
@@ -464,31 +522,73 @@ class WorkflowRunner:
         )
 
     @staticmethod
-    def _render_jobs_with_args(
+    def _render_jobs_with_args_and_deps(
         jobs_data: list[dict[str, Any]], args: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        """Render Jinja templates in job data using args.
+        """Render Jinja templates per-job in dependency order.
 
-        Phases:
-        1. Find which variables are used in the jobs YAML
-        2. Resolve variable dependencies via topological sort
-        3. Evaluate all variables in dependency order
-        4. Render the jobs YAML with evaluated variables
+        Each job is rendered with `{**args, 'deps': <DepsNamespace>}`
+        where ``deps`` exposes the already-rendered ``exports`` of every
+        predecessor listed in the job's ``depends_on``. Uses
+        StrictUndefined so typos in ``deps.X.Y`` fail fast at load time.
+
+        Reject legacy ``outputs:`` keys explicitly rather than silently
+        dropping them, so stale YAML surfaces a clear error instead of
+        producing empty exports and a broken ``deps.X.Y`` resolution.
         """
-        if not args:
-            return jobs_data
+        from graphlib import CycleError, TopologicalSorter
 
-        jobs_yaml = yaml.dump(jobs_data, default_flow_style=False)
-        required = _find_required_variables(jobs_yaml, args)
-        evaluated = _evaluate_variables(args, required)
+        for jd in jobs_data:
+            if "outputs" in jd:
+                raise WorkflowValidationError(
+                    f"Job '{jd.get('name', '?')}' uses the removed 'outputs' key. "
+                    "Rename to 'exports' and update consumers to reference the value "
+                    "as '{{ deps.<job_name>.<key> }}' (load-time resolution). "
+                    "See CHANGELOG migration guide."
+                )
 
-        template = jinja2.Template(jobs_yaml, undefined=jinja2.DebugUndefined)
+        # Evaluate args up front (supports `python:` prefix).
+        if args:
+            jobs_yaml = yaml.dump(jobs_data, default_flow_style=False)
+            required = _find_required_variables(jobs_yaml, args)
+            evaluated_args = _evaluate_variables(args, required)
+        else:
+            evaluated_args = {}
+
+        name_to_data = {j["name"]: j for j in jobs_data if "name" in j}
+        name_to_deps = {
+            name: set(jd.get("depends_on", []) or []) & name_to_data.keys()
+            for name, jd in name_to_data.items()
+        }
+
         try:
-            rendered_yaml = template.render(**evaluated)
-            return yaml.safe_load(rendered_yaml)
-        except jinja2.TemplateError as e:
-            logger.error(f"Jinja template rendering failed: {e}")
-            raise WorkflowValidationError(f"Template rendering failed: {e}") from e
+            order = list(TopologicalSorter(name_to_deps).static_order())
+        except CycleError as e:
+            raise WorkflowValidationError(f"Circular job dependency: {e}") from e
+
+        rendered: dict[str, dict[str, Any]] = {}
+        for job_name in order:
+            raw = name_to_data[job_name]
+            deps_ctx = _DepsNamespace(
+                {
+                    dep: rendered[dep].get("exports", {}) or {}
+                    for dep in name_to_deps[job_name]
+                    if dep in rendered
+                }
+            )
+            context = {**evaluated_args, "deps": deps_ctx}
+
+            job_yaml = yaml.dump(raw, default_flow_style=False)
+            try:
+                template = jinja2.Template(job_yaml, undefined=jinja2.StrictUndefined)
+                rendered_yaml = template.render(**context)
+            except jinja2.TemplateError as e:
+                raise WorkflowValidationError(
+                    f"Failed to render job '{job_name}': {e}"
+                ) from e
+            rendered[job_name] = yaml.safe_load(rendered_yaml)
+
+        return [rendered[j["name"]] for j in jobs_data if j.get("name") in rendered]
 
     def get_independent_jobs(self) -> list[RunnableJobType]:
         """Get all jobs that are independent of any other job."""
@@ -627,17 +727,6 @@ class WorkflowRunner:
             # update here is not fatal.
             mark_workflow_run_status(workflow_run_id, "running")
 
-        # Generate shared outputs directory for inter-job variable passing
-        any_job_has_outputs = any(
-            getattr(job, "outputs", None) for job in jobs_to_execute
-        )
-        any_job_has_deps = any(job.depends_on for job in jobs_to_execute)
-        outputs_dir: str | None = None
-        if any_job_has_outputs or any_job_has_deps:
-            run_id = uuid4().hex[:8]
-            base = os.getenv("SRUNX_TEMP_DIR", "/tmp/srunx")
-            outputs_dir = f"{base}/{self.workflow.name}_{run_id}"
-
         # Log execution plan
         if single_job:
             logger.info(f"🚀 Executing single job: {single_job}")
@@ -732,20 +821,11 @@ class WorkflowRunner:
             """Execute a single job."""
             logger.info(f"⚡ {'SUBMITTED':<12} Job {job.name:<12}")
 
-            # Resolve dependency names for outputs sourcing
-            dep_names = (
-                [dep.job_name for dep in job.parsed_dependencies]
-                if outputs_dir
-                else None
-            )
-
             try:
                 result = self.slurm.run(
                     job,
                     workflow_name=self.workflow.name,
                     workflow_run_id=workflow_run_id,
-                    outputs_dir=outputs_dir,
-                    dependency_names=dep_names,
                 )
                 return result
             except Exception as e:
@@ -1097,7 +1177,7 @@ class WorkflowRunner:
         base = {
             "name": data["name"],
             "depends_on": data.get("depends_on", []),
-            "outputs": data.get("outputs", {}),
+            "exports": data.get("exports", {}),
             "retry": data.get("retry", 0),
             "retry_delay": data.get("retry_delay", 60),
         }

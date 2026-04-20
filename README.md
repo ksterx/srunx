@@ -75,7 +75,7 @@ Instead of stitching together `sbatch`, `squeue`, SSH, and a pipeline runner, sr
 | Python API | ✅ | ✅ | ✅ | ✅ |
 | Web dashboard | ✅ | ❌ | ❌ | ❌ |
 | Workflow DAG with dependencies | ✅ | ❌ | ❌ | ✅ |
-| Inter-job runtime variable passing | ✅ | ❌ | ❌ | ⚠️ via files |
+| Inter-job value passing (load-time) | ✅ | ❌ | ❌ | ⚠️ via files |
 | GPU availability monitoring | ✅ | ❌ | ❌ | ❌ |
 | SSH remote submit + file sync | ✅ | ❌ | ❌ | ❌ |
 | Container support (Pyxis / Apptainer / Singularity) | ✅ | ⚠️ limited | ❌ | ⚠️ via rules |
@@ -148,11 +148,11 @@ args:
 jobs:
   - name: preprocess
     command: ["python", "preprocess.py", "--out", "{{ output_dir }}/data"]
-    outputs:
+    exports:
       DATA_PATH: "{{ output_dir }}/data/processed.parquet"
 
   - name: train
-    command: ["python", "train.py", "--model", "{{ model }}", "--data", "$DATA_PATH"]
+    command: ["python", "train.py", "--model", "{{ model }}", "--data", "{{ deps.preprocess.DATA_PATH }}"]
     depends_on: [preprocess]
     gpus_per_node: 2
     environment:
@@ -160,18 +160,18 @@ jobs:
         image: nvcr.io/nvidia/pytorch:24.01-py3
         mounts:
           - /data:/data
-    outputs:
+    exports:
       MODEL_PATH: "{{ output_dir }}/models/best.pt"
 
   - name: evaluate
-    command: ["python", "eval.py", "--model", "$MODEL_PATH"]
+    command: ["python", "eval.py", "--model", "{{ deps.train.MODEL_PATH }}"]
     depends_on: [train]
 ```
 
 **What this shows off:**
 
 - **`args` with Jinja2** — reusable, parameterized pipelines (`{{ model }}`, `{{ output_dir }}`)
-- **Inter-job outputs** — downstream jobs read `$DATA_PATH` / `$MODEL_PATH` at runtime; you can also append from the job with `echo "key=value" >> $SRUNX_OUTPUTS`
+- **Inter-job exports** — parents declare `exports:`; children read them via `{{ deps.<parent>.<key> }}`, fully resolved at workflow load time (no runtime env files)
 - **Containers per job** — Pyxis / Apptainer / Singularity are first-class (`environment.container`)
 - **Dependency-driven scheduling** — `evaluate` blocks on `train`; parallel branches run automatically
 

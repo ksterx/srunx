@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **`outputs` field renamed to `exports`** for all workflow jobs (YAML, Pydantic model, web API, frontend).
+- **Inter-job value propagation is now resolved at workflow load time** via `{{ deps.<job_name>.<key> }}`, not at runtime via shared env files.
+- **Removed**: `SRUNX_OUTPUTS_DIR`, `SRUNX_OUTPUTS`, dynamic `echo "key=value" >> $SRUNX_OUTPUTS` writes, and the `{% if outputs_dir %}` template block in `base.slurm.jinja`.
+- **Removed kwargs** from `Slurm.submit` / `Slurm.run` / `render_job_script`: `outputs_dir`, `dependency_names`, `job_outputs`.
+
+### Migration
+
+Before:
+```yaml
+- name: preprocess
+  outputs:
+    data_path: "{{ base_dir }}/data"
+- name: train
+  depends_on: [preprocess]
+  command: [python, train.py, --data, "$data_path"]
+```
+
+After:
+```yaml
+- name: preprocess
+  exports:
+    data_path: "{{ base_dir }}/data"
+- name: train
+  depends_on: [preprocess]
+  command: [python, train.py, --data, "{{ deps.preprocess.data_path }}"]
+```
+
+If you were using dynamic `echo "key=value" >> $SRUNX_OUTPUTS` at job runtime, that mechanism is no longer supported. Pass runtime-determined values between jobs via explicit files (e.g., `--out-file /shared/path/result.json`) or workflow-args-derived deterministic paths.
+
 ### Fixed
 
 #### Resource Monitor Improvements (2025-12-23)

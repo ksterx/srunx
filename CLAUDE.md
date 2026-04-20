@@ -175,7 +175,7 @@ src/srunx/
 ### Core Components
 
 #### Models (`models.py`)
-- **BaseJob**: Base class for all job types with common fields (name, job_id, depends_on, outputs, status)
+- **BaseJob**: Base class for all job types with common fields (name, job_id, depends_on, exports, status)
 - **Job**: Complete SLURM job configuration with command, resources, and environment
 - **ShellJob**: Job that executes a shell script with variables (script_path, script_vars)
 - **JobResource**: Resource allocation (nodes, GPUs, memory, time, partition, nodelist)
@@ -286,11 +286,11 @@ src/srunx/
 
 ### Template System
 - Enhanced Jinja2 templates with conditional resource allocation
-- `base.slurm.jinja`: Full-featured template with all options, including inter-job outputs support
+- `base.slurm.jinja`: Full-featured template with all options; inter-job values are resolved at workflow load time via `exports` / `deps` (no runtime env-file wiring in the template)
 - Automatic environment setup integration
 
 ### Workflow Definition
-Enhanced YAML workflow format with variables and outputs:
+Enhanced YAML workflow format with variables and exports:
 ```yaml
 name: ml_pipeline
 args:
@@ -300,14 +300,14 @@ args:
 jobs:
   - name: preprocess
     command: ["python", "preprocess.py", "--output", "{{ base_dir }}/data"]
-    outputs:
+    exports:
       data_path: "{{ base_dir }}/data/processed"
     nodes: 1
 
   - name: train
-    command: ["python", "train.py", "--data", "$data_path"]
+    command: ["python", "train.py", "--data", "{{ deps.preprocess.data_path }}"]
     depends_on: [preprocess]
-    outputs:
+    exports:
       model_path: "{{ base_dir }}/models/best.pt"
     gpus_per_node: 1
     conda: ml_env
@@ -315,7 +315,7 @@ jobs:
     time_limit: "4:00:00"
 
   - name: evaluate
-    command: ["python", "evaluate.py", "--model", "$model_path"]
+    command: ["python", "evaluate.py", "--model", "{{ deps.train.model_path }}"]
     depends_on: [train]
 ```
 
@@ -324,13 +324,12 @@ jobs:
 - Supports `python:` prefix for dynamic evaluation (CLI only, rejected from web API for security)
 - Variables can reference each other with automatic dependency resolution
 
-#### Inter-Job Outputs
-- Jobs declare static `outputs` (dict of KEY=value) written to `$SRUNX_OUTPUTS` file at job start
-- Jobs can also write dynamic outputs at runtime: `echo "key=value" >> $SRUNX_OUTPUTS`
-- Dependent jobs automatically source parent output files via `$SRUNX_OUTPUTS_DIR/<job_name>.env`
-- Output variable keys must be valid shell identifiers (`^[A-Za-z_][A-Za-z0-9_]*$`)
-- Values are single-quoted in generated scripts to prevent shell injection
-- Outputs directory uses `chmod 700` for multi-tenant security
+#### Inter-Job Exports (Load-Time)
+- Jobs declare static `exports` (dict of KEY=value) — string literals expanded with workflow `args` at load time
+- Downstream jobs reference parent values as `{{ deps.<parent_name>.<key> }}`; Jinja (with `StrictUndefined`) substitutes literals into the child's fields at workflow load time, before any job is submitted
+- `deps.X` is only populated for names listed in the child's `depends_on`; referencing a non-dep or a missing key fails the workflow at load time
+- No runtime env-file mechanism: `$SRUNX_OUTPUTS`, `$SRUNX_OUTPUTS_DIR`, and dynamic `echo "key=value" >> $SRUNX_OUTPUTS` writes are gone
+- Values that can only be computed at runtime are out of scope — pass them explicitly (e.g. `--out-file /shared/path/result.json`) or make the path deterministic from `args`
 
 ### Key Improvements
 - **Unified Job Model**: Single `Job` class with comprehensive configuration
@@ -339,7 +338,7 @@ jobs:
 - **Better Error Handling**: Comprehensive validation and error messages
 - **Resource Management**: Full SLURM resource specification
 - **Workflow Validation**: Dependency checking and cycle detection
-- **Inter-Job Communication**: Runtime variable passing between workflow jobs via shared outputs directory
+- **Load-Time Value Propagation**: Parent-job `exports` are substituted into child jobs via `{{ deps.<parent>.<key> }}` at workflow load time, with StrictUndefined validation
 
 ### Notification + State Persistence (new in 2026-Q2)
 

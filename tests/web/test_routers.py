@@ -1007,16 +1007,16 @@ class TestWorkflowsRouter:
         data = resp.json()
         assert data["args"] == {"base_dir": "/data/exp", "lr": "0.001"}
 
-    def test_create_workflow_with_outputs(self, client: TestClient) -> None:
-        """Jobs with outputs should be persisted and returned."""
+    def test_create_workflow_with_exports(self, client: TestClient) -> None:
+        """Jobs with exports should be persisted and returned."""
         payload = {
-            "name": "outputs-test",
+            "name": "exports-test",
             "default_project": MOUNT,
             "jobs": [
                 {
                     "name": "train",
                     "command": ["python", "train.py"],
-                    "outputs": {"model_path": "/data/model.pt"},
+                    "exports": {"model_path": "/data/model.pt"},
                 },
                 {
                     "name": "eval",
@@ -1030,8 +1030,8 @@ class TestWorkflowsRouter:
         data = resp.json()
         train_job = next(j for j in data["jobs"] if j["name"] == "train")
         eval_job = next(j for j in data["jobs"] if j["name"] == "eval")
-        assert train_job["outputs"] == {"model_path": "/data/model.pt"}
-        assert eval_job["outputs"] == {}
+        assert train_job["exports"] == {"model_path": "/data/model.pt"}
+        assert eval_job["exports"] == {}
 
     def test_create_workflow_rejects_python_args(self, client: TestClient) -> None:
         """Args containing 'python:' should be rejected from web."""
@@ -1045,78 +1045,41 @@ class TestWorkflowsRouter:
         assert resp.status_code == 422
         assert "python:" in resp.json()["detail"]
 
-    def test_create_workflow_invalid_output_key(self, client: TestClient) -> None:
-        """Output keys with invalid shell identifiers should be rejected."""
+    def test_create_workflow_invalid_export_key(self, client: TestClient) -> None:
+        """Export keys with invalid shell identifiers should be rejected."""
         payload = {
-            "name": "bad-outputs",
+            "name": "bad-exports",
             "default_project": MOUNT,
             "jobs": [
                 {
                     "name": "train",
                     "command": ["echo"],
-                    "outputs": {"bad key": "value"},
+                    "exports": {"bad key": "value"},
                 },
             ],
         }
         resp = client.post("/api/workflows/create", json=payload)
         assert resp.status_code == 422
 
-    def test_run_workflow_with_outputs_includes_outputs_in_script(
-        self, client: TestClient, mock_adapter: MagicMock
+    def test_create_workflow_rejects_legacy_outputs_key(
+        self, client: TestClient
     ) -> None:
-        """Running a workflow with outputs should include SRUNX_OUTPUTS_DIR in scripts."""
-        # Create workflow with outputs
-        create_payload = {
-            "name": "outputs-run",
+        """Legacy 'outputs:' in the request body must 422, not silently drop."""
+        payload = {
+            "name": "legacy-outputs",
             "default_project": MOUNT,
             "jobs": [
                 {
                     "name": "train",
-                    "command": ["python", "train.py"],
-                    "outputs": {"model_path": "/data/model.pt"},
-                },
-                {
-                    "name": "eval",
-                    "command": ["python", "eval.py"],
-                    "depends_on": ["train"],
+                    "command": ["echo"],
+                    "outputs": {"model_path": "/x"},
                 },
             ],
         }
-        resp = client.post("/api/workflows/create", json=create_payload)
-        assert resp.status_code == 200
-
-        call_count = 0
-
-        def mock_submit(script_content, job_name=None, dependency=None):
-            nonlocal call_count
-            call_count += 1
-            return {
-                "name": job_name or "job",
-                "job_id": 20000 + call_count,
-                "status": "PENDING",
-                "depends_on": [],
-                "command": [],
-                "resources": {},
-            }
-
-        mock_adapter.submit_job.side_effect = mock_submit
-
-        resp = client.post("/api/workflows/outputs-run/run", params={"mount": MOUNT})
-        assert resp.status_code == 202
-
-        # Check that submitted scripts contain SRUNX_OUTPUTS_DIR
-        calls = mock_adapter.submit_job.call_args_list
-        train_script = (
-            calls[0][0][0] if calls[0][0] else calls[0].kwargs.get("script_content", "")
-        )
-        assert "SRUNX_OUTPUTS_DIR" in train_script
-        assert "model_path" in train_script
-
-        eval_script = (
-            calls[1][0][0] if calls[1][0] else calls[1].kwargs.get("script_content", "")
-        )
-        assert "SRUNX_OUTPUTS_DIR" in eval_script
-        assert "train.env" in eval_script  # Should source train's outputs
+        resp = client.post("/api/workflows/create", json=payload)
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "outputs" in str(body).lower() and "exports" in str(body).lower()
 
 
 # ── Config SSH Connect / Test / Status ───────────────

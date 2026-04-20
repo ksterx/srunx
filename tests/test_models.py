@@ -682,119 +682,41 @@ class TestRenderJobScript:
         captured = capsys.readouterr()
         assert "Test template: test_job" in captured.out
 
-    def test_render_base_template_with_outputs(self, temp_dir):
-        """Test that outputs_dir and job_outputs render correctly."""
-        template_path = (
-            Path(__file__).resolve().parent.parent
-            / "src"
-            / "srunx"
-            / "templates"
-            / "base.slurm.jinja"
-        )
-        job = Job(
-            name="train",
-            command=["python", "train.py"],
-            outputs={"model_path": "/data/models/best.pt", "accuracy": "0.95"},
-            log_dir="",
-            work_dir="",
-        )
-        script_path = render_job_script(
-            template_path,
-            job,
-            temp_dir,
-            outputs_dir="/tmp/srunx/test_run",
-        )
-        content = Path(script_path).read_text()
-        assert 'SRUNX_OUTPUTS_DIR="/tmp/srunx/test_run"' in content
-        assert 'SRUNX_OUTPUTS="${SRUNX_OUTPUTS_DIR}/train.env"' in content
-        assert "mkdir -p" in content
-        assert "chmod 700" in content
-        assert "model_path" in content
-        assert "/data/models/best.pt" in content
-        assert "accuracy" in content
 
-    def test_render_base_template_with_dependency_sourcing(self, temp_dir):
-        """Test that dependency output files are sourced."""
-        template_path = (
-            Path(__file__).resolve().parent.parent
-            / "src"
-            / "srunx"
-            / "templates"
-            / "base.slurm.jinja"
-        )
-        job = Job(
-            name="evaluate",
-            command=["python", "eval.py"],
-            depends_on=["train"],
-            log_dir="",
-            work_dir="",
-        )
-        script_path = render_job_script(
-            template_path,
-            job,
-            temp_dir,
-            outputs_dir="/tmp/srunx/test_run",
-            dependency_names=["train"],
-        )
-        content = Path(script_path).read_text()
-        assert "${SRUNX_OUTPUTS_DIR}/train.env" in content
-        assert "source" in content
-        assert "set -a" in content
+class TestExportsValidation:
+    """Test exports field validation on BaseJob."""
 
-    def test_render_base_template_without_outputs(self, temp_dir):
-        """When outputs_dir is None, no outputs block is rendered."""
-        template_path = (
-            Path(__file__).resolve().parent.parent
-            / "src"
-            / "srunx"
-            / "templates"
-            / "base.slurm.jinja"
-        )
-        job = Job(
-            name="simple",
-            command=["echo", "hello"],
-            log_dir="",
-            work_dir="",
-        )
-        script_path = render_job_script(template_path, job, temp_dir)
-        content = Path(script_path).read_text()
-        assert "SRUNX_OUTPUTS" not in content
-
-
-class TestOutputsValidation:
-    """Test outputs field validation on BaseJob."""
-
-    def test_valid_output_keys(self):
+    def test_valid_export_keys(self):
         """Valid shell identifiers should pass."""
         job = BaseJob(
             name="test",
-            outputs={
+            exports={
                 "model_path": "/data/model.pt",
                 "BATCH_SIZE": "32",
                 "_private": "x",
             },
         )
-        assert len(job.outputs) == 3
+        assert len(job.exports) == 3
 
-    def test_invalid_output_key_with_spaces(self):
+    def test_invalid_export_key_with_spaces(self):
         """Keys with spaces should fail."""
-        with pytest.raises(ValidationError, match="Invalid output variable name"):
-            BaseJob(name="test", outputs={"bad key": "value"})
+        with pytest.raises(ValidationError, match="Invalid export name"):
+            BaseJob(name="test", exports={"bad key": "value"})
 
-    def test_invalid_output_key_with_semicolon(self):
+    def test_invalid_export_key_with_semicolon(self):
         """Keys with shell metacharacters should fail."""
-        with pytest.raises(ValidationError, match="Invalid output variable name"):
-            BaseJob(name="test", outputs={"foo;rm -rf /": "value"})
+        with pytest.raises(ValidationError, match="Invalid export name"):
+            BaseJob(name="test", exports={"foo;rm -rf /": "value"})
 
-    def test_invalid_output_key_starts_with_number(self):
+    def test_invalid_export_key_starts_with_number(self):
         """Keys starting with a number should fail."""
-        with pytest.raises(ValidationError, match="Invalid output variable name"):
-            BaseJob(name="test", outputs={"1var": "value"})
+        with pytest.raises(ValidationError, match="Invalid export name"):
+            BaseJob(name="test", exports={"1var": "value"})
 
-    def test_empty_outputs(self):
-        """Empty outputs dict should be fine."""
-        job = BaseJob(name="test", outputs={})
-        assert job.outputs == {}
+    def test_empty_exports(self):
+        """Empty exports dict should be fine."""
+        job = BaseJob(name="test", exports={})
+        assert job.exports == {}
 
 
 class TestRenderJobScriptExtraArgs:

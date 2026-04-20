@@ -9,7 +9,7 @@ from pathlib import Path
 BUILTIN_TEMPLATES = {
     "base": {
         "name": "base",
-        "description": "SLURM job template with full resource control and inter-job outputs",
+        "description": "SLURM job template with full resource control",
         "path": "base.slurm.jinja",
         "use_case": "All job types including distributed training",
     },

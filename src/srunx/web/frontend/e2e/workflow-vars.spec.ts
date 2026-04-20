@@ -5,7 +5,7 @@ test.beforeEach(async ({ page }) => {
   await setupMockRoutes(page);
 });
 
-test.describe("Workflow Variables (args & outputs)", () => {
+test.describe("Workflow Variables (args & exports)", () => {
   test("args button is visible in builder toolbar", async ({ page }) => {
     await page.goto("/workflows/new?mount=ml-project");
 
@@ -54,30 +54,30 @@ test.describe("Workflow Variables (args & outputs)", () => {
     await expect(valueInput).toHaveValue("/data/experiments");
   });
 
-  test("outputs section is visible in job property panel", async ({ page }) => {
+  test("exports section is visible in job property panel", async ({ page }) => {
     await page.goto("/workflows/new?mount=ml-project");
 
     await page.getByRole("button", { name: "Add Job" }).click();
     await expect(page.getByText("job_1")).toBeVisible();
     await page.locator("[data-id]").filter({ hasText: "job_1" }).click();
 
-    // Scroll the Add Output button into view
-    const addOutputBtn = page.getByRole("button", { name: "Add Output" });
-    await addOutputBtn.scrollIntoViewIfNeeded();
-    await expect(addOutputBtn).toBeVisible();
+    // Scroll the Add Export button into view
+    const addExportBtn = page.getByRole("button", { name: "Add Export" });
+    await addExportBtn.scrollIntoViewIfNeeded();
+    await expect(addExportBtn).toBeVisible();
   });
 
-  test("adding outputs creates key-value row", async ({ page }) => {
+  test("adding exports creates key-value row", async ({ page }) => {
     await page.goto("/workflows/new?mount=ml-project");
 
     await page.getByRole("button", { name: "Add Job" }).click();
     await page.locator("[data-id]").filter({ hasText: "job_1" }).click();
 
-    const addOutputBtn = page.getByRole("button", { name: "Add Output" });
-    await addOutputBtn.scrollIntoViewIfNeeded();
-    await addOutputBtn.click();
+    const addExportBtn = page.getByRole("button", { name: "Add Export" });
+    await addExportBtn.scrollIntoViewIfNeeded();
+    await addExportBtn.click();
 
-    // Should see key and value inputs for output
+    // Should see key and value inputs for export
     const keyInput = page.getByPlaceholder("name").first();
     const valueInput = page
       .locator('input[placeholder="/path/or/value"]')
@@ -92,15 +92,15 @@ test.describe("Workflow Variables (args & outputs)", () => {
     await expect(valueInput).toHaveValue("/data/model.pt");
   });
 
-  test("help text mentions $SRUNX_OUTPUTS", async ({ page }) => {
+  test("help text mentions deps.<job>.<key> syntax", async ({ page }) => {
     await page.goto("/workflows/new?mount=ml-project");
 
     await page.getByRole("button", { name: "Add Job" }).click();
     await page.locator("[data-id]").filter({ hasText: "job_1" }).click();
 
-    const srunxText = page.getByText("$SRUNX_OUTPUTS");
-    await srunxText.scrollIntoViewIfNeeded();
-    await expect(srunxText).toBeVisible();
+    const depsText = page.getByText(/deps\.job_1\./);
+    await depsText.scrollIntoViewIfNeeded();
+    await expect(depsText).toBeVisible();
   });
 
   test("args editor shows hint about variable_name syntax", async ({

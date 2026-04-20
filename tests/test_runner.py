@@ -320,8 +320,8 @@ class TestWorkflowRunner:
         job = runner.workflow.jobs[0]
         assert job.command == ["echo", "hello"]
 
-    def test_from_yaml_invalid_template(self, temp_dir):
-        """Test that workflow loads successfully with DebugUndefined handling."""
+    def test_from_yaml_undefined_var_raises(self, temp_dir):
+        """Unresolved Jinja refs fail at load time (StrictUndefined)."""
         yaml_content = {
             "name": "invalid_template_workflow",
             "args": {"valid_var": "value"},
@@ -338,13 +338,11 @@ class TestWorkflowRunner:
         with open(yaml_path, "w") as f:
             yaml.dump(yaml_content, f)
 
-        # Should now load successfully with DebugUndefined handling
-        runner = WorkflowRunner.from_yaml(yaml_path)
-        assert runner.workflow.name == "invalid_template_workflow"
-        assert len(runner.workflow.jobs) == 1
+        with pytest.raises(WorkflowValidationError):
+            WorkflowRunner.from_yaml(yaml_path)
 
-    def test_render_jobs_with_args_static_method(self):
-        """Test _render_jobs_with_args static method."""
+    def test_render_jobs_with_args_and_deps_static_method(self):
+        """_render_jobs_with_args_and_deps resolves args in per-job render."""
         args = {
             "dataset": "mnist",
             "epochs": 10,
@@ -366,7 +364,7 @@ class TestWorkflowRunner:
             }
         ]
 
-        rendered_jobs = WorkflowRunner._render_jobs_with_args(jobs_data, args)
+        rendered_jobs = WorkflowRunner._render_jobs_with_args_and_deps(jobs_data, args)
 
         assert len(rendered_jobs) == 1
         job = rendered_jobs[0]
@@ -380,8 +378,8 @@ class TestWorkflowRunner:
         ]
         assert job["work_dir"] == "/results"
 
-    def test_render_jobs_with_args_no_args(self):
-        """Test _render_jobs_with_args with no args."""
+    def test_render_jobs_with_args_and_deps_no_args(self):
+        """Empty args still round-trips jobs through the render pipeline."""
         jobs_data = [
             {
                 "name": "simple_job",
@@ -389,22 +387,11 @@ class TestWorkflowRunner:
             }
         ]
 
-        rendered_jobs = WorkflowRunner._render_jobs_with_args(jobs_data, {})
+        rendered_jobs = WorkflowRunner._render_jobs_with_args_and_deps(jobs_data, {})
 
-        assert rendered_jobs == jobs_data
-
-    def test_render_jobs_with_args_empty_args(self):
-        """Test _render_jobs_with_args with empty args dict."""
-        jobs_data = [
-            {
-                "name": "simple_job",
-                "command": ["echo", "hello"],
-            }
-        ]
-
-        rendered_jobs = WorkflowRunner._render_jobs_with_args(jobs_data, {})
-
-        assert rendered_jobs == jobs_data
+        assert len(rendered_jobs) == 1
+        assert rendered_jobs[0]["name"] == "simple_job"
+        assert rendered_jobs[0]["command"] == ["echo", "hello"]
 
     @patch("srunx.runner.Slurm")
     def test_run_simple_workflow(self, mock_slurm_class):
@@ -438,8 +425,6 @@ class TestWorkflowRunner:
         mock_slurm.run.assert_called_once()
         call_kwargs = mock_slurm.run.call_args.kwargs
         assert call_kwargs["workflow_name"] == "test"
-        assert call_kwargs["outputs_dir"] is None
-        assert call_kwargs["dependency_names"] is None
         assert isinstance(call_kwargs["workflow_run_id"], int)
 
     @patch("srunx.runner.Slurm")
@@ -1254,23 +1239,23 @@ class TestEnhancedDependencies:
         assert not job.dependencies_satisfied({}, completed_job_names=completed_jobs)
 
 
-class TestWorkflowOutputs:
-    """Tests for workflow outputs feature."""
+class TestWorkflowExports:
+    """Tests for workflow exports feature (load-time deps resolution)."""
 
     @pytest.fixture
     def temp_dir(self, tmp_path):
         return tmp_path
 
-    def test_from_yaml_with_outputs(self, temp_dir):
-        """Test loading workflow YAML with outputs declared on jobs."""
+    def test_from_yaml_with_exports(self, temp_dir):
+        """Test loading workflow YAML with exports declared on jobs."""
         yaml_content = {
-            "name": "outputs_workflow",
+            "name": "exports_workflow",
             "args": {"base_dir": "/data/experiments"},
             "jobs": [
                 {
                     "name": "train",
                     "command": ["python", "train.py"],
-                    "outputs": {
+                    "exports": {
                         "model_path": "{{ base_dir }}/models/best.pt",
                         "metrics_dir": "{{ base_dir }}/metrics",
                     },
@@ -1285,126 +1270,377 @@ class TestWorkflowOutputs:
             ],
         }
 
-        yaml_path = temp_dir / "outputs_workflow.yaml"
+        yaml_path = temp_dir / "exports_workflow.yaml"
         with open(yaml_path, "w") as f:
             yaml.dump(yaml_content, f)
 
         runner = WorkflowRunner.from_yaml(yaml_path)
 
         train_job = next(j for j in runner.workflow.jobs if j.name == "train")
-        assert train_job.outputs == {
+        assert train_job.exports == {
             "model_path": "/data/experiments/models/best.pt",
             "metrics_dir": "/data/experiments/metrics",
         }
 
-    def test_parse_job_with_outputs(self):
-        """Test parse_job correctly passes outputs."""
+    def test_parse_job_with_exports(self):
+        """Test parse_job correctly passes exports."""
         data = {
             "name": "train",
             "command": ["python", "train.py"],
-            "outputs": {"model_path": "/data/model.pt"},
+            "exports": {"model_path": "/data/model.pt"},
         }
         job = WorkflowRunner.parse_job(data)
-        assert job.outputs == {"model_path": "/data/model.pt"}
+        assert job.exports == {"model_path": "/data/model.pt"}
 
-    def test_parse_job_without_outputs(self):
-        """Test parse_job defaults to empty outputs."""
+    def test_parse_job_without_exports(self):
+        """Test parse_job defaults to empty exports."""
         data = {
             "name": "train",
             "command": ["python", "train.py"],
         }
         job = WorkflowRunner.parse_job(data)
-        assert job.outputs == {}
+        assert job.exports == {}
 
-    @patch("srunx.runner.Slurm")
-    def test_run_generates_outputs_dir_when_outputs_present(self, mock_slurm_class):
-        """When jobs have outputs, outputs_dir should be generated and passed."""
-        mock_slurm = Mock()
-        mock_slurm_class.return_value = mock_slurm
+    def test_deps_reference_resolved_at_load_time(self, temp_dir):
+        """deps.<name>.<key> is resolved to literal string at from_yaml."""
+        yaml_content = {
+            "name": "wf",
+            "args": {"base": "/data"},
+            "jobs": [
+                {
+                    "name": "preprocess",
+                    "command": ["echo", "pre"],
+                    "exports": {"data_path": "{{ base }}/processed"},
+                },
+                {
+                    "name": "train",
+                    "command": [
+                        "python",
+                        "train.py",
+                        "--data",
+                        "{{ deps.preprocess.data_path }}",
+                    ],
+                    "depends_on": ["preprocess"],
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
 
-        job = Job(
-            name="train",
-            command=["python", "train.py"],
-            outputs={"model": "/path/to/model"},
-            environment=JobEnvironment(conda="env"),
-        )
-        job.status = JobStatus.COMPLETED
-        mock_slurm.run.return_value = job
+        runner = WorkflowRunner.from_yaml(yaml_path)
+        train = next(j for j in runner.workflow.jobs if j.name == "train")
+        assert train.command == [
+            "python",
+            "train.py",
+            "--data",
+            "/data/processed",
+        ]
 
-        workflow = Workflow(name="test", jobs=[job])
-        runner = WorkflowRunner(workflow)
-        runner.run()
+    def test_deps_missing_key_raises(self, temp_dir):
+        """Reference to non-existent deps.X.Y fails at load time (StrictUndefined)."""
+        yaml_content = {
+            "name": "wf",
+            "jobs": [
+                {"name": "a", "command": ["echo", "a"], "exports": {"good": "x"}},
+                {
+                    "name": "b",
+                    "command": ["echo", "{{ deps.a.bad }}"],
+                    "depends_on": ["a"],
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        with pytest.raises(WorkflowValidationError):
+            WorkflowRunner.from_yaml(yaml_path)
 
-        call_kwargs = mock_slurm.run.call_args[1]
-        assert call_kwargs["outputs_dir"] is not None
-        assert call_kwargs["outputs_dir"].startswith("/tmp/srunx/test_")
+    def test_deps_undeclared_dep_raises(self, temp_dir):
+        """Referencing a job not in depends_on fails at load time."""
+        yaml_content = {
+            "name": "wf",
+            "jobs": [
+                {"name": "a", "command": ["echo", "a"], "exports": {"x": "1"}},
+                {
+                    "name": "b",
+                    "command": ["echo", "{{ deps.a.x }}"],
+                    # Note: depends_on NOT declared
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        with pytest.raises(WorkflowValidationError):
+            WorkflowRunner.from_yaml(yaml_path)
 
-    @patch("srunx.runner.Slurm")
-    def test_run_generates_outputs_dir_when_dependencies_present(
-        self, mock_slurm_class
-    ):
-        """When jobs have dependencies, outputs_dir should be generated."""
-        mock_slurm = Mock()
-        mock_slurm_class.return_value = mock_slurm
+    def test_transitive_deps_composition(self, temp_dir):
+        """Exports can reference earlier deps' exports at load time."""
+        yaml_content = {
+            "name": "wf",
+            "args": {"base": "/exp"},
+            "jobs": [
+                {
+                    "name": "a",
+                    "command": ["echo", "a"],
+                    "exports": {"dir": "{{ base }}/a"},
+                },
+                {
+                    "name": "b",
+                    "command": ["echo", "b"],
+                    "depends_on": ["a"],
+                    "exports": {"dir": "{{ deps.a.dir }}/b"},
+                },
+                {
+                    "name": "c",
+                    "command": ["echo", "{{ deps.b.dir }}"],
+                    "depends_on": ["b"],
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        runner = WorkflowRunner.from_yaml(yaml_path)
+        c = next(j for j in runner.workflow.jobs if j.name == "c")
+        assert c.command == ["echo", "/exp/a/b"]
 
-        job1 = Job(
-            name="job1",
-            command=["echo", "1"],
-            environment=JobEnvironment(conda="env"),
-        )
-        job2 = Job(
-            name="job2",
-            command=["echo", "2"],
-            depends_on=["job1"],
-            environment=JobEnvironment(conda="env"),
-        )
-        job1._status = JobStatus.PENDING
-        job2._status = JobStatus.PENDING
+    def test_cycle_detection_raises(self, temp_dir):
+        """Circular job dependencies fail at from_yaml (CycleError)."""
+        yaml_content = {
+            "name": "cyc",
+            "jobs": [
+                {"name": "a", "command": ["echo", "a"], "depends_on": ["b"]},
+                {"name": "b", "command": ["echo", "b"], "depends_on": ["a"]},
+            ],
+        }
+        yaml_path = temp_dir / "cyc.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        with pytest.raises(WorkflowValidationError, match="[Cc]ircular"):
+            WorkflowRunner.from_yaml(yaml_path)
 
-        def mock_run(job, **kwargs):
-            job.status = JobStatus.COMPLETED
-            return job
+    def test_python_arg_feeds_exports_feeds_deps(self, temp_dir):
+        """python: args → exports → deps.X.Y chain resolves at load time."""
+        yaml_content = {
+            "name": "wf",
+            "args": {
+                "stamp": "python: 'run_2026'",
+                "base": "{{ stamp }}_/data",
+            },
+            "jobs": [
+                {
+                    "name": "prep",
+                    "command": ["echo", "prep"],
+                    "exports": {"out": "{{ base }}/prep"},
+                },
+                {
+                    "name": "train",
+                    "command": ["python", "t.py", "--in", "{{ deps.prep.out }}"],
+                    "depends_on": ["prep"],
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        runner = WorkflowRunner.from_yaml(yaml_path)
+        train = next(j for j in runner.workflow.jobs if j.name == "train")
+        assert train.command == ["python", "t.py", "--in", "run_2026_/data/prep"]
 
-        mock_slurm.run.side_effect = mock_run
+    def test_deps_reference_in_work_dir_and_log_dir(self, temp_dir):
+        """deps.X.Y resolves when placed in non-command fields."""
+        yaml_content = {
+            "name": "wf",
+            "jobs": [
+                {
+                    "name": "a",
+                    "command": ["echo", "a"],
+                    "exports": {"root": "/shared/job_a"},
+                },
+                {
+                    "name": "b",
+                    "command": ["echo", "b"],
+                    "depends_on": ["a"],
+                    "work_dir": "{{ deps.a.root }}/work",
+                    "log_dir": "{{ deps.a.root }}/logs",
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        runner = WorkflowRunner.from_yaml(yaml_path)
+        b = next(j for j in runner.workflow.jobs if j.name == "b")
+        assert b.work_dir == "/shared/job_a/work"
+        assert b.log_dir == "/shared/job_a/logs"
 
-        workflow = Workflow(name="dep_test", jobs=[job1, job2])
-        runner = WorkflowRunner(workflow)
-        runner.run()
+    def test_single_job_filter_preserves_deps_resolution(self, temp_dir):
+        """single_job='train' still resolves {{ deps.prep.* }} via full DAG render."""
+        yaml_content = {
+            "name": "wf",
+            "args": {"base": "/data"},
+            "jobs": [
+                {
+                    "name": "prep",
+                    "command": ["echo", "prep"],
+                    "exports": {"p": "{{ base }}/prep"},
+                },
+                {
+                    "name": "train",
+                    "command": ["python", "t.py", "--in", "{{ deps.prep.p }}"],
+                    "depends_on": ["prep"],
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        runner = WorkflowRunner.from_yaml(yaml_path, single_job="train")
+        assert len(runner.workflow.jobs) == 1
+        assert runner.workflow.jobs[0].name == "train"
+        assert runner.workflow.jobs[0].command == [
+            "python",
+            "t.py",
+            "--in",
+            "/data/prep",
+        ]
 
-        # Both calls should receive the same outputs_dir
-        calls = mock_slurm.run.call_args_list
-        assert len(calls) == 2
-        dir1 = calls[0][1]["outputs_dir"]
-        dir2 = calls[1][1]["outputs_dir"]
-        assert dir1 is not None
-        assert dir1 == dir2
-        assert dir1.startswith("/tmp/srunx/dep_test_")
+    def test_shell_job_with_exports_resolves_for_dependents(self, temp_dir):
+        """ShellJob.exports is consumable by downstream jobs at load time."""
+        script_path = temp_dir / "prep.slurm.jinja"
+        script_path.write_text("#!/bin/bash\necho prep\n")
+        yaml_content = {
+            "name": "wf",
+            "jobs": [
+                {
+                    "name": "prep",
+                    "script_path": str(script_path),
+                    "exports": {"out": "/shared/prep_result"},
+                },
+                {
+                    "name": "train",
+                    "command": ["python", "t.py", "--in", "{{ deps.prep.out }}"],
+                    "depends_on": ["prep"],
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        runner = WorkflowRunner.from_yaml(yaml_path)
+        train = next(j for j in runner.workflow.jobs if j.name == "train")
+        assert train.command == [
+            "python",
+            "t.py",
+            "--in",
+            "/shared/prep_result",
+        ]
 
-        # job2 should have dependency_names=["job1"]
-        dep_names = calls[1][1]["dependency_names"]
-        assert dep_names == ["job1"]
+    def test_exports_key_shadowing_dict_method(self, temp_dir):
+        """Export keys colliding with dict methods (items/get/keys/...) must
+        still resolve to the user's value, not the method reference."""
+        yaml_content = {
+            "name": "wf",
+            "jobs": [
+                {
+                    "name": "a",
+                    "command": ["echo", "a"],
+                    "exports": {
+                        "items": "ITEMS_VALUE",
+                        "keys": "KEYS_VALUE",
+                        "get": "GET_VALUE",
+                    },
+                },
+                {
+                    "name": "b",
+                    "command": [
+                        "echo",
+                        "{{ deps.a.items }}",
+                        "{{ deps.a.keys }}",
+                        "{{ deps.a.get }}",
+                    ],
+                    "depends_on": ["a"],
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        runner = WorkflowRunner.from_yaml(yaml_path)
+        b = next(j for j in runner.workflow.jobs if j.name == "b")
+        assert b.command == [
+            "echo",
+            "ITEMS_VALUE",
+            "KEYS_VALUE",
+            "GET_VALUE",
+        ]
 
-    @patch("srunx.runner.Slurm")
-    def test_run_no_outputs_dir_when_no_outputs_or_deps(self, mock_slurm_class):
-        """When no outputs or dependencies, outputs_dir should be None."""
-        mock_slurm = Mock()
-        mock_slurm_class.return_value = mock_slurm
+    def test_legacy_outputs_key_rejected(self, temp_dir):
+        """Legacy 'outputs:' key must fail fast with a migration message,
+        not silently drop the values."""
+        yaml_content = {
+            "name": "wf",
+            "jobs": [
+                {"name": "a", "command": ["echo", "a"], "outputs": {"x": "1"}},
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        with pytest.raises(WorkflowValidationError, match="'outputs'"):
+            WorkflowRunner.from_yaml(yaml_path)
 
-        job = Job(
-            name="simple",
-            command=["echo", "hello"],
-            environment=JobEnvironment(conda="env"),
-        )
-        job.status = JobStatus.COMPLETED
-        mock_slurm.run.return_value = job
+    def test_single_job_ignores_unrelated_broken_jinja(self, temp_dir):
+        """A broken Jinja reference in a sibling job should not prevent
+        single_job rendering of the target."""
+        yaml_content = {
+            "name": "wf",
+            "jobs": [
+                {"name": "target", "command": ["echo", "target"]},
+                {
+                    "name": "broken",
+                    "command": ["echo", "{{ undefined_var }}"],
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        runner = WorkflowRunner.from_yaml(yaml_path, single_job="target")
+        assert [j.name for j in runner.workflow.jobs] == ["target"]
 
-        workflow = Workflow(name="simple", jobs=[job])
-        runner = WorkflowRunner(workflow)
-        runner.run()
-
-        call_kwargs = mock_slurm.run.call_args[1]
-        assert call_kwargs["outputs_dir"] is None
-        assert call_kwargs["dependency_names"] is None
+    def test_single_job_still_requires_its_own_deps(self, temp_dir):
+        """single_job=target must still render target's transitive
+        dependency chain so {{ deps.X.Y }} in target resolves."""
+        yaml_content = {
+            "name": "wf",
+            "args": {"base": "/d"},
+            "jobs": [
+                {
+                    "name": "prep",
+                    "command": ["echo", "prep"],
+                    "exports": {"p": "{{ base }}/out"},
+                },
+                {
+                    "name": "train",
+                    "command": ["python", "t.py", "--in", "{{ deps.prep.p }}"],
+                    "depends_on": ["prep"],
+                },
+                {
+                    "name": "sibling",
+                    "command": ["echo", "{{ undefined_var }}"],
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        runner = WorkflowRunner.from_yaml(yaml_path, single_job="train")
+        train = runner.workflow.jobs[0]
+        assert train.name == "train"
+        assert train.command == ["python", "t.py", "--in", "/d/out"]
 
 
 class TestSafeEvalExec:

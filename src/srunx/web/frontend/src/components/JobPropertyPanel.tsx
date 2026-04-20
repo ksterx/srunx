@@ -169,10 +169,10 @@ export function JobPropertyPanel({
     setBrowserTarget(null);
   }
 
-  // Convert outputs string ↔ KVEntry[]
-  const outputEntries: KVEntry[] = useMemo(() => {
-    if (!job.outputs.trim()) return [];
-    return job.outputs
+  // Convert exports string ↔ KVEntry[]
+  const exportEntries: KVEntry[] = useMemo(() => {
+    if (!job.exports.trim()) return [];
+    return job.exports
       .split("\n")
       .filter((l) => l.includes("="))
       .map((line) => {
@@ -182,11 +182,11 @@ export function JobPropertyPanel({
           value: line.slice(eq + 1).trim(),
         };
       });
-  }, [job.outputs]);
+  }, [job.exports]);
 
-  function handleOutputsChange(entries: KVEntry[]) {
+  function handleExportsChange(entries: KVEntry[]) {
     const text = entries.map((e) => `${e.key}=${e.value}`).join("\n");
-    onUpdate({ outputs: text });
+    onUpdate({ exports: text });
   }
 
   const hasContainer = job.container !== null;
@@ -624,17 +624,17 @@ export function JobPropertyPanel({
         </div>
       </div>
 
-      {/* ── Outputs ──────────────────────────── */}
+      {/* ── Exports ──────────────────────────── */}
       <div style={sectionDividerStyle}>
-        <div style={sectionTitleStyle}>Outputs</div>
+        <div style={sectionTitleStyle}>Exports</div>
         <KeyValueEditor
-          entries={outputEntries}
-          onChange={handleOutputsChange}
+          entries={exportEntries}
+          onChange={handleExportsChange}
           keyPlaceholder="name"
           valuePlaceholder="/path/or/value"
-          addLabel="Add Output"
+          addLabel="Add Export"
           compact
-          hint="Exported as env vars to dependent jobs via $SRUNX_OUTPUTS"
+          hint={`Referenced by dependent jobs as {{ deps.${job.name}.<key> }} at workflow load time`}
         />
       </div>
 

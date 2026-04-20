@@ -57,8 +57,6 @@ class Slurm:
         record_history: bool = True,
         workflow_name: str | None = None,
         workflow_run_id: int | None = None,
-        outputs_dir: str | None = None,
-        dependency_names: list[str] | None = None,
     ) -> RunnableJobType:
         """Submit a job to SLURM.
 
@@ -73,8 +71,6 @@ class Slurm:
                 submitted from a workflow; persisted on the ``jobs`` row
                 so reports (``srunx report --workflow``, the Web history
                 JOIN) actually pick up CLI-launched workflow jobs.
-            outputs_dir: Shared directory for inter-job output variables.
-            dependency_names: Names of dependency jobs whose outputs should be sourced.
 
         Returns:
             Job instance with updated job_id and status.
@@ -93,8 +89,6 @@ class Slurm:
                     job,
                     temp_dir,
                     verbose,
-                    outputs_dir=outputs_dir,
-                    dependency_names=dependency_names,
                 )
                 logger.debug(f"Generated SLURM script at: {script_path}")
 
@@ -474,8 +468,6 @@ class Slurm:
         verbose: bool = False,
         workflow_name: str | None = None,
         workflow_run_id: int | None = None,
-        outputs_dir: str | None = None,
-        dependency_names: list[str] | None = None,
     ) -> RunnableJobType:
         """Submit a job and wait for completion."""
         submitted_job = self.submit(
@@ -485,8 +477,6 @@ class Slurm:
             verbose=verbose,
             workflow_name=workflow_name,
             workflow_run_id=workflow_run_id,
-            outputs_dir=outputs_dir,
-            dependency_names=dependency_names,
         )
         monitored_job = self.monitor(
             submitted_job, poll_interval=poll_interval, callbacks=callbacks
