@@ -3,11 +3,36 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 import yaml  # type: ignore
-from mcp.server.fastmcp import FastMCP
+
+try:
+    from mcp.server.fastmcp import FastMCP
+except ModuleNotFoundError:
+    sys.stderr.write(
+        "srunx-mcp: the 'mcp' package is not installed in this Python "
+        "environment.\n"
+        "\n"
+        "Fix:\n"
+        "  1. Preferred (zero-install):\n"
+        "       uvx --from 'srunx[mcp]' srunx-mcp\n"
+        "     Register it with Claude Code as:\n"
+        "       claude mcp add --scope user srunx -- "
+        "uvx --from 'srunx[mcp]' srunx-mcp\n"
+        "\n"
+        "  2. Globally installed binary:\n"
+        "       uv tool install --force --with 'mcp[cli]' srunx\n"
+        "     then register:\n"
+        "       claude mcp add --scope user srunx -- srunx-mcp\n"
+        "\n"
+        "Note: 'uv run --extra mcp srunx-mcp' resolves extras against the\n"
+        "current working directory's pyproject.toml, so it only works when\n"
+        "launched from inside the srunx source tree.\n"
+    )
+    sys.exit(1)
 
 mcp = FastMCP(
     "srunx",

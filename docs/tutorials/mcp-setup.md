@@ -9,68 +9,135 @@ interaction.
 
 ## Prerequisites
 
-- srunx installed (see `installation`)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
+- [uv](https://docs.astral.sh/uv/) installed
 - A working SLURM cluster (local or via SSH profile)
 
-## Install the MCP Extra
+## Install srunx with the MCP extra
 
-The MCP server is an optional dependency. Install it with:
+Pick whichever install style matches how you plan to call `srunx-mcp`.
 
-``` bash
-uv sync --extra mcp
+### Option 1: `uvx` (recommended, zero-install)
+
+No install step at all — `uvx` resolves and runs `srunx-mcp` with its
+`mcp` extra on demand, regardless of the current working directory:
+
+```bash
+uvx --from 'srunx[mcp]' srunx-mcp --help
 ```
 
-Or if you are adding srunx to another project:
+This is the pattern used in the registration command below.
 
-``` bash
+### Option 2: `uv tool install` (globally installed binary)
+
+If you prefer a `~/.local/bin/srunx-mcp` binary on `PATH`, you **must**
+include the `mcp` extra at install time — `uv tool install srunx` alone
+does **not** pull it in and will fail with `ModuleNotFoundError: No module named 'mcp'`:
+
+```bash
+uv tool install --with 'mcp[cli]' srunx
+```
+
+Then the binary is callable directly:
+
+```bash
+srunx-mcp --help
+```
+
+### Option 3: inside a uv project
+
+When srunx is a dependency of the current uv project, add the extra:
+
+```bash
 uv add "srunx[mcp]"
 ```
 
-This pulls in the `mcp[cli]` package required to run the server.
+Then `uv run srunx-mcp` works from that project's directory.
 
-## Configure the MCP Server
+!!! warning "Don't use `uv run --extra mcp srunx-mcp` globally"
+    `uv run --extra mcp` resolves extras against the **current working
+    directory's** `pyproject.toml`, not srunx's. Registering
+    `uv run --extra mcp srunx-mcp` as an MCP command only works when
+    Claude Code is launched from inside the srunx source tree — from any
+    other project it fails with
+    `error: Extra 'mcp' is not defined in the project's optional-dependencies`.
 
-There are two ways to register the server with Claude Code: a project config
-file or the `claude mcp add` CLI command.
+## Register with Claude Code
 
-### Option A: Project config file
+There are two equally valid registration styles — pick whichever matches
+the install option you used above. Both are CWD-independent.
 
-Create a `.mcp.json` file in your project root:
+### Trade-off at a glance
 
-``` json
+| Style | Startup | Updates | Installed binary |
+|---|---|---|---|
+| `uvx --from 'srunx[mcp]' srunx-mcp` | ~50–200 ms (after first run) | Automatic — every launch resolves the latest version | None |
+| `uv tool install` + `srunx-mcp` | ~50 ms | Manual (`uv tool upgrade srunx`) | `~/.local/bin/srunx-mcp` |
+
+For long-lived MCP sessions the difference is negligible — go with
+whichever fits your update preference.
+
+### Style A: `uvx` (zero-install, auto-updates)
+
+**User scope** (available in every project):
+
+```bash
+claude mcp add --scope user srunx -- uvx --from 'srunx[mcp]' srunx-mcp
+```
+
+**Project scope** (shared via a checked-in `.mcp.json`):
+
+```bash
+claude mcp add --scope project srunx -- uvx --from 'srunx[mcp]' srunx-mcp
+```
+
+**Local scope** (current project only):
+
+```bash
+claude mcp add srunx -- uvx --from 'srunx[mcp]' srunx-mcp
+```
+
+### Style B: installed binary (fastest startup, pinned version)
+
+Install once with the `mcp` extra, then register the bare binary:
+
+```bash
+uv tool install --with 'mcp[cli]' srunx
+
+# User scope
+claude mcp add --scope user srunx -- srunx-mcp
+
+# Project scope
+claude mcp add --scope project srunx -- srunx-mcp
+
+# Local scope
+claude mcp add srunx -- srunx-mcp
+```
+
+### `.mcp.json` hand-written
+
+For project scope you can commit a `.mcp.json` instead of running
+`claude mcp add`. Pick the block matching the style above:
+
+```json title=".mcp.json (Style A — uvx)"
 {
   "mcpServers": {
     "srunx": {
-      "command": "uv",
-      "args": ["run", "--extra", "mcp", "srunx-mcp"]
+      "command": "uvx",
+      "args": ["--from", "srunx[mcp]", "srunx-mcp"]
     }
   }
 }
 ```
 
-Claude Code reads this file automatically when you open the project.
-
-### Option B: `claude mcp add` command
-
-The `claude mcp add` CLI supports three scopes:
-
-**Local** (current project only, written to `.mcp.json`):
-
-``` bash
-claude mcp add srunx -- uv run --extra mcp srunx-mcp
-```
-
-**Project** (shared with collaborators via `.mcp.json` in version control):
-
-``` bash
-claude mcp add --scope project srunx -- uv run --extra mcp srunx-mcp
-```
-
-**User** (available in all your projects):
-
-``` bash
-claude mcp add --scope user srunx -- uv run --extra mcp srunx-mcp
+```json title=".mcp.json (Style B — installed binary)"
+{
+  "mcpServers": {
+    "srunx": {
+      "command": "srunx-mcp"
+    }
+  }
+}
 ```
 
 !!! tip
@@ -82,13 +149,14 @@ claude mcp add --scope user srunx -- uv run --extra mcp srunx-mcp
 
 Check that Claude Code sees the srunx server:
 
-``` bash
+```bash
 claude mcp list
 ```
 
-You should see `srunx` listed with its tools. If the server does not
-appear, ensure the `uv` command is on your `PATH` and that
-`uv sync --extra mcp` completed without errors.
+You should see `srunx` listed with its tools. If the server shows
+`Failed to connect`, inspect the MCP log Claude Code prints at startup —
+`srunx-mcp` now emits a clear error (with fix instructions) when the
+`mcp` package is missing from its runtime.
 
 ## First Interaction
 
@@ -96,7 +164,7 @@ Open Claude Code in your project and try these prompts:
 
 **List your SLURM jobs:**
 
-``` text
+```text
 > List my current SLURM jobs
 ```
 
@@ -105,7 +173,7 @@ of your queued and running jobs.
 
 **Check GPU resources:**
 
-``` text
+```text
 > How many GPUs are available on the gpu partition?
 ```
 
@@ -114,7 +182,7 @@ total, in-use, and available GPU counts.
 
 **Submit a simple job:**
 
-``` text
+```text
 > Submit a job to run "python train.py" with 2 GPUs, using the ml_env
 > conda environment
 ```
@@ -128,7 +196,7 @@ If your SLURM cluster is remote, ensure you have an SSH profile configured
 (see [Sync](../how-to/sync.md) for mount setup). Then include "via SSH" in your
 prompt:
 
-``` text
+```text
 > List my jobs on the remote cluster
 ```
 
