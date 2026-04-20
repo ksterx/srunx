@@ -443,3 +443,99 @@ dgx-node5 gpu:NVIDIA-A100:8 maint
         ]
         for field in required:
             assert field in result, f"Missing field: {field}"
+
+
+# ── get_cluster_snapshot ──────────────────────────
+
+
+class TestClusterSnapshot:
+    """Test the new cluster-wide snapshot method.
+
+    Critical regression: summing per-partition ``get_resources(None)``
+    dicts double-counted nodes that belong to multiple partitions.
+    ``get_cluster_snapshot`` runs ONE ``sinfo`` without ``-p`` and
+    dedups by node name via ``seen_nodes``.
+    """
+
+    def test_dedups_nodes_across_partitions(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Node ``dgx1`` in both ``gpu`` and ``debug`` → counted once."""
+        # Two partitions report dgx1 with 8 GPUs; cluster-wide sinfo output
+        # lists it twice. The dedup must count 8 total, not 16.
+        sinfo_out = "dgx1 gpu:8 idle\ndgx1 gpu:8 idle\ndgx2 gpu:8 idle\n"
+        squeue_out = ""
+
+        def fake_run(_adapter, cmd: str) -> str:
+            return sinfo_out if cmd.startswith("sinfo") else squeue_out
+
+        monkeypatch.setattr("srunx.web.ssh_adapter._run_slurm_cmd", fake_run)
+        adapter = object.__new__(SlurmSSHAdapter)
+
+        snap = adapter.get_cluster_snapshot()
+
+        assert snap["nodes_total"] == 2
+        assert snap["total_gpus"] == 16  # 2 nodes × 8, not 3 × 8
+        assert snap["gpus_available"] == 16
+        assert snap["partition"] is None
+
+    def test_excludes_down_nodes_from_available(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sinfo_out = "dgx1 gpu:8 idle\ndgx2 gpu:8 down\ndgx3 gpu:8 drain\n"
+        squeue_out = ""
+
+        def fake_run(_adapter, cmd: str) -> str:
+            return sinfo_out if cmd.startswith("sinfo") else squeue_out
+
+        monkeypatch.setattr("srunx.web.ssh_adapter._run_slurm_cmd", fake_run)
+        adapter = object.__new__(SlurmSSHAdapter)
+
+        snap = adapter.get_cluster_snapshot()
+
+        assert snap["nodes_total"] == 3
+        assert snap["nodes_down"] == 2  # drain + down
+        assert snap["nodes_idle"] == 1
+        # GPUs on DOWN/DRAIN nodes are NOT counted (matches local
+        # ResourceMonitor semantics).
+        assert snap["total_gpus"] == 8
+
+    def test_counts_running_jobs_and_gpus_in_use(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sinfo_out = "dgx1 gpu:8 allocated\ndgx2 gpu:8 idle\n"
+        # 1 running job using 4 GPUs on 1 node; 1 running using 2 GPUs × 2 nodes
+        squeue_out = (
+            "1001 RUNNING gpu:4 1\n1002 RUNNING gpu:2 2\n1003 PENDING (null) 1\n"
+        )
+
+        def fake_run(_adapter, cmd: str) -> str:
+            return sinfo_out if cmd.startswith("sinfo") else squeue_out
+
+        monkeypatch.setattr("srunx.web.ssh_adapter._run_slurm_cmd", fake_run)
+        adapter = object.__new__(SlurmSSHAdapter)
+
+        snap = adapter.get_cluster_snapshot()
+
+        assert snap["jobs_running"] == 2  # PENDING excluded
+        assert snap["gpus_in_use"] == 4 + 2 * 2  # 4 + 4 = 8
+        assert snap["total_gpus"] == 16
+        assert snap["gpus_available"] == 8
+        assert snap["gpu_utilization"] == 0.5
+
+    def test_propagates_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Unlike ``get_resources(None)``, cluster snapshot fails closed.
+
+        Silent per-partition suppression is fine for the dashboard
+        listing but wrong for the snapshotter — backoff is better than
+        zero rows in the time series.
+        """
+
+        def boom(_adapter, _cmd: str) -> str:
+            raise RuntimeError("ssh dropped")
+
+        monkeypatch.setattr("srunx.web.ssh_adapter._run_slurm_cmd", boom)
+        adapter = object.__new__(SlurmSSHAdapter)
+
+        with pytest.raises(RuntimeError, match="ssh dropped"):
+            adapter.get_cluster_snapshot()

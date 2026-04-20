@@ -280,8 +280,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     from srunx.monitor.resource_source import (
                         SSHAdapterResourceSource,
                     )
+                    from srunx.web.deps import get_adapter_or_none
 
-                    resource_source = SSHAdapterResourceSource(adapter)
+                    # Pass ``get_adapter_or_none`` (a function) rather
+                    # than the startup ``adapter`` reference so
+                    # ``deps.swap_adapter`` (triggered by live profile
+                    # switches at /api/config/ssh/profiles/.../connect)
+                    # is reflected in the snapshotter's next cycle.
+                    resource_source = SSHAdapterResourceSource(get_adapter_or_none)
                 except Exception:
                     logger.warning(
                         "Could not build SSHAdapterResourceSource; falling back",
