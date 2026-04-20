@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="https://raw.githubusercontent.com/ksterx/srunx/main/docs/assets/images/icon.svg" width="120" alt="srunx logo">
+
 # srunx
 
 **A unified CLI, web dashboard, and Python API for SLURM job management.**

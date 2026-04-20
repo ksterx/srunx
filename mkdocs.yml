@@ -11,6 +11,8 @@ site_dir: public
 theme:
   name: material
   font: false
+  logo: assets/images/icon.svg
+  favicon: assets/images/icon.svg
   features:
     - navigation.tabs
     - navigation.sections
