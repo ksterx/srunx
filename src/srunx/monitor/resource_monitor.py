@@ -7,6 +7,7 @@ from loguru import logger
 
 from srunx.callbacks import Callback
 from srunx.monitor.base import BaseMonitor
+from srunx.monitor.resource_source import ResourceSource
 from srunx.monitor.types import MonitorConfig, ResourceSnapshot
 from srunx.utils import GPU_TRES_RE
 
@@ -16,6 +17,12 @@ class ResourceMonitor(BaseMonitor):
 
     Polls partition resources at configured intervals and notifies callbacks
     when resources become available or exhausted.
+
+    When a :class:`~srunx.monitor.resource_source.ResourceSource` is
+    injected, partition queries delegate to it instead of shelling out
+    to local ``sinfo`` / ``squeue``. That lets ``srunx ui`` talk to a
+    remote cluster through the existing SSH adapter — the previous
+    subprocess-only path only worked on a SLURM head/login node.
     """
 
     def __init__(
@@ -24,6 +31,7 @@ class ResourceMonitor(BaseMonitor):
         partition: str | None = None,
         config: MonitorConfig | None = None,
         callbacks: list[Callback] | None = None,
+        source: ResourceSource | None = None,
     ) -> None:
         """Initialize resource monitor.
 
@@ -32,6 +40,11 @@ class ResourceMonitor(BaseMonitor):
             partition: SLURM partition to monitor. Defaults to all partitions if None.
             config: Monitoring configuration. Defaults to MonitorConfig() if None.
             callbacks: List of notification callbacks. Defaults to empty list if None.
+            source: Optional pluggable backend. When provided, partition
+                queries delegate to ``source.get_snapshot(partition)``
+                instead of the local-subprocess fallback. Required when
+                ``sinfo`` / ``squeue`` aren't on the caller's PATH
+                (e.g. a developer laptop driving a remote cluster).
 
         Raises:
             ValueError: If min_gpus < 0.
@@ -43,12 +56,13 @@ class ResourceMonitor(BaseMonitor):
 
         self.min_gpus = min_gpus
         self.partition = partition
+        self._source = source
         self._was_available: bool | None = None  # None = uninitialized
         self._cached_snapshot: ResourceSnapshot | None = None
 
         logger.debug(
             f"ResourceMonitor initialized for min_gpus={min_gpus}, "
-            f"partition={partition or 'all'}"
+            f"partition={partition or 'all'}, source={source.__class__.__name__ if source else 'subprocess'}"
         )
 
     def _get_snapshot(self) -> ResourceSnapshot:
@@ -96,8 +110,12 @@ class ResourceMonitor(BaseMonitor):
     def get_partition_resources(self) -> ResourceSnapshot:
         """Query SLURM for GPU resource availability.
 
-        Uses sinfo to get total GPUs per partition and squeue to get GPUs in use.
-        Filters out DOWN/DRAIN/DRAINING nodes from availability calculation.
+        Delegates to the injected :class:`ResourceSource` when one was
+        provided (e.g. the SSH adapter for remote clusters). Otherwise
+        falls back to the local ``sinfo`` / ``squeue`` subprocess path —
+        unchanged behaviour for callers running on a SLURM head node.
+        Filters out DOWN/DRAIN/DRAINING nodes from availability
+        calculation.
 
         Returns:
             ResourceSnapshot with current resource state.
@@ -105,13 +123,12 @@ class ResourceMonitor(BaseMonitor):
         Raises:
             SlurmError: If SLURM command fails.
         """
-        # Get node and GPU statistics
+        if self._source is not None:
+            return self._source.get_snapshot(self.partition)
+
+        # Local-subprocess fallback: original implementation.
         nodes_total, nodes_idle, nodes_down, total_gpus = self._get_node_stats()
-
-        # Get GPUs in use and running jobs count
         gpus_in_use, jobs_running = self._get_gpu_usage()
-
-        # Calculate available GPUs
         gpus_available = max(0, total_gpus - gpus_in_use)
 
         return ResourceSnapshot(

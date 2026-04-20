@@ -463,3 +463,95 @@ class TestResourceMonitor:
         assert nodes_idle == 0
         assert nodes_down == 0
         assert total_gpus == 0
+
+
+class TestResourceMonitorSourceInjection:
+    """Regression: injecting a ``ResourceSource`` bypasses subprocess.
+
+    ``srunx ui`` on a laptop has no local ``sinfo``; routing the
+    snapshotter through the SSH adapter is the entire point of the
+    pluggable source. These tests pin the wiring so a future refactor
+    can't silently re-introduce the subprocess call.
+    """
+
+    def test_delegates_to_source(self):
+        from unittest.mock import MagicMock
+
+        from srunx.monitor.resource_monitor import ResourceMonitor
+        from srunx.monitor.types import ResourceSnapshot
+
+        expected = ResourceSnapshot(
+            partition="gpu",
+            total_gpus=8,
+            gpus_in_use=5,
+            gpus_available=3,
+            jobs_running=2,
+            nodes_total=4,
+            nodes_idle=1,
+            nodes_down=0,
+        )
+        source = MagicMock()
+        source.get_snapshot.return_value = expected
+
+        monitor = ResourceMonitor(min_gpus=0, partition="gpu", source=source)
+
+        result = monitor.get_partition_resources()
+        assert result is expected
+        source.get_snapshot.assert_called_once_with("gpu")
+
+    def test_does_not_shell_out_when_source_is_injected(self, monkeypatch):
+        """With a source injected, ``subprocess.run`` must never fire.
+
+        A laptop without ``sinfo`` would raise ``FileNotFoundError``
+        on subprocess.run; this guard makes sure the source path
+        short-circuits before we get there.
+        """
+        import subprocess
+        from unittest.mock import MagicMock
+
+        from srunx.monitor.resource_monitor import ResourceMonitor
+        from srunx.monitor.types import ResourceSnapshot
+
+        def fail(*args, **kwargs):
+            raise AssertionError("subprocess.run must not be called")
+
+        monkeypatch.setattr(subprocess, "run", fail)
+
+        source = MagicMock()
+        source.get_snapshot.return_value = ResourceSnapshot(
+            partition=None,
+            total_gpus=0,
+            gpus_in_use=0,
+            gpus_available=0,
+            jobs_running=0,
+            nodes_total=0,
+            nodes_idle=0,
+            nodes_down=0,
+        )
+
+        monitor = ResourceMonitor(min_gpus=0, source=source)
+        snap = monitor.get_current_snapshot()
+
+        assert snap.total_gpus == 0
+        source.get_snapshot.assert_called_once_with(None)
+
+    def test_no_source_uses_subprocess_path(self, monkeypatch):
+        """Backward compat: ``source=None`` keeps the old subprocess path."""
+        from srunx.monitor.resource_monitor import ResourceMonitor
+
+        stats_called = {"node": False, "gpu": False}
+
+        def fake_node_stats(self):
+            stats_called["node"] = True
+            return (0, 0, 0, 0)
+
+        def fake_gpu_usage(self):
+            stats_called["gpu"] = True
+            return (0, 0)
+
+        monkeypatch.setattr(ResourceMonitor, "_get_node_stats", fake_node_stats)
+        monkeypatch.setattr(ResourceMonitor, "_get_gpu_usage", fake_gpu_usage)
+
+        ResourceMonitor(min_gpus=0).get_partition_resources()
+
+        assert stats_called["node"] and stats_called["gpu"]
