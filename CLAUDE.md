@@ -340,7 +340,7 @@ Background pollers (lifespan tasks managed by `PollerSupervisor`):
 
 All pollers are crash-resilient via a lease mechanism (`leased_until`, `worker_id`) and a `reclaim_expired_leases()` sweep at the start of every `DeliveryPoller` cycle.
 
-Legacy ``~/.srunx/history.db`` is preserved during Phase 1 rollout; a future cleanup will delete it.
+Legacy ``~/.srunx/history.db`` was removed in P2-4 (``srunx.history`` module deleted entirely; CLI history + reports read from the unified state DB via ``JobRepository``). On first ``init_db`` call the legacy file, if present, is silently deleted by ``_delete_legacy_history_db``.
 
 **Environment variables** that affect poller startup:
 - `SRUNX_DISABLE_POLLER=1` — disable ALL pollers (also applied automatically in `uvicorn --reload` dev mode).
