@@ -129,6 +129,17 @@ def ui(
         bool,
         typer.Option("--verbose", "-v", help="Show FastAPI/uvicorn logs"),
     ] = False,
+    dev: Annotated[
+        bool,
+        typer.Option(
+            "--dev",
+            help="Dev mode: FastAPI --reload + spawn Vite HMR server. Requires a source checkout.",
+        ),
+    ] = False,
+    frontend_port: Annotated[
+        int,
+        typer.Option(help="Vite dev server port (dev mode only)"),
+    ] = 3000,
 ) -> None:
     """Launch the srunx Web UI."""
     import uvicorn
@@ -144,6 +155,10 @@ def ui(
     if not verbose:
         configure_cli_logging(level="WARNING")
 
+    if dev:
+        _run_ui_dev(host=host, port=port, frontend_port=frontend_port, verbose=verbose)
+        return
+
     uvicorn.run(
         "srunx.web.app:create_app",
         factory=True,
@@ -152,6 +167,63 @@ def ui(
         log_level="info" if verbose else "warning",
         access_log=verbose,
     )
+
+
+def _run_ui_dev(*, host: str, port: int, frontend_port: int, verbose: bool) -> None:
+    """Launch uvicorn --reload plus Vite dev server in a single foreground process."""
+    import shutil
+    import signal
+    import subprocess
+
+    import uvicorn
+
+    frontend_dir = Path(__file__).resolve().parents[1] / "web" / "frontend"
+    if not (frontend_dir / "package.json").is_file():
+        console = Console()
+        console.print(
+            "[red]--dev requires a source checkout; frontend sources not found at "
+            f"{frontend_dir}.[/red]\n"
+            "Clone the repo and run `uv sync` before using --dev."
+        )
+        sys.exit(1)
+    if shutil.which("npm") is None:
+        console = Console()
+        console.print(
+            "[red]npm not found on PATH; --dev needs Node.js installed.[/red]"
+        )
+        sys.exit(1)
+
+    vite = subprocess.Popen(
+        ["npm", "run", "dev", "--", "--port", str(frontend_port), "--strictPort"],
+        cwd=str(frontend_dir),
+    )
+
+    console = Console()
+    console.print(
+        f"[bold cyan]srunx ui --dev[/bold cyan]  "
+        f"backend [green]http://{host}:{port}[/green]  "
+        f"frontend [green]http://localhost:{frontend_port}[/green] (HMR)"
+    )
+    console.print("[dim]Open the frontend URL in your browser.[/dim]")
+
+    try:
+        uvicorn.run(
+            "srunx.web.app:create_app",
+            factory=True,
+            host=host,
+            port=port,
+            reload=True,
+            reload_dirs=[str(Path(__file__).resolve().parents[1])],
+            log_level="info" if verbose else "warning",
+            access_log=verbose,
+        )
+    finally:
+        if vite.poll() is None:
+            vite.send_signal(signal.SIGTERM)
+            try:
+                vite.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                vite.kill()
 
 
 def _parse_env_vars(env_var_list: list[str] | None) -> dict[str, str]:
