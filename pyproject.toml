@@ -106,6 +106,10 @@ markers = [
     "integration: Integration tests",
     "slow: Slow tests",
 ]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
 
 [tool.coverage.run]
 source = ["src"]
