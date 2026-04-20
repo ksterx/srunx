@@ -1020,10 +1020,6 @@ def _resolve_direct_profile(profile_obj: Any, ssh_config: str | None) -> dict[st
         if ssh_host.proxy_jump and not proxy_jump:
             proxy_jump = ssh_host.proxy_jump
 
-    # Tilde expansion — paramiko treats ~ as a literal filename character.
-    if isinstance(key_filename, str):
-        key_filename = os.path.expanduser(key_filename)
-
     return {
         "hostname": hostname,
         "username": profile_obj.username,

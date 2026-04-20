@@ -252,3 +252,60 @@ class TestMountConfigExcludePatterns:
         loaded_profile = cm2.get_profile("p")
         assert loaded_profile is not None
         assert loaded_profile.mounts[0].exclude_patterns == []
+
+
+class TestServerProfileKeyFilenameExpansion:
+    def test_tilde_is_expanded(self):
+        profile = ServerProfile(
+            hostname="h", username="u", key_filename="~/.ssh/test_key"
+        )
+        assert profile.key_filename == str(Path("~/.ssh/test_key").expanduser())
+        assert "~" not in profile.key_filename
+
+    def test_absolute_path_is_unchanged(self):
+        profile = ServerProfile(
+            hostname="h", username="u", key_filename="/abs/path/key"
+        )
+        assert profile.key_filename == "/abs/path/key"
+
+    def test_empty_string_is_unchanged(self):
+        profile = ServerProfile(hostname="h", username="u", key_filename="")
+        assert profile.key_filename == ""
+
+    def test_expansion_survives_config_roundtrip(self, temp_config_file):
+        cm = ConfigManager(temp_config_file)
+        cm.add_profile(
+            "p",
+            ServerProfile(hostname="h", username="u", key_filename="~/.ssh/k"),
+        )
+        cm2 = ConfigManager(temp_config_file)
+        loaded = cm2.get_profile("p")
+        assert loaded is not None
+        assert loaded.key_filename == str(Path("~/.ssh/k").expanduser())
+
+
+class TestWebConfigSshKeyExpansion:
+    def test_tilde_is_expanded(self):
+        from srunx.web.config import WebConfig
+
+        cfg = WebConfig(ssh_key_filename="~/.ssh/web_key")
+        assert cfg.ssh_key_filename == str(Path("~/.ssh/web_key").expanduser())
+
+    def test_absolute_path_is_unchanged(self):
+        from srunx.web.config import WebConfig
+
+        cfg = WebConfig(ssh_key_filename="/abs/key")
+        assert cfg.ssh_key_filename == "/abs/key"
+
+    def test_none_is_preserved(self):
+        from srunx.web.config import WebConfig
+
+        cfg = WebConfig(ssh_key_filename=None)
+        assert cfg.ssh_key_filename is None
+
+    def test_env_var_is_expanded(self, monkeypatch):
+        from srunx.web.config import WebConfig
+
+        monkeypatch.setenv("SRUNX_SSH_KEY", "~/.ssh/env_key")
+        cfg = WebConfig()
+        assert cfg.ssh_key_filename == str(Path("~/.ssh/env_key").expanduser())

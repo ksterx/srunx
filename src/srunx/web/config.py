@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class WebConfig(BaseModel):
@@ -31,6 +32,14 @@ class WebConfig(BaseModel):
 
     # UI verbosity — when False, lifespan suppresses info logs in favour of a banner.
     verbose: bool = Field(default=False)
+
+    @model_validator(mode="after")
+    def expand_ssh_key_filename(self) -> WebConfig:
+        """Expand ~ so paramiko receives a concrete path (covers both
+        explicit args and the SRUNX_SSH_KEY default_factory value)."""
+        if self.ssh_key_filename:
+            self.ssh_key_filename = str(Path(self.ssh_key_filename).expanduser())
+        return self
 
 
 _config: WebConfig | None = None

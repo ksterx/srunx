@@ -115,12 +115,6 @@ class SlurmSSHAdapter:
                     if ssh_host.proxy_jump and not resolved_proxy:
                         resolved_proxy = ssh_host.proxy_jump
 
-                # Expand ~ in key_filename
-                if resolved_key:
-                    from pathlib import Path
-
-                    resolved_key = str(Path(resolved_key).expanduser())
-
                 self._client = SSHSlurmClient(
                     hostname=resolved_hostname,
                     username=profile.username,

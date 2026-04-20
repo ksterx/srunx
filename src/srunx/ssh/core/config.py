@@ -44,6 +44,13 @@ class ServerProfile(BaseModel):
         default=[], description="Local-to-remote path mappings for project directories"
     )
 
+    @model_validator(mode="after")
+    def expand_key_filename(self) -> "ServerProfile":
+        """Expand ~ in key_filename so paramiko receives a concrete path."""
+        if self.key_filename:
+            self.key_filename = str(Path(self.key_filename).expanduser())
+        return self
+
 
 class ConfigManager:
     def __init__(self, config_path: str | None = None):
