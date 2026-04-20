@@ -92,6 +92,7 @@ class SSHSlurmClient:
         self._slurm_path: str | None = None
         self.custom_env_vars: dict[str, str] = env_vars or {}
         self.verbose = verbose
+        self._last_error: Exception | None = None
 
         # ── Composed components (for standalone / advanced usage) ───
         self.connection = SSHConnection(
@@ -186,6 +187,7 @@ class SSHSlurmClient:
 
         except Exception as e:
             self.logger.error(f"Failed to connect to {self.hostname}: {e}")
+            self._last_error = e
             return False
 
     def disconnect(self):
@@ -250,8 +252,14 @@ class SSHSlurmClient:
     def __enter__(self):
         if self.connect():
             return self
-        else:
-            raise ConnectionError("Failed to establish SSH connection")
+        cause = self._last_error
+        target = self.hostname
+        if self.proxy_jump:
+            target += f" (via {self.proxy_jump})"
+        reason = f"{type(cause).__name__}: {cause}" if cause else "unknown error"
+        raise ConnectionError(
+            f"Failed to establish SSH connection to {target}: {reason}"
+        ) from cause
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.disconnect()

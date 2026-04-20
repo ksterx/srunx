@@ -390,6 +390,29 @@ class TestSubmitJob:
             assert result["success"] is False
             assert "slurm not available" in result["error"]
 
+    @patch("srunx.mcp.server._get_ssh_client")
+    def test_submit_ssh_real_template_render(self, mock_get_client):
+        """Regression test for #117: real template render must succeed."""
+        mock_client = MagicMock()
+        mock_returned_job = MagicMock()
+        mock_returned_job.job_id = "42"
+        mock_returned_job.name = "ssh_job"
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.submit_sbatch_job.return_value = mock_returned_job
+        mock_get_client.return_value = mock_client
+
+        result = submit_job(
+            command="echo hi",
+            name="ssh_job",
+            use_ssh=True,
+            work_dir="/remote/workdir",
+        )
+        assert result["success"] is True, result
+        script_content = mock_client.submit_sbatch_job.call_args[0][0]
+        assert "#SBATCH --job-name=ssh_job" in script_content
+        assert "SRUNX_OUTPUTS_DIR" not in script_content
+
 
 class TestListJobs:
     """Test list_jobs tool."""
