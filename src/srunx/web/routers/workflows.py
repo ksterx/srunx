@@ -19,7 +19,7 @@ from typing import Any
 import anyio
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from srunx.db.connection import transaction
 from srunx.db.models import WorkflowRun as DBWorkflowRun
@@ -75,6 +75,18 @@ class WorkflowJobInput(BaseModel):
     retry_delay: int | None = None
     srun_args: str | None = None
     launch_prefix: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_legacy_outputs(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "outputs" in data:
+            raise ValueError(
+                "The 'outputs' field was renamed to 'exports' (see CHANGELOG). "
+                "Dependent jobs now reference values as '{{ deps.<job_name>.<key> }}'."
+            )
+        return data
 
 
 class WorkflowCreateRequest(BaseModel):

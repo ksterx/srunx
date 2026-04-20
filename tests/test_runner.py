@@ -1538,6 +1538,110 @@ class TestWorkflowExports:
             "/shared/prep_result",
         ]
 
+    def test_exports_key_shadowing_dict_method(self, temp_dir):
+        """Export keys colliding with dict methods (items/get/keys/...) must
+        still resolve to the user's value, not the method reference."""
+        yaml_content = {
+            "name": "wf",
+            "jobs": [
+                {
+                    "name": "a",
+                    "command": ["echo", "a"],
+                    "exports": {
+                        "items": "ITEMS_VALUE",
+                        "keys": "KEYS_VALUE",
+                        "get": "GET_VALUE",
+                    },
+                },
+                {
+                    "name": "b",
+                    "command": [
+                        "echo",
+                        "{{ deps.a.items }}",
+                        "{{ deps.a.keys }}",
+                        "{{ deps.a.get }}",
+                    ],
+                    "depends_on": ["a"],
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        runner = WorkflowRunner.from_yaml(yaml_path)
+        b = next(j for j in runner.workflow.jobs if j.name == "b")
+        assert b.command == [
+            "echo",
+            "ITEMS_VALUE",
+            "KEYS_VALUE",
+            "GET_VALUE",
+        ]
+
+    def test_legacy_outputs_key_rejected(self, temp_dir):
+        """Legacy 'outputs:' key must fail fast with a migration message,
+        not silently drop the values."""
+        yaml_content = {
+            "name": "wf",
+            "jobs": [
+                {"name": "a", "command": ["echo", "a"], "outputs": {"x": "1"}},
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        with pytest.raises(WorkflowValidationError, match="'outputs'"):
+            WorkflowRunner.from_yaml(yaml_path)
+
+    def test_single_job_ignores_unrelated_broken_jinja(self, temp_dir):
+        """A broken Jinja reference in a sibling job should not prevent
+        single_job rendering of the target."""
+        yaml_content = {
+            "name": "wf",
+            "jobs": [
+                {"name": "target", "command": ["echo", "target"]},
+                {
+                    "name": "broken",
+                    "command": ["echo", "{{ undefined_var }}"],
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        runner = WorkflowRunner.from_yaml(yaml_path, single_job="target")
+        assert [j.name for j in runner.workflow.jobs] == ["target"]
+
+    def test_single_job_still_requires_its_own_deps(self, temp_dir):
+        """single_job=target must still render target's transitive
+        dependency chain so {{ deps.X.Y }} in target resolves."""
+        yaml_content = {
+            "name": "wf",
+            "args": {"base": "/d"},
+            "jobs": [
+                {
+                    "name": "prep",
+                    "command": ["echo", "prep"],
+                    "exports": {"p": "{{ base }}/out"},
+                },
+                {
+                    "name": "train",
+                    "command": ["python", "t.py", "--in", "{{ deps.prep.p }}"],
+                    "depends_on": ["prep"],
+                },
+                {
+                    "name": "sibling",
+                    "command": ["echo", "{{ undefined_var }}"],
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        runner = WorkflowRunner.from_yaml(yaml_path, single_job="train")
+        train = runner.workflow.jobs[0]
+        assert train.name == "train"
+        assert train.command == ["python", "t.py", "--in", "/d/out"]
+
 
 class TestSafeEvalExec:
     """Test that the eval/exec sandbox blocks dangerous operations."""

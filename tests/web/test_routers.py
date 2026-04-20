@@ -1061,6 +1061,26 @@ class TestWorkflowsRouter:
         resp = client.post("/api/workflows/create", json=payload)
         assert resp.status_code == 422
 
+    def test_create_workflow_rejects_legacy_outputs_key(
+        self, client: TestClient
+    ) -> None:
+        """Legacy 'outputs:' in the request body must 422, not silently drop."""
+        payload = {
+            "name": "legacy-outputs",
+            "default_project": MOUNT,
+            "jobs": [
+                {
+                    "name": "train",
+                    "command": ["echo"],
+                    "outputs": {"model_path": "/x"},
+                },
+            ],
+        }
+        resp = client.post("/api/workflows/create", json=payload)
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "outputs" in str(body).lower() and "exports" in str(body).lower()
+
 
 # ── Config SSH Connect / Test / Status ───────────────
 
