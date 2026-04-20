@@ -1406,6 +1406,138 @@ class TestWorkflowExports:
         c = next(j for j in runner.workflow.jobs if j.name == "c")
         assert c.command == ["echo", "/exp/a/b"]
 
+    def test_cycle_detection_raises(self, temp_dir):
+        """Circular job dependencies fail at from_yaml (CycleError)."""
+        yaml_content = {
+            "name": "cyc",
+            "jobs": [
+                {"name": "a", "command": ["echo", "a"], "depends_on": ["b"]},
+                {"name": "b", "command": ["echo", "b"], "depends_on": ["a"]},
+            ],
+        }
+        yaml_path = temp_dir / "cyc.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        with pytest.raises(WorkflowValidationError, match="[Cc]ircular"):
+            WorkflowRunner.from_yaml(yaml_path)
+
+    def test_python_arg_feeds_exports_feeds_deps(self, temp_dir):
+        """python: args → exports → deps.X.Y chain resolves at load time."""
+        yaml_content = {
+            "name": "wf",
+            "args": {
+                "stamp": "python: 'run_2026'",
+                "base": "{{ stamp }}_/data",
+            },
+            "jobs": [
+                {
+                    "name": "prep",
+                    "command": ["echo", "prep"],
+                    "exports": {"out": "{{ base }}/prep"},
+                },
+                {
+                    "name": "train",
+                    "command": ["python", "t.py", "--in", "{{ deps.prep.out }}"],
+                    "depends_on": ["prep"],
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        runner = WorkflowRunner.from_yaml(yaml_path)
+        train = next(j for j in runner.workflow.jobs if j.name == "train")
+        assert train.command == ["python", "t.py", "--in", "run_2026_/data/prep"]
+
+    def test_deps_reference_in_work_dir_and_log_dir(self, temp_dir):
+        """deps.X.Y resolves when placed in non-command fields."""
+        yaml_content = {
+            "name": "wf",
+            "jobs": [
+                {
+                    "name": "a",
+                    "command": ["echo", "a"],
+                    "exports": {"root": "/shared/job_a"},
+                },
+                {
+                    "name": "b",
+                    "command": ["echo", "b"],
+                    "depends_on": ["a"],
+                    "work_dir": "{{ deps.a.root }}/work",
+                    "log_dir": "{{ deps.a.root }}/logs",
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        runner = WorkflowRunner.from_yaml(yaml_path)
+        b = next(j for j in runner.workflow.jobs if j.name == "b")
+        assert b.work_dir == "/shared/job_a/work"
+        assert b.log_dir == "/shared/job_a/logs"
+
+    def test_single_job_filter_preserves_deps_resolution(self, temp_dir):
+        """single_job='train' still resolves {{ deps.prep.* }} via full DAG render."""
+        yaml_content = {
+            "name": "wf",
+            "args": {"base": "/data"},
+            "jobs": [
+                {
+                    "name": "prep",
+                    "command": ["echo", "prep"],
+                    "exports": {"p": "{{ base }}/prep"},
+                },
+                {
+                    "name": "train",
+                    "command": ["python", "t.py", "--in", "{{ deps.prep.p }}"],
+                    "depends_on": ["prep"],
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        runner = WorkflowRunner.from_yaml(yaml_path, single_job="train")
+        assert len(runner.workflow.jobs) == 1
+        assert runner.workflow.jobs[0].name == "train"
+        assert runner.workflow.jobs[0].command == [
+            "python",
+            "t.py",
+            "--in",
+            "/data/prep",
+        ]
+
+    def test_shell_job_with_exports_resolves_for_dependents(self, temp_dir):
+        """ShellJob.exports is consumable by downstream jobs at load time."""
+        script_path = temp_dir / "prep.slurm.jinja"
+        script_path.write_text("#!/bin/bash\necho prep\n")
+        yaml_content = {
+            "name": "wf",
+            "jobs": [
+                {
+                    "name": "prep",
+                    "script_path": str(script_path),
+                    "exports": {"out": "/shared/prep_result"},
+                },
+                {
+                    "name": "train",
+                    "command": ["python", "t.py", "--in", "{{ deps.prep.out }}"],
+                    "depends_on": ["prep"],
+                },
+            ],
+        }
+        yaml_path = temp_dir / "wf.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_content, f)
+        runner = WorkflowRunner.from_yaml(yaml_path)
+        train = next(j for j in runner.workflow.jobs if j.name == "train")
+        assert train.command == [
+            "python",
+            "t.py",
+            "--in",
+            "/shared/prep_result",
+        ]
+
 
 class TestSafeEvalExec:
     """Test that the eval/exec sandbox blocks dangerous operations."""
