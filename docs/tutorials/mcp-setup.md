@@ -64,35 +64,62 @@ Then `uv run srunx-mcp` works from that project's directory.
 
 ## Register with Claude Code
 
-The `claude mcp add` CLI supports three scopes: local, project, and user.
-For the common case of "available everywhere", use **user** scope with
-`uvx`:
+There are two equally valid registration styles — pick whichever matches
+the install option you used above. Both are CWD-independent.
+
+### Trade-off at a glance
+
+| Style | Startup | Updates | Installed binary |
+|---|---|---|---|
+| `uvx --from 'srunx[mcp]' srunx-mcp` | ~50–200 ms (after first run) | Automatic — every launch resolves the latest version | None |
+| `uv tool install` + `srunx-mcp` | ~50 ms | Manual (`uv tool upgrade srunx`) | `~/.local/bin/srunx-mcp` |
+
+For long-lived MCP sessions the difference is negligible — go with
+whichever fits your update preference.
+
+### Style A: `uvx` (zero-install, auto-updates)
+
+**User scope** (available in every project):
 
 ```bash
 claude mcp add --scope user srunx -- uvx --from 'srunx[mcp]' srunx-mcp
 ```
 
-This command is CWD-independent and works from any project.
-
-### Other scopes
-
-**Project** (shared with collaborators via a checked-in `.mcp.json`):
+**Project scope** (shared via a checked-in `.mcp.json`):
 
 ```bash
 claude mcp add --scope project srunx -- uvx --from 'srunx[mcp]' srunx-mcp
 ```
 
-**Local** (current project only, written to `.mcp.json` but not shared):
+**Local scope** (current project only):
 
 ```bash
 claude mcp add srunx -- uvx --from 'srunx[mcp]' srunx-mcp
 ```
 
-### Alternative: `.mcp.json` hand-written
+### Style B: installed binary (fastest startup, pinned version)
 
-For the project scope you can also write `.mcp.json` directly:
+Install once with the `mcp` extra, then register the bare binary:
 
-```json
+```bash
+uv tool install --with 'mcp[cli]' srunx
+
+# User scope
+claude mcp add --scope user srunx -- srunx-mcp
+
+# Project scope
+claude mcp add --scope project srunx -- srunx-mcp
+
+# Local scope
+claude mcp add srunx -- srunx-mcp
+```
+
+### `.mcp.json` hand-written
+
+For project scope you can commit a `.mcp.json` instead of running
+`claude mcp add`. Pick the block matching the style above:
+
+```json title=".mcp.json (Style A — uvx)"
 {
   "mcpServers": {
     "srunx": {
@@ -103,10 +130,7 @@ For the project scope you can also write `.mcp.json` directly:
 }
 ```
 
-If you installed via `uv tool install --with 'mcp[cli]' srunx` instead
-(Option 2 above), you can use the plain binary:
-
-```json
+```json title=".mcp.json (Style B — installed binary)"
 {
   "mcpServers": {
     "srunx": {
