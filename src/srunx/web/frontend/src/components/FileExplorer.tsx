@@ -295,11 +295,23 @@ function SubmitDialog({
         }
 
         if (fetched.length > 0) {
+          // Pre-select the endpoint the user will most likely pick —
+          // their configured default, or the first available — so the
+          // dropdown is not empty the moment they tick the box.
           const match = defaultName
             ? fetched.find((e) => e.name === defaultName)
             : undefined;
           setSelectedEndpointId((match ?? fetched[0]).id);
-          setNotify(true);
+          // Auto-opt-in only when the user has *explicitly* wired up
+          // a ``default_endpoint_name`` in config. Merely having an
+          // endpoint row in the DB (e.g. from a teammate) is not a
+          // signal that this user wants every submit to notify — we
+          // used to turn the toggle on in that case, which surprised
+          // users who didn't realise their runs were firing Slack.
+          // The checkbox still defaults to ON when the opt-in is
+          // explicit via config, so configured users see no behaviour
+          // change.
+          setNotify(match !== undefined);
         } else {
           setSelectedEndpointId(null);
           setNotify(false);
