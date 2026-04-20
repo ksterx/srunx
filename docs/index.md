@@ -6,7 +6,7 @@ hide:
 
 <div class="srunx-hero" markdown>
 
-<p class="srunx-status">v1.1 · SLURM · MIT</p>
+<p class="srunx-status">v1.1 · SLURM · Apache-2.0</p>
 
 # Orchestrate SLURM jobs<br>like <span class="accent">code</span>.
 
