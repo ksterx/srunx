@@ -7,7 +7,6 @@ import {
   Cpu,
   Bell,
   Settings,
-  Terminal,
   ChevronLeft,
   ChevronRight,
   FolderTree,
@@ -132,21 +131,17 @@ export function Sidebar({
           minHeight: 64,
         }}
       >
-        <div
+        <img
+          src="/icon.svg"
+          alt="srunx"
+          width={28}
+          height={28}
           style={{
-            width: 28,
-            height: 28,
             borderRadius: 6,
-            background:
-              "linear-gradient(135deg, var(--accent), var(--resource))",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
             flexShrink: 0,
+            display: "block",
           }}
-        >
-          <Terminal size={15} color="#fff" strokeWidth={2.5} />
-        </div>
+        />
         <AnimatePresence>
           {!collapsed && (
             <motion.span

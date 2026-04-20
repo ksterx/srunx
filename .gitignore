@@ -471,7 +471,7 @@ src/srunx/_version.py
 test-results/
 playwright-report/
 .playwright-mcp/
-public/
+/public/
 *.png
 
 # Serena
