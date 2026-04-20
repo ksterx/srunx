@@ -78,10 +78,18 @@ test.describe("Settings → Notifications", () => {
     await page.getByRole("button", { name: /^Create$/ }).click();
 
     // New row appears in the table + success banner fires with the name.
-    // The name text appears in two places (success banner + table cell),
-    // so scope each assertion to its specific landmark to avoid strict-
-    // mode locator collisions.
-    await expect(page.getByRole("cell", { name: "team-alerts" })).toBeVisible();
+    //
+    // ``team-alerts`` ends up in three places once the row renders:
+    //   1. <td>team-alerts</td> (name column)
+    //   2. the status chip's ``aria-label`` — P3-11's a11y wiring
+    //      makes the span's accessible name ``Endpoint team-alerts is
+    //      enabled``, which propagates up to the <td> role.
+    //   3. the success banner text.
+    // ``{ exact: true }`` pins the assertion to (1); without it
+    // Playwright's strict mode flags the (1)+(2) collision and fails.
+    await expect(
+      page.getByRole("cell", { name: "team-alerts", exact: true }),
+    ).toBeVisible();
     await expect(
       page.getByText(/Endpoint "team-alerts" created/i),
     ).toBeVisible();
