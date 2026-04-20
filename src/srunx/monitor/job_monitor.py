@@ -151,21 +151,27 @@ class JobMonitor(BaseMonitor):
         """Invoke appropriate callback methods based on job status transition."""
         logger.debug(f"Job {job.job_id} transitioned to {status.value}")
 
-        # Update history database for terminal states
-        if status in {
-            JobStatus.COMPLETED,
-            JobStatus.FAILED,
-            JobStatus.CANCELLED,
-            JobStatus.TIMEOUT,
-        }:
-            try:
-                from srunx.history import get_history
+        # Mirror terminal states into the state DB (best-effort; the
+        # helper swallows + logs at debug if the DB isn't available).
+        if (
+            status
+            in {
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+                JobStatus.TIMEOUT,
+            }
+            and job.job_id is not None
+        ):
+            from srunx.db.cli_helpers import record_completion
 
-                history = get_history()
-                if job.job_id:
-                    history.update_job_completion(job.job_id, status)
-            except Exception as e:
-                logger.warning(f"Failed to update job history: {e}")
+            try:
+                record_completion(int(job.job_id), status)
+            except Exception as exc:
+                # ``record_completion`` is best-effort internally, but a
+                # bug in it (or a monkeypatched test) must never prevent
+                # callback notifications.
+                logger.warning(f"record_completion failed: {exc}")
 
         for callback in self.callbacks:
             try:

@@ -56,6 +56,7 @@ class Slurm:
         verbose: bool = False,
         record_history: bool = True,
         workflow_name: str | None = None,
+        workflow_run_id: int | None = None,
         outputs_dir: str | None = None,
         dependency_names: list[str] | None = None,
     ) -> RunnableJobType:
@@ -68,6 +69,10 @@ class Slurm:
             verbose: Whether to print the rendered content.
             record_history: Whether to record job in history database.
             workflow_name: Name of the workflow if part of a workflow.
+            workflow_run_id: ``workflow_runs.id`` when the job was
+                submitted from a workflow; persisted on the ``jobs`` row
+                so reports (``srunx report --workflow``, the Web history
+                JOIN) actually pick up CLI-launched workflow jobs.
             outputs_dir: Shared directory for inter-job output variables.
             dependency_names: Names of dependency jobs whose outputs should be sourced.
 
@@ -151,15 +156,16 @@ class Slurm:
 
         logger.debug(f"Successfully submitted job '{job.name}' with ID {job_id}")
 
-        # Record in history database
+        # Record in the state DB (best-effort; failures log at debug
+        # and never surface to the caller — see cli_helpers.py).
         if record_history:
-            try:
-                from srunx.history import get_history
+            from srunx.db.cli_helpers import record_submission_from_job
 
-                history = get_history()
-                history.record_job(job, workflow_name=workflow_name)
-            except Exception as e:
-                logger.warning(f"Failed to record job in history: {e}")
+            record_submission_from_job(
+                job,
+                workflow_name=workflow_name,
+                workflow_run_id=workflow_run_id,
+            )
 
         all_callbacks = self.callbacks[:]
         if callbacks:
@@ -438,15 +444,12 @@ class Slurm:
 
     @staticmethod
     def _record_completion(job: BaseJob) -> None:
-        """Record job completion in history database."""
-        try:
-            from srunx.history import get_history
+        """Record job completion in the state DB."""
+        if job.job_id is None:
+            return
+        from srunx.db.cli_helpers import record_completion
 
-            history = get_history()
-            if job.job_id:
-                history.update_job_completion(job.job_id, job.status)
-        except Exception as e:
-            logger.warning(f"Failed to update job history: {e}")
+        record_completion(int(job.job_id), job.status)
 
     @staticmethod
     def _build_error_msg(job: BaseJob) -> str:
@@ -470,6 +473,7 @@ class Slurm:
         poll_interval: int = 5,
         verbose: bool = False,
         workflow_name: str | None = None,
+        workflow_run_id: int | None = None,
         outputs_dir: str | None = None,
         dependency_names: list[str] | None = None,
     ) -> RunnableJobType:
@@ -480,6 +484,7 @@ class Slurm:
             callbacks=callbacks,
             verbose=verbose,
             workflow_name=workflow_name,
+            workflow_run_id=workflow_run_id,
             outputs_dir=outputs_dir,
             dependency_names=dependency_names,
         )
