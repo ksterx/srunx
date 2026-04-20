@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { motion } from "framer-motion";
 import {
   AlertTriangle,
@@ -33,6 +33,14 @@ function AddEndpointForm({ onCancel, onCreated }: AddFormProps) {
   const [webhookUrl, setWebhookUrl] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Stable per-instance ids for label↔input association. Without these
+  // the visual <label> elements are not exposed to screen readers.
+  const nameId = useId();
+  const kindId = useId();
+  const webhookId = useId();
+  const webhookErrorId = useId();
+  const formErrorId = useId();
 
   const urlValid = SLACK_WEBHOOK_PATTERN.test(webhookUrl);
   const canSubmit = name.trim().length > 0 && urlValid && !saving;
@@ -90,6 +98,7 @@ function AddEndpointForm({ onCancel, onCreated }: AddFormProps) {
         </span>
         <button
           onClick={onCancel}
+          aria-label="Cancel new endpoint"
           style={{
             background: "none",
             border: "none",
@@ -100,12 +109,13 @@ function AddEndpointForm({ onCancel, onCreated }: AddFormProps) {
             display: "flex",
           }}
         >
-          <X size={14} />
+          <X size={14} aria-hidden="true" />
         </button>
       </div>
 
       <div>
         <label
+          htmlFor={nameId}
           style={{
             fontFamily: "var(--font-mono)",
             fontSize: "0.65rem",
@@ -119,17 +129,20 @@ function AddEndpointForm({ onCancel, onCreated }: AddFormProps) {
           Name
         </label>
         <input
+          id={nameId}
           className="input"
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="e.g. team-alerts"
+          required
           style={{ width: "100%", fontSize: "0.8rem" }}
         />
       </div>
 
       <div>
         <label
+          htmlFor={kindId}
           style={{
             fontFamily: "var(--font-mono)",
             fontSize: "0.65rem",
@@ -143,10 +156,12 @@ function AddEndpointForm({ onCancel, onCreated }: AddFormProps) {
           Kind
         </label>
         <input
+          id={kindId}
           className="input"
           type="text"
           value="slack_webhook"
           disabled
+          aria-readonly="true"
           style={{
             width: "100%",
             fontSize: "0.8rem",
@@ -158,6 +173,7 @@ function AddEndpointForm({ onCancel, onCreated }: AddFormProps) {
 
       <div>
         <label
+          htmlFor={webhookId}
           style={{
             fontFamily: "var(--font-mono)",
             fontSize: "0.65rem",
@@ -171,11 +187,17 @@ function AddEndpointForm({ onCancel, onCreated }: AddFormProps) {
           Webhook URL
         </label>
         <input
+          id={webhookId}
           className="input"
           type="url"
           value={webhookUrl}
           onChange={(e) => setWebhookUrl(e.target.value)}
           placeholder="https://hooks.slack.com/services/..."
+          required
+          aria-invalid={webhookUrl !== "" && !urlValid}
+          aria-describedby={
+            webhookUrl && !urlValid ? webhookErrorId : undefined
+          }
           style={{
             width: "100%",
             fontFamily: "var(--font-mono)",
@@ -186,6 +208,8 @@ function AddEndpointForm({ onCancel, onCreated }: AddFormProps) {
         />
         {webhookUrl && !urlValid && (
           <div
+            id={webhookErrorId}
+            role="alert"
             style={{
               display: "flex",
               alignItems: "center",
@@ -195,7 +219,7 @@ function AddEndpointForm({ onCancel, onCreated }: AddFormProps) {
               fontSize: "0.75rem",
             }}
           >
-            <AlertTriangle size={12} />
+            <AlertTriangle size={12} aria-hidden="true" />
             Must be a valid Slack webhook URL
             (https://hooks.slack.com/services/...)
           </div>
@@ -204,6 +228,8 @@ function AddEndpointForm({ onCancel, onCreated }: AddFormProps) {
 
       {error && (
         <div
+          id={formErrorId}
+          role="alert"
           style={{
             display: "flex",
             alignItems: "center",
@@ -212,7 +238,7 @@ function AddEndpointForm({ onCancel, onCreated }: AddFormProps) {
             fontSize: "0.75rem",
           }}
         >
-          <AlertTriangle size={12} />
+          <AlertTriangle size={12} aria-hidden="true" />
           {error}
         </div>
       )}
@@ -280,6 +306,10 @@ function EndpointRow({ endpoint, busy, onToggle, onDelete }: EndpointRowProps) {
         }}
       >
         <span
+          role="status"
+          aria-label={`Endpoint ${endpoint.name} is ${
+            disabled ? "disabled" : "enabled"
+          }`}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -291,7 +321,11 @@ function EndpointRow({ endpoint, busy, onToggle, onDelete }: EndpointRowProps) {
             color: disabled ? "var(--text-muted)" : "var(--st-completed)",
           }}
         >
-          {disabled ? <BellOff size={11} /> : <Bell size={11} />}
+          {disabled ? (
+            <BellOff size={11} aria-hidden="true" />
+          ) : (
+            <Bell size={11} aria-hidden="true" />
+          )}
           {disabled ? "Disabled" : "Enabled"}
         </span>
       </td>
@@ -323,6 +357,7 @@ function EndpointRow({ endpoint, busy, onToggle, onDelete }: EndpointRowProps) {
             onClick={onToggle}
             disabled={busy}
             title={disabled ? "Enable" : "Disable"}
+            aria-pressed={!disabled}
             style={{
               background: "none",
               border: "1px solid var(--border-subtle)",
@@ -337,7 +372,7 @@ function EndpointRow({ endpoint, busy, onToggle, onDelete }: EndpointRowProps) {
               fontFamily: "var(--font-mono)",
             }}
           >
-            <Power size={11} />
+            <Power size={11} aria-hidden="true" />
             {disabled ? "Enable" : "Disable"}
           </button>
           <button
@@ -358,7 +393,7 @@ function EndpointRow({ endpoint, busy, onToggle, onDelete }: EndpointRowProps) {
               fontFamily: "var(--font-mono)",
             }}
           >
-            <Trash2 size={11} />
+            <Trash2 size={11} aria-hidden="true" />
             Delete
           </button>
         </div>
@@ -459,6 +494,8 @@ export function NotificationsTab() {
       <ErrorBanner error={error} />
       {success && (
         <motion.div
+          role="status"
+          aria-live="polite"
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
           style={{
@@ -471,7 +508,11 @@ export function NotificationsTab() {
             fontSize: "0.8rem",
           }}
         >
-          <Check size={14} style={{ verticalAlign: -2, marginRight: 6 }} />
+          <Check
+            size={14}
+            aria-hidden="true"
+            style={{ verticalAlign: -2, marginRight: 6 }}
+          />
           {success}
         </motion.div>
       )}
