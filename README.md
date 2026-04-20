@@ -34,14 +34,13 @@ uv add srunx             # with uv (recommended)
 pip install srunx        # or with pip
 ```
 
-Optional extras:
+The web dashboard and Slack notifications are included in the base install — no extras required.
 
-| Extra | Adds |
-|-------|------|
-| `srunx[web]` | Web dashboard (FastAPI + React UI) |
-| `srunx[mcp]` | MCP server for AI agent integration |
+For AI agent integration (MCP server), add the `mcp` extra:
 
-Slack notifications are included in the base install — just set `SLACK_WEBHOOK_URL`.
+```bash
+uv add "srunx[mcp]"
+```
 
 ## Quick Start
 
@@ -50,7 +49,7 @@ Submit a job, wait for it, and view the logs — end to end:
 ```bash
 # 1. Submit (use -- to separate srunx flags from the command)
 $ srunx submit --name training --gpus-per-node 2 --conda ml_env -- python train.py
-✓ Submitted job training (id=847291)
+✅ Submitted job training (id=847291)
 
 # 2. Follow until completion
 $ srunx monitor jobs 847291
@@ -72,15 +71,15 @@ Instead of stitching together `sbatch`, `squeue`, SSH, and a pipeline runner, sr
 
 | Capability | srunx | submitit | simple-slurm | Snakemake |
 |---|:---:|:---:|:---:|:---:|
-| CLI for submit / status / cancel | ✓ | — | — | partial |
-| Python API | ✓ | ✓ | ✓ | ✓ |
-| Web dashboard | ✓ | — | — | — |
-| Workflow DAG with dependencies | ✓ | — | — | ✓ |
-| Inter-job runtime variable passing | ✓ | — | — | via files |
-| GPU availability monitoring | ✓ | — | — | — |
-| SSH remote submit + file sync | ✓ | — | — | — |
-| Container support (Pyxis / Apptainer / Singularity) | ✓ | limited | — | via rules |
-| Slack notifications | ✓ | — | — | plugin |
+| CLI for submit / status / cancel | ✅ | ❌ | ❌ | ⚠️ partial |
+| Python API | ✅ | ✅ | ✅ | ✅ |
+| Web dashboard | ✅ | ❌ | ❌ | ❌ |
+| Workflow DAG with dependencies | ✅ | ❌ | ❌ | ✅ |
+| Inter-job runtime variable passing | ✅ | ❌ | ❌ | ⚠️ via files |
+| GPU availability monitoring | ✅ | ❌ | ❌ | ❌ |
+| SSH remote submit + file sync | ✅ | ❌ | ❌ | ❌ |
+| Container support (Pyxis / Apptainer / Singularity) | ✅ | ⚠️ limited | ❌ | ⚠️ via rules |
+| Slack notifications | ✅ | ❌ | ❌ | ⚠️ plugin |
 
 If you need full-featured scientific workflow tooling, Snakemake / Nextflow are still the right call. srunx targets the sweet spot of *"SLURM + a few dependencies + a nice UI"* without Airflow-scale infrastructure.
 

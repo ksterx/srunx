@@ -13,17 +13,22 @@ srunx is organized as a modular Python library with clear separation of concerns
    src/srunx/
    ├── models.py          # Data models and validation (Pydantic)
    ├── client.py          # Local SLURM client (subprocess-based)
+   ├── client_protocol.py # SlurmClientProtocol + JobStatusInfo (shared interface)
    ├── runner.py          # Workflow execution engine
    ├── callbacks.py       # Notification system (Slack, etc.)
    ├── config.py          # Configuration management
    ├── exceptions.py      # Custom exceptions
    ├── formatters.py      # Output formatting utilities
-   ├── history.py         # Job execution history tracking
    ├── logging.py         # Centralized logging (Loguru)
    ├── template.py        # SLURM script template rendering
    ├── utils.py           # Utility functions
    ├── cli/               # Command-line interface (Typer)
+   ├── containers/        # Container runtime adapters (Pyxis, Apptainer)
+   ├── db/                # SQLite-backed state persistence + repositories
+   ├── mcp/               # MCP server for AI agent integration
    ├── monitor/           # Job and resource monitoring
+   ├── notifications/     # Notification domain (events → deliveries fan-out)
+   ├── pollers/           # Background lifespan tasks (watch / delivery / snapshots)
    ├── ssh/               # SSH integration for remote SLURM
    ├── sync/              # rsync-based file synchronization
    ├── templates/         # SLURM script templates (Jinja2)

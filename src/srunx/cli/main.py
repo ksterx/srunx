@@ -131,14 +131,7 @@ def ui(
     ] = False,
 ) -> None:
     """Launch the srunx Web UI."""
-    try:
-        import uvicorn
-    except ImportError:
-        Console().print(
-            "[red]Web UI requires extra dependencies. "
-            "Install with: uv pip install srunx[web][/red]"
-        )
-        raise typer.Exit(1) from None
+    import uvicorn
 
     from srunx.web.config import get_web_config
 

@@ -11,19 +11,17 @@ Prerequisites
 * Python 3.12+
 * Node.js 18+ (for frontend development only; not needed for production use)
 
-Step 1: Install Web Dependencies
----------------------------------
+Step 1: Install srunx
+---------------------
 
-The Web UI is an optional feature. Install it with the ``web`` extra:
+The Web UI and its backend dependencies (FastAPI, uvicorn) are included in the base install — no extras required:
 
 .. code-block:: bash
 
-   uv add "srunx[web]"
+   uv add srunx
 
    # Or if installing from source
-   uv sync --extra web
-
-This installs FastAPI, uvicorn, and other backend dependencies.
+   uv sync
 
 Step 2: Configure SSH Connection
 ---------------------------------

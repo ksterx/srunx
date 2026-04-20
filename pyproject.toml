@@ -6,25 +6,23 @@ readme = "README.md"
 authors = [{ name = "ksterx", email = "kostonerx@gmail.com" }]
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.136.0",
+    "uvicorn[standard]>=0.44.0",
+    "anyio>=4.13.0",
     "jinja2>=3.1.6",
     "loguru>=0.7.3",
-    "pydantic>=2.11.5",
-    "pyyaml>=6.0.2",
-    "rich>=14.0.0",
+    "pydantic>=2.13.2",
+    "pyyaml>=6.0.3",
+    "rich>=15.0.0",
     "paramiko>=4.0.0",
-    "slack-sdk>=3.35.0",
-    "typer>=0.17.3",
-    "apscheduler>=3.10.0",
+    "slack-sdk>=3.41.0",
+    "typer>=0.24.1",
+    "apscheduler>=3.11.2",
 ]
 
 [project.optional-dependencies]
-web = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.34.0",
-    "anyio>=4.0.0",
-]
 mcp = [
-    "mcp[cli]>=1.0.0",
+    "mcp[cli]>=1.27.0",
 ]
 
 [project.scripts]
@@ -72,23 +70,21 @@ version-file = "src/srunx/_version.py"
 
 [dependency-groups]
 dev = [
-    "jupyterlab>=4.4.3",
-    "mypy>=1.16.0",
-    "pre-commit>=4.2.0",
-    "pytest>=8.4.0",
-    "ruff>=0.11.13",
-    "types-pyyaml>=6.0.12",
-    "pytest>=8.0.0",
-    "pytest-cov>=4.0.0",
-    "pytest-mock>=3.12.0",
-    "sphinx>=8.2.3",
-    "sphinx-autobuild>=2024.10.3",
-    "sphinx-autodoc-typehints>=3.2.0",
-    "sphinx-rtd-theme>=3.0.2",
-    "sphinx-book-theme>=1.1.4",
-    "sphinxcontrib-mermaid>=2.0.1",
-    "fastapi>=0.135.2",
     "httpx>=0.28.1",
+    "jupyterlab>=4.5.6",
+    "mypy>=1.20.1",
+    "pre-commit>=4.5.1",
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.15.1",
+    "ruff>=0.15.11",
+    "sphinx>=9.1.0",
+    "sphinx-autobuild>=2025.8.25",
+    "sphinx-autodoc-typehints>=3.10.2",
+    "sphinx-book-theme>=1.2.0",
+    "sphinx-rtd-theme>=3.1.0",
+    "sphinxcontrib-mermaid>=2.0.1",
+    "types-pyyaml>=6.0.12.20260408",
 ]
 
 [tool.pytest.ini_options]

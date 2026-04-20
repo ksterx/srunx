@@ -101,12 +101,19 @@ src/srunx/
 ├── callbacks.py       # Callback system for job notifications
 ├── config.py          # Configuration management and defaults
 ├── exceptions.py      # Custom exceptions
+├── formatters.py      # Output formatting helpers (tables, JSON, status icons)
 ├── logging.py         # Centralized logging configuration
+├── template.py        # SLURM script template rendering (Jinja2)
 ├── utils.py           # Utility functions
+├── containers/        # Container runtime adapters
+│   ├── base.py        # ContainerRuntime abstract base
+│   ├── pyxis.py       # Pyxis/SLURM srun --container-* integration
+│   └── apptainer.py   # Apptainer / Singularity integration
 ├── db/                # DB-backed state persistence (SQLite, ~/.config/srunx/srunx.db)
 │   ├── connection.py  # XDG path resolution, open_connection, init_db, transaction
 │   ├── migrations.py  # SCHEMA_V1 DDL + apply_migrations + bootstrap_from_config
 │   ├── models.py      # Pydantic row models (Endpoint/Watch/.../Delivery, WorkflowRun, Job...)
+│   ├── cli_helpers.py # DB helpers used by CLI commands
 │   └── repositories/  # Thin CRUD per table (JobRepository, DeliveryRepository, ...)
 ├── notifications/     # Notification domain
 │   ├── sanitize.py    # sanitize_slack_text (shared with callbacks.SlackCallback)
@@ -122,29 +129,41 @@ src/srunx/
 ├── cli/               # Command-line interfaces
 │   ├── main.py        # Main CLI commands (submit, status, list, cancel, resources)
 │   ├── monitor.py     # Monitor subcommands (jobs, resources, cluster)
-│   └── workflow.py    # Workflow CLI
+│   ├── workflow.py    # Workflow CLI
+│   └── notification_setup.py  # Interactive endpoint setup helpers
+├── mcp/               # MCP server for AI agent integration
+│   └── server.py      # FastMCP tool surface (submit_job, list_jobs, run_workflow, ...)
 ├── monitor/           # Job and resource monitoring
 │   ├── base.py        # BaseMonitor abstract class
 │   ├── job_monitor.py # JobMonitor for job state tracking (also writes to job_state_transitions for SSOT)
 │   ├── resource_monitor.py  # ResourceMonitor for GPU availability
+│   ├── resource_source.py   # Adapter-backed resource query abstraction
+│   ├── scheduler.py   # Periodic report scheduler (APScheduler)
+│   ├── report_types.py # Report payload dataclasses
 │   └── types.py       # MonitorConfig, ResourceSnapshot, WatchMode
 ├── ssh/               # SSH integration for remote SLURM
-│   ├── core/          # Core SSH SLURM functionality
-│   │   ├── client.py  # SSH SLURM client
-│   │   ├── config.py  # SSH profile configuration
-│   │   ├── proxy_client.py  # SSH proxy connection handling
-│   │   └── ssh_config.py    # SSH config file parsing
+│   ├── core/          # Core SSH + SLURM-over-SSH building blocks
+│   │   ├── client.py        # SSHSlurmClient (high-level facade)
+│   │   ├── slurm.py         # SLURM command wrappers
+│   │   ├── connection.py    # Paramiko connection management
+│   │   ├── proxy_client.py  # ProxyJump / multi-hop SSH
+│   │   ├── file_manager.py  # SFTP upload / workspace sync
+│   │   ├── log_reader.py    # Remote log streaming
+│   │   ├── config.py        # SSH profile configuration
+│   │   ├── ssh_config.py    # ~/.ssh/config parser
+│   │   ├── client_types.py  # Shared dataclasses
+│   │   └── utils.py         # Misc SSH helpers
 │   ├── cli/           # SSH CLI interfaces
-│   │   ├── main.py    # SSH CLI entry point
-│   │   ├── profile.py # Profile management CLI
-│   │   └── submit.py  # Job submission CLI
-│   ├── helpers/       # SSH utility tools
-│   │   └── proxy_helper.py  # Proxy connection analysis
-│   └── example.py     # SSH usage examples
+│   │   ├── commands.py      # Typer command wiring (submit/logs/test/sync + profile)
+│   │   └── profile_impl.py  # Profile management implementations
+│   └── helpers/       # SSH utility tools
+│       └── proxy_helper.py  # Proxy connection analysis
+├── sync/              # rsync-based project directory synchronization
+│   └── rsync.py       # RsyncClient (delta transfers, ProxyJump via -e)
 ├── templates/         # SLURM script templates
 │   └── base.slurm.jinja
 └── web/               # Web UI (FastAPI + React)
-    ├── routers/       # API endpoints (jobs, workflows, resources, etc.)
+    ├── routers/       # API endpoints (jobs, workflows, resources, endpoints, deliveries, ...)
     └── frontend/      # React SPA
         └── src/
             ├── components/  # Reusable components (KeyValueEditor, JobPropertyPanel, etc.)
