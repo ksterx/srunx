@@ -473,3 +473,6 @@ playwright-report/
 .playwright-mcp/
 public/
 *.png
+
+# Serena
+.serena/
