@@ -16,7 +16,7 @@ Stop juggling `sbatch` scripts, `squeue` loops, and SSH sessions.
 </div>
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/ksterx/srunx/main/public/screenshots/dashboard.png" width="800" alt="srunx web dashboard">
+  <img src="https://raw.githubusercontent.com/ksterx/srunx/main/docs/assets/images/ui-dashboard.png" width="800" alt="srunx web dashboard">
 </div>
 
 - **Submit & manage** SLURM jobs from CLI, browser, or Python
@@ -115,25 +115,25 @@ srunx ui --port 3000    # custom port
 
 Browse, search, filter, and cancel jobs.
 
-<img src="https://raw.githubusercontent.com/ksterx/srunx/main/public/screenshots/jobs.png" width="800" alt="Jobs page">
+<img src="https://raw.githubusercontent.com/ksterx/srunx/main/docs/assets/images/ui-jobs.png" width="800" alt="Jobs page">
 
 ### Workflow DAG
 
 Visualize job dependencies. Run workflows directly from the UI.
 
-<img src="https://raw.githubusercontent.com/ksterx/srunx/main/public/screenshots/workflow_dag.png" width="800" alt="Workflow DAG visualization">
+<img src="https://raw.githubusercontent.com/ksterx/srunx/main/docs/assets/images/ui-workflow-dag.png" width="800" alt="Workflow DAG visualization">
 
 ### Resources
 
 GPU and node availability per partition.
 
-<img src="https://raw.githubusercontent.com/ksterx/srunx/main/public/screenshots/resources.png" width="800" alt="Resources page">
+<img src="https://raw.githubusercontent.com/ksterx/srunx/main/docs/assets/images/ui-resources.png" width="800" alt="Resources page">
 
 ### Explorer
 
 Browse remote files via SSH mounts. Shell scripts can be submitted as sbatch jobs directly from the file tree.
 
-<img src="https://raw.githubusercontent.com/ksterx/srunx/main/public/screenshots/explorer_sbatch.gif" width="800" alt="Explorer sbatch submission">
+<img src="https://raw.githubusercontent.com/ksterx/srunx/main/docs/assets/images/ui-explorer-sbatch.gif" width="800" alt="Explorer sbatch submission">
 
 ## Workflow Orchestration
 
@@ -225,7 +225,7 @@ srunx ssh sync
 Get notified when jobs finish — set `SLACK_WEBHOOK_URL` (or configure it in the web dashboard), then append `--slack` to any `srunx flow run` command. In Python, pass `SlackCallback` to the runner (see the Python API section below).
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/ksterx/srunx/main/public/slack_screenshot.png" width="400" alt="Slack notification">
+  <img src="https://raw.githubusercontent.com/ksterx/srunx/main/docs/assets/images/ui-slack-notification.png" width="400" alt="Slack notification">
 </div>
 
 ```bash
