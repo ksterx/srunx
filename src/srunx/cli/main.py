@@ -13,7 +13,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from srunx.callbacks import Callback, SlackCallback
+from srunx.callbacks import Callback, NotificationWatchCallback, SlackCallback
 from srunx.cli.monitor import monitor_app
 from srunx.client import Slurm
 from srunx.config import (
@@ -791,6 +791,27 @@ def flow_run(
     slack: Annotated[
         bool, typer.Option("--slack", help="Send notifications to Slack")
     ] = False,
+    endpoint: Annotated[
+        str | None,
+        typer.Option(
+            "--endpoint",
+            help=(
+                "Name of a configured notification endpoint (see "
+                "`/api/endpoints` / Settings UI). Attaches a watch per "
+                "submitted job via the poller pipeline."
+            ),
+        ),
+    ] = None,
+    preset: Annotated[
+        str | None,
+        typer.Option(
+            "--preset",
+            help=(
+                "Subscription preset for --endpoint: terminal (default), "
+                "running_and_terminal, or all."
+            ),
+        ),
+    ] = None,
     debug: Annotated[
         bool, typer.Option("--debug", help="Show rendered SLURM scripts for each job")
     ] = False,
@@ -824,11 +845,30 @@ def flow_run(
         sys.exit(1)
 
     try:
-        # Setup callbacks
+        # Setup callbacks.
+        #
+        # Resolution order mirrors ``srunx submit``:
+        #   --endpoint → durable watch per submitted job (poller pipeline)
+        #   --slack    → in-process SlackCallback fallback (deprecated)
+        # Both may be set; keeping the deprecated path firing guards
+        # against endpoint attach failures silently dropping notifications
+        # the user explicitly opted into.
         callbacks: list[Callback] = []
         if debug:
             callbacks.append(DebugCallback())
+        effective_preset = preset or get_config().notifications.default_preset
+        if endpoint:
+            callbacks.append(
+                NotificationWatchCallback(
+                    endpoint_name=endpoint,
+                    preset=effective_preset,
+                )
+            )
         if slack:
+            logger.warning(
+                "`--slack` is deprecated; configure an endpoint via "
+                "Settings → Notifications and pass `--endpoint <name>`."
+            )
             webhook_url = os.getenv("SLACK_WEBHOOK_URL")
             if webhook_url:
                 callbacks.append(SlackCallback(webhook_url=webhook_url))
@@ -1129,6 +1169,27 @@ def template_apply(
     slack: Annotated[
         bool, typer.Option("--slack", help="Send notifications to Slack")
     ] = False,
+    endpoint: Annotated[
+        str | None,
+        typer.Option(
+            "--endpoint",
+            help=(
+                "Name of a configured notification endpoint (see "
+                "`/api/endpoints` / Settings UI). Attaches a durable "
+                "watch via the poller pipeline."
+            ),
+        ),
+    ] = None,
+    preset: Annotated[
+        str | None,
+        typer.Option(
+            "--preset",
+            help=(
+                "Subscription preset for --endpoint: terminal (default), "
+                "running_and_terminal, or all."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Apply a template and submit a job."""
     try:
@@ -1190,9 +1251,27 @@ def template_apply(
             environment=environment,
         )
 
-        # Setup callbacks
+        # Setup callbacks.
+        #
+        # Resolution order mirrors ``srunx submit``:
+        #   --endpoint → durable watch attached via the poller pipeline
+        #   --slack    → in-process SlackCallback fallback (deprecated)
+        # Both may be set — keep the deprecated path firing so endpoint
+        # lookup failures don't silently drop the user's opt-in.
         callbacks: list[Callback] = []
+        effective_preset = preset or get_config().notifications.default_preset
+        if endpoint:
+            callbacks.append(
+                NotificationWatchCallback(
+                    endpoint_name=endpoint,
+                    preset=effective_preset,
+                )
+            )
         if slack:
+            logger.warning(
+                "`--slack` is deprecated; configure an endpoint via "
+                "Settings → Notifications and pass `--endpoint <name>`."
+            )
             webhook_url = os.getenv("SLACK_WEBHOOK_URL")
             if not webhook_url:
                 raise ValueError("SLACK_WEBHOOK_URL is not set")

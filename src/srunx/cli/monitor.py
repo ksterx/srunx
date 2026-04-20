@@ -52,6 +52,27 @@ def monitor_jobs(
         str | None,
         typer.Option("--notify", "-n", help="Slack webhook URL for notifications"),
     ] = None,
+    endpoint: Annotated[
+        str | None,
+        typer.Option(
+            "--endpoint",
+            help=(
+                "Name of a configured notification endpoint (see "
+                "`/api/endpoints` / Settings UI). Attaches a durable "
+                "watch per monitored job via the poller pipeline."
+            ),
+        ),
+    ] = None,
+    preset: Annotated[
+        str | None,
+        typer.Option(
+            "--preset",
+            help=(
+                "Subscription preset for --endpoint: terminal (default), "
+                "running_and_terminal, or all."
+            ),
+        ),
+    ] = None,
     continuous: Annotated[
         bool,
         typer.Option(
@@ -103,9 +124,34 @@ def monitor_jobs(
             sys.exit(0)
         console.print(f"📋 Monitoring {len(job_ids)} jobs for current user")
 
-    # Setup callbacks
+    # Setup callbacks.
+    #
+    # Resolution order:
+    #   --endpoint → attach a durable watch per monitored job (poller
+    #                pipeline takes over delivery)
+    #   --notify   → in-process SlackCallback fallback (deprecated; kept
+    #                so endpoint-attach failures don't silently drop
+    #                notifications the user asked for)
     callbacks: list[Callback] = []
+    if endpoint:
+        from srunx.cli.notification_setup import attach_notification_watch
+        from srunx.config import get_config
+
+        effective_preset = preset or get_config().notifications.default_preset
+        # Attach per-job watches upfront: monitor_jobs does not resubmit
+        # jobs, so the one-shot attach here is the equivalent of the
+        # Callback.on_job_submitted hook used by submit flows.
+        assert job_ids is not None
+        for _jid in job_ids:
+            attach_notification_watch(
+                job_id=int(_jid),
+                endpoint_name=endpoint,
+                preset=effective_preset,
+            )
     if notify:
+        console.print(
+            "[yellow]⚠️  --notify is deprecated; use --endpoint instead.[/yellow]"
+        )
         try:
             callbacks.append(SlackCallback(notify))
         except ValueError as e:
@@ -117,7 +163,7 @@ def monitor_jobs(
         poll_interval=interval,
         timeout=timeout if not continuous else None,
         mode=WatchMode.CONTINUOUS if continuous else WatchMode.UNTIL_CONDITION,
-        notify_on_change=continuous or bool(notify),
+        notify_on_change=continuous or bool(notify) or bool(endpoint),
     )
 
     # Create and run monitor

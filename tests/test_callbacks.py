@@ -4,8 +4,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from srunx.callbacks import Callback, SlackCallback
-from srunx.models import BaseJob, Job, JobEnvironment, JobStatus
+from srunx.callbacks import Callback, NotificationWatchCallback, SlackCallback
+from srunx.models import BaseJob, Job, JobEnvironment, JobStatus  # noqa: F401
 
 
 class TestCallback:
@@ -475,3 +475,71 @@ class TestSlackCallbackSecurity:
         assert "\\_" in sanitized  # Markdown italic escaped
         assert "\\[" in sanitized  # Markdown link brackets escaped
         assert "\\]" in sanitized  # Markdown link brackets escaped
+
+
+class TestNotificationWatchCallback:
+    """Test NotificationWatchCallback — the endpoint-watch bridge.
+
+    Invariants:
+
+    - ``on_job_submitted`` calls ``attach_notification_watch`` with the
+      configured endpoint_name / preset / endpoint_kind.
+    - A job with ``job_id=None`` is a no-op (nothing to attach to).
+    - An exception from ``attach_notification_watch`` is swallowed so
+      the callback chain keeps firing for sibling callbacks.
+    """
+
+    def test_on_job_submitted_attaches_watch(self):
+        job = BaseJob(name="test_job", job_id=12345)
+        cb = NotificationWatchCallback(endpoint_name="my-slack", preset="terminal")
+
+        with patch(
+            "srunx.cli.notification_setup.attach_notification_watch"
+        ) as mock_attach:
+            cb.on_job_submitted(job)
+            mock_attach.assert_called_once_with(
+                job_id=12345,
+                endpoint_name="my-slack",
+                preset="terminal",
+                endpoint_kind="slack_webhook",
+            )
+
+    def test_on_job_submitted_without_job_id_is_noop(self):
+        job = BaseJob(name="test_job")  # job_id=None
+        cb = NotificationWatchCallback(endpoint_name="my-slack")
+
+        with patch(
+            "srunx.cli.notification_setup.attach_notification_watch"
+        ) as mock_attach:
+            cb.on_job_submitted(job)
+            mock_attach.assert_not_called()
+
+    def test_on_job_submitted_swallows_attach_errors(self):
+        job = BaseJob(name="test_job", job_id=42)
+        cb = NotificationWatchCallback(endpoint_name="my-slack")
+
+        with patch(
+            "srunx.cli.notification_setup.attach_notification_watch",
+            side_effect=RuntimeError("DB error"),
+        ):
+            # Must not raise — downstream callbacks depend on this
+            cb.on_job_submitted(job)
+
+    def test_custom_preset_and_kind_flow_through(self):
+        job = BaseJob(name="test_job", job_id=7)
+        cb = NotificationWatchCallback(
+            endpoint_name="ops",
+            preset="all",
+            endpoint_kind="slack_webhook",
+        )
+
+        with patch(
+            "srunx.cli.notification_setup.attach_notification_watch"
+        ) as mock_attach:
+            cb.on_job_submitted(job)
+            mock_attach.assert_called_once_with(
+                job_id=7,
+                endpoint_name="ops",
+                preset="all",
+                endpoint_kind="slack_webhook",
+            )
