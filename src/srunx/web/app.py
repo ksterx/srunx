@@ -254,27 +254,47 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if os.environ.get("SRUNX_DISABLE_DELIVERY_POLLER") != "1":
             pollers.append(DeliveryPoller(worker_id=f"delivery-{os.getpid()}"))
         if os.environ.get("SRUNX_DISABLE_RESOURCE_SNAPSHOTTER") != "1":
-            # ResourceSnapshotter needs a local ``sinfo`` because
-            # ``ResourceMonitor.get_current_snapshot`` shells out directly —
-            # it does NOT tunnel through the SSH adapter. On a developer
-            # laptop that only has SSH profiles pointing at a remote
-            # SLURM cluster this is a guaranteed ``FileNotFoundError``
-            # every ``interval_seconds``, spamming the log until the
-            # process is killed. Gate the poller on ``sinfo`` being on
-            # PATH so the boot-time log line explains the skip once,
-            # then stay quiet.
+            # ResourceMonitor now accepts an injected ``ResourceSource``.
+            # When the SSH adapter is configured we route partition
+            # queries through it so a laptop driving a remote cluster
+            # produces ``resource_snapshots`` rows identical to what a
+            # head-node deployment would record. Fall back to the
+            # local-subprocess path only when ``sinfo`` is available
+            # on PATH (i.e. we actually are on a SLURM head node) or
+            # when the admin explicitly wants to keep the legacy
+            # behaviour via ``SRUNX_RESOURCE_SOURCE=subprocess``.
             import shutil
 
-            if adapter is None:
-                logger.info(
-                    "Skipping ResourceSnapshotter: no SLURM client is available"
-                )
+            source_mode = os.environ.get("SRUNX_RESOURCE_SOURCE", "auto")
+            resource_source = None
+            skip_reason: str | None = None
+
+            if source_mode == "subprocess":
+                if shutil.which("sinfo") is None:
+                    skip_reason = (
+                        "SRUNX_RESOURCE_SOURCE=subprocess but local "
+                        "'sinfo' is not on PATH"
+                    )
+            elif adapter is not None:
+                try:
+                    from srunx.monitor.resource_source import (
+                        SSHAdapterResourceSource,
+                    )
+
+                    resource_source = SSHAdapterResourceSource(adapter)
+                except Exception:
+                    logger.warning(
+                        "Could not build SSHAdapterResourceSource; falling back",
+                        exc_info=True,
+                    )
             elif shutil.which("sinfo") is None:
+                skip_reason = "no SLURM client configured and local 'sinfo' not on PATH"
+
+            if skip_reason is not None:
                 logger.info(
-                    "Skipping ResourceSnapshotter: local 'sinfo' not found on PATH. "
-                    "The snapshotter shells out locally; remote SLURM via SSH is "
-                    "not supported yet. Set SRUNX_DISABLE_RESOURCE_SNAPSHOTTER=1 "
-                    "to silence this at startup."
+                    "Skipping ResourceSnapshotter: %s. Set "
+                    "SRUNX_DISABLE_RESOURCE_SNAPSHOTTER=1 to silence this.",
+                    skip_reason,
                 )
             else:
                 try:
@@ -283,7 +303,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     # min_gpus=0 because we're observing, not waiting on a threshold.
                     pollers.append(
                         ResourceSnapshotter(
-                            resource_monitor=ResourceMonitor(min_gpus=0),
+                            resource_monitor=ResourceMonitor(
+                                min_gpus=0, source=resource_source
+                            ),
                         )
                     )
                 except Exception:
