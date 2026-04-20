@@ -71,13 +71,29 @@ class JobRepository(BaseRepository):
     ) -> int:
         """Insert a new row for a just-submitted job.
 
-        Uses ``INSERT OR REPLACE`` on ``job_id``: a resubmission under the
-        same SLURM ID replaces the prior record. Returns the row's ``id``.
+        Uses ``INSERT OR IGNORE`` on the ``job_id`` UNIQUE constraint:
+        if a row with this SLURM id already exists, the call is a
+        no-op and returns ``0``. Callers that want to mutate an
+        existing row should use :meth:`update_status` /
+        :meth:`update_completion` explicitly.
+
+        Rationale for **not** using ``INSERT OR REPLACE`` here
+        (P1-2 in the Codex review triage): ``REPLACE`` executes
+        ``DELETE`` + ``INSERT``, which triggers
+        ``ON DELETE SET NULL`` on the FK references in
+        ``workflow_run_jobs.job_id`` and ``job_state_transitions.job_id``.
+        A re-submission path (or a bug-induced double call) would
+        silently orphan every prior transition and membership, which
+        corrupts the poller's dedup / aggregation invariants. It would
+        also reset a poller-advanced ``status='RUNNING'`` row back to
+        ``'PENDING'`` + rewrite ``submitted_at``. With ``IGNORE`` the
+        first call wins; subsequent callers observe ``lastrowid=0``
+        and must decide explicitly what to do.
         """
         submitted_at = submitted_at or now_iso()
         cur = self.conn.execute(
             """
-            INSERT OR REPLACE INTO jobs (
+            INSERT OR IGNORE INTO jobs (
                 job_id, name, command, status,
                 nodes, gpus_per_node, memory_per_node, time_limit,
                 partition, nodelist,
@@ -109,6 +125,12 @@ class JobRepository(BaseRepository):
                 self._encode_json(metadata),
             ),
         )
+        # ``lastrowid`` is only meaningful when rowcount > 0. SQLite (and
+        # the Python driver) preserve the prior successful rowid from the
+        # same connection across an IGNORE no-op, so relying on it would
+        # make duplicates look like fresh inserts. Gate on rowcount.
+        if cur.rowcount == 0:
+            return 0
         return int(cur.lastrowid or 0)
 
     def update_status(
