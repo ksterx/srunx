@@ -123,12 +123,16 @@ export async function setupMockRoutes(page: Page) {
   });
 
   await page.route("**/api/workflows/**/run", (route) => {
+    // Fresh runs stay ``pending`` until ``ActiveWatchPoller`` observes
+    // a child job in RUNNING (P1-1). The mock used to return ``running``
+    // eagerly, which drifted from the real backend contract after the
+    // poller-owned-lifecycle fix landed.
     return route.fulfill({
       json: {
         id: "run-001",
         workflow_name: "ml-pipeline",
         started_at: new Date().toISOString(),
-        status: "running",
+        status: "pending",
         job_statuses: {},
       },
     });
