@@ -486,7 +486,11 @@ class TestWorkflowsRouter:
         assert resp.status_code == 202
         data = resp.json()
         assert data["workflow_name"] == "run-test"
-        assert data["status"] == "running"
+        # Status stays 'pending' until ActiveWatchPoller observes a child
+        # job in RUNNING state. Pre-emptively writing 'running' here
+        # caused a spurious 'running → pending' regression on the first
+        # poll cycle (see P1-1 in the Codex review triage).
+        assert data["status"] == "pending"
         assert "10001" in data["job_ids"].values()
         assert "10002" in data["job_ids"].values()
 
@@ -564,7 +568,9 @@ class TestWorkflowsRouter:
             run = WorkflowRunRepository(conn).get(run_id)
             assert run is not None
             assert run.workflow_name == "integration-run"
-            assert run.status == "running"
+            # P1-1: the run stays 'pending' until the poller observes a
+            # RUNNING child. See the phase-5 comment in workflows.py.
+            assert run.status == "pending"
             assert run.triggered_by == "web"
 
             memberships = WorkflowRunJobRepository(conn).list_by_run(run_id)
@@ -1589,7 +1595,9 @@ class TestWorkflowExecutionControl:
         )
         assert resp.status_code == 202
         data = resp.json()
-        assert data["status"] == "running"
+        # P1-1: newly-created runs start at 'pending' and the poller
+        # promotes them to 'running' on the first RUNNING child.
+        assert data["status"] == "pending"
         # All 3 jobs should be submitted
         assert mock_adapter.submit_job.call_count == 3
 
