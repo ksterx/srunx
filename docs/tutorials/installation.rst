@@ -15,11 +15,7 @@ Installing with uv (recommended)
 
    uv add srunx
 
-To use the Web UI, install with the ``web`` extra:
-
-.. code-block:: bash
-
-   uv add "srunx[web]"
+The Web UI is included in the base install — no extras required.
 
 Installing with pip
 --------------------
@@ -27,9 +23,6 @@ Installing with pip
 .. code-block:: bash
 
    pip install srunx
-
-   # With Web UI support
-   pip install "srunx[web]"
 
 Installing from Source
 ----------------------
