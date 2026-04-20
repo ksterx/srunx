@@ -63,7 +63,7 @@ export const MOCK_WORKFLOWS = [
         name: "preprocess",
         status: "COMPLETED",
         depends_on: [],
-        outputs: { data_path: "/data/experiments/preprocessed" },
+        exports: { data_path: "/data/experiments/preprocessed" },
         command: ["python", "preprocess.py"],
         resources: { nodes: 1, gpus_per_node: 0 },
       },
@@ -71,7 +71,7 @@ export const MOCK_WORKFLOWS = [
         name: "train",
         status: "RUNNING",
         depends_on: ["preprocess"],
-        outputs: { model_path: "/data/experiments/models/best.pt" },
+        exports: { model_path: "/data/experiments/models/best.pt" },
         command: ["python", "train.py"],
         resources: { nodes: 2, gpus_per_node: 4 },
       },
@@ -79,7 +79,7 @@ export const MOCK_WORKFLOWS = [
         name: "evaluate",
         status: "PENDING",
         depends_on: ["train"],
-        outputs: {},
+        exports: {},
         command: ["python", "evaluate.py"],
         resources: { nodes: 1, gpus_per_node: 1 },
       },
@@ -172,7 +172,7 @@ export const MOCK_TEMPLATES = [
   {
     name: "base",
     description:
-      "SLURM job template with full resource control and inter-job outputs",
+      "SLURM job template with full resource control and inter-job exports",
     use_case: "All job types including distributed training",
   },
   {
@@ -186,7 +186,7 @@ export const MOCK_TEMPLATES = [
 export const MOCK_TEMPLATE_DETAIL = {
   name: "base",
   description:
-    "SLURM job template with full resource control and inter-job outputs",
+    "SLURM job template with full resource control and inter-job exports",
   use_case: "All job types including distributed training",
   content:
     "#!/bin/bash\n#SBATCH --job-name={{ job_name }}\n#SBATCH --nodes={{ nodes }}\nsrun {{ command }}",

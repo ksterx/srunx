@@ -10,7 +10,6 @@ aggregates child job statuses into the workflow run via an internal
 from __future__ import annotations
 
 import functools
-import os  # noqa: E402
 import re
 import sqlite3
 import tempfile
@@ -67,7 +66,7 @@ class WorkflowJobInput(BaseModel):
     command: list[str]
     depends_on: list[str] = []
     template: str | None = None
-    outputs: dict[str, str] = Field(default_factory=dict)
+    exports: dict[str, str] = Field(default_factory=dict)
     resources: dict[str, Any] | None = None
     environment: dict[str, Any] | None = None
     work_dir: str | None = None
@@ -107,7 +106,7 @@ def _validate_and_build_workflow(data: dict[str, Any]) -> Workflow:
             "name": jd["name"],
             "command": jd["command"],
             "depends_on": jd.get("depends_on", []),
-            "outputs": jd.get("outputs", {}),
+            "exports": jd.get("exports", {}),
             "resources": resource,
             "environment": environment,
         }
@@ -152,9 +151,9 @@ def _workflow_to_yaml(
         if depends:
             entry["depends_on"] = depends
 
-        outputs = jd.get("outputs", {})
-        if outputs:
-            entry["outputs"] = outputs
+        exports = jd.get("exports", {})
+        if exports:
+            entry["exports"] = exports
 
         # Resources — only include non-None values
         raw_res = jd.get("resources") or {}
@@ -288,7 +287,7 @@ def _serialize_workflow(
             "job_id": job.job_id,
             "status": job._status.value,
             "depends_on": job.depends_on,
-            "outputs": job.outputs,
+            "exports": job.exports,
         }
         raw_job = raw_by_name.get(job.name, {})
         if raw_job.get("template"):
@@ -730,13 +729,11 @@ def _prepare_render_context(
     yaml_path: Path,
     workflow: Workflow,
     name: str,
-) -> tuple[dict[str, str], dict[str, dict[str, str]], str | None]:
-    """Parse raw YAML for template/extra args and build outputs dir.
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """Parse raw YAML for template/extra args.
 
-    Returns (job_template_map, job_extra_args, wf_outputs_dir).
+    Returns (job_template_map, job_extra_args).
     """
-    from uuid import uuid4
-
     import yaml as _yaml
 
     raw_data = _yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
@@ -756,14 +753,7 @@ def _prepare_render_context(
         if extras:
             job_extra_args[rj_name] = extras
 
-    any_job_has_outputs = any(job.outputs for job in workflow.jobs)
-    any_job_has_deps = any(job.depends_on for job in workflow.jobs)
-    wf_outputs_dir: str | None = None
-    if any_job_has_outputs or any_job_has_deps:
-        base = os.getenv("SRUNX_TEMP_DIR", "/tmp/srunx")
-        wf_outputs_dir = f"{base}/{name}_{uuid4().hex[:8]}"
-
-    return job_template_map, job_extra_args, wf_outputs_dir
+    return job_template_map, job_extra_args
 
 
 def _render_scripts(
@@ -772,14 +762,12 @@ def _render_scripts(
     profile: Any,
     job_template_map: dict[str, str],
     job_extra_args: dict[str, dict[str, str]],
-    wf_outputs_dir: str | None,
 ) -> dict[str, str]:
     """Render SLURM scripts for all jobs in the workflow."""
     from srunx.models import render_job_script
     from srunx.template import TEMPLATES
 
     templates_dir = Path(__file__).resolve().parent.parent.parent / "templates"
-    job_names_in_wf = {job.name for job in workflow.jobs}
     scripts: dict[str, str] = {}
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -792,18 +780,11 @@ def _render_scripts(
                 else:
                     template_path = templates_dir / "base.slurm.jinja"
 
-                dep_names = [
-                    dep.job_name
-                    for dep in job.parsed_dependencies
-                    if dep.job_name in job_names_in_wf
-                ]
                 extras = job_extra_args.get(job.name, {})
                 rendered_path = render_job_script(
                     template_path,
                     job,
                     output_dir=tmpdir,
-                    outputs_dir=wf_outputs_dir,
-                    dependency_names=dep_names if wf_outputs_dir else None,
                     extra_srun_args=extras.get("srun_args"),
                     extra_launch_prefix=extras.get("launch_prefix"),
                 )
@@ -1075,7 +1056,7 @@ async def run_workflow(
         raise
 
     # Phase 2: Prepare render context and render scripts
-    job_template_map, job_extra_args, wf_outputs_dir = await anyio.to_thread.run_sync(
+    job_template_map, job_extra_args = await anyio.to_thread.run_sync(
         lambda: _prepare_render_context(yaml_path, workflow, name)
     )
 
@@ -1087,7 +1068,6 @@ async def run_workflow(
                 profile,
                 job_template_map,
                 job_extra_args,
-                wf_outputs_dir,
             )
         )
     except Exception as exc:

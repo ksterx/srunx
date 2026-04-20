@@ -146,7 +146,7 @@ export type BuilderJob = {
   venv: string | null;
   container: BuilderContainer | null;
   env_vars: string; // "KEY=VAL" per line, parsed on save
-  outputs: string; // "KEY=value" per line, parsed on save
+  exports: string; // "KEY=value" per line, parsed on save
   // Job-level
   work_dir: string | null;
   log_dir: string | null;
@@ -464,7 +464,7 @@ export type WorkflowCreateRequest = {
     command: string[];
     depends_on: string[];
     template?: string;
-    outputs?: Record<string, string>;
+    exports?: Record<string, string>;
     resources?: {
       nodes?: number;
       gpus_per_node?: number;

@@ -267,21 +267,23 @@ class BaseJob(BaseModel):
     depends_on: list[str] = Field(
         default_factory=list, description="Task dependencies for workflow execution"
     )
-    outputs: dict[str, str] = Field(
+    exports: dict[str, str] = Field(
         default_factory=dict,
-        description="Static output variables (KEY=VALUE) written to outputs file at job start",
+        description=(
+            "Values this job exports for downstream jobs to reference via "
+            "`{{ deps.<this_job>.<key> }}` at workflow load time."
+        ),
     )
 
-    @field_validator("outputs")
+    @field_validator("exports")
     @classmethod
-    def validate_output_keys(cls, v: dict[str, str]) -> dict[str, str]:
-        """Ensure output variable names are valid shell identifiers."""
-
+    def validate_export_keys(cls, v: dict[str, str]) -> dict[str, str]:
+        """Ensure export names are valid identifiers."""
         for key in v:
             if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
                 raise ValueError(
-                    f"Invalid output variable name: '{key}'. "
-                    "Must be a valid shell identifier (letters, digits, underscores)."
+                    f"Invalid export name: '{key}'. "
+                    "Must be a valid identifier (letters, digits, underscores)."
                 )
         return v
 
@@ -744,8 +746,6 @@ def render_job_script(
     job: Job,
     output_dir: Path | str | None = None,
     verbose: bool = False,
-    outputs_dir: str | None = None,
-    dependency_names: list[str] | None = None,
     extra_srun_args: str | None = None,
     extra_launch_prefix: str | None = None,
 ) -> str:
@@ -756,8 +756,6 @@ def render_job_script(
         job: Job configuration.
         output_dir: Directory where the generated script will be saved.
         verbose: Whether to print the rendered content.
-        outputs_dir: Shared directory for inter-job output variables (SRUNX_OUTPUTS_DIR).
-        dependency_names: Names of dependency jobs whose outputs should be sourced.
         extra_srun_args: Additional srun flags to append after auto-generated ones.
         extra_launch_prefix: Additional launch prefix to append after auto-generated ones.
 
@@ -790,9 +788,6 @@ def render_job_script(
         "srun_args": srun_args,
         "launch_prefix": launch_prefix,
         "container": job.environment.container,
-        "outputs_dir": outputs_dir,
-        "job_outputs": job.outputs,
-        "dependency_names": dependency_names or [],
         **job.resources.model_dump(),
     }
 

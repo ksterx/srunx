@@ -271,9 +271,6 @@ def submit_job(
                 srun_args=srun_args,
                 launch_prefix=launch_prefix,
                 container=environment.container,
-                outputs_dir=None,
-                job_outputs=job.outputs,
-                dependency_names=[],
                 **resource.model_dump(),
             )
             ssh_client = _get_ssh_client()
