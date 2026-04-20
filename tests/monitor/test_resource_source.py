@@ -1,22 +1,26 @@
 """Tests for :mod:`srunx.monitor.resource_source`.
 
-Covers the SSH-adapter-backed resource source that lets
-``ResourceMonitor`` talk to a remote cluster instead of requiring local
-``sinfo`` / ``squeue``. Guards:
+Covers the SSH-adapter-backed resource source. Regression surface:
 
-- Single-partition query returns the exact adapter row, coerced to a
-  ``ResourceSnapshot``.
-- Cluster-wide query (``partition=None``) sums the per-partition dicts
-  the adapter produces, so the resulting snapshot matches what the
-  local subprocess path would produce on the same cluster.
-- Empty adapter return values don't blow up — we produce a zero
-  snapshot instead of an IndexError.
+- Stale-adapter guard: the source resolves the adapter per-call via
+  a provider callable, so ``deps.swap_adapter`` at runtime is picked
+  up on the next snapshotter cycle.
+- Cluster-wide snapshots delegate to ``adapter.get_cluster_snapshot``
+  (one cluster-wide sinfo+squeue pair with cross-partition dedup);
+  summing ``adapter.get_resources(None)`` would double-count nodes
+  that belong to multiple partitions AND could silently persist
+  understated totals when per-partition errors are caught inside
+  the adapter.
+- Single-partition queries bubble up errors — transient failures
+  must trigger supervisor backoff, not write zero snapshots.
 """
 
 from __future__ import annotations
 
 from typing import Any
 from unittest.mock import MagicMock
+
+import pytest
 
 from srunx.monitor.resource_source import (
     ResourceSource,
@@ -39,11 +43,27 @@ def _row(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+def _snapshot_dict(**overrides: Any) -> dict[str, Any]:
+    base = {
+        "timestamp": "2026-04-20T00:00:00+00:00",
+        "partition": None,
+        "total_gpus": 0,
+        "gpus_in_use": 0,
+        "gpus_available": 0,
+        "jobs_running": 0,
+        "nodes_total": 0,
+        "nodes_idle": 0,
+        "nodes_down": 0,
+        "gpu_utilization": 0.0,
+        "has_available_gpus": False,
+    }
+    base.update(overrides)
+    return base
+
+
 class TestSSHAdapterResourceSource:
     def test_satisfies_protocol(self) -> None:
-        """``SSHAdapterResourceSource`` is a structural match for ``ResourceSource``."""
-        adapter = MagicMock()
-        source = SSHAdapterResourceSource(adapter)
+        source = SSHAdapterResourceSource(lambda: MagicMock())
         assert isinstance(source, ResourceSource)
 
     def test_single_partition_returns_that_row(self) -> None:
@@ -61,9 +81,10 @@ class TestSSHAdapterResourceSource:
             )
         ]
 
-        snap = SSHAdapterResourceSource(adapter).get_snapshot("gpu")
+        snap = SSHAdapterResourceSource(lambda: adapter).get_snapshot("gpu")
 
         adapter.get_resources.assert_called_once_with("gpu")
+        adapter.get_cluster_snapshot.assert_not_called()
         assert snap.partition == "gpu"
         assert snap.total_gpus == 16
         assert snap.gpus_in_use == 10
@@ -73,59 +94,42 @@ class TestSSHAdapterResourceSource:
         assert snap.nodes_idle == 1
         assert snap.nodes_down == 0
 
-    def test_cluster_wide_sums_all_partitions(self) -> None:
-        """``partition=None`` aggregates every partition dict the adapter returns.
+    def test_cluster_wide_uses_adapter_cluster_snapshot(self) -> None:
+        """``partition=None`` delegates to ``adapter.get_cluster_snapshot``.
 
-        Matches the local-subprocess semantic: ``sinfo`` without ``-p``
-        returns cluster-wide totals. Per-partition dicts from the
-        adapter must be summed so the downstream snapshotter produces
-        the same numbers regardless of transport.
+        Summing ``get_resources(None)`` per-partition dicts would
+        double-count shared nodes AND silently swallow per-partition
+        errors; the dedicated cluster-wide adapter call does neither.
         """
         adapter = MagicMock()
-        adapter.get_resources.return_value = [
-            _row(
-                partition="gpu",
-                total_gpus=16,
-                gpus_in_use=10,
-                gpus_available=6,
-                nodes_total=4,
-                nodes_idle=1,
-            ),
-            _row(
-                partition="cpu",
-                total_gpus=0,
-                nodes_total=8,
-                nodes_idle=4,
-            ),
-            _row(
-                partition="debug",
-                total_gpus=2,
-                gpus_available=2,
-                nodes_total=1,
-                nodes_idle=1,
-            ),
-        ]
+        adapter.get_cluster_snapshot.return_value = _snapshot_dict(
+            total_gpus=18,
+            gpus_in_use=10,
+            gpus_available=8,
+            nodes_total=13,
+            nodes_idle=6,
+        )
 
-        snap = SSHAdapterResourceSource(adapter).get_snapshot(None)
+        snap = SSHAdapterResourceSource(lambda: adapter).get_snapshot(None)
 
-        adapter.get_resources.assert_called_once_with(None)
+        adapter.get_cluster_snapshot.assert_called_once_with()
+        adapter.get_resources.assert_not_called()
         assert snap.partition is None
-        assert snap.total_gpus == 18  # 16 + 0 + 2
+        assert snap.total_gpus == 18
         assert snap.gpus_in_use == 10
-        assert snap.gpus_available == 8  # 6 + 0 + 2
-        assert snap.nodes_total == 13  # 4 + 8 + 1
-        assert snap.nodes_idle == 6  # 1 + 4 + 1
+        assert snap.gpus_available == 8
+        assert snap.nodes_total == 13
+        assert snap.nodes_idle == 6
 
-    def test_empty_adapter_response_yields_zero_snapshot(self) -> None:
-        """No partitions → zero snapshot, not IndexError."""
+    def test_single_partition_empty_result_yields_zero_snapshot(self) -> None:
+        """An empty list for a named partition is a zero snapshot, not IndexError."""
         adapter = MagicMock()
         adapter.get_resources.return_value = []
 
-        snap = SSHAdapterResourceSource(adapter).get_snapshot(None)
+        snap = SSHAdapterResourceSource(lambda: adapter).get_snapshot("gpu")
 
-        assert snap.partition is None
+        assert snap.partition == "gpu"
         assert snap.total_gpus == 0
-        assert snap.gpus_available == 0
         assert snap.nodes_total == 0
 
     def test_handles_none_field_values(self) -> None:
@@ -144,8 +148,64 @@ class TestSSHAdapterResourceSource:
             }
         ]
 
-        snap = SSHAdapterResourceSource(adapter).get_snapshot("gpu")
+        snap = SSHAdapterResourceSource(lambda: adapter).get_snapshot("gpu")
 
         assert snap.total_gpus == 0
         assert snap.gpus_in_use == 0
         assert snap.nodes_total == 2
+
+    def test_single_partition_error_propagates(self) -> None:
+        """Per-partition SLURM failure must surface — supervisor backs off.
+
+        Silently returning a zero snapshot here would persist bogus
+        rows every cycle until the cluster recovered, with no signal
+        in the logs beyond one info line.
+        """
+        adapter = MagicMock()
+        adapter.get_resources.side_effect = RuntimeError("ssh dropped")
+
+        with pytest.raises(RuntimeError, match="ssh dropped"):
+            SSHAdapterResourceSource(lambda: adapter).get_snapshot("gpu")
+
+    def test_cluster_wide_error_propagates(self) -> None:
+        """Cluster-wide SLURM failure must surface — see above rationale."""
+        adapter = MagicMock()
+        adapter.get_cluster_snapshot.side_effect = RuntimeError("sinfo timeout")
+
+        with pytest.raises(RuntimeError, match="sinfo timeout"):
+            SSHAdapterResourceSource(lambda: adapter).get_snapshot(None)
+
+    def test_no_adapter_raises(self) -> None:
+        """Provider returning None — raise, don't persist a zero row."""
+        source = SSHAdapterResourceSource(lambda: None)
+
+        with pytest.raises(RuntimeError, match="No SLURM adapter"):
+            source.get_snapshot(None)
+
+    def test_provider_is_resolved_per_call(self) -> None:
+        """Swapping the adapter (profile switch) is reflected next cycle.
+
+        Before this fix, the source captured the startup adapter
+        reference. After ``deps.swap_adapter`` the snapshotter kept
+        talking to the now-disconnected old adapter while the Web UI
+        routes used the new one — two inconsistent views of the
+        cluster persisted in ``resource_snapshots``.
+        """
+        first = MagicMock()
+        first.get_cluster_snapshot.return_value = _snapshot_dict(total_gpus=8)
+        second = MagicMock()
+        second.get_cluster_snapshot.return_value = _snapshot_dict(total_gpus=16)
+
+        current = {"adapter": first}
+        source = SSHAdapterResourceSource(lambda: current["adapter"])
+
+        snap1 = source.get_snapshot(None)
+        assert snap1.total_gpus == 8
+
+        # Simulate a profile switch.
+        current["adapter"] = second
+
+        snap2 = source.get_snapshot(None)
+        assert snap2.total_gpus == 16
+        first.get_cluster_snapshot.assert_called_once()
+        second.get_cluster_snapshot.assert_called_once()
