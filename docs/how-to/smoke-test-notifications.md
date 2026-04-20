@@ -70,7 +70,11 @@ Estimated wall time: **~15 minutes**.
    ```
 
 5. **Expected Slack messages** (chronological, typically within ~30 s
-   each). The `job_id` / `job_name` keys are only present once PR #85
+   each). A delivered message looks like:
+
+   ![Slack notification example](../assets/images/ui-slack-notification.png){ width="360" }
+
+   The `job_id` / `job_name` keys are only present once PR #85
    has landed; before that, the Slack adapter falls back to parsing
    the id out of `source_ref`, rendering `Name: ?`:
 
@@ -79,6 +83,21 @@ Estimated wall time: **~15 minutes**.
    | `job.submitted`       | `*Job submitted*`         | `job_id`, `job_name` |
    | `job.status_changed`  | `PENDING → *RUNNING*`     | `job_id`, `job_name`, `from_status`, `to_status`, `started_at`, `completed_at` |
    | `job.status_changed`  | `RUNNING → *COMPLETED*`   | same |
+
+   The Notifications Center (at `http://127.0.0.1:8000/notifications`)
+   walks through three states during this test — it should look like:
+
+   === "Empty"
+
+       ![Empty notifications center](../assets/images/notifications-center-empty.png)
+
+   === "Populated"
+
+       ![Populated notifications center](../assets/images/notifications-center-populated.png)
+
+   === "Filter: delivered"
+
+       ![Delivered filter applied](../assets/images/notifications-center-filter-delivered.png)
 
 6. **Verify persistence.** Before inspecting, stop the web server (Ctrl+C)
    and reopen the DB directly:

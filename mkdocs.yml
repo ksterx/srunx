@@ -1,0 +1,125 @@
+site_name: srunx
+site_description: Slurm job workflow management
+site_url: https://ksterx.github.io/srunx/
+repo_url: https://github.com/ksterx/srunx
+repo_name: ksterx/srunx
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: public
+
+theme:
+  name: material
+  font: false
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - toc.follow
+    - content.code.copy
+    - content.code.annotate
+    - search.highlight
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: lime
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: lime
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+  icon:
+    repo: fontawesome/brands/github
+
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - https://unpkg.com/mermaid@11/dist/mermaid.min.js
+  - javascripts/mermaid-init.js
+
+plugins:
+  - search
+  - glightbox:
+      touchNavigation: true
+      loop: false
+      effect: zoom
+      slide_effect: slide
+      width: 100%
+      height: auto
+      zoomable: true
+      draggable: true
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_signature_annotations: true
+            separate_signature: true
+            merge_init_into_class: true
+            members_order: source
+            heading_level: 2
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_div_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+nav:
+  - Home: index.md
+  - Tutorials:
+      - Installation: tutorials/installation.md
+      - Quickstart: tutorials/quickstart.md
+      - Web UI: tutorials/webui.md
+      - MCP Setup: tutorials/mcp-setup.md
+  - How-to Guides:
+      - User Guide: how-to/user_guide.md
+      - Workflows: how-to/workflows.md
+      - Monitoring: how-to/monitoring.md
+      - Sync: how-to/sync.md
+      - Web UI: how-to/webui.md
+      - Settings: how-to/settings.md
+      - Explorer: how-to/explorer.md
+      - MCP Usage: how-to/mcp-usage.md
+      - Smoke-test Notifications: how-to/smoke-test-notifications.md
+  - Reference:
+      - API: reference/api.md
+      - Web UI API: reference/webui-api.md
+      - MCP Tools: reference/mcp-tools.md
+  - Explanation:
+      - Architecture: explanation/architecture.md
+      - MCP Architecture: explanation/mcp-architecture.md

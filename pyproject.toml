@@ -78,13 +78,13 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-mock>=3.15.1",
     "ruff>=0.15.11",
-    "sphinx>=9.1.0",
-    "sphinx-autobuild>=2025.8.25",
-    "sphinx-autodoc-typehints>=3.10.2",
-    "sphinx-book-theme>=1.2.0",
-    "sphinx-rtd-theme>=3.1.0",
-    "sphinxcontrib-mermaid>=2.0.1",
     "types-pyyaml>=6.0.12.20260408",
+]
+docs = [
+    "mkdocs-glightbox>=0.5.2",
+    "mkdocs-material>=9.5.0",
+    "mkdocstrings[python]>=0.26.0",
+    "pymdown-extensions>=10.0",
 ]
 
 [tool.pytest.ini_options]
