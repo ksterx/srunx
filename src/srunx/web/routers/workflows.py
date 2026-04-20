@@ -627,6 +627,18 @@ class WorkflowRunRequest(BaseModel):
     to_job: str | None = None
     single_job: str | None = None
     dry_run: bool = False
+    # Notification subscription wiring. When ``notify`` is true and
+    # ``endpoint_id`` resolves to an enabled endpoint row, the run's
+    # auto-created ``kind='workflow_run'`` watch is paired with a
+    # subscription so the delivery poller fans status-transition
+    # events out to that endpoint. Matches the shape accepted by
+    # ``/api/jobs`` submit (R6 in design.md §Request models).
+    notify: bool = False
+    endpoint_id: int | None = Field(default=None, gt=0)
+    preset: str = "terminal"
+
+
+_WORKFLOW_RUN_PRESETS = ("terminal", "running_and_terminal", "all")
 
 
 def _filter_workflow_jobs(
@@ -1007,6 +1019,21 @@ async def run_workflow(
         raise HTTPException(status_code=422, detail="mount query parameter is required")
 
     run_opts = body or WorkflowRunRequest()
+
+    # Validate preset up-front — before mounting, rendering, and
+    # ``sbatch``ing. Deferring this check until Phase 5 (post-submit)
+    # means a bogus preset returns 422 with jobs already queued on
+    # the cluster, leaving orphans behind. The implementation set
+    # matches ``SubscriptionRepository`` + the subscriptions router
+    # guard (P1-3) — ``digest`` has no delivery pipeline yet.
+    if run_opts.notify and run_opts.preset not in _WORKFLOW_RUN_PRESETS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid preset '{run_opts.preset}'. Allowed: {_WORKFLOW_RUN_PRESETS}"
+            ),
+        )
+
     yaml_path = _find_yaml(name, mount)
 
     # Load and optionally filter workflow
@@ -1129,24 +1156,46 @@ async def run_workflow(
         raise
 
     # Phase 5: open the workflow_run watch so the poller can drive
-    # status transitions going forward. We deliberately do NOT set
-    # ``workflow_runs.status='running'`` here: the run record stays
-    # ``pending`` (as created above) until ActiveWatchPoller observes a
-    # child job in RUNNING state.
+    # status transitions going forward. ``workflow_runs.status='running'``
+    # is deliberately NOT written here — the run record stays ``pending``
+    # (as created above) until ``ActiveWatchPoller`` observes a child
+    # job in RUNNING state (P1-1). Writing ``running`` eagerly would
+    # race the poller's "otherwise→pending" rule and emit a spurious
+    # ``running → pending`` transition (+ a
+    # ``workflow_run.status_changed`` event to every subscriber) on the
+    # very first cycle, while all children are still PENDING in SLURM.
     #
-    # Rationale (R/Codex P1-1): the poller's aggregation rules say
-    # "any child RUNNING → running; otherwise pending". Pre-emptively
-    # writing ``running`` here meant the very first poll cycle — while
-    # all children are still PENDING in SLURM — would aggregate to
-    # ``pending`` and emit a spurious ``running → pending`` transition,
-    # complete with a ``workflow_run.status_changed`` event to every
-    # subscriber. Letting the poller own the lifecycle keeps transitions
-    # monotonic: ``pending → running → completed/failed/cancelled``.
-    def _open_watch() -> None:
-        watch_repo.create(
+    # When ``notify`` is requested, also pair the watch with a
+    # subscription for the chosen endpoint; the delivery poller then
+    # fans ``workflow_run.status_changed`` events out to Slack/etc.
+    def _open_watch() -> int | None:
+        new_watch_id = watch_repo.create(
             kind="workflow_run",
             target_ref=f"workflow_run:{run_id}",
         )
+        if run_opts.notify and run_opts.endpoint_id is not None:
+            from srunx.db.repositories.endpoints import EndpointRepository
+            from srunx.db.repositories.subscriptions import SubscriptionRepository
+
+            endpoint = EndpointRepository(conn).get(run_opts.endpoint_id)
+            if endpoint is None or endpoint.disabled_at is not None:
+                # Non-fatal: the watch still exists, the run is open,
+                # the user just won't get external notifications. Jobs
+                # are already queued on the cluster — 4xx'ing here
+                # would be misleading.
+                logger.warning(
+                    "workflow_run %s: requested endpoint_id=%s not usable "
+                    "(missing or disabled); skipping subscription",
+                    run_id,
+                    run_opts.endpoint_id,
+                )
+                return new_watch_id
+            SubscriptionRepository(conn).create(
+                watch_id=new_watch_id,
+                endpoint_id=run_opts.endpoint_id,
+                preset=run_opts.preset,
+            )
+        return new_watch_id
 
     await anyio.to_thread.run_sync(_open_watch)
 

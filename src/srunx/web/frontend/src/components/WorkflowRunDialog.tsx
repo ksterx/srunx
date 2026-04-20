@@ -1,9 +1,26 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Play, Eye, Loader2, X, ChevronDown, ChevronUp } from "lucide-react";
-import { workflows as workflowsApi } from "../lib/api.ts";
+import {
+  Play,
+  Eye,
+  Loader2,
+  X,
+  ChevronDown,
+  ChevronUp,
+  Bell,
+  BellOff,
+} from "lucide-react";
+import {
+  config as configApi,
+  endpoints as endpointsApi,
+  workflows as workflowsApi,
+} from "../lib/api.ts";
 import { ErrorBanner } from "./ErrorBanner.tsx";
-import type { WorkflowRunOptions, DryRunJobInfo } from "../lib/types.ts";
+import type {
+  DryRunJobInfo,
+  Endpoint,
+  WorkflowRunOptions,
+} from "../lib/types.ts";
 
 type WorkflowRunDialogProps = {
   workflowName: string;
@@ -14,6 +31,18 @@ type WorkflowRunDialogProps = {
 };
 
 type ExecutionMode = "full" | "from" | "to" | "range" | "single";
+
+const NOTIFICATION_PRESETS = [
+  { value: "terminal", label: "Terminal (completed / failed)" },
+  { value: "running_and_terminal", label: "Running + terminal" },
+  { value: "all", label: "All state changes" },
+] as const;
+
+type PresetValue = (typeof NOTIFICATION_PRESETS)[number]["value"];
+
+function isKnownPreset(value: string): value is PresetValue {
+  return NOTIFICATION_PRESETS.some((p) => p.value === value);
+}
 
 export function WorkflowRunDialog({
   workflowName,
@@ -34,6 +63,18 @@ export function WorkflowRunDialog({
   );
   const [expandedScript, setExpandedScript] = useState<string | null>(null);
 
+  // Notification controls — mirror the submit-dialog pattern.
+  // Auto-opt-in requires both (a) a configured ``default_endpoint_name``
+  // and (b) that name matching an endpoint row; just having endpoints
+  // in the DB is not a signal of user intent. (Matches P3-8.)
+  const [notify, setNotify] = useState(false);
+  const [endpointList, setEndpointList] = useState<Endpoint[]>([]);
+  const [selectedEndpointId, setSelectedEndpointId] = useState<number | null>(
+    null,
+  );
+  const [preset, setPreset] = useState<PresetValue>("terminal");
+  const [endpointsLoading, setEndpointsLoading] = useState(true);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -41,6 +82,53 @@ export function WorkflowRunDialog({
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [onClose]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadNotificationState() {
+      try {
+        setEndpointsLoading(true);
+        const [fetched, cfg] = await Promise.all([
+          endpointsApi.list(),
+          configApi.get().catch(() => null),
+        ]);
+        if (cancelled) return;
+        setEndpointList(fetched);
+
+        const defaultName = cfg?.notifications?.default_endpoint_name ?? null;
+        const defaultPreset = cfg?.notifications?.default_preset;
+        if (defaultPreset && isKnownPreset(defaultPreset)) {
+          setPreset(defaultPreset);
+        }
+
+        if (fetched.length > 0) {
+          const match = defaultName
+            ? fetched.find((e) => e.name === defaultName)
+            : undefined;
+          setSelectedEndpointId((match ?? fetched[0]).id);
+          setNotify(match !== undefined);
+        } else {
+          setSelectedEndpointId(null);
+          setNotify(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setEndpointList([]);
+          setSelectedEndpointId(null);
+          setNotify(false);
+        }
+      } finally {
+        if (!cancelled) setEndpointsLoading(false);
+      }
+    }
+    loadNotificationState();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const hasEndpoints = endpointList.length > 0;
+  const notifyEnabled = notify && hasEndpoints && selectedEndpointId !== null;
 
   const buildOptions = (): WorkflowRunOptions => {
     const opts: WorkflowRunOptions = {};
@@ -60,6 +148,11 @@ export function WorkflowRunDialog({
         break;
     }
     if (dryRun) opts.dry_run = true;
+    if (notifyEnabled) {
+      opts.notify = true;
+      opts.endpoint_id = selectedEndpointId;
+      opts.preset = preset;
+    }
     return opts;
   };
 
@@ -294,6 +387,117 @@ export function WorkflowRunDialog({
             />
             Dry run (preview scripts without submitting)
           </label>
+
+          {/* Notification controls */}
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "var(--sp-2)",
+              paddingTop: "var(--sp-3)",
+              borderTop: "1px solid var(--border-ghost)",
+            }}
+          >
+            <label
+              title={
+                hasEndpoints
+                  ? "Notify via the notification pipeline when the run finishes"
+                  : "Add an endpoint in Settings → Notifications first."
+              }
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "var(--sp-2)",
+                fontSize: "0.8rem",
+                cursor: hasEndpoints ? "pointer" : "not-allowed",
+                color: hasEndpoints
+                  ? "var(--text-primary)"
+                  : "var(--text-muted)",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={notify && hasEndpoints}
+                onChange={(e) => setNotify(e.target.checked)}
+                disabled={!hasEndpoints || endpointsLoading || loading}
+              />
+              {notify && hasEndpoints ? (
+                <Bell size={13} aria-hidden="true" />
+              ) : (
+                <BellOff size={13} aria-hidden="true" />
+              )}
+              Notify on workflow completion
+            </label>
+            {!endpointsLoading && !hasEndpoints && (
+              <div
+                style={{
+                  fontSize: "0.72rem",
+                  color: "var(--text-muted)",
+                  paddingLeft: 24,
+                }}
+              >
+                Add an endpoint in Settings → Notifications first.
+              </div>
+            )}
+            {hasEndpoints && notify && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: "var(--sp-2)",
+                  paddingLeft: 24,
+                }}
+              >
+                <select
+                  value={selectedEndpointId ?? ""}
+                  onChange={(e) =>
+                    setSelectedEndpointId(
+                      e.target.value ? Number(e.target.value) : null,
+                    )
+                  }
+                  aria-label="Notification endpoint"
+                  style={{
+                    padding: "var(--sp-2)",
+                    background: "var(--bg-base)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: "var(--radius-md)",
+                    color: "var(--text-primary)",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "0.8rem",
+                  }}
+                >
+                  {endpointList.map((ep) => (
+                    <option key={ep.id} value={ep.id}>
+                      {ep.kind}:{ep.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={preset}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (isKnownPreset(v)) setPreset(v);
+                  }}
+                  aria-label="Notification preset"
+                  style={{
+                    padding: "var(--sp-2)",
+                    background: "var(--bg-base)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: "var(--radius-md)",
+                    color: "var(--text-primary)",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "0.8rem",
+                  }}
+                >
+                  {NOTIFICATION_PRESETS.map((p) => (
+                    <option key={p.value} value={p.value}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
 
           <ErrorBanner error={error} />
 

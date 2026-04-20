@@ -486,10 +486,10 @@ class TestWorkflowsRouter:
         assert resp.status_code == 202
         data = resp.json()
         assert data["workflow_name"] == "run-test"
-        # Status stays 'pending' until ActiveWatchPoller observes a child
-        # job in RUNNING state. Pre-emptively writing 'running' here
-        # caused a spurious 'running → pending' regression on the first
-        # poll cycle (see P1-1 in the Codex review triage).
+        # Status stays ``pending`` until ``ActiveWatchPoller`` observes
+        # the first child transition (P1-1). Pre-emptively writing
+        # ``running`` here caused a spurious ``running → pending``
+        # transition on the first poll cycle.
         assert data["status"] == "pending"
         assert "10001" in data["job_ids"].values()
         assert "10002" in data["job_ids"].values()
@@ -568,8 +568,8 @@ class TestWorkflowsRouter:
             run = WorkflowRunRepository(conn).get(run_id)
             assert run is not None
             assert run.workflow_name == "integration-run"
-            # P1-1: the run stays 'pending' until the poller observes a
-            # RUNNING child. See the phase-5 comment in workflows.py.
+            # P1-1: the run stays ``pending`` until the poller observes
+            # a RUNNING child. See the phase-5 comment in workflows.py.
             assert run.status == "pending"
             assert run.triggered_by == "web"
 
@@ -602,6 +602,175 @@ class TestWorkflowsRouter:
             ]
             assert len(open_watches) == 1
             assert open_watches[0].target_ref == f"workflow_run:{run_id}"
+        finally:
+            conn.close()
+
+    def test_run_workflow_with_notify_creates_subscription(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """``notify=True`` + valid endpoint_id → one subscription on the run watch.
+
+        P3-7 #H wires the workflow-run dialog's notification toggle
+        through the API: the auto-created ``kind='workflow_run'`` watch
+        must be paired with a subscription when the caller opts in, so
+        the delivery poller fans ``workflow_run.status_changed`` events
+        out to Slack/etc.
+        """
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.endpoints import EndpointRepository
+        from srunx.db.repositories.subscriptions import SubscriptionRepository
+        from srunx.db.repositories.watches import WatchRepository
+
+        # Seed an endpoint row — real FK target.
+        conn = open_connection()
+        try:
+            endpoint_id = EndpointRepository(conn).create(
+                kind="slack_webhook",
+                name="ops",
+                config={"webhook_url": "https://hooks.slack.com/services/T/B/X"},
+            )
+        finally:
+            conn.close()
+
+        resp = client.post(
+            "/api/workflows/create",
+            json={
+                "name": "notify-run",
+                "default_project": MOUNT,
+                "jobs": [{"name": "a", "command": ["echo", "a"]}],
+            },
+        )
+        assert resp.status_code == 200
+
+        mock_adapter.submit_job.return_value = {
+            "name": "a",
+            "job_id": 30000,
+            "status": "PENDING",
+            "depends_on": [],
+            "command": [],
+            "resources": {},
+        }
+
+        resp = client.post(
+            "/api/workflows/notify-run/run",
+            params={"mount": MOUNT},
+            json={
+                "notify": True,
+                "endpoint_id": endpoint_id,
+                "preset": "all",
+            },
+        )
+        assert resp.status_code == 202
+        run_id = int(resp.json()["id"])
+
+        conn = open_connection()
+        try:
+            watch = next(
+                w
+                for w in WatchRepository(conn).list_open()
+                if w.target_ref == f"workflow_run:{run_id}"
+            )
+            assert watch.id is not None
+            subs = SubscriptionRepository(conn).list_by_watch(watch.id)
+            assert len(subs) == 1
+            assert subs[0].endpoint_id == endpoint_id
+            assert subs[0].preset == "all"
+        finally:
+            conn.close()
+
+    def test_run_workflow_without_notify_creates_no_subscription(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """Default path — watch is created, but no subscription."""
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.subscriptions import SubscriptionRepository
+        from srunx.db.repositories.watches import WatchRepository
+
+        resp = client.post(
+            "/api/workflows/create",
+            json={
+                "name": "no-notify-run",
+                "default_project": MOUNT,
+                "jobs": [{"name": "a", "command": ["echo", "a"]}],
+            },
+        )
+        assert resp.status_code == 200
+
+        mock_adapter.submit_job.return_value = {
+            "name": "a",
+            "job_id": 30100,
+            "status": "PENDING",
+            "depends_on": [],
+            "command": [],
+            "resources": {},
+        }
+
+        resp = client.post(
+            "/api/workflows/no-notify-run/run",
+            params={"mount": MOUNT},
+        )
+        assert resp.status_code == 202
+        run_id = int(resp.json()["id"])
+
+        conn = open_connection()
+        try:
+            watch = next(
+                w
+                for w in WatchRepository(conn).list_open()
+                if w.target_ref == f"workflow_run:{run_id}"
+            )
+            assert watch.id is not None
+            assert SubscriptionRepository(conn).list_by_watch(watch.id) == []
+        finally:
+            conn.close()
+
+    def test_run_workflow_invalid_preset_is_rejected(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """Bogus preset → 422, **before** any sbatch submission.
+
+        Guards against the "422 with orphan jobs" shape: validating
+        preset after ``_submit_jobs_bfs`` would leave already-queued
+        SLURM jobs running on the cluster with no accompanying
+        workflow_run record and no way for the user to find them.
+        """
+        resp = client.post(
+            "/api/workflows/create",
+            json={
+                "name": "bad-preset-run",
+                "default_project": MOUNT,
+                "jobs": [{"name": "a", "command": ["echo", "a"]}],
+            },
+        )
+        assert resp.status_code == 200
+
+        mock_adapter.submit_job.return_value = {
+            "name": "a",
+            "job_id": 30200,
+            "status": "PENDING",
+            "depends_on": [],
+            "command": [],
+            "resources": {},
+        }
+
+        resp = client.post(
+            "/api/workflows/bad-preset-run/run",
+            params={"mount": MOUNT},
+            json={"notify": True, "endpoint_id": 1, "preset": "digest"},
+        )
+        assert resp.status_code == 422
+        assert "preset" in resp.json()["detail"].lower()
+
+        # The early reject must short-circuit BEFORE phase 4: no sbatch
+        # calls, and no ``workflow_runs`` row for the aborted run.
+        mock_adapter.submit_job.assert_not_called()
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+
+        conn = open_connection()
+        try:
+            all_runs = WorkflowRunRepository(conn).list_all()
+            assert not any(r.workflow_name == "bad-preset-run" for r in all_runs)
         finally:
             conn.close()
 
@@ -1595,8 +1764,8 @@ class TestWorkflowExecutionControl:
         )
         assert resp.status_code == 202
         data = resp.json()
-        # P1-1: newly-created runs start at 'pending' and the poller
-        # promotes them to 'running' on the first RUNNING child.
+        # P1-1: newly-created runs start at ``pending`` and the poller
+        # promotes them to ``running`` on the first RUNNING child.
         assert data["status"] == "pending"
         # All 3 jobs should be submitted
         assert mock_adapter.submit_job.call_count == 3
