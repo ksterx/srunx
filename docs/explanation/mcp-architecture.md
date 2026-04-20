@@ -78,8 +78,8 @@ The server process is started by Claude Code using the command configured in
 {
   "mcpServers": {
     "srunx": {
-      "command": "uv",
-      "args": ["run", "--extra", "mcp", "srunx-mcp"]
+      "command": "uvx",
+      "args": ["--from", "srunx[mcp]", "srunx-mcp"]
     }
   }
 }

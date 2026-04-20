@@ -2,8 +2,10 @@
 
 Complete reference for all 14 tools exposed by the srunx MCP server.
 
-The server is started with `uv run --extra mcp srunx-mcp` and communicates
-over stdio using the Model Context Protocol.
+The server is started with `uvx --from 'srunx[mcp]' srunx-mcp` (or the
+plain `srunx-mcp` binary after `uv tool install --with 'mcp[cli]' srunx`)
+and communicates over stdio using the Model Context Protocol. See
+[MCP Setup](../tutorials/mcp-setup.md) for registration details.
 
 All tools return a JSON object with a `success` boolean. On success,
 additional fields carry the result data. On failure, an `error` string
