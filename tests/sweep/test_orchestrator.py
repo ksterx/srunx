@@ -258,6 +258,57 @@ class TestCellFailure:
         assert row["cells_running"] == 0
         assert row["status"] == "failed"
 
+    def test_fail_fast_blocks_semaphore_queued_cells_from_starting(
+        self,
+        isolated_db: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression for C1: fail_fast must set ``_cancelled`` before draining.
+
+        Under ``max_parallel=1`` with 5 cells, cells 1..4 are queued on
+        the semaphore while cell 0 runs. When cell 0 fails, the
+        fail-fast branch of ``_on_cell_done`` must flip ``_cancelled``
+        so any cell that *subsequently* acquires the semaphore observes
+        the flag and returns early instead of executing. Without the
+        ``_cancelled = True`` line, queued cells would proceed to run
+        even though ``_drain`` already marked their rows ``cancelled``.
+        """
+        orch = _build_orchestrator(
+            tmp_path,
+            matrix={"lr": [0.1, 0.01, 0.001, 0.0001, 0.00001]},
+            fail_fast=True,
+            max_parallel=1,
+        )
+
+        started: list[int] = []
+
+        def _run_cell_sync(self: SweepOrchestrator, cell: CellSpec) -> None:
+            started.append(cell.cell_index)
+            if cell.cell_index == 0:
+                _simulate_cell(
+                    cell.workflow_run_id, final_status="failed", error="boom"
+                )
+                raise RuntimeError("boom")
+            # Any cell that starts after the failure is a C1 regression —
+            # the semaphore-queued cell should have bailed out when it
+            # saw ``self._cancelled`` right after ``sem.acquire()``.
+            pytest.fail(
+                f"cell {cell.cell_index} started after fail_fast drain "
+                "(C1 regression: _cancelled not set before _drain)"
+            )
+
+        monkeypatch.setattr(SweepOrchestrator, "_run_cell_sync", _run_cell_sync)
+
+        sweep = orch.run()
+        assert sweep.id is not None
+        # Exactly one cell actually executed (the failing one).
+        assert started == [0]
+        row = _read_sweep(sweep.id)
+        assert row["cells_failed"] == 1
+        assert row["cells_cancelled"] == 4
+        assert row["status"] == "failed"
+
     def test_one_cell_fails_fail_fast_true(
         self,
         isolated_db: Path,
@@ -306,6 +357,54 @@ class TestCellFailure:
         assert row["cells_pending"] == 0
         assert row["cells_running"] == 0
         assert row["status"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# C2 regression: from_yaml-style failure must transition cell to failed
+# ---------------------------------------------------------------------------
+
+
+class TestRunnerRaisesBeforeTransition:
+    def test_exception_in_run_cell_sync_records_failed_transition(
+        self,
+        isolated_db: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression for C2: ``_run_cell_sync`` raising pre-transition still finalizes.
+
+        Simulates ``from_yaml`` blowing up inside ``_run_cell_sync`` —
+        the runner never gets to flip ``workflow_runs.status`` from
+        ``pending``. The orchestrator must observe the failure and
+        drive the cell to ``failed`` itself via
+        :meth:`SweepOrchestrator._record_cell_failure`.
+        """
+        orch = _build_orchestrator(
+            tmp_path,
+            matrix={"lr": [0.1, 0.01]},
+            fail_fast=False,
+            max_parallel=2,
+        )
+
+        def _run_cell_sync(self: SweepOrchestrator, cell: CellSpec) -> None:
+            if cell.cell_index == 0:
+                raise RuntimeError("simulated from_yaml failure")
+            _simulate_cell(cell.workflow_run_id, final_status="completed")
+
+        monkeypatch.setattr(SweepOrchestrator, "_run_cell_sync", _run_cell_sync)
+
+        sweep = orch.run()
+        assert sweep.id is not None
+
+        row = _read_sweep(sweep.id)
+        assert row["cells_failed"] == 1
+        assert row["cells_completed"] == 1
+        assert row["cells_pending"] == 0
+        assert row["cells_running"] == 0
+
+        cells = _read_cells(sweep.id)
+        statuses = sorted(r["status"] for r in cells)
+        assert statuses == ["completed", "failed"]
 
 
 # ---------------------------------------------------------------------------
@@ -484,11 +583,18 @@ class TestExpandAndMaterialize:
             assert "lr" in cell
             assert "seed" in cell
 
-    def test_materialize_creates_rows_and_watches(
+    def test_materialize_creates_rows_without_per_cell_watches(
         self,
         isolated_db: Path,
         tmp_path: Path,
     ) -> None:
+        """Sweep cells must NOT get per-cell workflow_run watches.
+
+        Regression guard for C3: sweep cells don't populate
+        ``workflow_run_jobs``, so a workflow_run watch on each cell would
+        cause the active-watch poller to aggregate over the empty child
+        set and pull a terminal cell back to 'pending'.
+        """
         orch = _build_orchestrator(
             tmp_path,
             matrix={"lr": [0.1, 0.01]},
@@ -498,7 +604,6 @@ class TestExpandAndMaterialize:
         sweep_run_id = orch._materialize(cells)
 
         assert orch._sweep_run_id == sweep_run_id
-        # sweep_runs row
         conn = open_connection()
         try:
             sweep_repo = SweepRunRepository(conn)
@@ -507,7 +612,6 @@ class TestExpandAndMaterialize:
             assert sweep.cell_count == 2
             assert sweep.cells_pending == 2
 
-            # 2 workflow_runs with sweep_run_id set
             wf_rows = conn.execute(
                 "SELECT id, status, sweep_run_id FROM workflow_runs "
                 "WHERE sweep_run_id = ?",
@@ -517,10 +621,15 @@ class TestExpandAndMaterialize:
             assert all(r["status"] == "pending" for r in wf_rows)
             assert all(r["sweep_run_id"] == sweep_run_id for r in wf_rows)
 
-            # 2 watches (one per cell), all workflow_run kind
+            # No per-cell workflow_run watches created when endpoint_id is None.
             watch_rows = conn.execute(
                 "SELECT kind, target_ref FROM watches WHERE kind = 'workflow_run'"
             ).fetchall()
-            assert len(watch_rows) == 2
+            assert len(watch_rows) == 0
+            # No sweep_run watch either (endpoint_id was None).
+            sweep_watch_rows = conn.execute(
+                "SELECT kind, target_ref FROM watches WHERE kind = 'sweep_run'"
+            ).fetchall()
+            assert len(sweep_watch_rows) == 0
         finally:
             conn.close()

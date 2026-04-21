@@ -210,6 +210,53 @@ class TestSweepFlag:
         # max_parallel falls back to YAML value (2).
         assert sweep_spec.max_parallel == 2
 
+    def test_endpoint_skipped_for_sweep_mode_callbacks(
+        self, tmp_path: Path, isolated_db: Path
+    ) -> None:
+        """Regression for I2: ``--endpoint`` must NOT attach
+        NotificationWatchCallback in sweep mode.
+
+        Sweep-level notifications flow through the sweep_run watch +
+        subscription created by the orchestrator itself. Adding a
+        per-job ``NotificationWatchCallback`` on top would spam one
+        Slack delivery per submitted cell job, defeating the sweep's
+        aggregated-notification contract.
+        """
+        yaml_path = _write_workflow(tmp_path)
+
+        runner = CliRunner()
+        with (
+            patch("srunx.cli.workflow.SweepOrchestrator") as orch_cls,
+            patch("srunx.cli.workflow.NotificationWatchCallback") as cb_cls,
+        ):
+            mock_orch = MagicMock()
+            mock_orch.run.return_value = _FakeSweepRun()
+            orch_cls.return_value = mock_orch
+
+            result = runner.invoke(
+                workflow_app,
+                [
+                    "--sweep",
+                    "lr=0.1,0.01",
+                    "--max-parallel",
+                    "2",
+                    "--endpoint",
+                    "myslack",
+                    str(yaml_path),
+                ],
+            )
+
+        assert result.exit_code == 0, result.stdout
+        # NotificationWatchCallback must not be constructed for the
+        # sweep path — even though --endpoint was supplied.
+        cb_cls.assert_not_called()
+        # And the callbacks list handed to the orchestrator must not
+        # contain a NotificationWatchCallback instance.
+        callbacks = orch_cls.call_args.kwargs.get("callbacks") or []
+        from srunx.callbacks import NotificationWatchCallback
+
+        assert not any(isinstance(c, NotificationWatchCallback) for c in callbacks)
+
     def test_dry_run_with_sweep_does_not_execute(
         self, tmp_path: Path, isolated_db: Path
     ) -> None:

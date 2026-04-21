@@ -414,17 +414,57 @@ def _apply_tx_migration(conn: sqlite3.Connection, mig: Migration) -> None:
         raise
 
 
+def _split_sql_statements(sql: str) -> list[str]:
+    """Split a multi-statement SQL string on top-level ``;`` boundaries.
+
+    Comment-aware (``--`` line comments stripped) so SCHEMA_V3's inline
+    ``-- ...`` annotations don't break the parser. Used instead of
+    :meth:`sqlite3.Connection.executescript` because ``executescript``
+    issues an implicit ``COMMIT`` at the start, which would silently
+    terminate a surrounding ``BEGIN IMMEDIATE`` and run every DDL in
+    autocommit — losing the atomicity contract we rely on for rollback.
+    """
+    statements: list[str] = []
+    buf: list[str] = []
+    for raw_line in sql.splitlines():
+        stripped = raw_line.lstrip()
+        # Drop full-line SQL comments (``-- ...``). Inline comments
+        # after SQL on the same line are left in place; SQLite parses
+        # them natively.
+        if stripped.startswith("--"):
+            continue
+        buf.append(raw_line)
+        if ";" in raw_line:
+            chunk = "\n".join(buf).strip()
+            if chunk.rstrip(";").strip():
+                statements.append(chunk)
+            buf = []
+    tail = "\n".join(buf).strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
+
 def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> None:
-    """Apply a table-rebuild migration with foreign_keys temporarily OFF.
+    """Apply a table-rebuild migration atomically with foreign_keys OFF.
 
     ``PRAGMA foreign_keys`` is a no-op inside an active transaction in
-    SQLite, so the pragma must be toggled in autocommit mode *outside*
-    any ``BEGIN`` block. ``executescript`` itself commits any pending
-    transaction and runs its statements in autocommit mode, which is
-    what we want for the table-rebuild script.
+    SQLite, so the pragma is toggled in autocommit mode *outside* the
+    ``BEGIN`` block. The migration body itself runs inside an explicit
+    ``BEGIN IMMEDIATE`` / ``COMMIT`` pair so that partial DDL failures
+    roll back cleanly.
 
-    The pragma is always restored to ``ON`` in the ``finally`` clause,
-    even on failure, so subsequent connections observe FK enforcement.
+    We deliberately do NOT use :meth:`sqlite3.Connection.executescript`
+    because the CPython implementation issues an implicit ``COMMIT`` at
+    the start of the call — that would silently end our
+    ``BEGIN IMMEDIATE`` and drop every subsequent statement into
+    autocommit mode, leaving the schema half-migrated on partial failure.
+    Instead we split the SQL into individual statements and run each one
+    under the single surrounding transaction.
+
+    The pragma is always restored to ``ON`` in the outer ``finally``
+    clause, even on failure, so subsequent connections observe FK
+    enforcement.
     """
     # Re-check right before the pragma toggle; if a concurrent caller
     # applied this migration between our original check and here, skip.
@@ -434,11 +474,25 @@ def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> None:
     try:
         conn.execute("PRAGMA foreign_keys = OFF")
         try:
-            conn.executescript(mig.sql)
-            conn.execute(
-                "INSERT INTO schema_version (version, name, applied_at) VALUES (?, ?, ?)",
-                (mig.version, mig.name, _now_iso()),
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                # Re-check under the write lock in case a concurrent
+                # peer applied the migration between our earlier check
+                # and the BEGIN we just acquired.
+                if mig.name in _applied_names(conn):
+                    conn.rollback()
+                    return
+                for statement in _split_sql_statements(mig.sql):
+                    conn.execute(statement)
+                conn.execute(
+                    "INSERT INTO schema_version (version, name, applied_at) "
+                    "VALUES (?, ?, ?)",
+                    (mig.version, mig.name, _now_iso()),
+                )
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
         finally:
             conn.execute("PRAGMA foreign_keys = ON")
     except (sqlite3.IntegrityError, sqlite3.OperationalError):

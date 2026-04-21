@@ -20,6 +20,15 @@ from srunx.db.repositories.sweep_runs import SweepRunRepository
 from srunx.db.repositories.watches import WatchRepository
 from srunx.notifications.service import NotificationService
 
+# Terminal workflow_run statuses. Once a run reaches one of these, the
+# state service refuses to transition it back to a non-terminal status
+# (e.g. ``completed → pending``). This guards against stale poller
+# aggregations observing an empty ``workflow_run_jobs`` set (as happens
+# for sweep cells) and incorrectly pulling the cell back to pending.
+_TERMINAL_WORKFLOW_RUN_STATUSES: frozenset[str] = frozenset(
+    {"completed", "failed", "cancelled"}
+)
+
 
 class WorkflowRunStateService:
     """Single entry point for workflow_run status transitions."""
@@ -55,6 +64,15 @@ class WorkflowRunStateService:
         """
         # Circular import guard: aggregator imports this module's siblings.
         from srunx.sweep.aggregator import evaluate_and_fire_sweep_status_event
+
+        # Reject terminal → non-terminal regressions. A poller observing
+        # a stale view (e.g. sweep cells lack workflow_run_jobs rows and
+        # aggregate to 'pending') would otherwise revive a finalized run.
+        if (
+            from_status in _TERMINAL_WORKFLOW_RUN_STATUSES
+            and to_status not in _TERMINAL_WORKFLOW_RUN_STATUSES
+        ):
+            return False
 
         sweep_repo = SweepRunRepository(conn)
         cell_updated = sweep_repo.transition_cell(

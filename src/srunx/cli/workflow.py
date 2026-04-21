@@ -66,6 +66,18 @@ Example YAML workflow:
         - upload
       environment:
         venv: /path/to/venv
+
+Parameter sweeps:
+
+  # Single-arg override (no sweep)
+  srunx flow run --arg dataset=imagenet train.yaml
+
+  # Ad-hoc 3x3 sweep (9 cells, 4 at a time)
+  srunx flow run --sweep lr=0.001,0.01,0.1 --sweep seed=1,2,3 \\
+      --max-parallel 4 train.yaml
+
+  # Preview cell args without submitting
+  srunx flow run --sweep lr=0.001,0.01 --max-parallel 2 --dry-run train.yaml
 """,
 )
 
@@ -133,11 +145,24 @@ def execute_yaml(
     ] = None,
     arg: Annotated[
         list[str] | None,
-        typer.Option("--arg", help="Override args: KEY=VALUE (can repeat)"),
+        typer.Option(
+            "--arg",
+            help=(
+                "Override workflow args (KEY=VALUE). Repeat to set multiple; "
+                "e.g. --arg lr=0.01 --arg dataset=imagenet."
+            ),
+        ),
     ] = None,
     sweep: Annotated[
         list[str] | None,
-        typer.Option("--sweep", help="Sweep axis values: KEY=v1,v2,v3 (can repeat)"),
+        typer.Option(
+            "--sweep",
+            help=(
+                "Add a sweep matrix axis (KEY=v1,v2,v3). Repeat to cross "
+                "multiple axes; e.g. --sweep lr=0.001,0.01,0.1 "
+                "--sweep seed=1,2,3. Requires --max-parallel."
+            ),
+        ),
     ] = None,
     fail_fast: Annotated[
         bool,
@@ -326,6 +351,7 @@ def _execute_workflow(
     sweep: list[str] | None = None,
     fail_fast: bool = False,
     max_parallel: int | None = None,
+    debug: bool = False,
 ) -> None:
     """Common workflow execution logic."""
     # Configure logging for workflow execution
@@ -362,10 +388,18 @@ def _execute_workflow(
             max_parallel,
         )
 
-        # Setup callbacks if requested (shared between sweep / non-sweep).
+        # Setup callbacks if requested.
+        # ``NotificationWatchCallback`` attaches a per-job watch on every
+        # submission, which is right for non-sweep workflows but wrong
+        # for sweeps: sweep-level aggregation runs through the sweep_run
+        # watch + subscription created by the orchestrator, so adding
+        # per-job watches would spam one notification per cell job.
+        # ``SlackCallback`` is legacy in-process delivery and is still
+        # attached in both modes for backward compatibility.
         callbacks: list[Callback] = []
         effective_preset = preset or get_config().notifications.default_preset
-        if endpoint:
+        is_sweep = sweep_spec is not None
+        if endpoint and not is_sweep:
             callbacks.append(
                 NotificationWatchCallback(
                     endpoint_name=endpoint,
@@ -381,6 +415,13 @@ def _execute_workflow(
             if not webhook_url:
                 raise ValueError("SLACK_WEBHOOK_URL environment variable is not set")
             callbacks.append(SlackCallback(webhook_url=webhook_url))
+
+        if debug:
+            # Imported lazily to avoid pulling main.py's typer surface at
+            # module import time.
+            from srunx.cli.main import DebugCallback
+
+            callbacks.append(DebugCallback())
 
         if sweep_spec is not None:
             if validate:
@@ -566,11 +607,24 @@ def run_command(
     ] = None,
     arg: Annotated[
         list[str] | None,
-        typer.Option("--arg", help="Override args: KEY=VALUE (can repeat)"),
+        typer.Option(
+            "--arg",
+            help=(
+                "Override workflow args (KEY=VALUE). Repeat to set multiple; "
+                "e.g. --arg lr=0.01 --arg dataset=imagenet."
+            ),
+        ),
     ] = None,
     sweep: Annotated[
         list[str] | None,
-        typer.Option("--sweep", help="Sweep axis values: KEY=v1,v2,v3 (can repeat)"),
+        typer.Option(
+            "--sweep",
+            help=(
+                "Add a sweep matrix axis (KEY=v1,v2,v3). Repeat to cross "
+                "multiple axes; e.g. --sweep lr=0.001,0.01,0.1 "
+                "--sweep seed=1,2,3. Requires --max-parallel."
+            ),
+        ),
     ] = None,
     fail_fast: Annotated[
         bool,

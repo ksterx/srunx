@@ -161,10 +161,23 @@ async def cancel_sweep_run(
 
     refreshed = await anyio.to_thread.run_sync(_load_and_stamp)
 
-    # Best-effort in-process drain. Errors here must not fail the HTTP
-    # response since the DB-only stamp already guarantees eventual
-    # convergence via the aggregator.
-    from srunx.sweep.orchestrator import get_active_orchestrator
+    # Best-effort drain. Errors here must not fail the HTTP response
+    # since the ``cancel_requested_at`` stamp already guarantees
+    # eventual convergence via the aggregator.
+    #
+    # Two code paths:
+    # 1. Live orchestrator in this process (typical CLI / same-process
+    #    Web run): delegate to ``request_cancel`` so the anyio task
+    #    group is cancelled in addition to the DB drain.
+    # 2. No live orchestrator (crash-recovery, separate-process cancel):
+    #    run the SQL drain directly. Without this, pending cells stay
+    #    ``pending`` and the sweep's ``status`` is never flipped to
+    #    ``draining``, which means :class:`SweepReconciler` cannot skip
+    #    them on the next startup and resumes cancelled work.
+    from srunx.sweep.orchestrator import (
+        drain_sweep_pending_cells,
+        get_active_orchestrator,
+    )
 
     orch = get_active_orchestrator(sweep_run_id)
     if orch is not None:
@@ -176,5 +189,22 @@ async def cancel_sweep_run(
                 sweep_run_id,
                 exc_info=True,
             )
+    else:
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: drain_sweep_pending_cells(sweep_run_id)
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Sweep %s: drain_sweep_pending_cells raised",
+                sweep_run_id,
+                exc_info=True,
+            )
 
-    return _serialize_sweep(refreshed)
+    # Re-read after drain so the response reflects the draining status +
+    # updated counters.
+    def _reload() -> Any:
+        return SweepRunRepository(conn).get(sweep_run_id)
+
+    final = await anyio.to_thread.run_sync(_reload)
+    return _serialize_sweep(final if final is not None else refreshed)

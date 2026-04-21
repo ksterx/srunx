@@ -969,6 +969,46 @@ class TestWorkflowsRouter:
         resp = client.post("/api/workflows/runs/nonexistent/cancel")
         assert resp.status_code == 404
 
+    def test_cancel_run_emits_status_changed_event(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """Regression for I5: Web cancel must route through
+        WorkflowRunStateService so a ``workflow_run.status_changed``
+        event is emitted and subscribers receive a delivery.
+        """
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+
+        conn = open_connection()
+        try:
+            run_id = WorkflowRunRepository(conn).create(
+                workflow_name="cancel-event-test",
+                yaml_path=None,
+                args=None,
+                triggered_by="web",
+            )
+            WorkflowRunRepository(conn).update_status(run_id, "running")
+        finally:
+            conn.close()
+
+        resp = client.post(f"/api/workflows/runs/{run_id}/cancel")
+        assert resp.status_code == 200, resp.text
+
+        conn = open_connection()
+        try:
+            events = conn.execute(
+                "SELECT kind, payload FROM events WHERE source_ref = ? AND kind = ?",
+                (f"workflow_run:{run_id}", "workflow_run.status_changed"),
+            ).fetchall()
+        finally:
+            conn.close()
+        assert len(events) == 1
+        import json as _json
+
+        payload = _json.loads(events[0]["payload"])
+        assert payload["to_status"] == "cancelled"
+        assert payload["from_status"] == "running"
+
     def test_cancel_run_already_terminal(self, client: TestClient) -> None:
         from srunx.db.connection import open_connection
         from srunx.db.repositories.base import now_iso

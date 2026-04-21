@@ -153,6 +153,28 @@ class TestMergeSweepSpecs:
                 4,
             )
 
+    def test_arg_collides_with_yaml_matrix_axis_rejected(self) -> None:
+        """Regression for I4: ``--arg`` must not silently override a YAML matrix axis.
+
+        Without this check the YAML matrix values would silently win at
+        expand-time, masking the user's intent.
+        """
+        yaml_spec = SweepSpec(
+            matrix={"lr": [0.001, 0.01]},
+            fail_fast=False,
+            max_parallel=2,
+        )
+        with pytest.raises(
+            WorkflowValidationError, match="both in sweep.matrix and --arg"
+        ):
+            merge_sweep_specs(
+                yaml_spec,
+                {},  # no CLI --sweep override
+                {"lr": "0.5"},  # CLI --arg lr=0.5 collides with YAML matrix lr
+                None,
+                None,
+            )
+
     def test_cli_fail_fast_overrides_yaml(self) -> None:
         yaml_spec = SweepSpec(matrix={"lr": [1]}, fail_fast=False, max_parallel=2)
         merged = merge_sweep_specs(yaml_spec, {}, {}, True, None)

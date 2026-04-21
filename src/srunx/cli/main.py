@@ -938,6 +938,7 @@ def flow_run(
         sweep=sweep,
         fail_fast=fail_fast,
         max_parallel=max_parallel,
+        debug=debug,
     )
 
 

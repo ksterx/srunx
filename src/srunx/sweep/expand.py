@@ -111,6 +111,18 @@ def merge_sweep_specs(
     for axis, values in cli_sweep_axes.items():
         merged_matrix[axis] = list(values)
 
+    # Also reject ``--arg KEY=...`` that collides with a merged sweep
+    # matrix axis. Without this check the matrix value silently wins at
+    # expand time, masking the user's intent.
+    arg_matrix_collisions = set(cli_arg_overrides.keys()) & set(merged_matrix.keys())
+    if arg_matrix_collisions:
+        names = ", ".join(sorted(arg_matrix_collisions))
+        raise WorkflowValidationError(
+            f"key(s) {names!r} cannot be both in sweep.matrix and --arg "
+            "(use --sweep for matrix axes, or remove from sweep.matrix for "
+            "a single override)"
+        )
+
     if cli_fail_fast is not None:
         fail_fast = cli_fail_fast
     elif yaml_sweep is not None:

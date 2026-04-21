@@ -172,12 +172,14 @@ class NotificationService:
         endpoint_id: int | None = None,
         preset: str = "terminal",
     ) -> int:
-        """Create a sweep_run-kind watch and (optionally) its subscription.
+        """Create a sweep_run-kind watch and optional subscription for aggregated sweep-level notifications.
 
-        Mirrors :meth:`create_watch_for_workflow_run`. When ``endpoint_id``
-        is ``None`` the watch is created without any subscription — the
-        ``fan_out`` finds the watch but has no delivery to create. This is
-        the expected shape for per-cell watches under a sweep.
+        Mirrors :meth:`create_watch_for_workflow_run` but scopes the watch
+        to the parent sweep (``target_ref='sweep_run:<id>'``). When
+        ``endpoint_id`` is provided the subscription wires sweep-level
+        ``sweep_run.status_changed`` events to the endpoint via the
+        delivery pipeline. When ``endpoint_id`` is ``None`` the watch is
+        created without a subscription.
         """
         watch_id = self.watch_repo.create(
             kind="sweep_run",

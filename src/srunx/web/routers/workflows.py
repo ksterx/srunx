@@ -44,6 +44,7 @@ from srunx.models import (
 from srunx.runner import WorkflowRunner
 from srunx.sweep import SweepSpec
 from srunx.sweep.orchestrator import SweepOrchestrator
+from srunx.sweep.state_service import WorkflowRunStateService
 
 from ..deps import get_adapter, get_db_conn
 from ..ssh_adapter import SlurmSSHAdapter
@@ -508,15 +509,44 @@ async def cancel_run(
         except Exception as e:
             errors.append(f"{m.job_name}: {e}")
 
+    # Route through WorkflowRunStateService so a
+    # ``workflow_run.status_changed`` event is emitted and subscribers
+    # receive a delivery. ``run.status`` was captured above and is
+    # guaranteed non-terminal by the 422 guard.
+    current_status = run.status
+
     def _finalize() -> None:
-        run_repo.update_status(rid, "cancelled", completed_at=now_iso())
-        for w in watch_repo.list_by_target(
-            kind="workflow_run",
-            target_ref=f"workflow_run:{rid}",
-            only_open=True,
-        ):
-            if w.id is not None:
-                watch_repo.close(w.id)
+        with transaction(conn, "IMMEDIATE"):
+            transitioned = WorkflowRunStateService.update(
+                conn=conn,
+                workflow_run_id=rid,
+                from_status=current_status,
+                to_status="cancelled",
+                completed_at=now_iso(),
+            )
+            if not transitioned:
+                # Race with the poller: re-read the latest status and
+                # retry once. Skip if the row has reached a terminal
+                # state in the meantime.
+                latest = run_repo.get(rid)
+                if (
+                    latest is not None
+                    and latest.status not in _WORKFLOW_TERMINAL_STATUSES
+                ):
+                    WorkflowRunStateService.update(
+                        conn=conn,
+                        workflow_run_id=rid,
+                        from_status=latest.status,
+                        to_status="cancelled",
+                        completed_at=now_iso(),
+                    )
+            for w in watch_repo.list_by_target(
+                kind="workflow_run",
+                target_ref=f"workflow_run:{rid}",
+                only_open=True,
+            ):
+                if w.id is not None:
+                    watch_repo.close(w.id)
 
     await anyio.to_thread.run_sync(_finalize)
 
@@ -1040,17 +1070,44 @@ async def _submit_jobs_bfs(
     return submitted
 
 
+async def _run_sweep_background(
+    orchestrator: SweepOrchestrator, sweep_run_id: int
+) -> None:
+    """Background task body: drive already-materialized cells to completion.
+
+    Exceptions are logged and swallowed — the sweep's status columns in
+    the DB are authoritative, and the aggregator will converge the sweep
+    to a terminal state even if this task crashes mid-flight.
+    """
+    try:
+        await orchestrator.arun_from_materialized(sweep_run_id)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Background sweep task for sweep_run_id=%s raised",
+            sweep_run_id,
+            exc_info=True,
+        )
+
+
 async def _dispatch_sweep(
     *,
     yaml_path: Path,
     name: str,
     body: WorkflowRunRequest,
+    request: Request,
 ) -> dict[str, Any]:
-    """Materialize + spawn a :class:`SweepOrchestrator` for the request.
+    """Materialize synchronously + spawn the orchestrator as a background task.
 
-    Matrix validation (non-scalar values, reserved axis names, oversize
-    matrices) is routed through :class:`WorkflowValidationError` by
-    ``expand_matrix`` and surfaced as HTTP 422.
+    Returns 202 as soon as the cells exist in the DB so HTTP clients
+    don't block on the full sweep. Matrix validation (non-scalar
+    values, reserved axis names, oversize matrices) is routed through
+    :class:`WorkflowValidationError` by ``expand_matrix`` and surfaced
+    as HTTP 422.
+
+    Phase 1 limitation: the background task runs cells through the local
+    :class:`WorkflowRunner`, bypassing the Web app's SSH adapter. Remote
+    cluster sweeps via the Web UI require Phase 2 (SSH adapter
+    integration in :class:`SweepOrchestrator`).
     """
     assert body.sweep is not None  # narrowed by caller
     # ``SweepSpec`` / ``SweepOrchestrator`` are module-imported so
@@ -1092,16 +1149,51 @@ async def _dispatch_sweep(
     )
 
     try:
-        sweep_run = await orchestrator.arun()
+        sweep_run_id = await anyio.to_thread.run_sync(orchestrator.materialize)
     except WorkflowValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except SweepExecutionError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    # Spawn the execution loop on the app's lifespan task group so the
+    # HTTP request can return 202 immediately. ``task_group`` is set up
+    # in :func:`srunx.web.app.lifespan`; fall back to a stand-alone
+    # ``asyncio.create_task`` if the app state hasn't been wired (e.g.
+    # a bare ``TestClient`` without lifespan).
+    task_group = getattr(request.app.state, "task_group", None)
+    if task_group is not None:
+        task_group.start_soon(_run_sweep_background, orchestrator, sweep_run_id)
+    else:
+        # Fallback for test harnesses that don't run lifespan: keep a
+        # weak-ish reference to the spawned task so it isn't garbage-
+        # collected mid-flight.
+        import asyncio
+
+        pending = getattr(request.app.state, "background_tasks", None)
+        if pending is None:
+            pending = set()
+            request.app.state.background_tasks = pending
+        task = asyncio.create_task(_run_sweep_background(orchestrator, sweep_run_id))
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
+    # Read the freshly-materialized row so counters + status reflect the
+    # DB state, not the orchestrator's pre-run view.
+    from srunx.db.connection import open_connection as _open
+    from srunx.db.repositories.sweep_runs import SweepRunRepository
+
+    def _load_sweep() -> Any:
+        db_conn = _open()
+        try:
+            return SweepRunRepository(db_conn).get(sweep_run_id)
+        finally:
+            db_conn.close()
+
+    sweep_row = await anyio.to_thread.run_sync(_load_sweep)
     return {
-        "sweep_run_id": sweep_run.id,
-        "status": sweep_run.status,
-        "cell_count": sweep_run.cell_count,
+        "sweep_run_id": sweep_run_id,
+        "status": sweep_row.status if sweep_row is not None else "pending",
+        "cell_count": sweep_row.cell_count if sweep_row is not None else 0,
     }
 
 
@@ -1121,7 +1213,10 @@ async def run_workflow(
     consumes to drive aggregate status transitions after the request
     returns.
     """
-    _ = request  # referenced for route-signature compatibility only
+    # ``request`` is forwarded to ``_dispatch_sweep`` so the sweep
+    # branch can spawn the execution loop on the app's lifespan task
+    # group (avoiding a blocked HTTP response). Non-sweep branches
+    # don't need it.
     if not _SAFE_NAME.match(name):
         raise HTTPException(status_code=422, detail="Invalid workflow name")
     if not mount:
@@ -1152,15 +1247,17 @@ async def run_workflow(
 
     yaml_path = _find_yaml(name, mount)
 
-    # Sweep branch: materialize + execute N cells through the orchestrator.
-    # The per-cell workflow_run rows are created inside the orchestrator's
-    # happy-path TX; we return the ``sweep_run_id`` + 202 so the client
-    # can poll ``/api/sweep_runs/{id}``.
+    # Sweep branch: materialize synchronously so the 202 response carries
+    # a real ``sweep_run_id``, then spawn the execution loop on the app's
+    # lifespan task group. Per-cell workflow_run rows are created inside
+    # the orchestrator's happy-path TX; the client polls
+    # ``/api/sweep_runs/{id}``.
     if run_opts.sweep is not None:
         return await _dispatch_sweep(
             yaml_path=yaml_path,
             name=name,
             body=run_opts,
+            request=request,
         )
 
     # Load and optionally filter workflow
@@ -1193,9 +1290,24 @@ async def run_workflow(
         )
 
     def _fail(reason: str) -> None:
-        if run_id is not None:
-            run_repo.update_status(
-                run_id, "failed", error=reason, completed_at=now_iso()
+        if run_id is None:
+            return
+        # Route through WorkflowRunStateService so a status_changed event
+        # is emitted (subscribers of the auto-created workflow_run watch
+        # then receive a Slack-etc. delivery). Read the current status
+        # fresh — the poller may have already advanced the row before
+        # the failure fires.
+        with transaction(conn, "IMMEDIATE"):
+            latest = run_repo.get(run_id)
+            if latest is None or latest.status in _WORKFLOW_TERMINAL_STATUSES:
+                return
+            WorkflowRunStateService.update(
+                conn=conn,
+                workflow_run_id=run_id,
+                from_status=latest.status,
+                to_status="failed",
+                error=reason,
+                completed_at=now_iso(),
             )
 
     # Phase 1: Sync mounts

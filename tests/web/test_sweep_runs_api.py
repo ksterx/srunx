@@ -122,12 +122,40 @@ class TestRunWorkflowWithSweep:
 
             spec_cls.side_effect = _RealSweepSpec
 
-            async def fake_arun() -> _FakeSweepRun:
+            # C4: the router now calls ``materialize()`` synchronously
+            # (to obtain a sweep_run_id for the 202) and spawns
+            # ``arun_from_materialized`` on the app's task group. We
+            # stub both.
+            mock_orch = MagicMock()
+            mock_orch.materialize.return_value = 101
+
+            async def fake_arun_from_materialized(_sweep_run_id: int) -> _FakeSweepRun:
                 return _FakeSweepRun(sweep_id=101, cell_count=2)
 
-            mock_orch = MagicMock()
-            mock_orch.arun = fake_arun
+            mock_orch.arun_from_materialized = fake_arun_from_materialized
             orch_cls.return_value = mock_orch
+
+            # Also seed the sweep_runs row so the response can load
+            # the freshly-materialized row (materialize is stubbed so
+            # no real row exists).
+            from srunx.db.connection import open_connection
+            from srunx.db.repositories.sweep_runs import SweepRunRepository
+
+            conn = open_connection()
+            try:
+                seeded_id = SweepRunRepository(conn).create(
+                    name="sweep-wf",
+                    matrix={"lr": [0.01, 0.1]},
+                    args=None,
+                    fail_fast=False,
+                    max_parallel=2,
+                    cell_count=2,
+                    submission_source="web",
+                    status="pending",
+                )
+            finally:
+                conn.close()
+            mock_orch.materialize.return_value = seeded_id
 
             resp = client.post(
                 "/api/workflows/sweep-wf/run",
@@ -142,12 +170,89 @@ class TestRunWorkflowWithSweep:
 
         assert resp.status_code == 202, resp.text
         data = resp.json()
-        assert data["sweep_run_id"] == 101
-        assert data["status"] == "completed"
+        assert data["sweep_run_id"] == seeded_id
+        assert data["status"] == "pending"
         assert data["cell_count"] == 2
         # Orchestrator was invoked with submission_source='web'
         kwargs = orch_cls.call_args.kwargs
         assert kwargs["submission_source"] == "web"
+        # materialize() was called synchronously.
+        mock_orch.materialize.assert_called_once()
+
+    def test_run_with_sweep_returns_fast_without_blocking_on_cells(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """Regression for C4: Web sweep must spawn the execution loop
+        off-request so the 202 comes back immediately (< 2 seconds) even
+        when ``arun_from_materialized`` would block.
+        """
+        import time
+
+        _create_workflow(client, name="fast-sweep")
+
+        blocked = {"flag": False}
+
+        with (
+            patch("srunx.web.routers.workflows.SweepOrchestrator") as orch_cls,
+            patch("srunx.web.routers.workflows.SweepSpec") as spec_cls,
+        ):
+            from srunx.sweep import SweepSpec as _RealSweepSpec
+
+            spec_cls.side_effect = _RealSweepSpec
+
+            from srunx.db.connection import open_connection
+            from srunx.db.repositories.sweep_runs import SweepRunRepository
+
+            conn = open_connection()
+            try:
+                seeded_id = SweepRunRepository(conn).create(
+                    name="fast-sweep",
+                    matrix={"lr": [0.01, 0.1]},
+                    args=None,
+                    fail_fast=False,
+                    max_parallel=2,
+                    cell_count=2,
+                    submission_source="web",
+                    status="pending",
+                )
+            finally:
+                conn.close()
+
+            mock_orch = MagicMock()
+            mock_orch.materialize.return_value = seeded_id
+
+            async def slow_arun(_id: int) -> None:
+                # Simulate a long-running sweep; if the endpoint awaits
+                # this, the test's timing assertion below will fail.
+                import anyio
+
+                await anyio.sleep(2.0)
+                blocked["flag"] = True
+
+            mock_orch.arun_from_materialized = slow_arun
+            orch_cls.return_value = mock_orch
+
+            start = time.monotonic()
+            resp = client.post(
+                "/api/workflows/fast-sweep/run",
+                params={"mount": MOUNT},
+                json={
+                    "sweep": {
+                        "matrix": {"lr": [0.01, 0.1]},
+                        "max_parallel": 2,
+                    }
+                },
+            )
+            elapsed = time.monotonic() - start
+
+        assert resp.status_code == 202, resp.text
+        # Endpoint MUST NOT have awaited the slow arun (sleep=2.0s).
+        # Allowing 1s of slack for TestClient overhead on slow CI;
+        # real HTTP should be well under 500ms.
+        assert elapsed < 1.0, (
+            f"response took {elapsed:.2f}s; arun blocked the HTTP handler"
+        )
+        assert blocked["flag"] is False
 
     def test_run_with_args_override_non_sweep(
         self, client: TestClient, mock_adapter: MagicMock
@@ -287,6 +392,50 @@ class TestSweepRunsReadAPI:
         body = resp.json()
         assert body["id"] == sweep_id
         assert body["cancel_requested_at"] is not None
+
+    def test_cancel_db_only_drains_pending_cells(self, client: TestClient) -> None:
+        """Regression for I1: when no in-process orchestrator is alive,
+        the cancel endpoint must drain pending cells via SQL directly.
+
+        The drain itself flips the sweep to ``draining`` and invokes
+        the aggregator in the same TX; because every cell is already
+        terminal after the drain, the aggregator immediately advances
+        the sweep to ``cancelled``.
+        """
+        sweep_id = self._seed_sweep()
+        self._seed_cell(sweep_id, args={"lr": 0.1})
+        self._seed_cell(sweep_id, args={"lr": 0.01})
+
+        resp = client.post(f"/api/sweep_runs/{sweep_id}/cancel")
+        assert resp.status_code == 202, resp.text
+
+        from srunx.db.connection import open_connection
+
+        conn = open_connection()
+        try:
+            sweep_row = conn.execute(
+                "SELECT status, cells_pending, cells_cancelled, "
+                "       cancel_requested_at "
+                "FROM sweep_runs WHERE id = ?",
+                (sweep_id,),
+            ).fetchone()
+            cell_statuses = [
+                r["status"]
+                for r in conn.execute(
+                    "SELECT status FROM workflow_runs WHERE sweep_run_id = ?",
+                    (sweep_id,),
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+
+        # Without the DB-only drain the cells would remain ``pending``
+        # and the sweep would stay ``pending`` indefinitely.
+        assert sweep_row["status"] == "cancelled"
+        assert sweep_row["cells_pending"] == 0
+        assert sweep_row["cells_cancelled"] == 2
+        assert sweep_row["cancel_requested_at"] is not None
+        assert sorted(cell_statuses) == ["cancelled", "cancelled"]
 
     def test_cancel_404(self, client: TestClient) -> None:
         resp = client.post("/api/sweep_runs/424242/cancel")

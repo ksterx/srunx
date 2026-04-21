@@ -174,11 +174,14 @@ class SweepOrchestrator:
                     triggered_by=triggered_by,
                     sweep_run_id=sweep_run_id,
                 )
-                notifier.create_watch_for_workflow_run(
-                    run_id=workflow_run_id,
-                    endpoint_id=None,
-                    preset=None,
-                )
+                # Deliberately no per-cell workflow_run watch: sweep
+                # cells don't populate ``workflow_run_jobs``, so the
+                # active-watch poller would aggregate child-job status
+                # over an empty set and pull a terminal cell back to
+                # 'pending'. Orchestrator + WorkflowRunStateService
+                # already drive cell status + sweep counters end-to-end;
+                # sweep-level notifications use the sweep_run watch
+                # created below.
                 cell_specs.append(
                     CellSpec(
                         workflow_run_id=workflow_run_id,
@@ -242,16 +245,25 @@ class SweepOrchestrator:
         """Execute the sweep synchronously and return the final SweepRun."""
         return anyio.run(self.arun)
 
-    async def arun(self) -> SweepRun:
-        """Execute the sweep with bounded concurrency.
+    def materialize(self) -> int:
+        """Expand + materialize cells synchronously; return ``sweep_run_id``.
 
-        Steps: expand → materialize → spawn N cells behind an
-        ``anyio.Semaphore(min(max_parallel, cell_count))`` → return
-        the final SweepRun row.
+        Separated from :meth:`arun` so HTTP callers can materialize
+        inside the request (to obtain ``sweep_run_id``) and then spawn
+        :meth:`arun_from_materialized` as a background task.
         """
         cells = self._expand_cells()
-        sweep_run_id = self._materialize(cells)
+        return self._materialize(cells)
 
+    async def arun_from_materialized(self, sweep_run_id: int) -> SweepRun:
+        """Run the execution loop for an already-materialized sweep.
+
+        Assumes :meth:`materialize` (or equivalent) populated
+        ``self._cells`` and ``self._sweep_run_id``. Used by both
+        :meth:`arun` (materialize + run in the same call) and the Web
+        dispatcher (materialize synchronously, then spawn this as a
+        background task).
+        """
         if not self._cells:
             # No cells (shouldn't happen since expand_matrix rejects
             # empty matrices, but guard defensively).
@@ -276,6 +288,16 @@ class SweepOrchestrator:
             self._unregister_active(sweep_run_id)
 
         return self._load_sweep(sweep_run_id)
+
+    async def arun(self) -> SweepRun:
+        """Execute the sweep with bounded concurrency.
+
+        Steps: expand → materialize → spawn N cells behind an
+        ``anyio.Semaphore(min(max_parallel, cell_count))`` → return
+        the final SweepRun row.
+        """
+        sweep_run_id = self.materialize()
+        return await self.arun_from_materialized(sweep_run_id)
 
     async def resume_from_db(
         self,
@@ -338,7 +360,49 @@ class SweepOrchestrator:
                     f"sweep cell {cell.cell_index} "
                     f"(workflow_run_id={cell.workflow_run_id}) failed: {exc!r}"
                 )
+                # If the runner raised before it could record a terminal
+                # transition (e.g. ``from_yaml`` blew up during load), the
+                # workflow_runs row is still pending/running. Record the
+                # failure here so the cell doesn't stall and sweep
+                # counters can converge.
+                self._record_cell_failure(cell, error)
             self._on_cell_done(cell, sweep_run_id, final_status, error)
+
+    def _record_cell_failure(self, cell: CellSpec, error: str) -> None:
+        """Best-effort failed transition for a cell the runner never finalized.
+
+        Tries ``pending → failed`` first (the typical case when
+        ``from_yaml`` raises before ``run()`` starts). Falls back to
+        ``running → failed`` when the runner had already flipped the row
+        before raising. Swallows all exceptions so a DB hiccup here
+        cannot mask the original cell failure.
+        """
+        from srunx.sweep.state_service import WorkflowRunStateService
+
+        try:
+            init_db(delete_legacy=True)
+            conn = open_connection()
+            try:
+                for from_status in ("pending", "running"):
+                    with transaction(conn, "IMMEDIATE"):
+                        transitioned = WorkflowRunStateService.update(
+                            conn=conn,
+                            workflow_run_id=cell.workflow_run_id,
+                            from_status=from_status,
+                            to_status="failed",
+                            error=error,
+                            completed_at=now_iso(),
+                        )
+                    if transitioned:
+                        return
+            finally:
+                conn.close()
+        except Exception as exc:  # noqa: BLE001 — never mask the original failure
+            logger.warning(
+                f"sweep cell {cell.cell_index} "
+                f"(workflow_run_id={cell.workflow_run_id}): failed to record "
+                f"terminal failure transition: {exc!r}"
+            )
 
     def _run_cell_sync(self, cell: CellSpec) -> None:
         """Drive one cell through :class:`WorkflowRunner`.
@@ -380,6 +444,10 @@ class SweepOrchestrator:
         to decide whether a failure should trigger a fail-fast drain.
         """
         if self.sweep_spec.fail_fast and final_status in {"failed", "timeout"}:
+            # Flip ``_cancelled`` BEFORE draining so any cell currently
+            # blocked in the semaphore's ``acquire()`` sees the flag on
+            # wake and bails out instead of starting new work.
+            self._cancelled = True
             self._drain(sweep_run_id)
 
     # ------------------------------------------------------------------
@@ -412,45 +480,11 @@ class SweepOrchestrator:
     def _drain(self, sweep_run_id: int) -> None:
         """Atomically cancel every still-pending cell and adjust counters.
 
-        Runs in a single IMMEDIATE TX on a fresh connection so the
-        caller (either the fail-fast hook from ``_on_cell_done`` or
-        ``request_cancel``) doesn't have to thread a connection through.
-        After the drain we trigger the aggregator to roll the sweep
-        toward its target terminal status if all in-flight cells are
-        already done.
+        Thin instance-method wrapper around :func:`drain_sweep_pending_cells`
+        so fail-fast hooks and ``request_cancel`` can share the drain
+        logic with out-of-process callers (e.g. the cancel endpoint).
         """
-        init_db(delete_legacy=True)
-        conn = open_connection()
-        try:
-            with transaction(conn, "IMMEDIATE"):
-                cur = conn.execute(
-                    "UPDATE workflow_runs "
-                    "SET status = 'cancelled', completed_at = ? "
-                    "WHERE sweep_run_id = ? AND status = 'pending'",
-                    (now_iso(), sweep_run_id),
-                )
-                k = cur.rowcount or 0
-                if k > 0:
-                    conn.execute(
-                        "UPDATE sweep_runs "
-                        "SET cells_pending = cells_pending - ?, "
-                        "    cells_cancelled = cells_cancelled + ?, "
-                        "    status = 'draining' "
-                        "WHERE id = ? AND status IN ('pending','running')",
-                        (k, k, sweep_run_id),
-                    )
-                # Let the aggregator evaluate terminal status: if every
-                # in-flight cell is already done, the sweep transitions
-                # to its final status in the same TX.
-                from srunx.sweep.aggregator import (
-                    evaluate_and_fire_sweep_status_event,
-                )
-
-                evaluate_and_fire_sweep_status_event(
-                    conn=conn, sweep_run_id=sweep_run_id
-                )
-        finally:
-            conn.close()
+        drain_sweep_pending_cells(sweep_run_id)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -471,6 +505,50 @@ class SweepOrchestrator:
         return sweep
 
 
+def drain_sweep_pending_cells(sweep_run_id: int) -> int:
+    """Cancel every still-pending cell for ``sweep_run_id`` and sync counters.
+
+    Runs in a single IMMEDIATE TX on a fresh connection. After the drain
+    it triggers the aggregator so the sweep can transition to its final
+    status if every in-flight cell is already done. Returns the number
+    of cells moved from ``pending`` to ``cancelled`` (0 when nothing was
+    pending).
+
+    This is the out-of-process drain used by the cancel endpoint when
+    no in-process orchestrator is registered (crash-recovery path) and
+    by :class:`SweepOrchestrator` itself via :meth:`SweepOrchestrator._drain`.
+    """
+    init_db(delete_legacy=True)
+    conn = open_connection()
+    try:
+        with transaction(conn, "IMMEDIATE"):
+            cur = conn.execute(
+                "UPDATE workflow_runs "
+                "SET status = 'cancelled', completed_at = ? "
+                "WHERE sweep_run_id = ? AND status = 'pending'",
+                (now_iso(), sweep_run_id),
+            )
+            k = cur.rowcount or 0
+            if k > 0:
+                conn.execute(
+                    "UPDATE sweep_runs "
+                    "SET cells_pending = cells_pending - ?, "
+                    "    cells_cancelled = cells_cancelled + ?, "
+                    "    status = 'draining' "
+                    "WHERE id = ? AND status IN ('pending','running')",
+                    (k, k, sweep_run_id),
+                )
+            # Aggregator evaluate: if every in-flight cell is already
+            # done, the sweep transitions to its final status in the
+            # same TX.
+            from srunx.sweep.aggregator import evaluate_and_fire_sweep_status_event
+
+            evaluate_and_fire_sweep_status_event(conn=conn, sweep_run_id=sweep_run_id)
+    finally:
+        conn.close()
+    return k
+
+
 def _build_notification_service(conn: sqlite3.Connection) -> NotificationService:
     """Construct a :class:`NotificationService` bound to ``conn``."""
     from srunx.db.repositories.deliveries import DeliveryRepository
@@ -488,4 +566,8 @@ def _build_notification_service(conn: sqlite3.Connection) -> NotificationService
     )
 
 
-__all__ = ["SweepOrchestrator", "get_active_orchestrator"]
+__all__ = [
+    "SweepOrchestrator",
+    "drain_sweep_pending_cells",
+    "get_active_orchestrator",
+]

@@ -137,6 +137,36 @@ def test_sweep_cell_transition_updates_counters(
     assert _count_events(conn, f"sweep_run:{sweep_id}", "sweep_run.status_changed") == 1
 
 
+def test_terminal_to_non_terminal_transition_rejected(
+    conn: sqlite3.Connection,
+) -> None:
+    """Regression for C3: once a run is terminal, state service refuses to revive it.
+
+    Without this guard, a stale poller observation on a sweep cell
+    (which has an empty ``workflow_run_jobs`` set and therefore
+    aggregates to 'pending') would pull a finalized cell back to
+    ``pending``.
+    """
+    run_id = _insert_workflow_run(conn, status="completed")
+
+    ok = WorkflowRunStateService.update(
+        conn=conn,
+        workflow_run_id=run_id,
+        from_status="completed",
+        to_status="pending",
+    )
+    assert ok is False
+    row = conn.execute(
+        "SELECT status FROM workflow_runs WHERE id = ?", (run_id,)
+    ).fetchone()
+    assert row["status"] == "completed"
+    # No status_changed event for the no-op.
+    assert (
+        _count_events(conn, f"workflow_run:{run_id}", "workflow_run.status_changed")
+        == 0
+    )
+
+
 def test_second_call_with_same_from_is_idempotent(
     conn: sqlite3.Connection,
 ) -> None:

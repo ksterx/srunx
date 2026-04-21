@@ -107,6 +107,23 @@ class TestTyperCLI:
         assert "--debug" in clean_output
         assert "Show rendered SLURM scripts for each job" in clean_output
 
+    def test_flow_run_debug_flag_threads_through(self, tmp_path):
+        """Regression for I6: ``srunx flow run --debug`` must forward debug=True.
+
+        Prior to the fix, ``flow run`` parsed ``--debug`` but did not
+        pass it to :func:`srunx.cli.workflow._execute_workflow`, so
+        :class:`DebugCallback` never fired.
+        """
+        yaml_path = tmp_path / "wf.yaml"
+        yaml_path.write_text(
+            'name: dbg\njobs:\n  - name: a\n    command: ["echo", "hi"]\n'
+        )
+        with patch("srunx.cli.workflow._execute_workflow") as mock_exec:
+            result = self.runner.invoke(app, ["flow", "run", "--debug", str(yaml_path)])
+        assert result.exit_code == 0, result.stdout
+        mock_exec.assert_called_once()
+        assert mock_exec.call_args.kwargs["debug"] is True
+
     def test_config_help(self):
         """Test config command help."""
         result = self.runner.invoke(app, ["config", "--help"])

@@ -227,6 +227,14 @@ export async function setupMockRoutes(page: Page) {
     return route.continue();
   });
 
+  /* ── Sweep runs ────────────────────────────── */
+  await page.route("**/api/sweep_runs", (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({ json: [] });
+    }
+    return route.continue();
+  });
+
   /* ── Notifications (endpoints / watches / subscriptions / deliveries) ── */
   await setupNotificationMocks(page);
 

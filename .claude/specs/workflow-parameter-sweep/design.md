@@ -486,6 +486,10 @@ async def cancel_sweep(sweep_run_id: int, repo = Depends(...)) -> ...: ...
 
 既存 `/workflows/runs` のレスポンスモデルに `sweep_run_id: int | None = None` を追加 (後方互換)。
 
+**Phase 1 限定事項**:
+- **Web sweep は常にローカル SLURM を使う**: `_dispatch_sweep` は materialize を同期実行して `sweep_run_id` を返却後、`arun_from_materialized` を lifespan task group で bg 実行する。セル内部では `WorkflowRunner` が走るので、Web アプリが `SlurmSSHAdapter` を構成していても sweep のジョブ submit は SSH adapter を経由しない。リモートクラスタ向け sweep は Phase 2 の SSH adapter 連携 (`SweepOrchestrator` に adapter を注入する形) が必要。
+- **MCP sweep の `triggered_by` は `'web'` で記録される**: `workflow_runs.triggered_by` CHECK は v1 で `('cli','web','schedule')` に固定されている。MCP sweep の子セルは暫定的に `'web'` に寄せる (`_TRIGGERED_BY_BY_SOURCE['mcp'] = 'web'`)。Phase 2 で CHECK を `'mcp'` まで広げる migration を追加した後、この対応を正しく `'mcp'` に変更する。
+
 ### Web UI 変更
 
 **Phase 1 の UI スコープ注意**: バックエンド (DB / orchestrator / 通知統合) の state machine 整合性を先に固定する。UI は以下の 3 要素に限定、それ以外の拡張 (bulk retry、export、filter 等) は Phase 2 スコープ:
