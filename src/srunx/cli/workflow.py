@@ -1,18 +1,28 @@
 """CLI interface for workflow management."""
 
 import os
+import signal
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
+import yaml  # type: ignore
 from rich.console import Console
 
 from srunx.callbacks import Callback, NotificationWatchCallback, SlackCallback
 from srunx.config import get_config
+from srunx.exceptions import WorkflowValidationError
 from srunx.logging import configure_workflow_logging, get_logger
 from srunx.models import Job, ShellJob
 from srunx.runner import WorkflowRunner
+from srunx.sweep import SweepSpec
+from srunx.sweep.expand import (
+    merge_sweep_specs,
+    parse_arg_flags,
+    parse_sweep_flags,
+)
+from srunx.sweep.orchestrator import SweepOrchestrator
 
 logger = get_logger(__name__)
 
@@ -121,6 +131,28 @@ def execute_yaml(
             "--job", help="Execute only this specific job (ignoring all dependencies)"
         ),
     ] = None,
+    arg: Annotated[
+        list[str] | None,
+        typer.Option("--arg", help="Override args: KEY=VALUE (can repeat)"),
+    ] = None,
+    sweep: Annotated[
+        list[str] | None,
+        typer.Option("--sweep", help="Sweep axis values: KEY=v1,v2,v3 (can repeat)"),
+    ] = None,
+    fail_fast: Annotated[
+        bool,
+        typer.Option(
+            "--fail-fast",
+            help="Cancel remaining sweep cells after the first failure",
+        ),
+    ] = False,
+    max_parallel: Annotated[
+        int | None,
+        typer.Option(
+            "--max-parallel",
+            help="Maximum concurrent sweep cells (overrides YAML sweep.max_parallel)",
+        ),
+    ] = None,
 ) -> None:
     """Execute workflow from YAML file."""
     # If a subcommand was invoked, don't run the callback
@@ -145,6 +177,137 @@ def execute_yaml(
         from_job=from_job,
         to_job=to_job,
         job=job,
+        arg=arg,
+        sweep=sweep,
+        fail_fast=fail_fast,
+        max_parallel=max_parallel,
+    )
+
+
+def _load_yaml_sweep(yaml_file: Path) -> tuple[dict[str, Any], SweepSpec | None]:
+    """Return ``(raw_yaml_dict, yaml_sweep_spec)``.
+
+    ``yaml_sweep_spec`` is ``None`` when the YAML has no ``sweep:`` block.
+    Invalid sweep blocks surface via ``WorkflowValidationError`` so the
+    CLI path reports them consistently with the orchestrator.
+    """
+    with open(yaml_file, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        return {}, None
+    raw_sweep = data.get("sweep")
+    if raw_sweep is None:
+        return data, None
+    if not isinstance(raw_sweep, dict):
+        raise WorkflowValidationError(
+            "YAML sweep: must be a mapping with matrix / fail_fast / max_parallel"
+        )
+    try:
+        spec = SweepSpec.model_validate(raw_sweep)
+    except Exception as exc:  # noqa: BLE001 — surface as validation error
+        raise WorkflowValidationError(f"invalid YAML sweep block: {exc}") from exc
+    return data, spec
+
+
+def _resolve_endpoint_id(endpoint: str | None) -> int | None:
+    """Look up a notification endpoint by name, returning its id or ``None``.
+
+    Matches the attach logic used by :class:`NotificationWatchCallback`
+    (lookup by name, skip when missing or disabled) so sweep runs honour
+    ``--endpoint`` the same way non-sweep runs do.
+    """
+    if not endpoint:
+        return None
+    try:
+        from srunx.db.connection import open_connection
+        from srunx.db.repositories.endpoints import EndpointRepository
+    except Exception:  # pragma: no cover — DB unreachable
+        return None
+    conn = open_connection()
+    try:
+        row = EndpointRepository(conn).get_by_name("slack_webhook", endpoint)
+    finally:
+        conn.close()
+    if row is None or row.disabled_at is not None or row.id is None:
+        return None
+    return row.id
+
+
+def _preview_sweep_dry_run(
+    sweep_spec: SweepSpec,
+    workflow_data: dict[str, Any],
+    args_override: dict[str, Any],
+) -> None:
+    """Expand the matrix and print cell count / per-cell args without executing."""
+    from srunx.sweep.expand import expand_matrix
+
+    base_args: dict[str, Any] = {
+        **(workflow_data.get("args") or {}),
+        **args_override,
+    }
+    cells = expand_matrix(sweep_spec.matrix, base_args)
+    console = Console()
+    console.print("🔍 Sweep dry run:")
+    console.print(f"  Cell count: {len(cells)}")
+    console.print(f"  Matrix: {sweep_spec.matrix}")
+    console.print(f"  Max parallel: {sweep_spec.max_parallel}")
+    console.print(f"  Fail fast: {sweep_spec.fail_fast}")
+    for i, cell in enumerate(cells):
+        console.print(f"  Cell {i}: {cell}")
+
+
+def _run_sweep(
+    yaml_file: Path,
+    workflow_data: dict[str, Any],
+    args_override: dict[str, Any],
+    sweep_spec: SweepSpec,
+    callbacks: list[Callback],
+    endpoint_id: int | None,
+    preset: str,
+) -> None:
+    """Drive :class:`SweepOrchestrator` under a SIGINT → request_cancel guard.
+
+    First Ctrl+C triggers :meth:`SweepOrchestrator.request_cancel` (drain
+    pending cells). A second Ctrl+C re-raises ``KeyboardInterrupt`` so
+    the user can escape a stuck orchestrator.
+    """
+    orchestrator = SweepOrchestrator(
+        workflow_yaml_path=yaml_file,
+        workflow_data=workflow_data,
+        args_override=args_override or None,
+        sweep_spec=sweep_spec,
+        submission_source="cli",
+        callbacks=callbacks,
+        endpoint_id=endpoint_id,
+        preset=preset,
+    )
+
+    original_handler = signal.getsignal(signal.SIGINT)
+    cancel_requested = {"n": 0}
+
+    def _on_sigint(signum: int, frame: Any) -> None:
+        cancel_requested["n"] += 1
+        if cancel_requested["n"] == 1:
+            logger.warning(
+                "Received Ctrl+C — requesting sweep cancel. Press Ctrl+C again to abort."
+            )
+            try:
+                orchestrator.request_cancel()
+            except Exception:  # noqa: BLE001
+                logger.warning("request_cancel raised", exc_info=True)
+            # Restore default so the second Ctrl+C raises KeyboardInterrupt.
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+
+    signal.signal(signal.SIGINT, _on_sigint)
+    try:
+        sweep_run = orchestrator.run()
+    finally:
+        signal.signal(signal.SIGINT, original_handler)
+
+    logger.info(
+        f"Sweep {sweep_run.id} finished: status={sweep_run.status} "
+        f"cells={sweep_run.cell_count} completed={sweep_run.cells_completed} "
+        f"failed={sweep_run.cells_failed} cancelled={sweep_run.cells_cancelled}"
     )
 
 
@@ -159,13 +322,15 @@ def _execute_workflow(
     from_job: str | None = None,
     to_job: str | None = None,
     job: str | None = None,
+    arg: list[str] | None = None,
+    sweep: list[str] | None = None,
+    fail_fast: bool = False,
+    max_parallel: int | None = None,
 ) -> None:
     """Common workflow execution logic."""
     # Configure logging for workflow execution
     configure_workflow_logging(level=log_level)
 
-    # Validate mutually exclusive options
-    execution_options = [from_job, to_job, job]
     if job and (from_job or to_job):
         logger.error("❌ Cannot use --job with --from or --to options")
         sys.exit(1)
@@ -175,14 +340,29 @@ def _execute_workflow(
             logger.error(f"Workflow file not found: {yaml_file}")
             sys.exit(1)
 
-        # Setup callbacks if requested.
-        #
-        # Resolution order mirrors ``srunx submit``:
-        #   --endpoint → durable watch per submitted job (poller pipeline)
-        #   --slack    → in-process SlackCallback fallback (deprecated)
-        # Both may be set; the deprecated path keeps firing so users who
-        # opt in always get *some* notification even if the endpoint
-        # lookup fails.
+        # Parse --arg / --sweep; errors here are WorkflowValidationError.
+        args_override = parse_arg_flags(arg or [])
+        cli_sweep_axes_raw = parse_sweep_flags(sweep or [])
+        # Narrow to ScalarValue lists (CLI values are str).
+        cli_sweep_axes: dict[str, list[Any]] = {
+            k: list(v) for k, v in cli_sweep_axes_raw.items()
+        }
+
+        workflow_data, yaml_sweep_spec = _load_yaml_sweep(yaml_file)
+
+        # Only pass a bool when the user set --fail-fast; otherwise let
+        # YAML decide (merge_sweep_specs treats ``None`` as "unset").
+        cli_fail_fast: bool | None = True if fail_fast else None
+
+        sweep_spec = merge_sweep_specs(
+            yaml_sweep_spec,
+            cli_sweep_axes,
+            args_override,
+            cli_fail_fast,
+            max_parallel,
+        )
+
+        # Setup callbacks if requested (shared between sweep / non-sweep).
         callbacks: list[Callback] = []
         effective_preset = preset or get_config().notifications.default_preset
         if endpoint:
@@ -202,11 +382,42 @@ def _execute_workflow(
                 raise ValueError("SLACK_WEBHOOK_URL environment variable is not set")
             callbacks.append(SlackCallback(webhook_url=webhook_url))
 
+        if sweep_spec is not None:
+            if validate:
+                # Validate the workflow at least once (cell 0's rendering);
+                # matrix expansion semantics are already validated via
+                # merge_sweep_specs + expand.
+                runner = WorkflowRunner.from_yaml(
+                    yaml_file, callbacks=callbacks, args_override=args_override
+                )
+                runner.workflow.validate()
+                logger.info("Workflow validation successful")
+                return
+
+            if dry_run:
+                _preview_sweep_dry_run(sweep_spec, workflow_data, args_override)
+                return
+
+            endpoint_id = _resolve_endpoint_id(endpoint)
+            _run_sweep(
+                yaml_file=yaml_file,
+                workflow_data=workflow_data,
+                args_override=args_override,
+                sweep_spec=sweep_spec,
+                callbacks=callbacks,
+                endpoint_id=endpoint_id,
+                preset=effective_preset,
+            )
+            return
+
+        # Non-sweep path.
         runner = WorkflowRunner.from_yaml(
-            yaml_file, callbacks=callbacks, single_job=job
+            yaml_file,
+            callbacks=callbacks,
+            single_job=job,
+            args_override=args_override or None,
         )
 
-        # Validate dependencies
         runner.workflow.validate()
 
         if validate:
@@ -218,7 +429,6 @@ def _execute_workflow(
             console.print("🔍 Dry run mode - showing workflow structure:")
             console.print(f"Workflow: {runner.workflow.name}")
 
-            # Get jobs that would be executed
             jobs_to_execute = runner._get_jobs_to_execute(from_job, to_job, job)
 
             if job:
@@ -259,6 +469,9 @@ def _execute_workflow(
             else:
                 logger.info(f"  {task_name}: {job_result}")
 
+    except WorkflowValidationError as e:
+        logger.error(f"❌ Workflow validation error: {e}")
+        sys.exit(1)
     except FileNotFoundError as e:
         logger.error(f"❌ Workflow file not found: {e}")
         sys.exit(1)
@@ -351,6 +564,28 @@ def run_command(
             "--job", help="Execute only this specific job (ignoring all dependencies)"
         ),
     ] = None,
+    arg: Annotated[
+        list[str] | None,
+        typer.Option("--arg", help="Override args: KEY=VALUE (can repeat)"),
+    ] = None,
+    sweep: Annotated[
+        list[str] | None,
+        typer.Option("--sweep", help="Sweep axis values: KEY=v1,v2,v3 (can repeat)"),
+    ] = None,
+    fail_fast: Annotated[
+        bool,
+        typer.Option(
+            "--fail-fast",
+            help="Cancel remaining sweep cells after the first failure",
+        ),
+    ] = False,
+    max_parallel: Annotated[
+        int | None,
+        typer.Option(
+            "--max-parallel",
+            help="Maximum concurrent sweep cells (overrides YAML sweep.max_parallel)",
+        ),
+    ] = None,
 ) -> None:
     """Execute workflow from YAML file."""
     _execute_workflow(
@@ -364,6 +599,10 @@ def run_command(
         from_job=from_job,
         to_job=to_job,
         job=job,
+        arg=arg,
+        sweep=sweep,
+        fail_fast=fail_fast,
+        max_parallel=max_parallel,
     )
 
 

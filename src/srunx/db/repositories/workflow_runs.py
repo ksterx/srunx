@@ -28,6 +28,7 @@ class WorkflowRunRepository(BaseRepository):
         "args",
         "error",
         "triggered_by",
+        "sweep_run_id",
     )
 
     def create(
@@ -36,18 +37,22 @@ class WorkflowRunRepository(BaseRepository):
         yaml_path: str | None,
         args: dict | None,
         triggered_by: WorkflowRunTriggeredBy,
+        *,
+        sweep_run_id: int | None = None,
     ) -> int:
         """Insert a new workflow run in ``pending`` status.
 
         Uses ``INSERT OR REPLACE`` for parity with the other repositories.
+        ``sweep_run_id`` links the run to its parent sweep (Phase B of the
+        workflow-parameter-sweep spec); defaults to ``None`` for non-sweep runs.
         Returns the new row's ``id``.
         """
         cur = self.conn.execute(
             """
             INSERT OR REPLACE INTO workflow_runs (
                 workflow_name, workflow_yaml_path, status, started_at,
-                args, triggered_by
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                args, triggered_by, sweep_run_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 workflow_name,
@@ -56,6 +61,7 @@ class WorkflowRunRepository(BaseRepository):
                 now_iso(),
                 self._encode_json(args),
                 triggered_by,
+                sweep_run_id,
             ),
         )
         return int(cur.lastrowid or 0)

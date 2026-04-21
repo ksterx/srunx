@@ -204,6 +204,89 @@ CREATE INDEX IF NOT EXISTS idx_deliveries_status_created_at
 
 
 # ---------------------------------------------------------------------------
+# v3 schema: sweep_runs + workflow_runs.sweep_run_id + CHECK widening
+# for events.kind and watches.kind via table rebuild.
+# ---------------------------------------------------------------------------
+
+SCHEMA_V3 = """
+CREATE TABLE sweep_runs (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                TEXT NOT NULL,
+    workflow_yaml_path  TEXT,
+    status              TEXT NOT NULL
+                          CHECK (status IN ('pending','running','draining','completed','failed','cancelled')),
+    matrix              TEXT NOT NULL,
+    args                TEXT,
+    fail_fast           INTEGER NOT NULL DEFAULT 0 CHECK (fail_fast IN (0,1)),
+    max_parallel        INTEGER NOT NULL,
+    cell_count          INTEGER NOT NULL,
+    cells_pending       INTEGER NOT NULL DEFAULT 0,
+    cells_running       INTEGER NOT NULL DEFAULT 0,
+    cells_completed     INTEGER NOT NULL DEFAULT 0,
+    cells_failed        INTEGER NOT NULL DEFAULT 0,
+    cells_cancelled     INTEGER NOT NULL DEFAULT 0,
+    submission_source   TEXT NOT NULL CHECK (submission_source IN ('cli','web','mcp')),
+    started_at          TEXT NOT NULL,
+    completed_at        TEXT,
+    cancel_requested_at TEXT,
+    error               TEXT
+);
+CREATE INDEX idx_sweep_runs_status     ON sweep_runs(status);
+CREATE INDEX idx_sweep_runs_started_at ON sweep_runs(started_at);
+
+ALTER TABLE workflow_runs
+    ADD COLUMN sweep_run_id INTEGER REFERENCES sweep_runs(id) ON DELETE SET NULL;
+CREATE INDEX idx_workflow_runs_sweep_run_id ON workflow_runs(sweep_run_id);
+
+-- Rebuild events with widened kind CHECK to admit 'sweep_run.status_changed'.
+CREATE TABLE events_v3 (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind         TEXT NOT NULL CHECK (kind IN (
+        'job.submitted',
+        'job.status_changed',
+        'workflow_run.status_changed',
+        'sweep_run.status_changed',
+        'resource.threshold_crossed',
+        'scheduled_report.due'
+    )),
+    source_ref   TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    observed_at  TEXT NOT NULL
+);
+INSERT INTO events_v3 (id, kind, source_ref, payload, payload_hash, observed_at)
+    SELECT id, kind, source_ref, payload, payload_hash, observed_at FROM events;
+DROP TABLE events;
+ALTER TABLE events_v3 RENAME TO events;
+CREATE UNIQUE INDEX idx_events_dedup      ON events(kind, source_ref, payload_hash);
+CREATE INDEX        idx_events_source_ref ON events(source_ref, observed_at);
+CREATE INDEX        idx_events_kind       ON events(kind, observed_at);
+
+-- Rebuild watches with widened kind CHECK to admit 'sweep_run'.
+CREATE TABLE watches_v3 (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL CHECK (kind IN (
+        'job',
+        'workflow_run',
+        'sweep_run',
+        'resource_threshold',
+        'scheduled_report'
+    )),
+    target_ref TEXT NOT NULL,
+    filter     TEXT,
+    created_at TEXT NOT NULL,
+    closed_at  TEXT
+);
+INSERT INTO watches_v3 (id, kind, target_ref, filter, created_at, closed_at)
+    SELECT id, kind, target_ref, filter, created_at, closed_at FROM watches;
+DROP TABLE watches;
+ALTER TABLE watches_v3 RENAME TO watches;
+CREATE INDEX idx_watches_kind_target ON watches(kind, target_ref);
+CREATE INDEX idx_watches_open        ON watches(closed_at) WHERE closed_at IS NULL;
+"""
+
+
+# ---------------------------------------------------------------------------
 # Migration registry
 # ---------------------------------------------------------------------------
 
@@ -213,14 +296,31 @@ class Migration:
     version: int
     name: str
     sql: str
+    # When True, ``apply_migrations`` runs the script in autocommit mode
+    # with ``PRAGMA foreign_keys=OFF`` toggled around it so that a table
+    # rebuild (CREATE new, INSERT SELECT, DROP old, RENAME) can complete
+    # without tripping FK references from other tables.
+    requires_fk_off: bool = False
 
 
 MIGRATIONS: list[Migration] = [
-    Migration(version=1, name="v1_initial", sql=SCHEMA_V1),
+    Migration(
+        version=1,
+        name="v1_initial",
+        sql=SCHEMA_V1,
+        requires_fk_off=False,
+    ),
     Migration(
         version=2,
         name="v2_dashboard_indexes",
         sql=SCHEMA_V2_DASHBOARD_INDEXES,
+        requires_fk_off=False,
+    ),
+    Migration(
+        version=3,
+        name="v3_sweep_runs",
+        sql=SCHEMA_V3,
+        requires_fk_off=True,
     ),
 ]
 
@@ -252,18 +352,27 @@ def _applied_names(conn: sqlite3.Connection) -> set[str]:
 def apply_migrations(conn: sqlite3.Connection) -> list[str]:
     """Apply every pending migration in :data:`MIGRATIONS` order.
 
-    Each migration runs inside its own ``BEGIN IMMEDIATE`` transaction;
-    on failure the whole migration is rolled back and no
-    ``schema_version`` row is written. Returns the list of migration
-    names that were applied in this call.
+    Migrations with ``requires_fk_off=False`` (the default) run inside
+    their own ``BEGIN IMMEDIATE`` transaction; on failure the whole
+    migration is rolled back and no ``schema_version`` row is written.
+
+    Migrations with ``requires_fk_off=True`` run in autocommit mode with
+    ``PRAGMA foreign_keys=OFF`` toggled around them (SQLite ignores this
+    pragma inside a transaction). Table-rebuild migrations need this to
+    DROP the old table without tripping inbound foreign-key references
+    from sibling tables. The pragma is always restored in a ``finally``
+    block.
+
+    Returns the list of migration names that were applied in this call.
 
     Concurrency safety: the ``applied`` set is re-read **after**
-    acquiring the IMMEDIATE write lock. Without that re-check, two
-    concurrent callers on a cold DB both see an empty ``applied`` set
-    outside the lock; one wins the BEGIN, runs the CREATE TABLE
-    scripts, commits; the other then acquires the lock and attempts
-    the same CREATE TABLE statements on tables that now exist — which
-    fails because ``SCHEMA_V1`` uses bare ``CREATE TABLE`` (not
+    acquiring the IMMEDIATE write lock (for TX-wrapped migrations) or
+    immediately before the pragma toggle (for FK-off migrations).
+    Without that re-check, two concurrent callers on a cold DB both see
+    an empty ``applied`` set outside the lock; one wins, runs the
+    CREATE TABLE scripts, commits; the other then attempts the same
+    CREATE TABLE statements on tables that now exist — which fails
+    because ``SCHEMA_V1`` uses bare ``CREATE TABLE`` (not
     ``IF NOT EXISTS``) for the real domain tables.
     """
     newly_applied: list[str] = []
@@ -272,29 +381,82 @@ def apply_migrations(conn: sqlite3.Connection) -> list[str]:
         if mig.name in _applied_names(conn):
             continue
         logger.info("Applying migration %s (v%d)", mig.name, mig.version)
+        if mig.requires_fk_off:
+            _apply_fk_off_migration(conn, mig)
+        else:
+            _apply_tx_migration(conn, mig)
+        newly_applied.append(mig.name)
+
+    return newly_applied
+
+
+def _apply_tx_migration(conn: sqlite3.Connection, mig: Migration) -> None:
+    """Apply a migration inside a single BEGIN IMMEDIATE transaction."""
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        # Re-check inside the write lock. If a peer has applied the
+        # same migration between our initial check and the BEGIN we
+        # just acquired, skip the DDL to avoid duplicate CREATE TABLE.
+        if mig.name in _applied_names(conn):
+            conn.rollback()
+            return
+        conn.executescript(mig.sql)
+        # v1_initial creates schema_version itself; the IF NOT EXISTS
+        # guard earlier ensures the insert below always succeeds.
+        conn.execute(
+            "INSERT INTO schema_version (version, name, applied_at) VALUES (?, ?, ?)",
+            (mig.version, mig.name, _now_iso()),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.error("Migration %s failed; rolled back", mig.name)
+        raise
+
+
+def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> None:
+    """Apply a table-rebuild migration with foreign_keys temporarily OFF.
+
+    ``PRAGMA foreign_keys`` is a no-op inside an active transaction in
+    SQLite, so the pragma must be toggled in autocommit mode *outside*
+    any ``BEGIN`` block. ``executescript`` itself commits any pending
+    transaction and runs its statements in autocommit mode, which is
+    what we want for the table-rebuild script.
+
+    The pragma is always restored to ``ON`` in the ``finally`` clause,
+    even on failure, so subsequent connections observe FK enforcement.
+    """
+    # Re-check right before the pragma toggle; if a concurrent caller
+    # applied this migration between our original check and here, skip.
+    if mig.name in _applied_names(conn):
+        return
+
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
         try:
-            conn.execute("BEGIN IMMEDIATE")
-            # Re-check inside the write lock. If a peer has applied the
-            # same migration between our initial check and the BEGIN we
-            # just acquired, skip the DDL to avoid duplicate CREATE TABLE.
-            if mig.name in _applied_names(conn):
-                conn.rollback()
-                continue
             conn.executescript(mig.sql)
-            # v1_initial creates schema_version itself; the IF NOT EXISTS
-            # guard earlier ensures the insert below always succeeds.
             conn.execute(
                 "INSERT INTO schema_version (version, name, applied_at) VALUES (?, ?, ?)",
                 (mig.version, mig.name, _now_iso()),
             )
-            conn.commit()
-            newly_applied.append(mig.name)
-        except Exception:
-            conn.rollback()
-            logger.error("Migration %s failed; rolled back", mig.name)
-            raise
-
-    return newly_applied
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
+    except (sqlite3.IntegrityError, sqlite3.OperationalError):
+        # Concurrent migrator won the race (either the PK on
+        # schema_version fired, or one of the DDL statements tripped
+        # "table already exists"). Re-check the ledger; if the peer did
+        # record this migration, skip silently.
+        if mig.name in _applied_names(conn):
+            logger.info(
+                "Migration %s already applied by concurrent caller; skipping",
+                mig.name,
+            )
+            return
+        logger.error("Migration %s failed", mig.name)
+        raise
+    except Exception:
+        logger.error("Migration %s failed", mig.name)
+        raise
 
 
 # ---------------------------------------------------------------------------

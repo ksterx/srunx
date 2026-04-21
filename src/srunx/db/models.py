@@ -26,12 +26,19 @@ _MODEL_CONFIG = ConfigDict(extra="forbid")
 # ---------------------------------------------------------------------------
 
 EndpointKind = Literal["slack_webhook", "generic_webhook", "email", "slack_bot"]
-WatchKind = Literal["job", "workflow_run", "resource_threshold", "scheduled_report"]
+WatchKind = Literal[
+    "job",
+    "workflow_run",
+    "sweep_run",
+    "resource_threshold",
+    "scheduled_report",
+]
 SubscriptionPreset = Literal["terminal", "running_and_terminal", "all", "digest"]
 EventKind = Literal[
     "job.submitted",
     "job.status_changed",
     "workflow_run.status_changed",
+    "sweep_run.status_changed",
     "resource.threshold_crossed",
     "scheduled_report.due",
 ]
@@ -40,6 +47,15 @@ TransitionSource = Literal["poller", "cli_monitor", "webhook"]
 SubmissionSource = Literal["cli", "web", "workflow"]
 WorkflowRunStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 WorkflowRunTriggeredBy = Literal["cli", "web", "schedule"]
+SweepStatus = Literal[
+    "pending",
+    "running",
+    "draining",
+    "completed",
+    "failed",
+    "cancelled",
+]
+SweepSubmissionSource = Literal["cli", "web", "mcp"]
 
 
 class Endpoint(BaseModel):
@@ -120,6 +136,31 @@ class WorkflowRun(BaseModel):
     args: dict | None = None
     error: str | None = None
     triggered_by: WorkflowRunTriggeredBy
+    sweep_run_id: int | None = None
+
+
+class SweepRun(BaseModel):
+    model_config = _MODEL_CONFIG
+
+    id: int | None = None
+    name: str
+    workflow_yaml_path: str | None = None
+    status: SweepStatus
+    matrix: dict
+    args: dict | None = None
+    fail_fast: bool
+    max_parallel: int
+    cell_count: int
+    cells_pending: int = 0
+    cells_running: int = 0
+    cells_completed: int = 0
+    cells_failed: int = 0
+    cells_cancelled: int = 0
+    submission_source: SweepSubmissionSource
+    started_at: datetime
+    completed_at: datetime | None = None
+    cancel_requested_at: datetime | None = None
+    error: str | None = None
 
 
 class WorkflowRunJob(BaseModel):

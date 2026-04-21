@@ -25,6 +25,7 @@ from .routers import (
     workflows,
 )
 from .routers import subscriptions as subscriptions_router
+from .routers import sweep_runs as sweep_runs_router
 from .routers import watches as watches_router
 from .ssh_adapter import SlurmSSHAdapter
 
@@ -241,7 +242,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from srunx.pollers.resource_snapshotter import ResourceSnapshotter
     from srunx.pollers.supervisor import Poller, PollerSupervisor
 
-    # 4. Background pollers. All skipped in --reload dev mode or when
+    # 4. Sweep crash-recovery pass. Runs before the poller supervisor so
+    # the active-watch poller never races the orchestrator on observation
+    # of resumed cells. Skipped under --reload / SRUNX_DISABLE_POLLER=1
+    # for parity with the poller gating.
+    if should_start_pollers():
+        try:
+            from srunx.sweep.reconciler import SweepReconciler
+
+            await SweepReconciler.scan_and_resume_async()
+        except Exception:
+            logger.warning("SweepReconciler startup pass raised", exc_info=True)
+
+    # 5. Background pollers. All skipped in --reload dev mode or when
     # SRUNX_DISABLE_POLLER=1. Each poller is also individually toggleable.
     supervisor: PollerSupervisor | None = None
     if should_start_pollers():
@@ -394,6 +407,7 @@ def create_app() -> FastAPI:
     app.include_router(subscriptions_router.router)
     app.include_router(watches_router.router)
     app.include_router(deliveries_router.router)
+    app.include_router(sweep_runs_router.router)
 
     # Serve frontend static files (production) with SPA fallback
     if _FRONTEND_DIST.exists():

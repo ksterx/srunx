@@ -25,6 +25,13 @@ _TERMINAL_WORKFLOW_RUN_STATUSES: frozenset[str] = frozenset(
     {"completed", "failed", "cancelled"}
 )
 
+# Terminal sweep_run statuses — shares the same set as workflow_run today
+# but declared separately so a future divergence (e.g. "partial_failure")
+# only needs to touch this file.
+_TERMINAL_SWEEP_RUN_STATUSES: frozenset[str] = frozenset(
+    {"completed", "failed", "cancelled"}
+)
+
 
 def should_deliver(
     preset: str,
@@ -71,6 +78,13 @@ def should_deliver(
 
     if event_kind == "workflow_run.status_changed":
         if to_status in _TERMINAL_WORKFLOW_RUN_STATUSES:
+            return True
+        if preset == "running_and_terminal" and to_status == "running":
+            return True
+        return False
+
+    if event_kind == "sweep_run.status_changed":
+        if to_status in _TERMINAL_SWEEP_RUN_STATUSES:
             return True
         if preset == "running_and_terminal" and to_status == "running":
             return True

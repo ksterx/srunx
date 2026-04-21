@@ -166,6 +166,31 @@ class NotificationService:
             )
         return watch_id
 
+    def create_watch_for_sweep_run(
+        self,
+        sweep_run_id: int,
+        endpoint_id: int | None = None,
+        preset: str = "terminal",
+    ) -> int:
+        """Create a sweep_run-kind watch and (optionally) its subscription.
+
+        Mirrors :meth:`create_watch_for_workflow_run`. When ``endpoint_id``
+        is ``None`` the watch is created without any subscription — the
+        ``fan_out`` finds the watch but has no delivery to create. This is
+        the expected shape for per-cell watches under a sweep.
+        """
+        watch_id = self.watch_repo.create(
+            kind="sweep_run",
+            target_ref=f"sweep_run:{sweep_run_id}",
+        )
+        if endpoint_id is not None:
+            self.subscription_repo.create(
+                watch_id=watch_id,
+                endpoint_id=endpoint_id,
+                preset=preset,
+            )
+        return watch_id
+
     # -- internals ---------------------------------------------------------
 
     def _open_watches_for_source_ref(self, source_ref: str) -> list[Watch]:
@@ -178,7 +203,7 @@ class NotificationService:
         without touching ``fan_out``.
         """
         kind_prefix = source_ref.split(":", 1)[0]
-        if kind_prefix in {"job", "workflow_run"}:
+        if kind_prefix in {"job", "workflow_run", "sweep_run"}:
             return self.watch_repo.list_by_target(
                 kind=kind_prefix,
                 target_ref=source_ref,

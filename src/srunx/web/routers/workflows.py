@@ -32,7 +32,7 @@ from srunx.db.repositories.jobs import JobRepository
 from srunx.db.repositories.watches import WatchRepository
 from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
 from srunx.db.repositories.workflow_runs import WorkflowRunRepository
-from srunx.exceptions import WorkflowValidationError
+from srunx.exceptions import SweepExecutionError, WorkflowValidationError
 from srunx.logging import get_logger
 from srunx.models import (
     Job,
@@ -42,6 +42,8 @@ from srunx.models import (
     Workflow,
 )
 from srunx.runner import WorkflowRunner
+from srunx.sweep import SweepSpec
+from srunx.sweep.orchestrator import SweepOrchestrator
 
 from ..deps import get_adapter, get_db_conn
 from ..ssh_adapter import SlurmSSHAdapter
@@ -281,6 +283,34 @@ def _reject_python_args(yaml_content: str) -> None:
             )
 
 
+def _reject_python_in_mapping(mapping: dict[str, Any], *, source: str) -> None:
+    """Reject ``python:`` values in structured request payloads.
+
+    Used by the Web API sweep path where ``args_override`` and
+    ``sweep.matrix`` come in as JSON (not YAML text). The YAML path
+    uses :func:`_reject_python_args`.
+    """
+    for key, val in mapping.items():
+        if isinstance(val, str) and "python:" in val.lower():
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{source} key '{key}' contains 'python:' which is not "
+                    "allowed via web for security reasons"
+                ),
+            )
+        if isinstance(val, list):
+            for i, element in enumerate(val):
+                if isinstance(element, str) and "python:" in element.lower():
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"{source} key '{key}' contains 'python:' at index "
+                            f"{i} which is not allowed via web for security reasons"
+                        ),
+                    )
+
+
 def _serialize_workflow(
     runner: WorkflowRunner,
     raw_yaml_jobs: list[dict[str, Any]] | None = None,
@@ -397,6 +427,7 @@ def _serialize_run(
         "job_ids": job_ids,
         "job_statuses": job_statuses,
         "error": run.error,
+        "sweep_run_id": run.sweep_run_id,
     }
 
 
@@ -633,6 +664,21 @@ async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
     return _serialize_workflow(runner)
 
 
+class SweepSpecRequest(BaseModel):
+    """Sweep payload accepted by ``POST /api/workflows/{name}/run``.
+
+    Mirrors :class:`srunx.sweep.SweepSpec` but with a server-side default
+    for ``max_parallel`` (R7.9) so the client can omit it for small
+    sweeps.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    matrix: dict[str, list[Any]] = Field(default_factory=dict)
+    fail_fast: bool = False
+    max_parallel: int = 4
+
+
 class WorkflowRunRequest(BaseModel):
     from_job: str | None = None
     to_job: str | None = None
@@ -647,6 +693,11 @@ class WorkflowRunRequest(BaseModel):
     notify: bool = False
     endpoint_id: int | None = Field(default=None, gt=0)
     preset: str = "terminal"
+    # Sweep wiring (Phase G). ``args_override`` expands workflow-level
+    # ``args`` before Jinja rendering; ``sweep`` switches the request
+    # onto the :class:`SweepOrchestrator` path.
+    args_override: dict[str, Any] = Field(default_factory=dict)
+    sweep: SweepSpecRequest | None = None
 
 
 _WORKFLOW_RUN_PRESETS = ("terminal", "running_and_terminal", "all")
@@ -989,6 +1040,71 @@ async def _submit_jobs_bfs(
     return submitted
 
 
+async def _dispatch_sweep(
+    *,
+    yaml_path: Path,
+    name: str,
+    body: WorkflowRunRequest,
+) -> dict[str, Any]:
+    """Materialize + spawn a :class:`SweepOrchestrator` for the request.
+
+    Matrix validation (non-scalar values, reserved axis names, oversize
+    matrices) is routed through :class:`WorkflowValidationError` by
+    ``expand_matrix`` and surfaced as HTTP 422.
+    """
+    assert body.sweep is not None  # narrowed by caller
+    # ``SweepSpec`` / ``SweepOrchestrator`` are module-imported so
+    # tests can patch them via ``srunx.web.routers.workflows.*``.
+
+    # Read raw YAML once so the orchestrator can see base ``args`` and
+    # the workflow name. ``from_yaml`` would redundantly parse it.
+    def _load_raw() -> dict[str, Any]:
+        raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+
+    workflow_data = await anyio.to_thread.run_sync(_load_raw)
+
+    try:
+        sweep_spec = SweepSpec(
+            matrix=body.sweep.matrix,
+            fail_fast=body.sweep.fail_fast,
+            max_parallel=body.sweep.max_parallel,
+        )
+    except Exception as exc:  # noqa: BLE001 — Pydantic / value errors
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    endpoint_id: int | None = None
+    if body.notify and body.endpoint_id is not None:
+        endpoint_id = body.endpoint_id
+    elif body.notify and body.endpoint_id is None:
+        # Non-fatal — matches the non-sweep path's contract: the sweep
+        # still runs, but no external deliveries are wired.
+        logger.warning("sweep run: notify=true with no endpoint_id; skipping")
+
+    orchestrator = SweepOrchestrator(
+        workflow_yaml_path=yaml_path,
+        workflow_data={"name": name, **workflow_data},
+        args_override=body.args_override or None,
+        sweep_spec=sweep_spec,
+        submission_source="web",
+        endpoint_id=endpoint_id,
+        preset=body.preset,
+    )
+
+    try:
+        sweep_run = await orchestrator.arun()
+    except WorkflowValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SweepExecutionError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "sweep_run_id": sweep_run.id,
+        "status": sweep_run.status,
+        "cell_count": sweep_run.cell_count,
+    }
+
+
 @router.post("/{name}/run", status_code=202)
 async def run_workflow(
     name: str,
@@ -1027,10 +1143,33 @@ async def run_workflow(
             ),
         )
 
+    # R7: sanitize structured sweep / args_override payloads. YAML-level
+    # guard still runs on upload; this catches requests that bypass it.
+    if run_opts.args_override:
+        _reject_python_in_mapping(run_opts.args_override, source="args_override")
+    if run_opts.sweep is not None:
+        _reject_python_in_mapping(run_opts.sweep.matrix, source="sweep.matrix")
+
     yaml_path = _find_yaml(name, mount)
 
+    # Sweep branch: materialize + execute N cells through the orchestrator.
+    # The per-cell workflow_run rows are created inside the orchestrator's
+    # happy-path TX; we return the ``sweep_run_id`` + 202 so the client
+    # can poll ``/api/sweep_runs/{id}``.
+    if run_opts.sweep is not None:
+        return await _dispatch_sweep(
+            yaml_path=yaml_path,
+            name=name,
+            body=run_opts,
+        )
+
     # Load and optionally filter workflow
-    runner = await anyio.to_thread.run_sync(lambda: WorkflowRunner.from_yaml(yaml_path))
+    runner = await anyio.to_thread.run_sync(
+        lambda: WorkflowRunner.from_yaml(
+            yaml_path,
+            args_override=run_opts.args_override or None,
+        )
+    )
     workflow = runner.workflow
     if run_opts.from_job or run_opts.to_job or run_opts.single_job:
         filtered_jobs = _filter_workflow_jobs(

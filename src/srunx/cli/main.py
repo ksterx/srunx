@@ -3,7 +3,6 @@
 import os
 import sys
 import tempfile
-import traceback
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -23,7 +22,6 @@ from srunx.config import (
 )
 from srunx.logging import (
     configure_cli_logging,
-    configure_workflow_logging,
     get_logger,
 )
 from srunx.models import (
@@ -896,120 +894,51 @@ def flow_run(
             "--job", help="Execute only this specific job (ignoring all dependencies)"
         ),
     ] = None,
+    arg: Annotated[
+        list[str] | None,
+        typer.Option("--arg", help="Override args: KEY=VALUE (can repeat)"),
+    ] = None,
+    sweep: Annotated[
+        list[str] | None,
+        typer.Option("--sweep", help="Sweep axis values: KEY=v1,v2,v3 (can repeat)"),
+    ] = None,
+    fail_fast: Annotated[
+        bool,
+        typer.Option(
+            "--fail-fast",
+            help="Cancel remaining sweep cells after the first failure",
+        ),
+    ] = False,
+    max_parallel: Annotated[
+        int | None,
+        typer.Option(
+            "--max-parallel",
+            help="Maximum concurrent sweep cells (overrides YAML sweep.max_parallel)",
+        ),
+    ] = None,
 ) -> None:
     """Execute workflow from YAML file."""
-    configure_workflow_logging()
+    # Delegate to the shared implementation in srunx.cli.workflow which
+    # already handles sweep orchestration + args_override. The flags here
+    # must stay in sync with that helper's signature.
+    from srunx.cli.workflow import _execute_workflow
 
-    # Validate mutually exclusive options
-    if job and (from_job or to_job):
-        logger.error("❌ Cannot use --job with --from or --to options")
-        sys.exit(1)
-
-    if not yaml_file.exists():
-        logger.error(f"Workflow file not found: {yaml_file}")
-        sys.exit(1)
-
-    try:
-        # Setup callbacks.
-        #
-        # Resolution order mirrors ``srunx submit``:
-        #   --endpoint → durable watch per submitted job (poller pipeline)
-        #   --slack    → in-process SlackCallback fallback (deprecated)
-        # Both may be set; keeping the deprecated path firing guards
-        # against endpoint attach failures silently dropping notifications
-        # the user explicitly opted into.
-        callbacks: list[Callback] = []
-        if debug:
-            callbacks.append(DebugCallback())
-        effective_preset = preset or get_config().notifications.default_preset
-        if endpoint:
-            callbacks.append(
-                NotificationWatchCallback(
-                    endpoint_name=endpoint,
-                    preset=effective_preset,
-                )
-            )
-        if slack:
-            logger.warning(
-                "`--slack` is deprecated; configure an endpoint via "
-                "Settings → Notifications and pass `--endpoint <name>`."
-            )
-            webhook_url = os.getenv("SLACK_WEBHOOK_URL")
-            if webhook_url:
-                callbacks.append(SlackCallback(webhook_url=webhook_url))
-            else:
-                logger.warning(
-                    "SLACK_WEBHOOK_URL not set, skipping Slack notifications"
-                )
-
-        # Load and run workflow
-        runner = WorkflowRunner.from_yaml(yaml_file, callbacks=callbacks)
-
-        if dry_run:
-            console = Console()
-            console.print("🔍 Dry run mode - showing workflow structure:")
-            console.print(f"Workflow: {runner.workflow.name}")
-
-            # Get jobs that would be executed
-            jobs_to_execute = runner._get_jobs_to_execute(from_job, to_job, job)
-
-            if job:
-                console.print(f"Executing single job: {job}")
-            elif from_job or to_job:
-                range_info = []
-                if from_job:
-                    range_info.append(f"from {from_job}")
-                if to_job:
-                    range_info.append(f"to {to_job}")
-                console.print(
-                    f"Executing jobs {' '.join(range_info)}: {len(jobs_to_execute)} jobs"
-                )
-            else:
-                console.print(f"Executing all jobs: {len(jobs_to_execute)} jobs")
-
-            for job_obj in jobs_to_execute:
-                # Use hasattr checks to be robust against module boundary issues
-                if hasattr(job_obj, "command") and job_obj.command:
-                    command_str = (
-                        job_obj.command
-                        if isinstance(job_obj.command, str)
-                        else " ".join(job_obj.command)
-                    )
-                elif hasattr(job_obj, "script_path") and job_obj.script_path:
-                    command_str = f"Shell script: {job_obj.script_path}"
-                else:
-                    command_str = "N/A"
-                console.print(f"  - {job_obj.name}: {command_str}")
-        else:
-            runner.run(from_job=from_job, to_job=to_job, single_job=job)
-
-    except PermissionError as e:
-        logger.error(f"❌ Permission denied: {e}")
-        logger.error("💡 Check if you have write permissions to the target directories")
-        logger.error(traceback.format_exc())
-        sys.exit(1)
-    except OSError as e:
-        if e.errno == 30:  # Read-only file system
-            logger.error(f"❌ Cannot write to read-only file system: {e}")
-            logger.error(
-                "💡 The target directory appears to be read-only. Check mount permissions."
-            )
-        else:
-            logger.error(f"❌ System error: {e}")
-        logger.error(traceback.format_exc())
-        sys.exit(1)
-    except ImportError as e:
-        logger.error(f"❌ Missing dependency: {e}")
-        logger.error(
-            "💡 Make sure all required packages are installed in your environment"
-        )
-        logger.error(traceback.format_exc())
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"❌ Workflow execution failed: {e}")
-        logger.error(f"💡 Error type: {type(e).__name__}")
-        logger.error(traceback.format_exc())
-        sys.exit(1)
+    _execute_workflow(
+        yaml_file=yaml_file,
+        validate=False,
+        dry_run=dry_run,
+        log_level="INFO",
+        slack=slack,
+        endpoint=endpoint,
+        preset=preset,
+        from_job=from_job,
+        to_job=to_job,
+        job=job,
+        arg=arg,
+        sweep=sweep,
+        fail_fast=fail_fast,
+        max_parallel=max_parallel,
+    )
 
 
 @flow_app.command("validate")

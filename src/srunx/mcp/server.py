@@ -609,6 +609,26 @@ def validate_workflow(yaml_path: str) -> dict[str, Any]:
         return _err(str(e))
 
 
+def _reject_python_in_mcp_mapping(mapping: dict[str, Any], *, source: str) -> None:
+    """Reject ``python:`` prefix in MCP args / sweep payloads.
+
+    Mirrors the Web API guard. MCP is reachable by any Claude Code
+    session so we apply the same security rule as the Web path.
+    """
+    for key, val in mapping.items():
+        if isinstance(val, str) and "python:" in val.lower():
+            raise ValueError(
+                f"{source} key '{key}' contains 'python:' which is not allowed"
+            )
+        if isinstance(val, list):
+            for i, element in enumerate(val):
+                if isinstance(element, str) and "python:" in element.lower():
+                    raise ValueError(
+                        f"{source} key '{key}' contains 'python:' at index {i} "
+                        "which is not allowed"
+                    )
+
+
 @mcp.tool()
 def run_workflow(
     yaml_path: str,
@@ -616,6 +636,8 @@ def run_workflow(
     to_job: str | None = None,
     single_job: str | None = None,
     dry_run: bool = False,
+    args: dict[str, Any] | None = None,
+    sweep: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute a SLURM workflow from a YAML file.
 
@@ -628,11 +650,65 @@ def run_workflow(
         to_job: Stop execution at this job (skip later jobs)
         single_job: Execute only this specific job, ignoring dependencies
         dry_run: If true, show what would be executed without actually running
+        args: Optional mapping merged over the YAML ``args`` section before
+            Jinja rendering. ``python:`` prefix values are rejected.
+        sweep: Optional sweep spec: ``{"matrix": {...}, "fail_fast": bool,
+            "max_parallel": int}``. When present, the request goes through
+            :class:`SweepOrchestrator` and the response contains
+            ``sweep_run_id``.
     """
     try:
         from srunx.runner import WorkflowRunner
 
-        runner = WorkflowRunner.from_yaml(yaml_path)
+        if args is not None:
+            _reject_python_in_mcp_mapping(args, source="args")
+
+        if sweep is not None:
+            from pathlib import Path as _Path
+
+            import yaml as _yaml
+
+            from srunx.sweep import SweepSpec
+            from srunx.sweep.orchestrator import SweepOrchestrator
+
+            matrix = sweep.get("matrix") or {}
+            if not isinstance(matrix, dict):
+                return _err("sweep.matrix must be a mapping")
+            _reject_python_in_mcp_mapping(matrix, source="sweep.matrix")
+
+            try:
+                sweep_spec = SweepSpec(
+                    matrix=matrix,
+                    fail_fast=bool(sweep.get("fail_fast", False)),
+                    max_parallel=int(sweep.get("max_parallel", 4)),
+                )
+            except Exception as exc:  # noqa: BLE001
+                return _err(f"invalid sweep spec: {exc}")
+
+            yaml_file = _Path(yaml_path)
+            with open(yaml_file, encoding="utf-8") as f:
+                raw = _yaml.safe_load(f) or {}
+            if not isinstance(raw, dict):
+                raw = {}
+
+            orchestrator = SweepOrchestrator(
+                workflow_yaml_path=yaml_file,
+                workflow_data=raw,
+                args_override=args or None,
+                sweep_spec=sweep_spec,
+                submission_source="mcp",
+            )
+            sweep_run = orchestrator.run()
+            return _ok(
+                sweep_run_id=sweep_run.id,
+                status=sweep_run.status,
+                cell_count=sweep_run.cell_count,
+                cells_completed=sweep_run.cells_completed,
+                cells_failed=sweep_run.cells_failed,
+                cells_cancelled=sweep_run.cells_cancelled,
+            )
+
+        runner = WorkflowRunner.from_yaml(yaml_path, args_override=args or None)
 
         if dry_run:
             jobs_to_execute = runner._get_jobs_to_execute(from_job, to_job, single_job)

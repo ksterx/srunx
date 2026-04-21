@@ -428,6 +428,49 @@ def _evaluate_variables(args: dict[str, Any], required: set[str]) -> dict[str, A
     return evaluated
 
 
+def _transition_workflow_run(
+    workflow_run_id: int,
+    from_status: str,
+    to_status: str,
+    *,
+    error: str | None = None,
+) -> None:
+    """Best-effort ``workflow_runs`` status transition via the state service.
+
+    Opens a short ``BEGIN IMMEDIATE`` TX on a fresh connection so that
+    :class:`WorkflowRunStateService` (which refuses to open its own TX)
+    can emit the ``workflow_run.status_changed`` event and — when the
+    run belongs to a sweep — fan out sweep aggregation atomically.
+
+    Fails closed: any exception is logged at debug and swallowed, so a
+    DB outage never takes down the primary workflow flow.
+    """
+    try:
+        from srunx.db.connection import init_db, open_connection, transaction
+        from srunx.db.repositories.base import now_iso
+        from srunx.sweep.state_service import WorkflowRunStateService
+
+        completed_at = (
+            now_iso() if to_status in {"completed", "failed", "cancelled"} else None
+        )
+        init_db(delete_legacy=True)
+        conn = open_connection()
+        try:
+            with transaction(conn, "IMMEDIATE"):
+                WorkflowRunStateService.update(
+                    conn=conn,
+                    workflow_run_id=workflow_run_id,
+                    from_status=from_status,
+                    to_status=to_status,
+                    error=error,
+                    completed_at=completed_at,
+                )
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.debug(f"_transition_workflow_run failed: {exc}")
+
+
 class WorkflowRunner:
     """Runner for executing workflows defined in YAML with dynamic job scheduling.
 
@@ -462,6 +505,8 @@ class WorkflowRunner:
         yaml_path: str | Path,
         callbacks: Sequence[Callback] | None = None,
         single_job: str | None = None,
+        *,
+        args_override: dict[str, Any] | None = None,
     ) -> Self:
         """Load and validate a workflow from a YAML file.
 
@@ -469,6 +514,9 @@ class WorkflowRunner:
             yaml_path: Path to the YAML workflow definition file.
             callbacks: List of callbacks for job notifications.
             single_job: If specified, only load and process this job.
+            args_override: Optional mapping merged over the YAML ``args``
+                section before Jinja evaluation. Override entries win on
+                key collision; keys absent from the YAML are added.
 
         Returns:
             WorkflowRunner instance with loaded workflow.
@@ -486,7 +534,7 @@ class WorkflowRunner:
             data = yaml.safe_load(f)
 
         name = data.get("name", "unnamed")
-        args = data.get("args", {})
+        args = {**(data.get("args") or {}), **(args_override or {})}
         default_project = data.get("default_project")
         jobs_data = data.get("jobs", [])
 
@@ -689,6 +737,8 @@ class WorkflowRunner:
         from_job: str | None = None,
         to_job: str | None = None,
         single_job: str | None = None,
+        *,
+        workflow_run_id: int | None = None,
     ) -> dict[str, RunnableJobType]:
         """Run a workflow with dynamic job scheduling.
 
@@ -698,6 +748,11 @@ class WorkflowRunner:
             from_job: Start execution from this job (inclusive), ignoring dependencies
             to_job: Stop execution at this job (inclusive)
             single_job: Execute only this specific job, ignoring all dependencies
+            workflow_run_id: Pre-materialized ``workflow_runs`` row id to
+                attach this run to. When ``None`` (default), the runner
+                creates one itself via ``create_cli_workflow_run``. The
+                sweep orchestrator passes a non-None id so all cells of
+                the sweep share materialised ``workflow_runs`` rows.
 
         Returns:
             Dictionary mapping job names to completed Job instances.
@@ -710,22 +765,20 @@ class WorkflowRunner:
         # ``srunx report --workflow`` (which JOINs jobs to workflow_runs
         # on ``workflow_run_id``) returns zero rows for every CLI run.
         # Best-effort: a DB outage must not block the workflow itself.
-        from srunx.db.cli_helpers import (
-            create_cli_workflow_run,
-            mark_workflow_run_status,
-        )
+        if workflow_run_id is None:
+            from srunx.db.cli_helpers import create_cli_workflow_run
 
-        workflow_run_id = create_cli_workflow_run(
-            workflow_name=self.workflow.name,
-            args=self.args or None,
-        )
+            workflow_run_id = create_cli_workflow_run(
+                workflow_name=self.workflow.name,
+                args=self.args or None,
+            )
         if workflow_run_id is not None:
             # Flip from the default ``pending`` to ``running`` up-front so
             # ``workflow_runs`` reflects the live state; the final
             # completed/failed transition is recorded at the exit points
             # below. Terminal-status is cheap to re-mark, so a missed
             # update here is not fatal.
-            mark_workflow_run_status(workflow_run_id, "running")
+            _transition_workflow_run(workflow_run_id, "pending", "running")
 
         # Log execution plan
         if single_job:
@@ -906,8 +959,9 @@ class WorkflowRunner:
                 if result.status == JobStatus.FAILED:
                     logger.error(f"❌ Job {single_job} failed")
                     if workflow_run_id is not None:
-                        mark_workflow_run_status(
+                        _transition_workflow_run(
                             workflow_run_id,
+                            "running",
                             "failed",
                             error=f"Job {single_job} failed",
                         )
@@ -916,7 +970,7 @@ class WorkflowRunner:
                 logger.success(f"🎉 Job {single_job} completed!!")
 
                 if workflow_run_id is not None:
-                    mark_workflow_run_status(workflow_run_id, "completed")
+                    _transition_workflow_run(workflow_run_id, "running", "completed")
 
                 for callback in self.callbacks:
                     callback.on_workflow_completed(self.workflow)
@@ -926,7 +980,9 @@ class WorkflowRunner:
             except Exception as e:
                 logger.error(f"❌ Job {single_job} failed: {e}")
                 if workflow_run_id is not None:
-                    mark_workflow_run_status(workflow_run_id, "failed", error=str(e))
+                    _transition_workflow_run(
+                        workflow_run_id, "running", "failed", error=str(e)
+                    )
                 raise
 
         # Build reverse dependency map for efficient lookups (only for jobs we're executing)
@@ -1123,8 +1179,9 @@ class WorkflowRunner:
         if failed_jobs:
             logger.error(f"❌ Jobs failed: {failed_jobs}")
             if workflow_run_id is not None:
-                mark_workflow_run_status(
+                _transition_workflow_run(
                     workflow_run_id,
+                    "running",
                     "failed",
                     error=f"Jobs failed: {failed_jobs}",
                 )
@@ -1133,8 +1190,9 @@ class WorkflowRunner:
         if incomplete_jobs:
             logger.error(f"❌ Jobs did not complete: {incomplete_jobs}")
             if workflow_run_id is not None:
-                mark_workflow_run_status(
+                _transition_workflow_run(
                     workflow_run_id,
+                    "running",
                     "failed",
                     error=f"Jobs did not complete: {incomplete_jobs}",
                 )
@@ -1143,7 +1201,7 @@ class WorkflowRunner:
         logger.success(f"🎉 Workflow {self.workflow.name} completed!!")
 
         if workflow_run_id is not None:
-            mark_workflow_run_status(workflow_run_id, "completed")
+            _transition_workflow_run(workflow_run_id, "running", "completed")
 
         for callback in self.callbacks:
             callback.on_workflow_completed(self.workflow)

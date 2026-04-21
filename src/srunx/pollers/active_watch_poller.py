@@ -58,6 +58,7 @@ from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
 from srunx.db.repositories.workflow_runs import WorkflowRunRepository
 from srunx.logging import get_logger
 from srunx.notifications.service import NotificationService
+from srunx.sweep.state_service import WorkflowRunStateService
 
 logger = get_logger(__name__)
 
@@ -284,9 +285,7 @@ class ActiveWatchPoller:
                 workflow_run_repo=workflow_run_repo,
                 workflow_run_job_repo=workflow_run_job_repo,
                 job_repo=job_repo,
-                event_repo=event_repo,
                 watch_repo=watch_repo,
-                notification_service=notification_service,
             )
             transitions_detected += wf_transitions
             events_emitted += wf_events
@@ -428,9 +427,7 @@ class ActiveWatchPoller:
         workflow_run_repo: WorkflowRunRepository,
         workflow_run_job_repo: WorkflowRunJobRepository,
         job_repo: JobRepository,
-        event_repo: EventRepository,
         watch_repo: WatchRepository,
-        notification_service: NotificationService,
     ) -> tuple[int, int]:
         """Process every workflow_run-kind watch. Returns (transitions, events)."""
         transitions_count = 0
@@ -459,39 +456,30 @@ class ActiveWatchPoller:
             is_terminal = new_status in _TERMINAL_WORKFLOW_RUN_STATUSES
             completed_iso: str | None = now_iso() if is_terminal else None
 
+            # Route through WorkflowRunStateService so status UPDATE,
+            # workflow_run.status_changed event insert, delivery fan-out,
+            # and (for sweep-backed runs) sweep aggregation all land in
+            # one TX with consistent dedup semantics.
             with transaction(conn, "IMMEDIATE"):
-                workflow_run_repo.update_status(
-                    run_id,
-                    new_status,
+                updated = WorkflowRunStateService.update(
+                    conn=conn,
+                    workflow_run_id=run_id,
+                    from_status=run.status,
+                    to_status=new_status,
                     completed_at=completed_iso,
                 )
-                transitions_count += 1
-
-                payload: dict[str, object] = {
-                    "workflow_run_id": run_id,
-                    "workflow_name": run.workflow_name,
-                    "from_status": run.status,
-                    "to_status": new_status,
-                }
-                event_id = event_repo.insert(
-                    kind="workflow_run.status_changed",
-                    source_ref=source_ref,
-                    payload=payload,
-                )
-                if event_id is not None:
+                if updated:
+                    transitions_count += 1
                     events_count += 1
-                    event = event_repo.get(event_id)
-                    if event is not None:
-                        notification_service.fan_out(event, conn)
 
-                if is_terminal:
-                    for closing_watch in watch_repo.list_by_target(
-                        kind="workflow_run",
-                        target_ref=source_ref,
-                        only_open=True,
-                    ):
-                        if closing_watch.id is not None:
-                            watch_repo.close(closing_watch.id)
+                    if is_terminal:
+                        for closing_watch in watch_repo.list_by_target(
+                            kind="workflow_run",
+                            target_ref=source_ref,
+                            only_open=True,
+                        ):
+                            if closing_watch.id is not None:
+                                watch_repo.close(closing_watch.id)
 
         return transitions_count, events_count
 
