@@ -8,9 +8,13 @@ does not natively support.
 from __future__ import annotations
 
 import re
+import threading
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from srunx.callbacks import Callback
 from srunx.client_protocol import (
     JobStatusInfo,
     parse_slurm_datetime,
@@ -18,9 +22,12 @@ from srunx.client_protocol import (
 )
 from srunx.logging import get_logger
 from srunx.ssh.core.client import SSHSlurmClient
-from srunx.ssh.core.config import ConfigManager
+from srunx.ssh.core.config import ConfigManager, MountConfig
 from srunx.ssh.core.ssh_config import SSHConfigParser  # noqa: F811
 from srunx.utils import GPU_TRES_RE  # noqa: E402
+
+if TYPE_CHECKING:
+    from srunx.models import JobStatus, RunnableJobType
 
 logger = get_logger(__name__)
 
@@ -42,6 +49,30 @@ _TERMINAL_STATES = {
 }
 
 
+@dataclass(frozen=True)
+class SlurmSSHAdapterSpec:
+    """Connection spec used to clone a :class:`SlurmSSHAdapter` for pooling.
+
+    Intentionally captures only the configuration needed to re-create an
+    adapter with an equivalent SSH session -- no paramiko clients, SFTP
+    channels, or in-flight state. Used by Step 4's pool factory to mint
+    per-cell adapter clones off a shared singleton template.
+
+    ``mounts`` is a tuple so the spec itself is immutable; the contained
+    :class:`MountConfig` instances are Pydantic models and may not be
+    hashable, so do not rely on ``hash(spec)``.
+    """
+
+    profile_name: str | None
+    hostname: str
+    username: str
+    key_filename: str | None
+    port: int
+    proxy_jump: str | None = None
+    env_vars: tuple[tuple[str, str], ...] = ()
+    mounts: tuple[MountConfig, ...] = field(default_factory=tuple)
+
+
 def _validate_identifier(value: str, name: str) -> None:
     """Validate a SLURM identifier to prevent shell injection."""
     if not _SAFE_IDENTIFIER.match(value):
@@ -55,9 +86,13 @@ def _run_slurm_cmd(adapter: SlurmSSHAdapter, cmd: str) -> str:
     which handles SLURM path resolution, environment setup, and login shell wrapping.
 
     Raises RuntimeError if the command fails.
+
+    Runs under the adapter's ``_io_lock`` so concurrent workflow / sweep
+    threads cannot interleave SSH I/O on the shared paramiko session.
     """
-    adapter._ensure_connected()
-    stdout, stderr, exit_code = adapter._client._execute_slurm_command(cmd)  # noqa: SLF001
+    with adapter._io_lock:  # noqa: SLF001
+        adapter._ensure_connected()
+        stdout, stderr, exit_code = adapter._client._execute_slurm_command(cmd)  # noqa: SLF001
     if exit_code != 0:
         raise RuntimeError(f"Remote command failed ({exit_code}): {stderr.strip()}")
     return stdout
@@ -74,12 +109,44 @@ class SlurmSSHAdapter:
         username: str | None = None,
         key_filename: str | None = None,
         port: int = 22,
+        proxy_jump: str | None = None,
+        env_vars: dict[str, str] | None = None,
+        mounts: Sequence[MountConfig] | None = None,
+        callbacks: Sequence[Callback] | None = None,
     ) -> None:
+        # Reentrant lock: some code paths call _ensure_connected() explicitly
+        # from inside another locked section (e.g. _run_slurm_cmd). An RLock
+        # lets the same thread re-enter without self-deadlocking while still
+        # serializing I/O across threads.
+        self._io_lock: threading.RLock = threading.RLock()
+
+        # Resolved connection params — persisted so connection_spec() can
+        # reproduce this adapter in Step 4's pool factory. Populated below
+        # in both the profile_name and direct-hostname branches.
+        self._profile_name: str | None = profile_name
+        self._hostname: str = ""
+        self._username: str = ""
+        self._key_filename: str | None = None
+        self._port: int = port
+        self._proxy_jump: str | None = None
+        self._env_vars: dict[str, str] = dict(env_vars) if env_vars else {}
+        self._mounts: tuple[MountConfig, ...] = (
+            tuple(mounts) if mounts is not None else ()
+        )
+
+        # Callbacks attached to this adapter; invoked by :meth:`run` on the
+        # sweep path. Mirrors ``Slurm.callbacks`` in ``srunx.client``.
+        self.callbacks: list[Callback] = list(callbacks) if callbacks else []
+
         if profile_name:
             cm = ConfigManager()
             profile = cm.get_profile(profile_name)
             if not profile:
                 raise ValueError(f"SSH profile '{profile_name}' not found")
+
+            self._mounts = tuple(profile.mounts) if profile.mounts else ()
+            if profile.env_vars:
+                self._env_vars = dict(profile.env_vars)
 
             # Resolve connection: ssh_host (from ~/.ssh/config) or direct fields
             if profile.ssh_host:
@@ -89,13 +156,18 @@ class SlurmSSHAdapter:
                     raise ValueError(
                         f"SSH host '{profile.ssh_host}' not found in ~/.ssh/config"
                     )
+                self._hostname = ssh_host.hostname or profile.ssh_host
+                self._username = ssh_host.user or ""
+                self._key_filename = ssh_host.identity_file
+                self._port = ssh_host.port or 22
+                self._proxy_jump = ssh_host.proxy_jump
                 self._client = SSHSlurmClient(
-                    hostname=ssh_host.hostname or profile.ssh_host,
-                    username=ssh_host.user or "",
-                    key_filename=ssh_host.identity_file,
-                    port=ssh_host.port or 22,
-                    proxy_jump=ssh_host.proxy_jump,
-                    env_vars=dict(profile.env_vars) if profile.env_vars else None,
+                    hostname=self._hostname,
+                    username=self._username,
+                    key_filename=self._key_filename,
+                    port=self._port,
+                    proxy_jump=self._proxy_jump,
+                    env_vars=self._env_vars or None,
                 )
             else:
                 # Resolve hostname via ~/.ssh/config if it's an alias
@@ -115,23 +187,102 @@ class SlurmSSHAdapter:
                     if ssh_host.proxy_jump and not resolved_proxy:
                         resolved_proxy = ssh_host.proxy_jump
 
+                self._hostname = resolved_hostname
+                self._username = profile.username
+                self._key_filename = resolved_key
+                self._port = resolved_port
+                self._proxy_jump = resolved_proxy
                 self._client = SSHSlurmClient(
                     hostname=resolved_hostname,
                     username=profile.username,
                     key_filename=resolved_key,
                     port=resolved_port,
                     proxy_jump=resolved_proxy,
-                    env_vars=dict(profile.env_vars) if profile.env_vars else None,
+                    env_vars=self._env_vars or None,
                 )
         elif hostname and username:
+            self._hostname = hostname
+            self._username = username
+            self._key_filename = key_filename
+            self._port = port
+            self._proxy_jump = proxy_jump
             self._client = SSHSlurmClient(
                 hostname=hostname,
                 username=username,
                 key_filename=key_filename,
                 port=port,
+                proxy_jump=proxy_jump,
+                env_vars=self._env_vars or None,
             )
         else:
             raise ValueError("Either profile_name or (hostname, username) required")
+
+    # ── Connection spec (for Step 4 pool factory) ─────
+
+    @property
+    def connection_spec(self) -> SlurmSSHAdapterSpec:
+        """Return the immutable connection spec for cloning this adapter.
+
+        Step 4's sweep pool uses this spec to mint per-cell adapter clones
+        off the shared singleton template without copying any live
+        paramiko / SFTP state. Reading the spec does NOT touch the wire,
+        so it is safe to call without holding ``_io_lock``.
+        """
+        return SlurmSSHAdapterSpec(
+            profile_name=self._profile_name,
+            hostname=self._hostname,
+            username=self._username,
+            key_filename=self._key_filename,
+            port=self._port,
+            proxy_jump=self._proxy_jump,
+            env_vars=tuple(sorted(self._env_vars.items())),
+            mounts=self._mounts,
+        )
+
+    @classmethod
+    def from_spec(
+        cls,
+        spec: SlurmSSHAdapterSpec,
+        *,
+        callbacks: Sequence[Callback] | None = None,
+    ) -> SlurmSSHAdapter:
+        """Create a fresh adapter from a connection spec.
+
+        The returned adapter is NOT connected; it connects lazily on first
+        SSH I/O (via ``_ensure_connected``). Used by the Step 4 pool
+        factory to mint per-lease adapter clones off the singleton template
+        without copying any live paramiko / SFTP state.
+
+        ``callbacks`` are attached on construction so the pool's chosen
+        callback list propagates into each cloned adapter's ``run`` path.
+        """
+        return cls(
+            hostname=spec.hostname,
+            username=spec.username,
+            key_filename=spec.key_filename,
+            port=spec.port,
+            proxy_jump=spec.proxy_jump,
+            env_vars=dict(spec.env_vars) if spec.env_vars else None,
+            mounts=list(spec.mounts) if spec.mounts else None,
+            callbacks=callbacks,
+        )
+
+    @property
+    def is_connected(self) -> bool:
+        """Return True when the underlying paramiko session is live.
+
+        Used by the Step 4 pool to decide whether a released adapter is
+        safe to return to the free queue or should be discarded. Never
+        raises — any transport-level error is treated as "not connected".
+        """
+        try:
+            ssh = self._client.ssh_client
+            if ssh is None:
+                return False
+            transport = ssh.get_transport()
+            return bool(transport is not None and transport.is_active())
+        except Exception:  # noqa: BLE001 — diagnostic only
+            return False
 
     def _set_keepalive(self) -> None:
         ssh = self._client.ssh_client
@@ -141,29 +292,40 @@ class SlurmSSHAdapter:
                 transport.set_keepalive(30)
 
     def connect(self) -> bool:
-        result = self._client.connect()
-        if result:
-            self._set_keepalive()
-        return result
+        with self._io_lock:
+            result = self._client.connect()
+            if result:
+                self._set_keepalive()
+            return result
 
     def disconnect(self) -> None:
-        self._client.disconnect()
+        with self._io_lock:
+            self._client.disconnect()
 
     def _ensure_connected(self) -> None:
-        """Reconnect if the SSH connection has dropped."""
-        ssh = self._client.ssh_client
-        needs_reconnect = ssh is None
-        if not needs_reconnect:
-            transport = ssh.get_transport()  # type: ignore[union-attr]
-            needs_reconnect = transport is None or not transport.is_active()
+        """Reconnect if the SSH connection has dropped.
 
-        if needs_reconnect:
-            logger.warning("SSH connection lost, reconnecting...")
-            self._client.disconnect()
-            if not self._client.connect():
-                raise RuntimeError("SSH reconnection failed")
-            self._set_keepalive()
-            logger.info("SSH reconnection successful")
+        Safe to call from inside another ``_io_lock`` region because the
+        lock is reentrant. Callers that invoke SSH I/O directly on
+        ``self._client`` must wrap both ``_ensure_connected`` and the
+        subsequent call in a single ``with self._io_lock`` block so that
+        a competing thread cannot swap the paramiko session between the
+        check and the use.
+        """
+        with self._io_lock:
+            ssh = self._client.ssh_client
+            needs_reconnect = ssh is None
+            if not needs_reconnect:
+                transport = ssh.get_transport()  # type: ignore[union-attr]
+                needs_reconnect = transport is None or not transport.is_active()
+
+            if needs_reconnect:
+                logger.warning("SSH connection lost, reconnecting...")
+                self._client.disconnect()
+                if not self._client.connect():
+                    raise RuntimeError("SSH reconnection failed")
+                self._set_keepalive()
+                logger.info("SSH reconnection successful")
 
     def __enter__(self) -> SlurmSSHAdapter:
         self.connect()
@@ -471,6 +633,202 @@ class SlurmSSHAdapter:
     def get_job_status(self, job_id: int) -> str:
         """Get job status string."""
         return self._client.get_job_status(str(job_id))
+
+    def get_job_output_detailed(
+        self,
+        job_id: int | str,
+        job_name: str | None = None,
+        skip_content: bool = False,
+    ) -> dict[str, str | list[str] | None]:
+        """Return log-file metadata (and optionally content) for ``job_id``.
+
+        Signature + return shape match :meth:`srunx.client.Slurm.get_job_output_detailed`
+        so ``SSHWorkflowJobExecutor`` satisfies
+        :class:`WorkflowJobExecutorProtocol` transparently.
+
+        ``skip_content=True`` suppresses file content reads so callers that
+        only want the primary-log path pay only the ``find`` round-trips.
+        """
+        with self._io_lock:
+            self._ensure_connected()
+            info = self._client.get_job_output_detailed(str(job_id), job_name=job_name)
+        if skip_content:
+            # Preserve the list[str] / None / str shape expected by callers.
+            info["output"] = ""
+            info["error"] = ""
+        return info
+
+    # ── Workflow executor surface (Step 4) ───────────
+
+    def run(
+        self,
+        job: RunnableJobType,
+        *,
+        workflow_name: str | None = None,
+        workflow_run_id: int | None = None,
+    ) -> RunnableJobType:
+        """Submit *job* over SSH and block until it reaches a terminal status.
+
+        Mirrors :meth:`srunx.client.Slurm.run` on the sweep/web path:
+
+        1. Render the SLURM script locally from the job's template
+           (``job.template`` → default template), using
+           :func:`render_job_script` so ``Job.srun_args`` / ``Job.launch_prefix``
+           fallbacks apply consistently.
+        2. Submit the rendered content via ``submit_sbatch_job`` (the SSH
+           client writes it to a remote temp path before ``sbatch``).
+        3. Record the submission in the state DB (best-effort, mirrors
+           ``Slurm.submit``'s ``record_submission_from_job`` call).
+        4. Fire ``on_job_submitted`` callbacks.
+        5. Poll the remote status until terminal, then fire the matching
+           ``on_job_completed`` / ``on_job_failed`` / ``on_job_cancelled``
+           callback and return the updated job. Raises :class:`RuntimeError`
+           on terminal failure so the workflow runner's retry / failure
+           path triggers identically to the local ``Slurm`` executor.
+        """
+        # Inline imports keep the module import cost flat and mirror the
+        # pattern used in ``srunx.client.Slurm`` (e.g. ``record_submission_from_job``).
+        from srunx.models import (
+            Job,
+            JobStatus,
+            ShellJob,
+            render_job_script,
+            render_shell_job_script,
+        )
+        from srunx.template import get_template_path
+
+        # Resolve the template path once, honouring the Job-level override
+        # if present. ``get_template_path("base")`` returns the packaged
+        # default — same source of truth ``Slurm._get_default_template``
+        # uses so rendered output is bit-identical to the local path.
+        if isinstance(job, Job):
+            template_path = job.template if job.template else get_template_path("base")
+        else:
+            template_path = None  # ShellJob uses its own script path
+
+        with self._io_lock:
+            self._ensure_connected()
+
+            # --- 1. Render script locally ---
+            import tempfile as _tempfile
+
+            with _tempfile.TemporaryDirectory() as tmpdir:
+                if isinstance(job, Job):
+                    assert template_path is not None  # narrow for mypy
+                    script_path = render_job_script(
+                        template_path,
+                        job,
+                        output_dir=tmpdir,
+                    )
+                elif isinstance(job, ShellJob):
+                    script_path = render_shell_job_script(job.script_path, job, tmpdir)
+                else:  # pragma: no cover — Pydantic union guard
+                    raise TypeError(f"Unsupported job type: {type(job).__name__}")
+
+                with open(script_path, encoding="utf-8") as f:
+                    script_content = f.read()
+
+            # --- 2. Submit via SSH ---
+            result = self._client.submit_sbatch_job(script_content, job_name=job.name)
+            if result is None or not result.job_id:
+                raise RuntimeError(f"Failed to submit job '{job.name}' via SSH")
+            job_id = int(result.job_id)
+            job.job_id = job_id
+            job.status = JobStatus.PENDING
+
+        logger.debug(f"Submitted job '{job.name}' via SSH with ID {job_id}")
+
+        # --- 3. Record submission in state DB (best-effort) ---
+        self._record_job_submission(
+            job,
+            workflow_name=workflow_name,
+            workflow_run_id=workflow_run_id,
+        )
+
+        # --- 4. Fire on_job_submitted callbacks ---
+        for callback in self.callbacks:
+            try:
+                callback.on_job_submitted(job)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    f"on_job_submitted callback failed for job {job.name}: {exc}"
+                )
+
+        # --- 5. Monitor to terminal ---
+        terminal_status = self._monitor_until_terminal(job_id)
+        try:
+            job.status = JobStatus(terminal_status)
+        except ValueError:
+            # Unknown / NOT_FOUND — treat as FAILED so the runner's retry
+            # path trips instead of silently returning a non-terminal job.
+            job.status = JobStatus.FAILED
+
+        # --- 6. Dispatch terminal callback + handle failure ---
+        self._record_completion_safe(job_id, job.status)
+        for callback in self.callbacks:
+            try:
+                if job.status == JobStatus.COMPLETED:
+                    callback.on_job_completed(job)
+                elif job.status == JobStatus.FAILED:
+                    callback.on_job_failed(job)
+                elif job.status in {JobStatus.CANCELLED, JobStatus.TIMEOUT}:
+                    callback.on_job_cancelled(job)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"Terminal callback failed for job {job.name}: {exc}")
+
+        if job.status in {JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.TIMEOUT}:
+            raise RuntimeError(f"Job '{job.name}' ended with status {job.status.value}")
+
+        return job
+
+    def _monitor_until_terminal(self, job_id: int, poll_interval: int = 10) -> str:
+        """Poll remote job status until it reaches a terminal SLURM state.
+
+        Returns the raw SLURM state string (e.g. ``"COMPLETED"``). Uses
+        :meth:`get_job_status` so the lock + reconnection discipline is
+        uniform with the rest of the adapter.
+        """
+        import time as _time
+
+        terminal = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "NOT_FOUND"}
+        while True:
+            status = self.get_job_status(job_id)
+            if status in terminal:
+                return status
+            _time.sleep(poll_interval)
+
+    @staticmethod
+    def _record_job_submission(
+        job: RunnableJobType,
+        *,
+        workflow_name: str | None,
+        workflow_run_id: int | None,
+    ) -> None:
+        """Insert a ``jobs`` row for the SSH-submitted job.
+
+        Thin wrapper around :func:`record_submission_from_job` — same
+        best-effort contract as the local :class:`Slurm` executor.
+        """
+        try:
+            from srunx.db.cli_helpers import record_submission_from_job
+
+            record_submission_from_job(
+                job,
+                workflow_name=workflow_name,
+                workflow_run_id=workflow_run_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.debug(f"_record_job_submission failed: {exc}")
+
+    @staticmethod
+    def _record_completion_safe(job_id: int, status: JobStatus) -> None:
+        """Record terminal status in ``jobs`` / ``job_state_transitions``."""
+        try:
+            from srunx.db.cli_helpers import record_completion
+
+            record_completion(job_id, status)
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.debug(f"_record_completion_safe failed: {exc}")
 
     # ── Resource Operations ───────────────────────
 

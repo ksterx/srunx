@@ -48,6 +48,7 @@ from srunx.sweep.state_service import WorkflowRunStateService
 
 from ..deps import get_adapter, get_db_conn
 from ..ssh_adapter import SlurmSSHAdapter
+from ..ssh_executor import SlurmSSHExecutorPool
 
 logger = get_logger(__name__)
 
@@ -1071,13 +1072,19 @@ async def _submit_jobs_bfs(
 
 
 async def _run_sweep_background(
-    orchestrator: SweepOrchestrator, sweep_run_id: int
+    orchestrator: SweepOrchestrator,
+    sweep_run_id: int,
+    pool: SlurmSSHExecutorPool | None = None,
 ) -> None:
     """Background task body: drive already-materialized cells to completion.
 
     Exceptions are logged and swallowed — the sweep's status columns in
     the DB are authoritative, and the aggregator will converge the sweep
     to a terminal state even if this task crashes mid-flight.
+
+    When a ``pool`` is supplied, every pooled SSH adapter is torn down
+    after the orchestrator returns (success or crash) so a completed
+    sweep never leaks SSH sessions against the cluster.
     """
     try:
         await orchestrator.arun_from_materialized(sweep_run_id)
@@ -1087,6 +1094,16 @@ async def _run_sweep_background(
             sweep_run_id,
             exc_info=True,
         )
+    finally:
+        if pool is not None:
+            try:
+                await anyio.to_thread.run_sync(pool.close)
+            except Exception:  # noqa: BLE001 — pool cleanup is best-effort
+                logger.warning(
+                    "Failed to close SSH executor pool for sweep_run_id=%s",
+                    sweep_run_id,
+                    exc_info=True,
+                )
 
 
 async def _dispatch_sweep(
@@ -1095,6 +1112,7 @@ async def _dispatch_sweep(
     name: str,
     body: WorkflowRunRequest,
     request: Request,
+    adapter: SlurmSSHAdapter,
 ) -> dict[str, Any]:
     """Materialize synchronously + spawn the orchestrator as a background task.
 
@@ -1104,10 +1122,10 @@ async def _dispatch_sweep(
     :class:`WorkflowValidationError` by ``expand_matrix`` and surfaced
     as HTTP 422.
 
-    Phase 1 limitation: the background task runs cells through the local
-    :class:`WorkflowRunner`, bypassing the Web app's SSH adapter. Remote
-    cluster sweeps via the Web UI require Phase 2 (SSH adapter
-    integration in :class:`SweepOrchestrator`).
+    Sweep cells run through a per-sweep :class:`SlurmSSHExecutorPool`
+    bounded by ``min(max_parallel, 8)`` so concurrent cells share a small
+    set of pooled SSH sessions against the cluster. The pool is closed in
+    :func:`_run_sweep_background` once the orchestrator returns.
     """
     assert body.sweep is not None  # narrowed by caller
     # ``SweepSpec`` / ``SweepOrchestrator`` are module-imported so
@@ -1138,6 +1156,19 @@ async def _dispatch_sweep(
         # still runs, but no external deliveries are wired.
         logger.warning("sweep run: notify=true with no endpoint_id; skipping")
 
+    # Build a per-sweep SSH executor pool so each cell's runner submits
+    # through the configured cluster adapter instead of the local
+    # :class:`Slurm` client. Size is capped at 8 to avoid opening more
+    # SSH sessions than most clusters comfortably accept from a single
+    # web host. ``pool.lease`` matches ``WorkflowJobExecutorFactory`` so
+    # it can be handed to the orchestrator without further wrapping.
+    pool_size = max(1, min(sweep_spec.max_parallel, 8))
+    pool = SlurmSSHExecutorPool(
+        adapter.connection_spec,
+        callbacks=[],
+        size=pool_size,
+    )
+
     orchestrator = SweepOrchestrator(
         workflow_yaml_path=yaml_path,
         workflow_data={"name": name, **workflow_data},
@@ -1146,23 +1177,30 @@ async def _dispatch_sweep(
         submission_source="web",
         endpoint_id=endpoint_id,
         preset=body.preset,
+        executor_factory=pool.lease,
     )
 
     try:
         sweep_run_id = await anyio.to_thread.run_sync(orchestrator.materialize)
     except WorkflowValidationError as exc:
+        pool.close()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except SweepExecutionError as exc:
+        pool.close()
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except BaseException:
+        pool.close()
+        raise
 
     # Spawn the execution loop on the app's lifespan task group so the
     # HTTP request can return 202 immediately. ``task_group`` is set up
     # in :func:`srunx.web.app.lifespan`; fall back to a stand-alone
     # ``asyncio.create_task`` if the app state hasn't been wired (e.g.
-    # a bare ``TestClient`` without lifespan).
+    # a bare ``TestClient`` without lifespan). Either way the pool is
+    # closed inside :func:`_run_sweep_background`.
     task_group = getattr(request.app.state, "task_group", None)
     if task_group is not None:
-        task_group.start_soon(_run_sweep_background, orchestrator, sweep_run_id)
+        task_group.start_soon(_run_sweep_background, orchestrator, sweep_run_id, pool)
     else:
         # Fallback for test harnesses that don't run lifespan: keep a
         # weak-ish reference to the spawned task so it isn't garbage-
@@ -1173,7 +1211,9 @@ async def _dispatch_sweep(
         if pending is None:
             pending = set()
             request.app.state.background_tasks = pending
-        task = asyncio.create_task(_run_sweep_background(orchestrator, sweep_run_id))
+        task = asyncio.create_task(
+            _run_sweep_background(orchestrator, sweep_run_id, pool)
+        )
         pending.add(task)
         task.add_done_callback(pending.discard)
 
@@ -1258,6 +1298,7 @@ async def run_workflow(
             name=name,
             body=run_opts,
             request=request,
+            adapter=adapter,
         )
 
     # Load and optionally filter workflow

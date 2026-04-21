@@ -16,6 +16,7 @@ from typing import Any, Literal
 import anyio
 
 from srunx.callbacks import Callback
+from srunx.client_protocol import WorkflowJobExecutorFactory
 from srunx.db.connection import init_db, open_connection, transaction
 from srunx.db.models import SweepRun, SweepSubmissionSource, WorkflowRunTriggeredBy
 from srunx.db.repositories.base import now_iso
@@ -69,6 +70,7 @@ class SweepOrchestrator:
         callbacks: Sequence[Callback] | None = None,
         endpoint_id: int | None = None,
         preset: str = "terminal",
+        executor_factory: WorkflowJobExecutorFactory | None = None,
     ) -> None:
         self.workflow_yaml_path = workflow_yaml_path
         self.workflow_data = workflow_data
@@ -78,6 +80,13 @@ class SweepOrchestrator:
         self.callbacks = list(callbacks) if callbacks is not None else []
         self.endpoint_id = endpoint_id
         self.preset = preset
+        # Optional executor factory forwarded verbatim to every per-cell
+        # :class:`WorkflowRunner`. ``None`` (default) keeps the legacy CLI
+        # behaviour of running cells against a local :class:`Slurm`
+        # singleton; the Web dispatcher injects
+        # :meth:`SlurmSSHExecutorPool.lease` here to route sweep cells
+        # through the configured SSH adapter.
+        self.executor_factory = executor_factory
 
         self._cancelled: bool = False
         self._sweep_run_id: int | None = None
@@ -426,6 +435,7 @@ class SweepOrchestrator:
             self.workflow_yaml_path,
             callbacks=self.callbacks,
             args_override=cell.effective_args,
+            executor_factory=self.executor_factory,
         )
         runner.run(workflow_run_id=cell.workflow_run_id)
 

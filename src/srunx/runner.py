@@ -8,6 +8,7 @@ import time
 from collections import defaultdict
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from textwrap import dedent
 from typing import Any, Self
@@ -17,6 +18,10 @@ import yaml  # type: ignore
 
 from srunx.callbacks import Callback
 from srunx.client import Slurm
+from srunx.client_protocol import (
+    WorkflowJobExecutorFactory,
+    WorkflowJobExecutorProtocol,
+)
 from srunx.exceptions import WorkflowValidationError
 from srunx.logging import get_logger
 from srunx.models import (
@@ -484,6 +489,8 @@ class WorkflowRunner:
         callbacks: Sequence[Callback] | None = None,
         args: dict[str, Any] | None = None,
         default_project: str | None = None,
+        *,
+        executor_factory: WorkflowJobExecutorFactory | None = None,
     ) -> None:
         """Initialize workflow runner.
 
@@ -492,12 +499,36 @@ class WorkflowRunner:
             callbacks: List of callbacks for job notifications.
             args: Template variables from the YAML args section.
             default_project: Default project (mount name) for file syncing.
+            executor_factory: Optional context-manager factory producing a
+                :class:`WorkflowJobExecutorProtocol` per lease. When ``None``
+                (default) the runner falls back to a shared local
+                :class:`Slurm` singleton wrapped in ``nullcontext`` — i.e.
+                existing CLI behaviour is preserved bit-for-bit. Inject a
+                factory to route submissions through an alternative
+                executor (e.g. SSH-backed pool for the Web UI sweep path)
+                without otherwise changing runner semantics.
         """
         self.workflow = workflow
         self.slurm = Slurm(callbacks=callbacks)
         self.callbacks = callbacks or []
         self.args = args or {}
         self.default_project = default_project
+        self._executor_factory = executor_factory
+
+    def _get_executor_cm(
+        self,
+    ) -> AbstractContextManager[WorkflowJobExecutorProtocol]:
+        """Return a context manager yielding a workflow job executor.
+
+        When an ``executor_factory`` is injected, defers to it (bounded
+        pool lease, SSH adapter, etc.). Otherwise falls back to the
+        legacy :class:`Slurm` singleton on ``self.slurm`` via
+        ``nullcontext`` so backward-compatible call sites keep using the
+        same underlying client.
+        """
+        if self._executor_factory is not None:
+            return self._executor_factory()
+        return nullcontext(self.slurm)
 
     @classmethod
     def from_yaml(
@@ -507,6 +538,7 @@ class WorkflowRunner:
         single_job: str | None = None,
         *,
         args_override: dict[str, Any] | None = None,
+        executor_factory: WorkflowJobExecutorFactory | None = None,
     ) -> Self:
         """Load and validate a workflow from a YAML file.
 
@@ -517,6 +549,8 @@ class WorkflowRunner:
             args_override: Optional mapping merged over the YAML ``args``
                 section before Jinja evaluation. Override entries win on
                 key collision; keys absent from the YAML are added.
+            executor_factory: Optional executor factory passed through to
+                :class:`WorkflowRunner`; see ``__init__`` for semantics.
 
         Returns:
             WorkflowRunner instance with loaded workflow.
@@ -567,6 +601,7 @@ class WorkflowRunner:
             callbacks=callbacks,
             args=args,
             default_project=default_project,
+            executor_factory=executor_factory,
         )
 
     @staticmethod
@@ -815,7 +850,8 @@ class WorkflowRunner:
                     logger.warning("No job ID available for log retrieval")
                     return
 
-                log_info = self.slurm.get_job_output_detailed(job.job_id, job.name)
+                with self._get_executor_cm() as executor:
+                    log_info = executor.get_job_output_detailed(job.job_id, job.name)
 
                 found_files = log_info.get("found_files", [])
                 output = log_info.get("output", "")
@@ -875,11 +911,12 @@ class WorkflowRunner:
             logger.info(f"⚡ {'SUBMITTED':<12} Job {job.name:<12}")
 
             try:
-                result = self.slurm.run(
-                    job,
-                    workflow_name=self.workflow.name,
-                    workflow_run_id=workflow_run_id,
-                )
+                with self._get_executor_cm() as executor:
+                    result = executor.run(
+                        job,
+                        workflow_name=self.workflow.name,
+                        workflow_run_id=workflow_run_id,
+                    )
                 return result
             except Exception as e:
                 # Show SLURM logs when job fails
@@ -1271,6 +1308,15 @@ class WorkflowRunner:
             job_data["log_dir"] = data["log_dir"]
         if data.get("work_dir"):
             job_data["work_dir"] = data["work_dir"]
+        # Step 2 render-hint fields. Pulled only when present so jobs
+        # without them keep Job's default=None (preserves pre-Phase-2
+        # behaviour and avoids polluting model_dump output).
+        if data.get("template") is not None:
+            job_data["template"] = data["template"]
+        if data.get("srun_args") is not None:
+            job_data["srun_args"] = data["srun_args"]
+        if data.get("launch_prefix") is not None:
+            job_data["launch_prefix"] = data["launch_prefix"]
 
         return Job.model_validate(job_data)
 

@@ -382,9 +382,12 @@ Constraints / Phase 1 limitations:
 - Matrix values must be scalar (str/int/float/bool); nested structures rejected.
 - Cell count capped at 1000 (safety valve; SLURM MaxSubmitJobs is typically ~4096).
 - `fail_fast` defaults to false; one cell failing does not abort peers.
-- Web UI sweep submission uses the local SLURM client regardless of the Web
-  SSH adapter configuration. Remote-cluster sweeps via Web are Phase 2 scope
-  (use CLI sweeps for remote clusters).
+- Web UI sweep submission routes through the configured SSH adapter via a
+  per-sweep `SlurmSSHExecutorPool` (capped at `min(max_parallel, 8)` pooled
+  connections); the pool is closed when the background sweep task exits.
+  CLI and MCP sweeps still run cells through the local `Slurm` singleton —
+  the orchestrator's default `executor_factory=None` preserves that
+  behaviour bit-for-bit.
 - MCP-originated sweep cells record `workflow_runs.triggered_by='web'` (the
   v1 CHECK constraint does not yet allow `'mcp'`). Parent `sweep_runs.submission_source`
   correctly stores `'mcp'` for audit. Widening the child CHECK is Phase 2 scope.

@@ -532,6 +532,36 @@ class Job(BaseJob):
         description="Working directory",
     )
 
+    # Render metadata — optional, used by renderer when no explicit arg given.
+    # Explicit arguments to ``render_job_script`` always take precedence so the
+    # existing Web non-sweep path (which passes extras directly from raw YAML)
+    # keeps its behavior.
+    template: str | None = Field(
+        default=None,
+        description=(
+            "Optional template path override. When None, the default template "
+            "resolved by Slurm.default_template is used. Explicit "
+            "``template_path`` argument to ``render_job_script`` takes "
+            "precedence."
+        ),
+    )
+    srun_args: str | None = Field(
+        default=None,
+        description=(
+            "Optional additional srun arguments to inject into the rendered "
+            "script. Explicit ``extra_srun_args`` argument to "
+            "``render_job_script`` takes precedence if given."
+        ),
+    )
+    launch_prefix: str | None = Field(
+        default=None,
+        description=(
+            "Optional launch-prefix (e.g. ``mpirun`` wrapper) to prepend to the "
+            "job command. Explicit ``extra_launch_prefix`` argument to "
+            "``render_job_script`` takes precedence if given."
+        ),
+    )
+
     @model_validator(mode="before")
     @classmethod
     def apply_config_defaults(cls, data: dict) -> dict:
@@ -773,11 +803,20 @@ def render_job_script(
     environment_setup, srun_args, launch_prefix = _build_environment_setup(
         job.environment
     )
+    # Fallback to Job-level metadata when explicit args absent.
+    # Explicit args always win to preserve existing Web non-sweep path
+    # (which passes extras from raw YAML directly).
+    effective_extra_srun_args = (
+        extra_srun_args if extra_srun_args is not None else job.srun_args
+    )
+    effective_extra_launch_prefix = (
+        extra_launch_prefix if extra_launch_prefix is not None else job.launch_prefix
+    )
     # Merge user-specified extras with auto-generated values
-    if extra_srun_args:
-        srun_args = f"{srun_args} {extra_srun_args}".strip()
-    if extra_launch_prefix:
-        launch_prefix = f"{launch_prefix} {extra_launch_prefix}".strip()
+    if effective_extra_srun_args:
+        srun_args = f"{srun_args} {effective_extra_srun_args}".strip()
+    if effective_extra_launch_prefix:
+        launch_prefix = f"{launch_prefix} {effective_extra_launch_prefix}".strip()
 
     template_vars = {
         "job_name": job.name,
