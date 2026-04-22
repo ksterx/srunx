@@ -78,6 +78,7 @@ Instead of stitching together `sbatch`, `squeue`, SSH, and a pipeline runner, sr
 | Web dashboard | ✅ | ❌ | ❌ | ❌ |
 | Workflow DAG with dependencies | ✅ | ❌ | ❌ | ✅ |
 | Inter-job value passing (load-time) | ✅ | ❌ | ❌ | ⚠️ via files |
+| Matrix parameter sweeps | ✅ | ⚠️ manual | ❌ | ⚠️ via wildcards |
 | GPU availability monitoring | ✅ | ❌ | ❌ | ❌ |
 | SSH remote submit + file sync | ✅ | ❌ | ❌ | ❌ |
 | Container support (Pyxis / Apptainer / Singularity) | ✅ | ⚠️ limited | ❌ | ⚠️ via rules |
@@ -97,6 +98,8 @@ If you need full-featured scientific workflow tooling, Snakemake / Nextflow are 
 | `srunx resources` | Display GPU availability |
 | `srunx monitor` | Monitor jobs, resources, or cluster |
 | `srunx flow` | Run / validate YAML workflows |
+| `srunx flow run --arg KEY=VALUE` | Override workflow `args` from the CLI |
+| `srunx flow run --sweep KEY=V1,V2 --max-parallel N` | Ad-hoc matrix parameter sweep |
 | `srunx ssh` | Remote SLURM operations over SSH |
 | `srunx history` | Show job execution history |
 | `srunx report` | Generate job execution report |
@@ -187,6 +190,39 @@ srunx flow run workflow.yaml --from train # resume / partial execution
 
 Retry with `retry: N` and `retry_delay: <seconds>` per job.
 
+### Parameter Sweeps
+
+Run the same workflow across a matrix of hyperparameters without copying YAML. Each cell materializes into its own sbatch submission and is tracked independently.
+
+```yaml
+name: train
+args:
+  lr: 0.01
+  seed: 1
+
+sweep:
+  matrix:
+    lr: [0.001, 0.01, 0.1]
+    seed: [1, 2, 3]
+  fail_fast: false
+  max_parallel: 4
+
+jobs:
+  - name: train
+    command: ["python", "train.py", "--lr", "{{ lr }}", "--seed", "{{ seed }}"]
+    gpus_per_node: 1
+```
+
+Run it — or declare the axes ad-hoc on the command line:
+
+```bash
+srunx flow run train.yaml                                                # YAML-declared sweep
+srunx flow run --sweep lr=0.001,0.01 --max-parallel 2 train.yaml          # ad-hoc
+srunx flow run --sweep lr=0.001,0.01 --max-parallel 2 --dry-run train.yaml
+```
+
+Sweeps are a first-class concept across **CLI, Web UI, and MCP**. Web-triggered sweeps route cells through a bounded `SlurmSSHExecutorPool` against the configured SSH profile, while CLI and MCP runs use the local SLURM client by default. The Web UI surfaces per-cell progress with ETA, filter / sort, and per-cell cancellation.
+
 ## Monitoring
 
 ```bash
@@ -234,6 +270,30 @@ Get notified when jobs finish — set `SLACK_WEBHOOK_URL` (or configure it in th
 export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
 srunx flow run workflow.yaml --slack
 ```
+
+## MCP Server
+
+srunx ships an MCP server so Claude Code (and other MCP clients) can submit jobs, inspect the queue, and drive workflows over stdio. Install the extra and register the server with your client:
+
+```bash
+uv add "srunx[mcp]"
+srunx-mcp                                                              # launch the stdio server directly
+
+# Or register with Claude Code in one shot
+claude mcp add --scope user srunx -- uvx --from 'srunx[mcp]' srunx-mcp
+```
+
+Once connected, the agent can call `run_workflow` with optional sweep and mount parameters:
+
+```python
+run_workflow(
+    yaml_path="train.yaml",
+    sweep={"matrix": {"lr": [0.001, 0.01]}, "max_parallel": 2},
+    mount="my-project",
+)
+```
+
+Passing `mount=<name>` routes the run through the matching SSH profile mount, translating `work_dir` / `log_dir` into remote paths — so the agent can launch mount-aware submissions against a remote cluster without leaving the chat.
 
 ## Python API
 

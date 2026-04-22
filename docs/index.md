@@ -6,7 +6,7 @@ hide:
 
 <div class="srunx-hero" markdown>
 
-<p class="srunx-status">v1.1 · SLURM · Apache-2.0</p>
+<p class="srunx-status">v1.2 · SLURM · Apache-2.0</p>
 
 # Orchestrate SLURM jobs<br>like <span class="accent">code</span>.
 
@@ -39,6 +39,14 @@ hide:
 
     Typed jobs with `depends_on`, retry, and Jinja-templated args.
 
+-   :material-tune-variant:{ .lg .middle } __Parameter sweeps__
+
+    ---
+
+    Matrix cross-product over hyperparameters. Per-cell tracking, bounded SSH pool, Web UI progress.
+
+    [:octicons-arrow-right-24: Parameter sweeps](how-to/workflows.md#parameter-sweeps)
+
 -   :material-pulse:{ .lg .middle } __Live monitoring__
 
     ---
@@ -55,13 +63,13 @@ hide:
 
     ---
 
-    Browser dashboard for queue, DAG visualization, and run history.
+    Browser dashboard for queue, DAG visualization, run history, and sweep detail pages.
 
 -   :material-robot-outline:{ .lg .middle } __MCP server__
 
     ---
 
-    14 tools exposed to Claude Code and other MCP clients over stdio.
+    Claude Code and other MCP clients drive srunx over stdio — including `run_workflow(sweep=..., mount=...)`.
 
 -   :material-file-code-outline:{ .lg .middle } __Jinja templates__
 
