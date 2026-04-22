@@ -28,7 +28,8 @@ from srunx.ssh.core.ssh_config import SSHConfigParser  # noqa: F811
 from srunx.utils import GPU_TRES_RE  # noqa: E402
 
 if TYPE_CHECKING:
-    from srunx.models import JobStatus, RunnableJobType
+    from srunx.client_protocol import LogChunk
+    from srunx.models import BaseJob, JobStatus, RunnableJobType
     from srunx.rendering import SubmissionRenderContext
 
 logger = get_logger(__name__)
@@ -705,6 +706,244 @@ class SlurmSSHAdapter:
             info["output"] = ""
             info["error"] = ""
         return info
+
+    # ── JobOperationsProtocol surface (Phase 2) ──────
+    #
+    # These methods align SlurmSSHAdapter with
+    # :class:`srunx.client_protocol.JobOperationsProtocol` so the Web UI,
+    # MCP, and (future) top-level CLI can all drive a remote SLURM via
+    # the same 5 entry points they use for the local ``Slurm`` client.
+    # The existing ``submit_job`` / ``cancel_job`` / ``get_job_status`` /
+    # ``list_jobs`` / ``get_job_output`` methods are intentionally kept as
+    # backwards-compatible aliases so Phase 2 is non-breaking for callers
+    # that haven't migrated yet.
+    #
+    # Phase 2 note: DB recording via ``record_submission_from_job`` is
+    # deliberately NOT called from :meth:`submit` here. The
+    # ``transport_type`` / ``profile_name`` / ``scheduler_key`` columns
+    # on ``jobs`` do not yet exist (Phase 3 adds them via migration V5),
+    # so recording would either drop metadata or break the schema. Phase
+    # 3 will wire the recording call with the new kwargs.
+
+    def submit(self, job: RunnableJobType) -> RunnableJobType:
+        """Submit *job* over SSH and return it with ``job_id`` populated.
+
+        Renders the SLURM script locally (Jinja), uploads it via sftp,
+        invokes ``sbatch`` on the remote, mutates *job* in place to set
+        ``job_id`` and ``status = PENDING``, and returns the same object.
+        See :meth:`run` for the full lifecycle (render + submit + monitor
+        + callbacks). This method is submit-only; it does not block on
+        SLURM state transitions.
+        """
+        import tempfile as _tempfile
+
+        import paramiko
+
+        from srunx.exceptions import (
+            SubmissionError,
+            TransportAuthError,
+            TransportConnectionError,
+            TransportTimeoutError,
+        )
+        from srunx.models import (
+            Job,
+            JobStatus,
+            ShellJob,
+            render_job_script,
+            render_shell_job_script,
+        )
+        from srunx.template import get_template_path
+
+        if isinstance(job, Job):
+            template_path = job.template if job.template else get_template_path("base")
+        elif isinstance(job, ShellJob):
+            template_path = None
+        else:
+            raise ValueError(f"Unsupported job type: {type(job).__name__}")
+
+        with _tempfile.TemporaryDirectory() as tmpdir:
+            if isinstance(job, Job):
+                assert template_path is not None  # narrow for mypy
+                script_path = render_job_script(template_path, job, output_dir=tmpdir)
+            else:  # ShellJob — narrowed by the elif above
+                script_path = render_shell_job_script(job.script_path, job, tmpdir)
+            with open(script_path, encoding="utf-8") as f:
+                script_content = f.read()
+
+        try:
+            with self._io_lock:
+                self._ensure_connected()
+                result = self._client.submit_sbatch_job(
+                    script_content, job_name=job.name
+                )
+        except paramiko.AuthenticationException as exc:
+            raise TransportAuthError(f"SSH authentication failed: {exc}") from exc
+        except TimeoutError as exc:
+            raise TransportTimeoutError(f"SSH timed out: {exc}") from exc
+        except (paramiko.SSHException, OSError) as exc:
+            raise TransportConnectionError(f"SSH connection failed: {exc}") from exc
+
+        if result is None or not result.job_id:
+            raise SubmissionError(f"sbatch rejected submission for job '{job.name}'")
+
+        job.job_id = int(result.job_id)
+        job.status = JobStatus.PENDING
+        return job
+
+    def cancel(self, job_id: int) -> None:
+        """Cancel *job_id* on the remote cluster.
+
+        Raises :class:`~srunx.exceptions.JobNotFound` when ``scancel``
+        reports the job is missing, :class:`TransportError` subclasses
+        for SSH-layer failures. The legacy :meth:`cancel_job` API is
+        preserved below as a no-op alias for backwards compat.
+        """
+
+        import paramiko
+
+        from srunx.exceptions import (
+            JobNotFound,
+            RemoteCommandError,
+            TransportAuthError,
+            TransportConnectionError,
+            TransportTimeoutError,
+        )
+
+        try:
+            _run_slurm_cmd(self, f"scancel {int(job_id)}")
+        except paramiko.AuthenticationException as exc:
+            raise TransportAuthError(f"SSH authentication failed: {exc}") from exc
+        except TimeoutError as exc:
+            raise TransportTimeoutError(f"SSH timed out: {exc}") from exc
+        except paramiko.SSHException as exc:
+            raise TransportConnectionError(f"SSH connection failed: {exc}") from exc
+        except RuntimeError as exc:
+            # ``_run_slurm_cmd`` wraps non-zero-exit stderr into RuntimeError.
+            # SLURM's scancel emits "Invalid job id specified" for unknown
+            # ids; surface that as JobNotFound so callers can handle it as
+            # a user-level condition rather than a transport failure.
+            msg = str(exc).lower()
+            if "invalid job id" in msg or "invalid job specification" in msg:
+                raise JobNotFound(f"Job {job_id} not found on remote cluster") from exc
+            raise RemoteCommandError(str(exc)) from exc
+
+    def status(self, job_id: int) -> BaseJob:
+        """Return a snapshot :class:`BaseJob` for *job_id*.
+
+        Uses :meth:`queue_by_ids` (already Protocol-compliant) so both
+        active and terminal jobs resolve through the same code path as
+        the notification poller. Raises
+        :class:`~srunx.exceptions.JobNotFound` when SLURM has no record
+        of ``job_id``.
+
+        P-14 mitigation: we return a ``BaseJob`` with ``job_id=None``
+        on the returned model would defeat ``refresh()``'s early-out,
+        so we keep ``job_id`` set but set the status to a terminal
+        value when SLURM reports one. Callers in Phase 5a that want a
+        strictly non-refreshing DTO should read :class:`JobStatusInfo`
+        via ``queue_by_ids`` directly.
+        """
+        from srunx.exceptions import JobNotFound
+        from srunx.models import BaseJob, JobStatus
+
+        info_map = self.queue_by_ids([int(job_id)])
+        info = info_map.get(int(job_id))
+        if info is None:
+            raise JobNotFound(f"Job {job_id} not found on remote cluster")
+
+        try:
+            status_enum = JobStatus(info.status)
+        except ValueError:
+            status_enum = JobStatus.UNKNOWN
+
+        job = BaseJob(
+            name=f"job_{job_id}",
+            job_id=int(job_id),
+            nodelist=info.nodelist,
+        )
+        job.status = status_enum
+        return job
+
+    def queue(self, user: str | None = None) -> list[BaseJob]:
+        """List jobs for *user* (defaults to the profile's username).
+
+        Adapts :meth:`list_jobs` (which yields dicts) into Pydantic
+        :class:`BaseJob` objects so the return type matches
+        :class:`~srunx.client_protocol.JobOperationsProtocol.queue`.
+        ``user=None`` uses the profile's configured username, matching
+        the Protocol's "transport's current user" contract.
+        """
+        from srunx.models import BaseJob, JobStatus
+
+        effective_user = user if user is not None else self._username or None
+
+        raw_entries = self.list_jobs(user=effective_user)
+        out: list[BaseJob] = []
+        for entry in raw_entries:
+            status_str = str(entry.get("status", "UNKNOWN"))
+            try:
+                status_enum = JobStatus(status_str)
+            except ValueError:
+                status_enum = JobStatus.UNKNOWN
+            try:
+                job_id_val = int(entry["job_id"]) if entry.get("job_id") else None
+            except (TypeError, ValueError):
+                continue
+            job = BaseJob(
+                name=str(entry.get("name", "job")),
+                job_id=job_id_val,
+                partition=entry.get("partition"),
+                nodes=entry.get("nodes"),
+                gpus=entry.get("gpus"),
+                elapsed_time=entry.get("elapsed_time"),
+                user=effective_user,
+            )
+            job.status = status_enum
+            out.append(job)
+        return out
+
+    def tail_log_incremental(
+        self,
+        job_id: int,
+        stdout_offset: int = 0,
+        stderr_offset: int = 0,
+    ) -> LogChunk:
+        """Return new log content since the given byte offsets.
+
+        Thin wrapper around :meth:`get_job_output` which already returns
+        ``(stdout, stderr, new_stdout_offset, new_stderr_offset)``. Pure
+        function: no stdout writes, no blocking. Callers that want
+        ``tail -f`` semantics poll this method in a loop.
+        """
+
+        import paramiko
+
+        from srunx.client_protocol import LogChunk
+        from srunx.exceptions import (
+            TransportAuthError,
+            TransportConnectionError,
+            TransportTimeoutError,
+        )
+
+        try:
+            stdout, stderr, new_stdout_offset, new_stderr_offset = self.get_job_output(
+                int(job_id),
+                stdout_offset=stdout_offset,
+                stderr_offset=stderr_offset,
+            )
+        except paramiko.AuthenticationException as exc:
+            raise TransportAuthError(f"SSH authentication failed: {exc}") from exc
+        except TimeoutError as exc:
+            raise TransportTimeoutError(f"SSH timed out: {exc}") from exc
+        except paramiko.SSHException as exc:
+            raise TransportConnectionError(f"SSH connection failed: {exc}") from exc
+
+        return LogChunk(
+            stdout=stdout,
+            stderr=stderr,
+            stdout_offset=new_stdout_offset,
+            stderr_offset=new_stderr_offset,
+        )
 
     # ── Workflow executor surface (Step 4) ───────────
 
