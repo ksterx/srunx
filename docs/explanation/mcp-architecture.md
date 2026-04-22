@@ -141,6 +141,61 @@ flowchart TD
 For SSH mode, the `work_dir` parameter is required on `submit_job` because
 the local working directory has no meaning on the remote cluster.
 
+## Parameter Sweeps Through MCP
+
+`run_workflow` accepts an optional `sweep={...}` argument that expands a
+matrix at load time into N independent `workflow_runs` under one
+`sweep_run` parent. From the MCP server's perspective this is a single
+blocking tool call: the tool only returns once the whole sweep has
+converged (all cells terminal, or a `fail_fast` drain has completed).
+This is the opposite of the Web UI, which returns `202 Accepted` the
+moment the background task is scheduled.
+
+```mermaid
+flowchart LR
+  subgraph mcp["MCP tool: run_workflow(sweep=..., mount=...)"]
+    Expand["expand_matrix\n(load-time)"]
+    Orchestrator["SweepOrchestrator\nanyio.Semaphore"]
+    Factory["executor_factory\n= pool.lease"]
+    Pool["SlurmSSHExecutorPool\nsize=min(max_parallel, 8)"]
+    Expand --> Orchestrator
+    Orchestrator --> Factory --> Pool
+  end
+  subgraph cluster["SLURM (via SSH)"]
+    sbatch["sbatch"]
+    squeue["squeue / sacct"]
+  end
+  Pool -- "leased SSH exec" --> sbatch
+  Pool -- "leased SSH exec" --> squeue
+```
+
+**Shared code path with the Web UI.** The SSH-backed execution path is
+not reimplemented inside the MCP server. Both `srunx ui` and
+`srunx-mcp` build their sweep executor factories on top of
+`srunx.web.ssh_adapter` + `srunx.web.ssh_executor`. The MCP server is a
+side-effect-free caller that borrows the Web UI's abstractions; all
+reconciliation, pool lifecycle, and mount-aware render logic live in
+one place. The Web UI's `_run_sweep_background` closes the pool in a
+`finally` block; the MCP `run_workflow` tool closes its own pool in a
+matching `finally`. There is no process-wide pool.
+
+**Provenance: `submission_source='mcp'`.** A sweep triggered through
+MCP writes `sweep_runs.submission_source='mcp'` for audit. After the V4
+schema migration (see the architecture guide), each child cell also
+writes `workflow_runs.triggered_by='mcp'`, so notification fan-out and
+sweep listings can tell MCP-originated cells apart from Web and CLI
+cells without guessing. Before V4, MCP cells were recorded as
+`triggered_by='web'` because the V1 CHECK allowlist did not admit
+`'mcp'`; the V4 rebuild removed that workaround.
+
+**CLI-style sweeps without `mount=`.** When `run_workflow` is called
+with a `sweep` argument but **without** `mount=<profile>`, execution
+stays on the local `Slurm` singleton path -- exactly as if the user
+had run `srunx flow run --sweep ...` on a login node. Passing
+`mount=<profile>` switches the tool to the SSH + pool path above. This
+mirrors the CLI / Web split: the same tool call, the same blocking
+semantics, but a different transport determined by one argument.
+
 ## Security
 
 **Input validation.**  
@@ -159,6 +214,15 @@ The MCP server exposes only read and submit operations. It cannot modify
 SLURM configuration, access other users' jobs, or execute arbitrary
 commands on the cluster. File sync is constrained to configured mount
 points or explicit paths.
+
+**Shared security guards.**  
+The argument inspection that rejects dangerous Python invocations
+(`find_python_prefix`) and dangerous shell-script patterns
+(`find_shell_script_violation`) lives in `srunx.security` and is
+imported by both the Web UI router and the MCP tool surface. Keeping
+these checks in one module avoids drift between the two entry points:
+a pattern blocked in the Web UI is necessarily blocked in MCP, and
+vice versa.
 
 ## Relationship to Other Interfaces
 

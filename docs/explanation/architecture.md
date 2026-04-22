@@ -111,6 +111,180 @@ React + TypeScript with Vite. Pages use a custom `useApi` hook for
 data fetching with automatic polling. React Flow provides DAG
 visualization for workflow dependencies.
 
+## Sweep Architecture
+
+Parameter sweeps extend the single-workflow execution model into a bounded
+fan-out of "cells" -- each cell is an ordinary workflow run, but the
+whole set is tracked and orchestrated as one unit. The design deliberately
+reuses the workflow runner rather than inventing a parallel execution
+mechanism: a sweep is "one sweep_run, N workflow_runs", not "one
+workflow_run with N internal branches".
+
+### Load-time matrix materialization
+
+A sweep is expanded at **load time**, before any job is submitted to
+SLURM. `expand_matrix` takes the `sweep.matrix` block and produces the
+scalar cross-product, rejecting nested structures and capping the total
+cell count at 1000 (SLURM's `MaxSubmitJobs` is typically ~4096, so this
+is a safety valve and not a hard ceiling).
+
+Each resulting cell becomes its own `workflow_runs` row that is persisted
+up front, with the child's `sweep_run_id` pointing back to the parent
+`sweep_runs` row. Rendering substitutes the cell's args into every job
+field using Jinja2 with `StrictUndefined`, so a missing key fails loudly
+at expansion time instead of producing an empty arg inside `sbatch`.
+
+This is the same design judgement that underlies `exports` / `deps`:
+inter-job values are resolved at workflow load time rather than through
+a runtime env-file mechanism. Load-time resolution gives sweeps three
+properties that runtime expansion could not: the full plan is inspectable
+before submission (enabling `--dry-run`), every cell's args are stable
+and auditable in the DB, and reconciliation after a crash is purely a
+function of the persisted rows.
+
+### Orchestration and concurrency control
+
+The `SweepOrchestrator` runs cells under an `anyio.Semaphore` whose
+capacity is `min(max_parallel, cell_count)`. When `max_parallel` is
+larger than the actual cell count the semaphore is silently clamped
+(with a warning log) instead of erroring, keeping the CLI / Web /
+MCP surfaces tolerant of "over-provisioned" sweeps.
+
+Cell failures interact with `fail_fast` in one direction only: when
+`fail_fast=true` and a cell reaches a terminal failure state, the
+orchestrator transitions the sweep into `draining` and cancels not-yet-
+running cells. Cells already running are allowed to finish -- draining
+is cooperative, not pre-emptive. With the default `fail_fast=false` a
+single failure has no effect on peers, which matches how hyperparameter
+sweeps are typically run in practice.
+
+### Per-cell execution paths
+
+The orchestrator constructs each cell's `WorkflowRunner` with two
+injected dependencies:
+
+- **`executor_factory`** -- `None` for local execution (`Slurm`
+  singleton, `subprocess`-based), or a callable that leases a
+  `SlurmSSHExecutor` from a pool for remote execution.
+- **`submission_context`** -- a `SubmissionRenderContext` that
+  encapsulates the per-cell render concerns: mount-aware translation of
+  `work_dir` and `log_dir` from local paths to their remote equivalents,
+  and the canonical rendering step for `ShellJob` scripts that are
+  staged via SFTP.
+
+This keeps the local path and the SSH path on the **same code path**:
+the runner does not branch on execution mode. CLI and MCP sweeps
+without a `mount=` argument pass `executor_factory=None`, which
+preserves the pre-sweep behaviour bit-for-bit -- cells go through the
+`Slurm` singleton exactly as a non-swept workflow would. Web UI
+sweeps, and MCP sweeps with `mount=<profile>`, pass an
+`executor_factory` backed by a per-sweep `SlurmSSHExecutorPool`.
+
+### SSH pool and mount-aware rendering
+
+`SlurmSSHExecutorPool` is a bounded pool of pre-built SSH executors,
+sized at `max(1, min(max_parallel, 8))`. The floor at 1 guards against
+a zero-sized pool when `max_parallel=0` would otherwise be pathological;
+the ceiling at 8 avoids drowning the remote SSH server in long-lived
+control sessions even when the sweep's nominal parallelism is higher.
+The pool's lifecycle is strictly **per sweep**: the Web UI's
+`_run_sweep_background` closes it in a `finally` block, and the MCP
+`run_workflow` tool closes it in its own `finally` -- there is no
+process-wide pool.
+
+`SubmissionRenderContext` is the responsibility boundary for
+path translation. Where the local `Slurm` client can use absolute local
+paths verbatim, the SSH path must convert a job's `work_dir` /
+`log_dir` from the developer's machine into the matching remote path
+under the SSH mount. The render context owns that conversion (plus
+`ShellJob` script rendering), so the runner itself stays agnostic
+about whether it is submitting locally or through SSH.
+
+A related SSH-path subtlety is the **scontrol fallback** in the status
+query: the lookup chain is `sacct` → `squeue` → `scontrol`. The third
+stage exists specifically for Pyxis-style environments where
+`slurmdbd` is unreachable and `sacct` returns empty, which previously
+surfaced as silent `FAILED` statuses. If even `scontrol` cannot find
+the job we return `JobStatus.UNKNOWN` rather than coercing it to
+`FAILED` -- the ambiguity is preserved for the caller.
+
+### Aggregation via the sweep_runs counters
+
+Every cell transition goes through `WorkflowRunStateService`, which
+performs an optimistic-lock `UPDATE` on the cell's `workflow_runs` row
+and, in the same transaction, increments or decrements the parent
+sweep's `cells_*` counters. The counters on `sweep_runs`
+(`cells_pending` / `cells_running` / `cells_completed` /
+`cells_failed` / `cells_cancelled`) converge atomically with each cell
+transition rather than being re-derived from a scan, so the parent
+status is always a consistent snapshot of its children.
+
+Notifications follow a parent-only rule: only the `sweep_run` gets a
+`watch` + `subscription`, and only the parent fires a
+`sweep_run.status_changed` event (at first-cell-start and at the final
+terminal transition). Individual cells do not produce Slack messages.
+This is the opposite of the workflow-run default, and is a deliberate
+choice -- a 9-cell sweep would otherwise produce 18+ Slack messages
+for a single intent.
+
+### Crash recovery
+
+The `SweepReconciler` runs during Web lifespan startup and scans for
+sweeps in non-terminal states whose pending cells have no active
+orchestrator. For each such sweep it resumes execution from the DB
+snapshot -- the cells' args are already persisted, so reconciliation
+is a matter of rebuilding the orchestrator with the right
+`executor_factory` and letting it pick up the pending cells.
+
+The executor factory is reconstructed via an
+`executor_factory_provider` callback that the Web lifespan injects.
+The provider inspects the persisted sweep (submission source, mount
+profile) and returns either `None` (local path) or a fresh SSH pool
+lease factory. This indirection exists because the reconciler itself
+must stay pure with respect to transport choice: it does not know about
+SSH profiles, and it should not have to.
+
+## DB schema migrations
+
+The SQLite schema at `$XDG_CONFIG_HOME/srunx/srunx.db` evolves through
+numbered migrations. Each migration is applied idempotently and leaves a
+row in a `schema_migrations` table; the runtime refuses to start against
+a DB whose latest migration is unknown to the current binary.
+
+**V1 -- initial persistence layer.** Introduces the five core concepts
+for notification and state (`jobs`, `workflow_runs`, `workflow_run_jobs`,
+`job_state_transitions`, `resource_snapshots`, plus
+`endpoints` / `watches` / `subscriptions` / `events` / `deliveries`).
+The original allowlists are conservative: `workflow_runs.triggered_by`
+is `('cli', 'web', 'schedule')` and `events.kind` / `watches.kind`
+do not yet know about sweeps.
+
+**V3 -- sweep tables and widened allowlists.** Adds the `sweep_runs`
+table with the per-cell counters described above, and adds
+`workflow_runs.sweep_run_id` as a nullable FK that links each cell
+back to its parent. The `events.kind` CHECK is widened via a table
+rebuild to admit `sweep_run.status_changed`, and `watches.kind` is
+widened to admit `sweep_run`. The rebuild is required because SQLite
+cannot `ALTER CHECK` in place. (V2 is reserved for dashboard indexes
+and does not change the schema shape.)
+
+**V4 -- widen `workflow_runs.triggered_by` to include `'mcp'`.** V3
+shipped with MCP-originated cells marked `triggered_by='web'` as a
+workaround, because the V1 CHECK allowlist did not admit `'mcp'`
+and the CHECK can only be widened by rebuilding the table. V4 does
+exactly that: the migration is flagged `requires_fk_off=True` so
+SQLite can temporarily disable foreign-key enforcement while the old
+table is renamed, the new table is created, rows are copied with
+their preserved `sweep_run_id`, and the old table is dropped.
+`'schedule'` is kept in the widened allowlist as a reserved value
+for planned scheduled-workflow triggers even though no writer emits
+it yet.
+
+After V4, MCP-originated sweeps record their true provenance end-to-end:
+the parent `sweep_runs.submission_source` is `'mcp'` and each cell's
+`workflow_runs.triggered_by` is also `'mcp'`, which the notification
+fan-out and audit queries consume verbatim.
+
 ## DAG Builder Architecture
 
 The DAG builder is an interactive workflow editor that lets users construct
