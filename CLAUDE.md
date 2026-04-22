@@ -376,18 +376,21 @@ srunx flow run --arg dataset=imagenet train.yaml
 srunx flow run --sweep lr=0.001,0.01 --max-parallel 2 --dry-run train.yaml
 ```
 
-Constraints / Phase 1 limitations:
+Constraints:
 
 - `max_parallel` is required (YAML or `--max-parallel`; Web API defaults to 4).
 - Matrix values must be scalar (str/int/float/bool); nested structures rejected.
 - Cell count capped at 1000 (safety valve; SLURM MaxSubmitJobs is typically ~4096).
 - `fail_fast` defaults to false; one cell failing does not abort peers.
-- Web UI sweep submission routes through the configured SSH adapter via a
-  per-sweep `SlurmSSHExecutorPool` (capped at `min(max_parallel, 8)` pooled
-  connections); the pool is closed when the background sweep task exits.
-  CLI and MCP sweeps still run cells through the local `Slurm` singleton —
-  the orchestrator's default `executor_factory=None` preserves that
-  behaviour bit-for-bit.
+- Web UI + MCP sweep submissions can route through the configured SSH adapter
+  via a per-sweep `SlurmSSHExecutorPool` (capped at `min(max_parallel, 8)`
+  pooled connections); the pool is closed when the orchestrator returns.
+  MCP opts in explicitly with the `mount=` tool arg; when omitted MCP stays
+  on the local `Slurm` singleton (same as CLI). The orchestrator's default
+  `executor_factory=None` preserves local-SLURM behaviour bit-for-bit.
+- MCP `run_workflow(mount=...)` applies the same ShellJob script-root guard
+  as the Web sweep path (paths outside every profile mount's `local` root
+  are rejected before render), so the MCP and Web security surfaces match.
 - MCP-originated sweep cells record `workflow_runs.triggered_by='mcp'`
   (V4 migration widened the CHECK allowlist); parent
   `sweep_runs.submission_source` is `'mcp'` for the same sweep so cell

@@ -868,17 +868,17 @@ def _enforce_shell_script_roots(
     performed before the file was opened. Called before render so bogus
     paths surface as 403 with no partial render side effects.
     """
+    from srunx.security import find_shell_script_violation
+
     allowed_roots = [_workflow_dir(mount).resolve()]
     if profile:
         allowed_roots.extend(Path(m.local).resolve() for m in profile.mounts)
-    for job in workflow.jobs:
-        if isinstance(job, ShellJob):
-            script_path = Path(job.script_path).resolve()
-            if not any(script_path.is_relative_to(root) for root in allowed_roots):
-                raise HTTPException(
-                    403,
-                    f"Script path '{job.script_path}' is outside allowed directories",
-                )
+    violation = find_shell_script_violation(workflow, allowed_roots)
+    if violation is not None:
+        raise HTTPException(
+            403,
+            f"Script path '{violation.script_path}' is outside allowed directories",
+        )
 
 
 async def _submit_jobs_bfs(
