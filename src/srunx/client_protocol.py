@@ -12,10 +12,10 @@ from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from srunx.models import RunnableJobType
+    from srunx.models import BaseJob, RunnableJobType
     from srunx.rendering import SubmissionRenderContext
 
 
@@ -31,6 +31,72 @@ class JobStatusInfo(BaseModel):
     completed_at: datetime | None = None
     duration_secs: int | None = None
     nodelist: str | None = None
+
+
+class LogChunk(BaseModel):
+    """Incremental log tail chunk returned by ``tail_log_incremental``.
+
+    Field names match the WebUI ``/api/jobs/{id}/logs`` wire shape so the
+    Protocol, the WebUI router, and the CLI all speak the same vocabulary.
+    """
+
+    stdout: str
+    stderr: str
+    stdout_offset: int = Field(ge=0)
+    stderr_offset: int = Field(ge=0)
+
+
+@runtime_checkable
+class JobOperationsProtocol(Protocol):
+    """CLI-facing job operations. Pure functions, no side-effects.
+
+    Implementations must be thread-safe for the read paths (``status`` /
+    ``queue`` / ``tail_log_incremental``) because CLI ``--follow`` loops
+    and polling wrappers may call them concurrently.
+    """
+
+    def submit(self, job: RunnableJobType) -> RunnableJobType:
+        """Submit *job* to SLURM and return the populated job object.
+
+        The returned object MUST have ``job_id`` set. DB recording (via
+        ``record_submission_from_job``) is the implementation's
+        responsibility; callers must not record again.
+        """
+        ...
+
+    def cancel(self, job_id: int) -> None:
+        """Cancel *job_id*. Raises :class:`JobNotFound` if unknown."""
+        ...
+
+    def status(self, job_id: int) -> BaseJob:
+        """Return a snapshot of *job_id*'s current status.
+
+        Raises :class:`JobNotFound` if unknown. The returned ``BaseJob``
+        MUST NOT trigger lazy refresh on attribute access (callers may
+        touch ``.status`` after the transport context is closed).
+        """
+        ...
+
+    def queue(self, user: str | None = None) -> list[BaseJob]:
+        """List jobs for *user* (defaults to the transport's current user).
+
+        Local: ``$USER``. SSH: the profile's username. Empty list if
+        none, never raises.
+        """
+        ...
+
+    def tail_log_incremental(
+        self,
+        job_id: int,
+        stdout_offset: int = 0,
+        stderr_offset: int = 0,
+    ) -> LogChunk:
+        """Return new log content since *stdout_offset* / *stderr_offset*.
+
+        For ``follow`` behaviour, callers poll this method with the
+        returned offsets. The Protocol itself never blocks.
+        """
+        ...
 
 
 @runtime_checkable
