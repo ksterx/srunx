@@ -280,3 +280,117 @@ class TestSweepFlag:
         assert "Sweep dry run" in result.stdout
         assert "Cell count: 3" in result.stdout
         orch_cls.assert_not_called()
+
+
+def _write_cell_validation_workflow(tmp_path: Path) -> Path:
+    """Workflow whose per-cell Jinja render depends on ``stage_pick``.
+
+    ``stage1`` exports ``model_a`` / ``model_b``; ``stage2`` references
+    ``deps.stage1[stage_pick]`` so the cell's ``stage_pick`` value
+    determines whether the render succeeds under ``StrictUndefined``.
+    """
+    data: dict[str, Any] = {
+        "name": "cell_validate",
+        "args": {"stage_pick": "model_a"},
+        "jobs": [
+            {
+                "name": "stage1",
+                "command": ["echo", "stage1"],
+                "environment": {"conda": "env"},
+                "exports": {
+                    "model_a": "/path/a",
+                    "model_b": "/path/b",
+                },
+            },
+            {
+                "name": "stage2",
+                "command": [
+                    "echo",
+                    "{{ stage_pick }}",
+                    "{{ deps.stage1[stage_pick] }}",
+                ],
+                "environment": {"conda": "env"},
+                "depends_on": ["stage1"],
+            },
+        ],
+    }
+    path = tmp_path / "wf.yaml"
+    path.write_text(yaml.dump(data))
+    return path
+
+
+class TestSweepValidateAllCells:
+    """Regression tests for I2: ``--validate`` must check every matrix cell."""
+
+    def test_validate_detects_error_in_non_zero_cell(
+        self, tmp_path: Path, isolated_db: Path
+    ) -> None:
+        """Cells 0-1 render fine; cell 2 references a missing export key."""
+        yaml_path = _write_cell_validation_workflow(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            workflow_app,
+            [
+                "--sweep",
+                "stage_pick=model_a,model_b,bogus",
+                "--max-parallel",
+                "2",
+                "--validate",
+                str(yaml_path),
+            ],
+        )
+
+        assert result.exit_code == 1, result.stdout
+        output = result.stdout + (result.stderr or "")
+        assert "validation error" in output.lower()
+        assert "bogus" in output
+
+    def test_validate_passes_for_fully_valid_sweep(
+        self, tmp_path: Path, isolated_db: Path
+    ) -> None:
+        """Every cell renders → exit 0."""
+        yaml_path = _write_cell_validation_workflow(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            workflow_app,
+            [
+                "--sweep",
+                "stage_pick=model_a,model_b",
+                "--max-parallel",
+                "2",
+                "--validate",
+                str(yaml_path),
+            ],
+        )
+
+        assert result.exit_code == 0, result.stdout
+        assert "Workflow validation successful" in (
+            result.stdout + (result.stderr or "")
+        )
+
+    def test_validate_reports_failing_cell_args(
+        self, tmp_path: Path, isolated_db: Path
+    ) -> None:
+        """The error message must name the cell index + its effective args."""
+        yaml_path = _write_cell_validation_workflow(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            workflow_app,
+            [
+                "--sweep",
+                "stage_pick=model_a,bogus",
+                "--max-parallel",
+                "2",
+                "--validate",
+                str(yaml_path),
+            ],
+        )
+
+        assert result.exit_code == 1, result.stdout
+        output = result.stdout + (result.stderr or "")
+        assert "cell 1" in output
+        assert "stage_pick" in output
+        assert "bogus" in output

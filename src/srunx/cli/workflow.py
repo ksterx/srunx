@@ -281,6 +281,43 @@ def _preview_sweep_dry_run(
         console.print(f"  Cell {i}: {cell}")
 
 
+def _validate_all_sweep_cells(
+    *,
+    yaml_file: Path,
+    workflow_data: dict[str, Any],
+    args_override: dict[str, Any],
+    sweep_spec: SweepSpec,
+    callbacks: list[Callback],
+) -> None:
+    """Load + validate the workflow once per expanded matrix cell.
+
+    Reuses :func:`srunx.sweep.expand.expand_matrix` to produce the same
+    per-cell arg overlay the orchestrator will feed into
+    :meth:`WorkflowRunner.from_yaml` at execution time. The first cell
+    that fails Jinja rendering or workflow validation is reported with
+    its index and effective args, matching the error shape used by the
+    non-sweep validator.
+    """
+    from srunx.sweep.expand import expand_matrix
+
+    base_args: dict[str, Any] = {
+        **(workflow_data.get("args") or {}),
+        **args_override,
+    }
+    cells = expand_matrix(sweep_spec.matrix, base_args)
+
+    for idx, cell_args in enumerate(cells):
+        try:
+            runner = WorkflowRunner.from_yaml(
+                yaml_file, callbacks=callbacks, args_override=cell_args
+            )
+            runner.workflow.validate()
+        except WorkflowValidationError as exc:
+            raise WorkflowValidationError(
+                f"cell {idx} args={cell_args}: {exc}"
+            ) from exc
+
+
 def _run_sweep(
     yaml_file: Path,
     workflow_data: dict[str, Any],
@@ -425,13 +462,16 @@ def _execute_workflow(
 
         if sweep_spec is not None:
             if validate:
-                # Validate the workflow at least once (cell 0's rendering);
-                # matrix expansion semantics are already validated via
-                # merge_sweep_specs + expand.
-                runner = WorkflowRunner.from_yaml(
-                    yaml_file, callbacks=callbacks, args_override=args_override
+                # Validate every matrix cell: a Jinja undefined or type
+                # error in a non-zero cell (e.g. only cell 3 references
+                # an undeclared arg) must still fail the validator.
+                _validate_all_sweep_cells(
+                    yaml_file=yaml_file,
+                    workflow_data=workflow_data,
+                    args_override=args_override,
+                    sweep_spec=sweep_spec,
+                    callbacks=callbacks,
                 )
-                runner.workflow.validate()
                 logger.info("Workflow validation successful")
                 return
 
