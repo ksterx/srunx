@@ -50,15 +50,15 @@ Submit a job, wait for it, and view the logs — end to end:
 
 ```bash
 # 1. Submit (use -- to separate srunx flags from the command)
-$ srunx submit --name training --gpus-per-node 2 --conda ml_env -- python train.py
+$ srunx sbatch --name training --gpus-per-node 2 --conda ml_env -- python train.py
 ✅ Submitted job training (id=847291)
 
 # 2. Follow until completion
-$ srunx monitor jobs 847291
+$ srunx watch jobs 847291
 ⠋ 847291 training  PENDING  →  RUNNING  →  COMPLETED (4m 12s)
 
 # 3. Inspect output
-$ srunx logs 847291 -n 20
+$ srunx tail 847291 -n 20
 ```
 
 Or describe the whole pipeline once and let srunx drive it:
@@ -90,19 +90,18 @@ If you need full-featured scientific workflow tooling, Snakemake / Nextflow are 
 
 | Command | Description |
 |---------|-------------|
-| `srunx submit` | Submit a SLURM job |
-| `srunx status` | Check job status |
-| `srunx list` | List jobs in queue |
-| `srunx cancel` | Cancel a job |
-| `srunx logs` | View / stream job logs |
-| `srunx resources` | Display GPU availability |
-| `srunx monitor` | Monitor jobs, resources, or cluster |
+| `srunx sbatch <script>` / `srunx sbatch --wrap "<cmd>"` | Submit a SLURM job |
+| `srunx squeue` | List jobs in queue (use `-j <id>` for a single job's state) |
+| `srunx scancel <id>` | Cancel a job |
+| `srunx tail <id>` | View / stream job logs |
+| `srunx sinfo` | Display GPU availability |
+| `srunx watch jobs\|resources\|cluster` | Watch for state changes / resource availability |
 | `srunx flow` | Run / validate YAML workflows |
 | `srunx flow run --arg KEY=VALUE` | Override workflow `args` from the CLI |
 | `srunx flow run --sweep KEY=V1,V2 --max-parallel N` | Ad-hoc matrix parameter sweep |
 | `srunx ssh` | Remote SLURM operations over SSH |
-| `srunx history` | Show job execution history |
-| `srunx report` | Generate job execution report |
+| `srunx sacct` | Show job execution history |
+| `srunx sreport` | Generate job execution report |
 | `srunx config` | Manage configuration |
 | `srunx template` | Manage job templates |
 | `srunx ui` | Launch the web dashboard |
@@ -227,14 +226,14 @@ Sweeps are a first-class concept across **CLI, Web UI, and MCP**. Web-triggered 
 
 ```bash
 # Monitor a job until completion
-srunx monitor jobs 12345
+srunx watch jobs 12345
 
 # Wait for GPUs, then submit
-srunx monitor resources --min-gpus 4
-srunx submit python train.py --gpus-per-node 4
+srunx watch resources --min-gpus 4
+srunx sbatch --wrap "python train.py" --gpus-per-node 4
 
 # Periodic cluster reports to Slack
-srunx monitor cluster --schedule 1h --notify $SLACK_WEBHOOK
+srunx watch cluster --schedule 1h --notify $SLACK_WEBHOOK
 ```
 
 ## Remote SSH

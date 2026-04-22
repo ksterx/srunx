@@ -15,7 +15,7 @@ Estimated wall time: **~15 minutes**.
   the test, so use a test channel.
 - Local Python env with the latest changes installed:
   `uv sync && uv run srunx --version`.
-- **This procedure assumes PR #84 (`srunx submit --endpoint`) and PR #85
+- **This procedure assumes PR #84 (`srunx sbatch --endpoint`) and PR #85
   (poller payload enrichment including `job_id` / `job_name`) are both
   merged.** If they are not yet on `main`, skip to the
   "Pre-#84 fallback" note below before running step 4.
@@ -49,7 +49,7 @@ Estimated wall time: **~15 minutes**.
    `terminal` and `running_and_terminal` will skip the first Slack
    message and only deliver once the job reaches RUNNING / COMPLETED):
    ```bash
-   uv run srunx submit \
+   uv run srunx sbatch --wrap "\"
      bash -c 'echo hi && sleep 10' \
      --name smoke --endpoint smoke --preset all
    ```
@@ -60,7 +60,7 @@ Estimated wall time: **~15 minutes**.
    watch + subscription manually instead of relying on `--endpoint`:
    ```bash
    # 4a. Submit with the legacy --slack flag (uses SLACK_WEBHOOK_URL env)
-   SLACK_WEBHOOK_URL='<YOUR_URL>' uv run srunx submit \
+   SLACK_WEBHOOK_URL='<YOUR_URL>' uv run srunx sbatch --wrap "\"
      bash -c 'echo hi && sleep 10' --name smoke --slack
    # 4b. Grab the returned SLURM job id and create a watch+sub:
    curl -s http://127.0.0.1:8000/api/watches \

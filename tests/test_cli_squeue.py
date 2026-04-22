@@ -73,7 +73,7 @@ class TestListCommand:
             mock_client.queue.return_value = mock_jobs
             mock_slurm.return_value = mock_client
 
-            result = runner.invoke(app, ["list"])
+            result = runner.invoke(app, ["squeue"])
 
             assert result.exit_code == 0
             assert "Job Queue" in result.stdout
@@ -93,7 +93,7 @@ class TestListCommand:
             mock_client.queue.return_value = mock_jobs
             mock_slurm.return_value = mock_client
 
-            result = runner.invoke(app, ["list", "--show-gpus"])
+            result = runner.invoke(app, ["squeue", "--show-gpus"])
 
             assert result.exit_code == 0
             assert "Job Queue" in result.stdout
@@ -109,7 +109,7 @@ class TestListCommand:
             mock_client.queue.return_value = mock_jobs
             mock_slurm.return_value = mock_client
 
-            result = runner.invoke(app, ["list", "--format", "json"])
+            result = runner.invoke(app, ["squeue", "--format", "json"])
 
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -130,7 +130,7 @@ class TestListCommand:
             mock_client.queue.return_value = mock_jobs
             mock_slurm.return_value = mock_client
 
-            result = runner.invoke(app, ["list", "--show-gpus", "--format", "json"])
+            result = runner.invoke(app, ["squeue", "--show-gpus", "--format", "json"])
 
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -150,7 +150,7 @@ class TestListCommand:
             mock_client.queue.return_value = []
             mock_slurm.return_value = mock_client
 
-            result = runner.invoke(app, ["list"])
+            result = runner.invoke(app, ["squeue"])
 
             assert result.exit_code == 0
             assert "No jobs in queue" in result.stdout
@@ -169,7 +169,7 @@ class TestListCommand:
             mock_client.queue.return_value = jobs
             mock_slurm.return_value = mock_client
 
-            result = runner.invoke(app, ["list", "--show-gpus", "--format", "json"])
+            result = runner.invoke(app, ["squeue", "--show-gpus", "--format", "json"])
 
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -186,7 +186,7 @@ class TestListCommand:
             mock_client.queue.return_value = [job]
             mock_slurm.return_value = mock_client
 
-            result = runner.invoke(app, ["list", "--show-gpus", "--format", "json"])
+            result = runner.invoke(app, ["squeue", "--show-gpus", "--format", "json"])
 
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -200,6 +200,6 @@ class TestListCommand:
             mock_client.queue.side_effect = Exception("SLURM connection error")
             mock_slurm.return_value = mock_client
 
-            result = runner.invoke(app, ["list"])
+            result = runner.invoke(app, ["squeue"])
 
             assert result.exit_code == 1

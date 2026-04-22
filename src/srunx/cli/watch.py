@@ -1,4 +1,4 @@
-"""Monitor subcommands for jobs, resources, and cluster status."""
+"""Watch subcommands for jobs, resources, and cluster status."""
 
 import sys
 from typing import Annotated, cast
@@ -21,23 +21,23 @@ from srunx.transport import (
     resolve_transport_source,
 )
 
-# Create monitor subcommand app
-monitor_app = typer.Typer(
-    name="monitor",
-    help="Monitor jobs, resources, or cluster with unified subcommands",
+# Create watch subcommand app
+watch_app = typer.Typer(
+    name="watch",
+    help="Watch jobs, resources, or cluster with unified subcommands",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 
-@monitor_app.command("jobs")
-def monitor_jobs(
+@watch_app.command("jobs")
+def watch_jobs(
     job_ids: Annotated[
         list[int] | None,
-        typer.Argument(help="Job IDs to monitor (space-separated)"),
+        typer.Argument(help="Job IDs to watch (space-separated)"),
     ] = None,
     all_jobs: Annotated[
         bool,
-        typer.Option("--all", "-a", help="Monitor all user jobs"),
+        typer.Option("--all", "-a", help="Watch all user jobs"),
     ] = False,
     schedule: Annotated[
         str | None,
@@ -83,24 +83,24 @@ def monitor_jobs(
     continuous: Annotated[
         bool,
         typer.Option(
-            "--continuous", "-c", help="Enable continuous monitoring (until Ctrl+C)"
+            "--continuous", "-c", help="Enable continuous watching (until Ctrl+C)"
         ),
     ] = False,
     profile: ProfileOpt = None,
     local: LocalOpt = False,
     quiet: QuietOpt = False,
 ) -> None:
-    """Monitor specific jobs until completion or send periodic reports.
+    """Watch specific jobs until completion or send periodic reports.
 
     \b
     Modes:
-        State change detection (default): Monitor until jobs complete
-        - Example: srunx monitor jobs 12345
-        - Example: srunx monitor jobs --all --notify $WEBHOOK
+        State change detection (default): Watch until jobs complete
+        - Example: srunx watch jobs 12345
+        - Example: srunx watch jobs --all --notify $WEBHOOK
 
         Periodic reporting (--schedule): Send job status reports on schedule
-        - Example: srunx monitor jobs 12345 67890 --schedule 10m --notify $WEBHOOK
-        - Example: srunx monitor jobs --all --schedule 30m --notify $WEBHOOK
+        - Example: srunx watch jobs 12345 67890 --schedule 10m --notify $WEBHOOK
+        - Example: srunx watch jobs --all --schedule 30m --notify $WEBHOOK
     """
 
     console = Console()
@@ -108,7 +108,7 @@ def monitor_jobs(
     # Validate: either job_ids or --all must be specified
     if not job_ids and not all_jobs:
         console.print("[red]Error: Either specify job IDs or use --all flag[/red]")
-        console.print("Usage: srunx monitor jobs [JOB_IDS] or srunx monitor jobs --all")
+        console.print("Usage: srunx watch jobs [JOB_IDS] or srunx watch jobs --all")
         sys.exit(1)
 
     if job_ids and all_jobs:
@@ -119,11 +119,11 @@ def monitor_jobs(
     if schedule:
         console.print("[yellow]⚠️  Scheduled job reporting not yet implemented[/yellow]")
         console.print("Coming soon! Use cluster subcommand for now:")
-        console.print("  srunx monitor cluster --schedule 1h --notify $WEBHOOK")
+        console.print("  srunx watch cluster --schedule 1h --notify $WEBHOOK")
         sys.exit(1)
 
     with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
-        # State change monitoring mode (existing functionality). Use the
+        # State change watching mode (existing functionality). Use the
         # resolved transport's CLI-facing job ops so --profile picks up
         # SSH via resolve_transport rather than silently falling back to
         # a local Slurm singleton.
@@ -133,7 +133,7 @@ def monitor_jobs(
             if not job_ids:
                 console.print("[yellow]No jobs found for current user[/yellow]")
                 sys.exit(0)
-            console.print(f"📋 Monitoring {len(job_ids)} jobs for current user")
+            console.print(f"📋 Watching {len(job_ids)} jobs for current user")
 
         # Setup callbacks.
         #
@@ -149,7 +149,7 @@ def monitor_jobs(
             from srunx.config import get_config
 
             effective_preset = preset or get_config().notifications.default_preset
-            # Attach per-job watches upfront: monitor_jobs does not resubmit
+            # Attach per-job watches upfront: watch_jobs does not resubmit
             # jobs, so the one-shot attach here is the equivalent of the
             # Callback.on_job_submitted hook used by submit flows.
             assert job_ids is not None
@@ -199,40 +199,40 @@ def monitor_jobs(
             jobs_str = ", ".join(f"[bold cyan]{jid}[/bold cyan]" for jid in job_ids)
             if continuous:
                 console.print(
-                    f"[yellow]🔄[/yellow] Continuously monitoring {jobs_str} "
+                    f"[yellow]🔄[/yellow] Continuously watching {jobs_str} "
                     f"[dim](interval={interval}s · Ctrl+C to stop)[/dim]"
                 )
                 job_monitor.watch_continuous()
-                console.print("[green]✅[/green] Monitoring stopped")
+                console.print("[green]✅[/green] Watching stopped")
             else:
                 timeout_display = f"{timeout}s" if timeout else "no timeout"
                 console.print(
-                    f"[yellow]🔍[/yellow] Monitoring {jobs_str} "
+                    f"[yellow]🔍[/yellow] Watching {jobs_str} "
                     f"[dim](interval={interval}s · timeout={timeout_display})[/dim]"
                 )
-                console.print("[dim]Press Ctrl+C to stop monitoring[/dim]")
+                console.print("[dim]Press Ctrl+C to stop watching[/dim]")
                 job_monitor.watch_until()
                 console.print("[green]✅[/green] All jobs reached terminal status")
         except TimeoutError as e:
             console.print(f"[red]⏱️  {e}[/red]")
             raise typer.Exit(code=1) from e
         except KeyboardInterrupt:
-            console.print("\n[yellow]⚠[/yellow]  [dim]Monitoring stopped by user[/dim]")
+            console.print("\n[yellow]⚠[/yellow]  [dim]Watching stopped by user[/dim]")
             raise typer.Exit(code=0) from None
         except Exception as e:
             console.print(f"[red]✗ {e}[/red]")
             raise typer.Exit(code=1) from e
 
 
-@monitor_app.command("resources")
-def monitor_resources(
+@watch_app.command("resources")
+def watch_resources(
     min_gpus: Annotated[
         int | None,
         typer.Option("--min-gpus", "-g", help="Minimum GPUs required"),
     ] = None,
     partition: Annotated[
         str | None,
-        typer.Option("--partition", "-p", help="SLURM partition to monitor"),
+        typer.Option("--partition", "-p", help="SLURM partition to watch"),
     ] = None,
     interval: Annotated[
         int,
@@ -248,21 +248,21 @@ def monitor_resources(
     ] = None,
     continuous: Annotated[
         bool,
-        typer.Option("--continuous", "-c", help="Monitor continuously until Ctrl+C"),
+        typer.Option("--continuous", "-c", help="Watch continuously until Ctrl+C"),
     ] = False,
     profile: ProfileOpt = None,
     local: LocalOpt = False,
     quiet: QuietOpt = False,
 ) -> None:
-    """Monitor GPU resources until available or continuously.
+    """Watch GPU resources until available or continuously.
 
     \b
     Examples:
         # Wait for 4 GPUs
-        srunx monitor resources --min-gpus 4
+        srunx watch resources --min-gpus 4
 
-        # Continuous monitoring with notifications
-        srunx monitor resources --min-gpus 2 --continuous --notify $WEBHOOK
+        # Continuous watching with notifications
+        srunx watch resources --min-gpus 2 --continuous --notify $WEBHOOK
 
     Note:
         --profile / --local / --quiet are accepted for CLI-wide parity
@@ -275,7 +275,7 @@ def monitor_resources(
 
     if min_gpus is None:
         console.print("[red]Error: --min-gpus is required[/red]")
-        console.print("Usage: srunx monitor resources --min-gpus N")
+        console.print("Usage: srunx watch resources --min-gpus N")
         sys.exit(1)
 
     # SF7: ResourceMonitor is local-only, so skip the full
@@ -322,7 +322,7 @@ def monitor_resources(
     try:
         if continuous:
             console.print(
-                f"🔄 Continuously monitoring GPU resources "
+                f"🔄 Continuously watching GPU resources "
                 f"(min={min_gpus}, interval={interval}s)"
             )
             resource_monitor.watch_continuous()
@@ -337,15 +337,15 @@ def monitor_resources(
         console.print(f"[red]⏱️  {e}[/red]")
         sys.exit(1)
     except KeyboardInterrupt:
-        console.print("\n[yellow]Monitoring stopped by user[/yellow]")
+        console.print("\n[yellow]Watching stopped by user[/yellow]")
         sys.exit(0)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
 
 
-@monitor_app.command("cluster")
-def monitor_cluster(
+@watch_app.command("cluster")
+def watch_cluster(
     schedule: Annotated[
         str,
         typer.Option(
@@ -367,7 +367,7 @@ def monitor_cluster(
     ] = None,
     partition: Annotated[
         str | None,
-        typer.Option("--partition", "-p", help="SLURM partition to monitor"),
+        typer.Option("--partition", "-p", help="SLURM partition to watch"),
     ] = None,
     user: Annotated[
         str | None,
@@ -390,10 +390,10 @@ def monitor_cluster(
     \b
     Examples:
         # Hourly cluster reports
-        srunx monitor cluster --schedule 1h --notify $WEBHOOK
+        srunx watch cluster --schedule 1h --notify $WEBHOOK
 
         # Daily report at 9am with specific sections
-        srunx monitor cluster --schedule "0 9 * * *" --notify $WEBHOOK \\
+        srunx watch cluster --schedule "0 9 * * *" --notify $WEBHOOK \\
             --include jobs,resources,running
     """
     from rich.panel import Panel

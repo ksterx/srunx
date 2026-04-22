@@ -12,12 +12,12 @@ The monitoring system consists of three main components:
 
 ## Monitor Commands
 
-The `srunx monitor` command has three subcommands:
+The `srunx watch` command has three subcommands:
 
 ``` bash
-srunx monitor jobs      # Monitor job state changes
-srunx monitor resources # Monitor GPU resource availability
-srunx monitor cluster   # Scheduled periodic reporting
+srunx watch jobs      # Monitor job state changes
+srunx watch resources # Monitor GPU resource availability
+srunx watch cluster   # Scheduled periodic reporting
 ```
 
 ## Job Monitoring
@@ -28,13 +28,13 @@ Monitor single or multiple SLURM jobs until completion with automatic state tran
 
 ``` bash
 # Monitor single job until completion
-srunx monitor jobs 12345
+srunx watch jobs 12345
 
 # Monitor multiple jobs
-srunx monitor jobs 12345 12346 12347
+srunx watch jobs 12345 12346 12347
 
 # Monitor all your jobs
-srunx monitor jobs --all
+srunx watch jobs --all
 ```
 
 ### Continuous Monitoring
@@ -43,13 +43,13 @@ Monitor job state changes continuously with real-time notifications:
 
 ``` bash
 # Continuous monitoring (Ctrl+C to stop)
-srunx monitor jobs 12345 --continuous
+srunx watch jobs 12345 --continuous
 
 # With custom poll interval (default: 60s)
-srunx monitor jobs 12345 --continuous --interval 30
+srunx watch jobs 12345 --continuous --interval 30
 
 # With Slack notifications
-srunx monitor jobs 12345 --continuous --notify $WEBHOOK_URL
+srunx watch jobs 12345 --continuous --notify $WEBHOOK_URL
 ```
 
 ### Monitoring Options
@@ -82,17 +82,17 @@ The `monitor resources` command requires `--min-gpus` to specify a threshold:
 
 ``` bash
 # Wait for 4 GPUs to become available
-srunx monitor resources --min-gpus 4
+srunx watch resources --min-gpus 4
 
 # Wait for resources on specific partition
-srunx monitor resources --min-gpus 2 --partition gpu
+srunx watch resources --min-gpus 2 --partition gpu
 
 # With timeout (default: no timeout)
-srunx monitor resources --min-gpus 4 --timeout 7200
+srunx watch resources --min-gpus 4 --timeout 7200
 ```
 
 !!! note
-    To display current resources without waiting, use `srunx resources` instead (see [User Guide](../how-to/user_guide.md)).
+    To display current resources without waiting, use `srunx sinfo` instead (see [User Guide](../how-to/user_guide.md)).
 
 ### Continuous Resource Monitoring
 
@@ -100,10 +100,10 @@ Monitor resource availability changes continuously:
 
 ``` bash
 # Continuous monitoring with state change notifications
-srunx monitor resources --min-gpus 2 --continuous
+srunx watch resources --min-gpus 2 --continuous
 
 # With Slack notifications
-srunx monitor resources --min-gpus 4 --continuous --notify $WEBHOOK_URL
+srunx watch resources --min-gpus 4 --continuous --notify $WEBHOOK_URL
 ```
 
 ### Resource Monitoring Options
@@ -148,13 +148,13 @@ Send periodic SLURM cluster status reports via Slack webhooks.
 
 ``` bash
 # Send hourly reports
-srunx monitor cluster --schedule 1h --notify $WEBHOOK_URL
+srunx watch cluster --schedule 1h --notify $WEBHOOK_URL
 
 # Send reports every 30 minutes
-srunx monitor cluster --schedule 30m --notify $WEBHOOK_URL
+srunx watch cluster --schedule 30m --notify $WEBHOOK_URL
 
 # Send daily reports at 9 AM
-srunx monitor cluster --schedule "0 9 * * *" --notify $WEBHOOK_URL
+srunx watch cluster --schedule "0 9 * * *" --notify $WEBHOOK_URL
 ```
 
 ### Schedule Formats
@@ -224,15 +224,15 @@ Customize report contents with `--include`:
 
 ``` bash
 # Include all sections (default)
-srunx monitor cluster --schedule 1h --notify $WEBHOOK_URL \
+srunx watch cluster --schedule 1h --notify $WEBHOOK_URL \
     --include jobs,resources,user,running
 
 # Only job and resource statistics
-srunx monitor cluster --schedule 1h --notify $WEBHOOK_URL \
+srunx watch cluster --schedule 1h --notify $WEBHOOK_URL \
     --include jobs,resources
 
 # Only running jobs list
-srunx monitor cluster --schedule 30m --notify $WEBHOOK_URL \
+srunx watch cluster --schedule 30m --notify $WEBHOOK_URL \
     --include running
 ```
 
@@ -412,10 +412,10 @@ Always set timeouts for blocking operations:
 
 ``` bash
 # Good: Set reasonable timeout
-srunx monitor jobs 12345 --timeout 3600
+srunx watch jobs 12345 --timeout 3600
 
 # Bad: No timeout (could block indefinitely)
-srunx monitor jobs 12345
+srunx watch jobs 12345
 ```
 
 ### Error Handling
@@ -466,7 +466,7 @@ Or via environment variable:
 
 ``` bash
 export LOGURU_LEVEL=DEBUG
-srunx monitor jobs 12345
+srunx watch jobs 12345
 ```
 
 ## Examples
@@ -511,22 +511,22 @@ print("Job completed!")
 # automated_queue.sh
 
 # Wait for resources
-srunx monitor resources --min-gpus 8 --timeout 7200
+srunx watch resources --min-gpus 8 --timeout 7200
 
 # Submit batch of jobs
 for experiment in exp1 exp2 exp3; do
-    srunx submit python train.py --name $experiment
+    srunx sbatch --wrap "python train.py" --name $experiment
 done
 
 # Monitor all submitted jobs
-srunx monitor jobs --all --notify $SLACK_WEBHOOK
+srunx watch jobs --all --notify $SLACK_WEBHOOK
 ```
 
 ### Cluster Status Dashboard
 
 ``` bash
 # Start scheduled reporting for cluster dashboard
-srunx monitor cluster \
+srunx watch cluster \
     --schedule "*/15 * * * *" \
     --notify $SLACK_WEBHOOK \
     --include jobs,resources,running

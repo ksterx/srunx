@@ -49,43 +49,46 @@ class TestTyperCLI:
         self.runner = CliRunner()
 
     def test_help_command(self):
-        """Test main help command."""
+        """Test main help command lists the SLURM-aligned subcommands."""
         result = self.runner.invoke(app, ["--help"])
         assert result.exit_code == 0
         assert "Python library for SLURM job management" in result.stdout
-        assert "submit" in result.stdout
-        assert "status" in result.stdout
-        assert "list" in result.stdout
-        assert "cancel" in result.stdout
+        assert "sbatch" in result.stdout
+        assert "squeue" in result.stdout
+        assert "scancel" in result.stdout
+        assert "sinfo" in result.stdout
+        assert "sacct" in result.stdout
+        assert "tail" in result.stdout
+        assert "watch" in result.stdout
         assert "flow" in result.stdout
         assert "config" in result.stdout
 
-    def test_submit_help(self):
-        """Test submit command help."""
-        result = self.runner.invoke(app, ["submit", "--help"])
+    def test_sbatch_help(self):
+        """Test sbatch command help advertises SLURM-aligned flags."""
+        result = self.runner.invoke(app, ["sbatch", "--help"])
         assert result.exit_code == 0
         clean_output = strip_ansi_codes(result.stdout)
         assert "Submit a SLURM job" in clean_output
-        assert "--name" in clean_output
+        assert "--wrap" in clean_output
         assert "--nodes" in clean_output
         assert "--gpus-per-node" in clean_output
+        assert "--gres" in clean_output
+        # SLURM short flags must appear too: -J (name), -D (chdir),
+        # -N (nodes), -p (partition), -t (time), -c (cpus-per-task),
+        # -w (nodelist).
+        assert "-J" in clean_output
+        assert "-N" in clean_output
+        assert "-p" in clean_output
 
-    def test_status_help(self):
-        """Test status command help."""
-        result = self.runner.invoke(app, ["status", "--help"])
-        assert result.exit_code == 0
-        assert "Check job status" in result.stdout
-        assert "job_id" in result.stdout
-
-    def test_list_help(self):
-        """Test list command help."""
-        result = self.runner.invoke(app, ["list", "--help"])
+    def test_squeue_help(self):
+        """Test squeue command help."""
+        result = self.runner.invoke(app, ["squeue", "--help"])
         assert result.exit_code == 0
         assert "List user's jobs in the queue" in result.stdout
 
-    def test_cancel_help(self):
-        """Test cancel command help."""
-        result = self.runner.invoke(app, ["cancel", "--help"])
+    def test_scancel_help(self):
+        """Test scancel command help."""
+        result = self.runner.invoke(app, ["scancel", "--help"])
         assert result.exit_code == 0
         assert "Cancel a running job" in result.stdout
         assert "job_id" in result.stdout
@@ -96,16 +99,16 @@ class TestTyperCLI:
         assert result.exit_code == 0
         assert "Workflow management" in result.stdout
         assert "run" in result.stdout
-        assert "validate" in result.stdout
 
     def test_flow_run_help(self):
-        """Test flow run command help includes debug option."""
+        """Test flow run command help includes debug + validate options."""
         result = self.runner.invoke(app, ["flow", "run", "--help"])
         assert result.exit_code == 0
         clean_output = strip_ansi_codes(result.stdout)
         assert "Execute workflow from YAML file" in clean_output
         assert "--debug" in clean_output
         assert "Show rendered SLURM scripts for each job" in clean_output
+        assert "--validate" in clean_output
 
     def test_flow_run_debug_flag_threads_through(self, tmp_path):
         """Regression for I6: ``srunx flow run --debug`` must forward debug=True.
@@ -135,75 +138,127 @@ class TestTyperCLI:
 
     @patch("srunx.cli.main.Slurm")
     @patch("srunx.cli.main.get_config")
-    def test_submit_command_basic(self, mock_get_config, mock_slurm_class):
-        """Test basic submit command."""
-        # Mock config
+    def test_sbatch_wrap_basic(self, mock_get_config, mock_slurm_class):
+        """``srunx sbatch --wrap "cmd"`` submits a Job with the wrap string."""
         mock_config = Mock()
         mock_config.log_dir = "logs"
         mock_config.work_dir = None
         mock_get_config.return_value = mock_config
 
-        # Mock Slurm client
         mock_slurm = Mock()
         mock_job = Mock()
         mock_job.job_id = 12345
         mock_job.name = "test_job"
-        mock_job.command = ["python", "script.py"]
+        mock_job.command = "python script.py"
         mock_slurm.submit.return_value = mock_job
         mock_slurm_class.return_value = mock_slurm
 
         result = self.runner.invoke(
-            app, ["submit", "python", "script.py", "--name", "test_job"]
+            app,
+            ["sbatch", "--wrap", "python script.py", "--name", "test_job"],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.stdout
         assert "Job submitted successfully: 12345" in result.stdout
         mock_slurm.submit.assert_called_once()
+        submitted_job = mock_slurm.submit.call_args[0][0]
+        # --wrap maps to Job.command verbatim.
+        assert submitted_job.command == "python script.py"
 
     @patch("srunx.cli.main.Slurm")
-    def test_status_command(self, mock_slurm_class):
-        """Test status command."""
-        # Mock Slurm client
+    @patch("srunx.cli.main.get_config")
+    def test_sbatch_positional_script(
+        self, mock_get_config, mock_slurm_class, tmp_path
+    ):
+        """``srunx sbatch <script>`` submits a ShellJob referencing the file."""
+        mock_config = Mock()
+        mock_config.log_dir = "logs"
+        mock_config.work_dir = None
+        mock_get_config.return_value = mock_config
+
+        script_path = tmp_path / "run.sh"
+        script_path.write_text("#!/bin/bash\necho hi\n")
+
+        from srunx.models import ShellJob
+
         mock_slurm = Mock()
-        mock_job = Mock()
+        mock_job = Mock(spec=ShellJob)
         mock_job.job_id = 12345
         mock_job.name = "test_job"
-        mock_job.command = ["python", "script.py"]
-        mock_job.status = Mock()
-        mock_job.status.name = "RUNNING"
-        mock_slurm.retrieve.return_value = mock_job
+        mock_job.script_path = str(script_path)
+        mock_slurm.submit.return_value = mock_job
         mock_slurm_class.return_value = mock_slurm
 
-        result = self.runner.invoke(app, ["status", "12345"])
+        result = self.runner.invoke(
+            app, ["sbatch", str(script_path), "--name", "test_job"]
+        )
 
-        assert result.exit_code == 0
-        assert "Job ID: 12345" in result.stdout
-        assert "Status: RUNNING" in result.stdout
-        mock_slurm.retrieve.assert_called_once_with(12345)
+        assert result.exit_code == 0, result.stdout
+        assert "Job submitted successfully: 12345" in result.stdout
+        submitted_job = mock_slurm.submit.call_args[0][0]
+        assert isinstance(submitted_job, ShellJob)
+        assert submitted_job.script_path == str(script_path)
+
+    def test_sbatch_script_and_wrap_mutex(self, tmp_path):
+        """Positional script and --wrap are mutually exclusive."""
+        script_path = tmp_path / "run.sh"
+        script_path.write_text("#!/bin/bash\necho hi\n")
+        result = self.runner.invoke(
+            app,
+            ["sbatch", str(script_path), "--wrap", "python script.py"],
+        )
+        assert result.exit_code != 0
+        combined = (result.stdout or "") + (result.stderr or "")
+        assert "mutually exclusive" in combined.lower()
 
     @patch("srunx.cli.main.Slurm")
-    def test_cancel_command(self, mock_slurm_class):
-        """Test cancel command."""
+    @patch("srunx.cli.main.get_config")
+    def test_sbatch_gres_sets_gpus_per_node(self, mock_get_config, mock_slurm_class):
+        """``--gres=gpu:4`` overrides ``--gpus-per-node`` (sbatch parity)."""
+        mock_config = Mock()
+        mock_config.log_dir = "logs"
+        mock_config.work_dir = None
+        mock_get_config.return_value = mock_config
+
+        mock_slurm = Mock()
+        mock_job = Mock()
+        mock_job.job_id = 1
+        mock_job.name = "j"
+        mock_job.command = "python x.py"
+        mock_slurm.submit.return_value = mock_job
+        mock_slurm_class.return_value = mock_slurm
+
+        result = self.runner.invoke(
+            app, ["sbatch", "--wrap", "python x.py", "--gres", "gpu:4"]
+        )
+
+        assert result.exit_code == 0, result.stdout
+        submitted_job = mock_slurm.submit.call_args[0][0]
+        assert submitted_job.resources.gpus_per_node == 4
+
+    @patch("srunx.cli.main.Slurm")
+    def test_scancel_command(self, mock_slurm_class):
+        """Test scancel command."""
         # Mock Slurm client
         mock_slurm = Mock()
         mock_slurm.cancel.return_value = True
         mock_slurm_class.return_value = mock_slurm
 
-        result = self.runner.invoke(app, ["cancel", "12345"])
+        result = self.runner.invoke(app, ["scancel", "12345"])
 
         assert result.exit_code == 0
         assert "Job 12345 cancelled successfully" in result.stdout
         mock_slurm.cancel.assert_called_once_with(12345)
 
     @patch("srunx.cli.main.Slurm")
-    def test_list_command_empty(self, mock_slurm_class):
-        """Test list command with empty queue."""
+    def test_squeue_command_empty(self, mock_slurm_class):
+        """Test squeue command with empty queue."""
         # Mock Slurm client
         mock_slurm = Mock()
         mock_slurm.queue.return_value = []
         mock_slurm_class.return_value = mock_slurm
 
-        result = self.runner.invoke(app, ["list"])
+        result = self.runner.invoke(app, ["squeue"])
 
         assert result.exit_code == 0
         assert "No jobs in queue" in result.stdout
@@ -251,21 +306,16 @@ class TestTyperCLI:
         assert "Configuration file paths" in result.stdout
         mock_get_config_paths.assert_called_once()
 
-    def test_submit_missing_command(self):
-        """Test submit command without required command argument."""
-        result = self.runner.invoke(app, ["submit"])
-        assert result.exit_code == 2  # Typer error exit code
-        assert "Missing argument" in result.stderr
+    def test_sbatch_missing_job_source(self):
+        """sbatch requires either a positional script or --wrap."""
+        result = self.runner.invoke(app, ["sbatch"])
+        assert result.exit_code != 0
+        combined = (result.stdout or "") + (result.stderr or "")
+        assert "job source" in combined.lower() or "wrap" in combined.lower()
 
-    def test_status_missing_job_id(self):
-        """Test status command without required job ID."""
-        result = self.runner.invoke(app, ["status"])
-        assert result.exit_code == 2  # Typer error exit code
-        assert "Missing argument" in result.stderr
-
-    def test_cancel_missing_job_id(self):
-        """Test cancel command without required job ID."""
-        result = self.runner.invoke(app, ["cancel"])
+    def test_scancel_missing_job_id(self):
+        """Test scancel command without required job ID."""
+        result = self.runner.invoke(app, ["scancel"])
         assert result.exit_code == 2  # Typer error exit code
         assert "Missing argument" in result.stderr
 
@@ -372,29 +422,27 @@ class TestParseContainerArgs:
         assert result.image is None
 
 
-class TestTemplateApplyCLI:
-    """Test template_apply CLI options (T6.3)."""
+class TestSbatchTemplateOption:
+    """Test that sbatch exposes container/template options (T6.3)."""
 
     def setup_method(self):
         """Setup test environment."""
         self.runner = CliRunner()
 
-    def test_template_apply_help_has_container_options(self):
-        """Test that template apply help shows --container and --container-runtime."""
-        result = self.runner.invoke(app, ["template", "apply", "--help"])
+    def test_sbatch_help_has_container_runtime_option(self):
+        """Test that sbatch help shows --container-runtime / --no-container."""
+        result = self.runner.invoke(app, ["sbatch", "--help"])
         assert result.exit_code == 0
         clean_output = strip_ansi_codes(result.stdout)
-        assert "--container" in clean_output
         assert "--container-runtime" in clean_output
         assert "--no-container" in clean_output
 
-    def test_submit_help_has_container_runtime_option(self):
-        """Test that submit help shows --container-runtime."""
-        result = self.runner.invoke(app, ["submit", "--help"])
+    def test_sbatch_help_has_template_option(self):
+        """Test that sbatch help shows --template (replaces template apply)."""
+        result = self.runner.invoke(app, ["sbatch", "--help"])
         assert result.exit_code == 0
         clean_output = strip_ansi_codes(result.stdout)
-        assert "--container-runtime" in clean_output
-        assert "--no-container" in clean_output
+        assert "--template" in clean_output
 
 
 class TestNoContainerFlag:
@@ -406,10 +454,10 @@ class TestNoContainerFlag:
 
     @patch("srunx.cli.main.Slurm")
     @patch("srunx.cli.main.get_config")
-    def test_no_container_suppresses_config_default_on_submit(
+    def test_no_container_suppresses_config_default_on_sbatch(
         self, mock_get_config, mock_slurm_class
     ):
-        """Test --no-container on submit suppresses config default container."""
+        """Test --no-container on sbatch suppresses config default container."""
         from srunx.config import SrunxConfig
 
         # Config has a default container (use model_validate to avoid Pydantic
@@ -428,20 +476,22 @@ class TestNoContainerFlag:
         mock_job = Mock()
         mock_job.job_id = 99999
         mock_job.name = "test"
-        mock_job.command = ["echo", "hello"]
+        mock_job.command = "echo hello"
         mock_slurm.submit.return_value = mock_job
         mock_slurm_class.return_value = mock_slurm
 
-        result = self.runner.invoke(app, ["submit", "echo", "hello", "--no-container"])
+        result = self.runner.invoke(
+            app, ["sbatch", "--wrap", "echo hello", "--no-container"]
+        )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.stdout
         # Verify the submitted job has no container
         submitted_job = mock_slurm.submit.call_args[0][0]
         assert submitted_job.environment.container is None
 
     @patch("srunx.cli.main.Slurm")
     @patch("srunx.cli.main.get_config")
-    def test_container_runtime_override_on_submit(
+    def test_container_runtime_override_on_sbatch(
         self, mock_get_config, mock_slurm_class
     ):
         """Test --container-runtime without --container overrides config default (T6.9)."""
@@ -463,16 +513,16 @@ class TestNoContainerFlag:
         mock_job = Mock()
         mock_job.job_id = 99999
         mock_job.name = "test"
-        mock_job.command = ["echo", "hello"]
+        mock_job.command = "echo hello"
         mock_slurm.submit.return_value = mock_job
         mock_slurm_class.return_value = mock_slurm
 
         result = self.runner.invoke(
             app,
-            ["submit", "echo", "hello", "--container-runtime", "apptainer"],
+            ["sbatch", "--wrap", "echo hello", "--container-runtime", "apptainer"],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.stdout
         submitted_job = mock_slurm.submit.call_args[0][0]
         assert submitted_job.environment.container is not None
         assert submitted_job.environment.container.runtime == "apptainer"

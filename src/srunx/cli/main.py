@@ -12,9 +12,9 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from srunx.callbacks import Callback, NotificationWatchCallback, SlackCallback
-from srunx.cli.monitor import monitor_app
+from srunx.callbacks import Callback, SlackCallback
 from srunx.cli.transport_options import LocalOpt, ProfileOpt, QuietOpt
+from srunx.cli.watch import watch_app
 from srunx.client import Slurm
 from srunx.config import (
     create_example_config,
@@ -36,27 +36,43 @@ from srunx.models import (
     render_job_script,
     render_shell_job_script,
 )
-from srunx.runner import WorkflowRunner
 from srunx.ssh.cli.commands import ssh_app
 from srunx.template import get_template_info, get_template_path, list_templates
-from srunx.transport import peek_scheduler_key, resolve_transport
+from srunx.transport import resolve_transport
 
 logger = get_logger(__name__)
 
 
-# Module-local option alias: ``--script`` is only used by the ``submit``
-# subcommand so it does not belong in ``transport_options.py`` (which
-# holds the cross-command transport flags).
-ScriptOpt = Annotated[
-    Path | None,
-    typer.Option(
-        "--script",
-        help=(
-            "Submit a pre-authored sbatch script file instead of a command. "
-            "Mutually exclusive with the positional COMMAND argument."
-        ),
-    ),
-]
+def _parse_gres_gpu(gres: str | None) -> int | None:
+    """Parse a sbatch-style ``--gres=gpu:N`` value into an integer GPU count.
+
+    Returns ``None`` for falsy input; raises :class:`typer.BadParameter`
+    when the resource type is not ``gpu`` or the count is not a positive
+    integer. The intent is to accept the most common SLURM convention
+    (``--gres=gpu:N``) so ``srunx sbatch`` reads identically to
+    ``sbatch``; richer gres forms (``gpu:tesla:2`` etc.) are out of
+    scope for this minimal compatibility layer.
+    """
+    if not gres:
+        return None
+    parts = gres.split(":")
+    if len(parts) != 2 or parts[0] != "gpu":
+        raise typer.BadParameter(
+            f"--gres only supports 'gpu:N' form (got {gres!r}).",
+            param_hint="--gres",
+        )
+    try:
+        count = int(parts[1])
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"--gres gpu count must be an integer (got {parts[1]!r}).",
+            param_hint="--gres",
+        ) from exc
+    if count < 0:
+        raise typer.BadParameter(
+            "--gres gpu count must be non-negative.", param_hint="--gres"
+        )
+    return count
 
 
 class DebugCallback(Callback):
@@ -138,7 +154,7 @@ template_app = typer.Typer(help="Job template management")
 
 app.add_typer(flow_app, name="flow")
 app.add_typer(config_app, name="config")
-app.add_typer(monitor_app, name="monitor")
+app.add_typer(watch_app, name="watch")
 app.add_typer(ssh_app, name="ssh")
 app.add_typer(template_app, name="template")
 
@@ -349,46 +365,74 @@ def _parse_container_args(container_arg: str | None) -> ContainerResource | None
         return ContainerResource(image=container_arg)
 
 
-@app.command("submit")
-def submit(
-    command: Annotated[
-        list[str] | None,
+@app.command("sbatch")
+def sbatch(
+    script: Annotated[
+        Path | None,
         typer.Argument(
             help=(
-                "Command to execute in the SLURM job. Mutually exclusive with --script."
+                "Sbatch script file. Mutually exclusive with --wrap. "
+                "Matches the SLURM ``sbatch <script>`` convention."
             ),
         ),
     ] = None,
-    script: ScriptOpt = None,
+    wrap: Annotated[
+        str | None,
+        typer.Option(
+            "--wrap",
+            help=(
+                "Run the supplied command line in the SLURM job. "
+                "Equivalent to SLURM's ``sbatch --wrap=...``; mutually "
+                "exclusive with the positional script argument."
+            ),
+        ),
+    ] = None,
     profile: ProfileOpt = None,
     local: LocalOpt = False,
     quiet: QuietOpt = False,
-    name: Annotated[str, typer.Option("--name", "--job-name", help="Job name")] = "job",
+    name: Annotated[
+        str,
+        typer.Option("-J", "--name", "--job-name", help="Job name (sbatch -J)"),
+    ] = "job",
     log_dir: Annotated[
         str | None, typer.Option("--log-dir", help="Log directory")
     ] = None,
     work_dir: Annotated[
         str | None,
-        typer.Option("--work-dir", "--chdir", help="Working directory for the job"),
+        typer.Option(
+            "-D", "--work-dir", "--chdir", help="Working directory for the job"
+        ),
     ] = None,
     # Resource options
     nodes: Annotated[int, typer.Option("-N", "--nodes", help="Number of nodes")] = 1,
     gpus_per_node: Annotated[
         int, typer.Option("--gpus-per-node", help="Number of GPUs per node")
     ] = 0,
+    gres: Annotated[
+        str | None,
+        typer.Option(
+            "--gres",
+            help=(
+                "Generic SLURM resource (sbatch --gres). Currently parses "
+                "the ``gpu:N`` form into --gpus-per-node; richer gres "
+                "expressions (``gpu:tesla:2`` etc.) are not yet supported."
+            ),
+        ),
+    ] = None,
     ntasks_per_node: Annotated[
         int, typer.Option("--ntasks-per-node", help="Number of tasks per node")
     ] = 1,
     cpus_per_task: Annotated[
-        int, typer.Option("--cpus-per-task", help="Number of CPUs per task")
+        int, typer.Option("-c", "--cpus-per-task", help="Number of CPUs per task")
     ] = 1,
     memory: Annotated[
         str | None,
-        typer.Option("--memory", "--mem", help="Memory per node (e.g., '32GB', '1TB')"),
+        typer.Option("--mem", "--memory", help="Memory per node (e.g., '32GB', '1TB')"),
     ] = None,
     time: Annotated[
         str | None,
         typer.Option(
+            "-t",
             "--time",
             "--time-limit",
             help="Time limit (e.g., '1:00:00', '30:00', '1-12:00:00')",
@@ -397,12 +441,16 @@ def submit(
     nodelist: Annotated[
         str | None,
         typer.Option(
-            "--nodelist", help="Specific nodes to use (e.g., 'node001,node002')"
+            "-w",
+            "--nodelist",
+            help="Specific nodes to use (e.g., 'node001,node002')",
         ),
     ] = None,
     partition: Annotated[
         str | None,
-        typer.Option("--partition", help="SLURM partition to use (e.g., 'gpu', 'cpu')"),
+        typer.Option(
+            "-p", "--partition", help="SLURM partition to use (e.g., 'gpu', 'cpu')"
+        ),
     ] = None,
     # Environment options
     conda: Annotated[
@@ -471,25 +519,37 @@ def submit(
         bool, typer.Option("--verbose", "-v", help="Show verbose output")
     ] = False,
 ) -> None:
-    """Submit a SLURM job."""
-    # --script and positional command are mutually exclusive (AC-6.5).
-    # Enforce the mutex here so resolve_transport does not run for
-    # pathologically-constructed invocations.
-    if script is not None and command:
+    """Submit a SLURM job (matches the SLURM ``sbatch`` invocation shape).
+
+    Two input modes:
+
+    * ``srunx sbatch script.sh``        — submit a sbatch script (positional)
+    * ``srunx sbatch --wrap "cmd ..."`` — wrap a command line into a job
+
+    The two are mutually exclusive, mirroring SLURM's own ``sbatch``
+    behaviour. srunx-specific extensions (``--profile`` / ``--conda`` /
+    ``--container`` / ``--template`` etc.) layer on top of the standard
+    SLURM flags and are surfaced in this command's --help.
+    """
+    # Positional script vs --wrap are mutually exclusive (matches
+    # ``sbatch <script>`` vs ``sbatch --wrap=...`` semantics).
+    if script is not None and wrap is not None:
         raise typer.BadParameter(
-            "--script and command arguments are mutually exclusive.",
-            param_hint="--script / COMMAND",
+            "Positional script and --wrap are mutually exclusive.",
+            param_hint="<script> / --wrap",
         )
-    if script is None and not command:
-        # Match the historical Typer message so existing CLI tests that
-        # grep stderr for "Missing argument" keep passing. The
-        # ``command`` argument used to be strictly required; we relaxed
-        # it to allow ``--script`` but want the UX for the unconfigured
-        # case to feel identical.
+    if script is None and wrap is None:
         raise typer.BadParameter(
-            "Missing argument 'COMMAND'. Provide a command or use --script <path>.",
-            param_hint="--script / COMMAND",
+            "Missing job source. Provide a script path or use --wrap <command>.",
+            param_hint="<script> / --wrap",
         )
+
+    # SLURM ``--gres=gpu:N`` overrides ``--gpus-per-node`` so callers
+    # can paste sbatch lines verbatim. Explicit ``--gpus-per-node`` wins
+    # only when ``--gres`` is absent (the "no override" case).
+    gres_gpus = _parse_gres_gpu(gres)
+    if gres_gpus is not None:
+        gpus_per_node = gres_gpus
 
     config = get_config()
 
@@ -562,16 +622,22 @@ def submit(
         # travels with the script itself rather than the model, so we do
         # not forward ``resources`` / ``environment`` / ``log_dir`` /
         # ``work_dir`` here. Those CLI flags are accepted for UX symmetry
-        # with command-mode submits but are no-ops under ``--script``.
+        # with --wrap submits but are no-ops under positional script mode.
         shell_data: dict[str, Any] = {
             "name": name,
             "script_path": str(script),
         }
         job = ShellJob.model_validate(shell_data)
     else:
+        # ``--wrap`` is a single shell command line; SLURM's ``sbatch
+        # --wrap`` runs it via ``/bin/sh -c``. Mirror that here by
+        # passing the wrap string as the Job command (Job.command
+        # accepts ``str``); the local renderer will interpolate it
+        # verbatim into the rendered sbatch ``srun`` invocation.
+        assert wrap is not None  # type narrowing: enforced by mutex above
         job_data: dict[str, Any] = {
             "name": name,
-            "command": command,
+            "command": wrap,
             "resources": resources,
             "environment": environment,
             "log_dir": log_dir,
@@ -705,58 +771,8 @@ def submit(
                     )
 
 
-@app.command("status")
-def status(
-    job_id: Annotated[int, typer.Argument(help="Job ID to check")],
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
-    quiet: QuietOpt = False,
-) -> None:
-    """Check job status."""
-    try:
-        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
-            # Local ``Slurm.retrieve`` is preserved for the existing
-            # ``mock_slurm.retrieve.assert_called_once_with(...)`` tests.
-            # Remote transports go through the Protocol's ``status``.
-            if rt.transport_type == "local":
-                client = Slurm()
-                job = client.retrieve(job_id)
-            else:
-                job = rt.job_ops.status(job_id)
-
-            console = Console()
-            console.print(f"Job ID: [bold]{job.job_id}[/bold]")
-            console.print(f"Status: {job.status.name}")
-            console.print(f"Name: {job.name}")
-            if isinstance(job, Job) and job.command:
-                command_str = (
-                    job.command
-                    if isinstance(job.command, str)
-                    else " ".join(job.command)
-                )
-                console.print(f"Command: {command_str}")
-            elif isinstance(job, ShellJob):
-                console.print(f"Script: {job.script_path}")
-
-    except JobNotFound:
-        typer.secho(
-            f"Job {job_id} not found",
-            err=True,
-            fg=typer.colors.RED,
-        )
-        raise typer.Exit(code=1) from None
-    except TransportError as exc:
-        typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
-        raise typer.Exit(code=1) from None
-    except Exception as e:
-        typer.secho(
-            f"Error retrieving job {job_id}: {e}", err=True, fg=typer.colors.RED
-        )
-        raise typer.Exit(code=1) from e
-
-
-@app.command("list")
-def list_jobs(
+@app.command("squeue")
+def squeue(
     show_gpus: Annotated[
         bool,
         typer.Option("--show-gpus", "-g", help="Show GPU allocation for each job"),
@@ -772,10 +788,10 @@ def list_jobs(
     """List user's jobs in the queue.
 
     Examples:
-        srunx list
-        srunx list --show-gpus
-        srunx list --format json
-        srunx list --show-gpus --format json
+        srunx squeue
+        srunx squeue --show-gpus
+        srunx squeue --format json
+        srunx squeue --show-gpus --format json
     """
     import json
 
@@ -818,7 +834,7 @@ def list_jobs(
 
         # Empty-queue sentinel only for human-facing table format.
         # Moved past the json branch to fix the pre-existing bug where
-        # ``srunx list --format json`` on an empty queue emitted the
+        # ``srunx squeue --format json`` on an empty queue emitted the
         # human-readable line instead of ``[]`` (AC-7.1 prerequisite).
         if not jobs:
             console = Console()
@@ -871,8 +887,8 @@ def list_jobs(
         raise typer.Exit(code=1) from e
 
 
-@app.command("cancel")
-def cancel(
+@app.command("scancel")
+def scancel(
     job_id: Annotated[int, typer.Argument(help="Job ID to cancel")],
     profile: ProfileOpt = None,
     local: LocalOpt = False,
@@ -910,8 +926,8 @@ def cancel(
         raise typer.Exit(code=1) from e
 
 
-@app.command("resources")
-def resources(
+@app.command("sinfo")
+def sinfo(
     partition: Annotated[
         str | None,
         typer.Option("--partition", "-p", help="SLURM partition to query"),
@@ -924,10 +940,10 @@ def resources(
     """Display current GPU resource availability.
 
     Examples:
-        srunx resources
-        srunx resources --partition gpu
-        srunx resources --format json
-        srunx resources --partition gpu --format json
+        srunx sinfo
+        srunx sinfo --partition gpu
+        srunx sinfo --format json
+        srunx sinfo --partition gpu --format json
     """
     import json
 
@@ -978,8 +994,8 @@ def resources(
         sys.exit(1)
 
 
-@app.command("logs")
-def logs(
+@app.command("tail")
+def tail(
     job_id: Annotated[int, typer.Argument(help="Job ID to show logs for")],
     follow: Annotated[
         bool,
@@ -1070,6 +1086,12 @@ def flow_run(
     yaml_file: Annotated[
         Path, typer.Argument(help="Path to YAML workflow definition file")
     ],
+    validate: Annotated[
+        bool,
+        typer.Option(
+            "--validate", help="Only validate the workflow file without executing"
+        ),
+    ] = False,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -1153,7 +1175,7 @@ def flow_run(
 
     _execute_workflow(
         yaml_file=yaml_file,
-        validate=False,
+        validate=validate,
         dry_run=dry_run,
         log_level="INFO",
         slack=slack,
@@ -1171,31 +1193,6 @@ def flow_run(
         local=local,
         quiet=quiet,
     )
-
-
-@flow_app.command("validate")
-def flow_validate(
-    yaml_file: Annotated[
-        Path, typer.Argument(help="Path to YAML workflow definition file")
-    ],
-) -> None:
-    """Validate workflow YAML file."""
-    if not yaml_file.exists():
-        logger.error(f"Workflow file not found: {yaml_file}")
-        sys.exit(1)
-
-    try:
-        runner = WorkflowRunner.from_yaml(yaml_file)
-        runner.workflow.validate()
-
-        console = Console()
-        console.print("✅ Workflow validation successful")
-        console.print(f"   Workflow: {runner.workflow.name}")
-        console.print(f"   Jobs: {len(runner.workflow.jobs)}")
-
-    except Exception as e:
-        logger.error(f"Workflow validation failed: {e}")
-        sys.exit(1)
 
 
 @config_app.command("show")
@@ -1341,246 +1338,8 @@ def template_show(
         sys.exit(1)
 
 
-@template_app.command("apply")
-def template_apply(
-    name: Annotated[str, typer.Argument(help="Template name to apply")],
-    command: Annotated[list[str], typer.Argument(help="Command to execute in the job")],
-    job_name: Annotated[str, typer.Option("--job-name", help="Job name")] = "job",
-    # Resource options
-    nodes: Annotated[int, typer.Option("-N", "--nodes", help="Number of nodes")] = 1,
-    gpus_per_node: Annotated[
-        int, typer.Option("--gpus-per-node", help="Number of GPUs per node")
-    ] = 1,
-    ntasks_per_node: Annotated[
-        int, typer.Option("--ntasks-per-node", help="Number of tasks per node")
-    ] = 1,
-    cpus_per_task: Annotated[
-        int, typer.Option("--cpus-per-task", help="Number of CPUs per task")
-    ] = 1,
-    memory: Annotated[
-        str | None, typer.Option("--memory", "--mem", help="Memory per node")
-    ] = None,
-    time: Annotated[str | None, typer.Option("--time", help="Time limit")] = None,
-    partition: Annotated[
-        str | None, typer.Option("--partition", help="SLURM partition")
-    ] = None,
-    # Environment options
-    conda: Annotated[
-        str | None, typer.Option("--conda", help="Conda environment name")
-    ] = None,
-    venv: Annotated[
-        str | None, typer.Option("--venv", help="Virtual environment path")
-    ] = None,
-    container: Annotated[
-        str | None, typer.Option("--container", help="Container image or config")
-    ] = None,
-    container_runtime: Annotated[
-        str | None,
-        typer.Option(
-            "--container-runtime",
-            help="Container runtime: pyxis, apptainer, or singularity",
-        ),
-    ] = None,
-    no_container: Annotated[
-        bool,
-        typer.Option(
-            "--no-container",
-            help="Suppress config-default container injection",
-        ),
-    ] = False,
-    # Job options
-    wait: Annotated[
-        bool, typer.Option("--wait", help="Wait for job completion")
-    ] = False,
-    slack: Annotated[
-        bool, typer.Option("--slack", help="Send notifications to Slack")
-    ] = False,
-    endpoint: Annotated[
-        str | None,
-        typer.Option(
-            "--endpoint",
-            help=(
-                "Name of a configured notification endpoint (see "
-                "`/api/endpoints` / Settings UI). Attaches a durable "
-                "watch via the poller pipeline."
-            ),
-        ),
-    ] = None,
-    preset: Annotated[
-        str | None,
-        typer.Option(
-            "--preset",
-            help=(
-                "Subscription preset for --endpoint: terminal (default), "
-                "running_and_terminal, or all."
-            ),
-        ),
-    ] = None,
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
-    quiet: QuietOpt = False,
-) -> None:
-    """Apply a template and submit a job."""
-    try:
-        template_path = get_template_path(name)
-
-        # Create resources
-        resources = JobResource(
-            nodes=nodes,
-            gpus_per_node=gpus_per_node,
-            ntasks_per_node=ntasks_per_node,
-            cpus_per_task=cpus_per_task,
-            memory_per_node=memory,
-            time_limit=time,
-            partition=partition,
-        )
-
-        # Create environment
-        env_config: dict[str, Any] = {}
-        if conda:
-            env_config["conda"] = conda
-        if venv:
-            env_config["venv"] = venv
-
-        # Resolve container
-        if no_container:
-            env_config["container"] = None
-        elif container is not None:
-            parsed = _parse_container_args(container)
-            if parsed is not None:
-                if container_runtime is not None:
-                    parsed = parsed.model_copy(update={"runtime": container_runtime})
-                elif parsed.runtime == "pyxis":
-                    # Apply config default runtime (REQ-9 resolution order)
-                    ta_config = get_config()
-                    default_container = ta_config.environment.container
-                    if (
-                        default_container is not None
-                        and default_container.runtime != "pyxis"
-                    ):
-                        parsed = parsed.model_copy(
-                            update={"runtime": default_container.runtime}
-                        )
-            env_config["container"] = parsed
-        elif container_runtime is not None:
-            ta_config = get_config()
-            default_container = ta_config.environment.container
-            if default_container is not None and default_container.image:
-                container_dict = default_container.model_dump()
-                container_dict["runtime"] = container_runtime
-                env_config["container"] = container_dict
-
-        environment = JobEnvironment.model_validate(env_config)
-
-        # Create job
-        job = Job(
-            name=job_name,
-            command=command,
-            resources=resources,
-            environment=environment,
-        )
-
-        # Setup callbacks.
-        #
-        # Resolution order mirrors ``srunx submit``:
-        #   --endpoint → durable watch attached via the poller pipeline
-        #   --slack    → in-process SlackCallback fallback (deprecated)
-        # Both may be set — keep the deprecated path firing so endpoint
-        # lookup failures don't silently drop the user's opt-in.
-        callbacks: list[Callback] = []
-        effective_preset = preset or get_config().notifications.default_preset
-        # Bind the notification watch to the exact scheduler_key the
-        # transport will resolve to so SSH submissions don't silently
-        # register their watch under the wrong axis (Bug 5).
-        resolved_scheduler_key = peek_scheduler_key(profile=profile, local=local)
-        if endpoint:
-            callbacks.append(
-                NotificationWatchCallback(
-                    endpoint_name=endpoint,
-                    preset=effective_preset,
-                    scheduler_key=resolved_scheduler_key,
-                )
-            )
-        if slack:
-            logger.warning(
-                "`--slack` is deprecated; configure an endpoint via "
-                "Settings → Notifications and pass `--endpoint <name>`."
-            )
-            webhook_url = os.getenv("SLACK_WEBHOOK_URL")
-            if not webhook_url:
-                raise ValueError("SLACK_WEBHOOK_URL is not set")
-            callbacks.append(SlackCallback(webhook_url=webhook_url))
-
-        # Submit job with the specified template.
-        with resolve_transport(
-            profile=profile,
-            local=local,
-            quiet=quiet,
-            callbacks=callbacks,
-            submission_source="cli",
-        ) as rt:
-            client: Slurm | None
-            if rt.transport_type == "local":
-                client = Slurm(callbacks=callbacks)
-                submitted_job = client.submit(job, template_path=template_path)
-            else:
-                # SSH path: callbacks + submission_source were threaded
-                # into ``resolve_transport`` so the adapter fires callbacks
-                # and tags the jobs row with ``'cli'``. The submission
-                # render context translates ``--work-dir`` / mount paths.
-                submitted_job = rt.job_ops.submit(
-                    job, submission_context=rt.submission_context
-                )
-                client = None
-
-            console = Console()
-            console.print(
-                f"✅ Job submitted successfully with template '[cyan]{name}[/cyan]': [bold green]{submitted_job.job_id}[/bold green]"
-            )
-            console.print(f"   Job name: {submitted_job.name}")
-            if isinstance(submitted_job, Job) and submitted_job.command:
-                command_str = (
-                    submitted_job.command
-                    if isinstance(submitted_job.command, str)
-                    else " ".join(submitted_job.command)
-                )
-                console.print(f"   Command: {command_str}")
-
-            if wait:
-                if client is None:
-                    console.print(
-                        "⚠️  --wait is not yet supported for SSH transports; "
-                        "submitted job continues to run."
-                    )
-                else:
-                    try:
-                        final_job = client.monitor(submitted_job)
-                        if final_job.status.name == "COMPLETED":
-                            console.print("✅ Job completed successfully")
-                        else:
-                            console.print(
-                                f"❌ Job failed with status: {final_job.status.name}"
-                            )
-                            raise typer.Exit(code=1)
-                    except KeyboardInterrupt:
-                        console.print("\n⚠️  Monitoring interrupted by user")
-                        console.print(
-                            f"Job {submitted_job.job_id} is still running in the background"
-                        )
-
-    except ValueError as e:
-        typer.secho(str(e), err=True, fg=typer.colors.RED)
-        raise typer.Exit(code=1) from e
-    except TransportError as exc:
-        typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
-        raise typer.Exit(code=1) from None
-    except Exception as e:
-        typer.secho(f"Error applying template: {e}", err=True, fg=typer.colors.RED)
-        raise typer.Exit(code=1) from e
-
-
-@app.command("history")
-def history(
+@app.command("sacct")
+def sacct(
     limit: Annotated[
         int, typer.Option("--limit", "-n", help="Number of jobs to show")
     ] = 50,
@@ -1641,8 +1400,8 @@ def history(
         sys.exit(1)
 
 
-@app.command("report")
-def report(
+@app.command("sreport")
+def sreport(
     from_date: Annotated[
         str | None, typer.Option("--from", help="Start date (YYYY-MM-DD)")
     ] = None,
