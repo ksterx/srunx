@@ -188,6 +188,58 @@ By default, edges use `afterok` (run only if the upstream job completes successf
 !!! note
     The run transitions through these phases: `syncing` (pushing files), `submitting` (sending sbatch commands), `running` (polling job statuses), then a terminal state (`completed`, `failed`, or `cancelled`).
 
+## Run a Parameter Sweep
+
+Launch the same workflow over a cross-product of arg values without
+duplicating YAML files. Every cell runs as an independent `workflow_run`
+under one parent `sweep_run`.
+
+**Open the Run dialog:**
+
+1.  Navigate to **Workflows**
+2.  On the target workflow card, click the **Run** button (triangle icon)
+
+**Toggle LIST mode on args:**
+
+1.  Each arg row has a **SINGLE | LIST** toggle on the right
+2.  Switch the arg you want to sweep to **LIST**
+3.  Enter comma-separated values (for example `0.001, 0.01, 0.1`)
+4.  Repeat for any additional sweep axes -- the cell count is the
+    cross-product of all LIST args
+5.  A `Sweep: N cells . lr[3] . seed[3]` badge appears above the submit
+    button, showing the total cell count and the cardinality of each axis
+
+**Configure Advanced options:**
+
+1.  Expand the **Advanced** section below the args
+2.  Toggle **fail_fast** to cancel peers on first failure (default: off)
+3.  Set **max_parallel** (default: 4; required for sweeps)
+
+**Submit:**
+
+1.  Click **RUN SWEEP (N)** where N is the cell count
+2.  The UI navigates to `/sweep_runs/{id}` for the new sweep
+
+**Track progress on the sweep detail page:**
+
+- **Progress bar** -- segmented by cell status
+  (completed / failed / cancelled / running)
+- **ETA** -- linear estimate based on completed cells; hidden until at
+  least one cell reaches a terminal state
+- **Draining indicator** -- spinner plus "draining pending cells" label
+  while a cancelled sweep finishes up active cells
+- **Cells table** with:
+    - **Status filter** dropdown (all / pending / running / completed / failed / cancelled)
+    - **Sortable columns**: #, Status, Started, Completed, Duration
+    - Per-cell **cancel x** button (shown only for non-terminal cells)
+- Click any cell row to drill into `/workflow_runs/{cell_id}` for the
+  per-cell DAG view and logs
+
+!!! note
+    Sweep submissions always route through the configured SSH adapter via
+    a per-sweep pool. If no SSH profile is configured, the `RUN SWEEP`
+    button is disabled.
+
 ## Cancel a Running Workflow
 
 1.  While a workflow is running, click **Cancel** in the toolbar on the workflow detail page

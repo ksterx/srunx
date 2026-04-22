@@ -383,3 +383,95 @@ jobs:
       EPOCHS: 100
       LR: 0.001
 ```
+
+## Parameter Sweeps
+
+Run the same workflow over a cross-product of hyperparameters without
+copying YAML files. srunx expands the matrix into N independent
+``workflow_runs`` (cells), so a cell failure does not abort peers unless
+``fail_fast: true``.
+
+### YAML declaration
+
+Declare the matrix in a `sweep` block at the workflow root. Matrix keys
+reference values via ordinary `{{ arg }}` substitution in job fields.
+
+``` yaml
+name: train
+args:
+  lr: 0.01
+  seed: 1
+
+sweep:
+  matrix:
+    lr: [0.001, 0.01, 0.1]
+    seed: [1, 2, 3]
+  fail_fast: false
+  max_parallel: 4
+
+jobs:
+  - name: train
+    command: ["python", "train.py", "--lr", "{{ lr }}", "--seed", "{{ seed }}"]
+    gpus_per_node: 1
+```
+
+The example above produces a 3 x 3 cross-product (9 cells). Each cell
+runs with its own `lr` / `seed` pair and is tracked as a separate
+`workflow_run` under one parent `sweep_run`.
+
+### CLI usage
+
+Run a YAML-declared sweep:
+
+``` bash
+srunx flow run train.yaml
+```
+
+Override a single arg without triggering a sweep:
+
+``` bash
+srunx flow run --arg dataset=imagenet train.yaml
+```
+
+Launch an ad-hoc sweep from the CLI (takes precedence over, or augments,
+any YAML `sweep` block):
+
+``` bash
+srunx flow run --sweep lr=0.001,0.01,0.1 --max-parallel 2 train.yaml
+```
+
+### Constraints
+
+- ``max_parallel`` is required (YAML or ``--max-parallel``; Web UI defaults to 4).
+- Matrix values must be scalar (str/int/float/bool) -- nested structures are rejected at validation.
+- Total cell count is capped at 1000 (safety valve; SLURM ``MaxSubmitJobs`` is typically ~4096).
+- ``fail_fast`` defaults to ``false`` -- one cell failing does not cancel peers.
+
+### Ad-hoc overrides (``--arg`` / ``--sweep``)
+
+- ``--arg key=value`` overrides a single workflow arg for every cell (no sweep triggered on its own).
+- ``--sweep key=v1,v2,v3`` adds or replaces a matrix axis. Repeat the flag to sweep multiple keys.
+- CLI sweep axes merge with the YAML `sweep.matrix`: CLI wins on conflicting keys.
+- ``--max-parallel N`` is required when a sweep is active via CLI.
+
+### Dry-run preview
+
+Preview the expanded matrix without submitting any jobs:
+
+``` bash
+srunx flow run --sweep lr=0.001,0.01 --max-parallel 2 --dry-run train.yaml
+```
+
+The dry-run prints the resolved args for each cell so you can sanity-check
+the cross-product before launching.
+
+### Execution paths
+
+CLI and MCP sweeps (without a `mount=` argument) run cells through the
+local `Slurm` singleton. Web UI sweeps, and MCP sweeps that specify
+`mount=<profile>`, route every cell through a per-sweep
+`SlurmSSHExecutorPool` (capped at `min(max_parallel, 8)` pooled SSH
+connections) which is closed when the background sweep task exits.
+
+See also: [MCP sweep recipes](mcp-usage.md#parameter-sweeps) and
+[Web UI sweep recipes](webui.md#run-a-parameter-sweep).

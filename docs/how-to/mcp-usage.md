@@ -131,6 +131,93 @@ Execute specific portions of a workflow:
 Claude Code uses the `single_job`, `from_job`, `to_job`, and
 `dry_run` parameters of `run_workflow`.
 
+## Parameter Sweeps
+
+Run the same workflow over a cross-product of hyperparameters by passing
+a `sweep=` argument to `run_workflow`. Each cell executes as an
+independent `workflow_run` under one parent `sweep_run`.
+
+### Basic sweep (local Slurm)
+
+``` text
+> Run the train workflow at /projects/train.yaml with seed 1/2/3 and
+> lr 0.001/0.01, max 2 in parallel
+```
+
+Claude Code calls:
+
+``` python
+run_workflow(
+    yaml_path="/projects/train.yaml",
+    sweep={
+        "matrix": {"seed": [1, 2, 3], "lr": [0.001, 0.01]},
+        "max_parallel": 2,
+    },
+)
+```
+
+Without `mount=`, cells run through the local `Slurm` singleton.
+
+### Sweep over SSH (``mount=``)
+
+``` text
+> Submit the train workflow on the cookbook2 project with seed 1-3,
+> max 2 parallel
+```
+
+Claude Code calls:
+
+``` python
+run_workflow(
+    yaml_path="/projects/cookbook2/train.yaml",
+    sweep={
+        "matrix": {"seed": [1, 2, 3]},
+        "max_parallel": 2,
+    },
+    mount="cookbook2",
+)
+```
+
+With `mount=<profile>`, cells route through a per-sweep SSH executor
+pool. The named mount must exist on the active SSH profile -- unknown
+names return an error envelope.
+
+### Combine ``args`` and ``sweep``
+
+`args` overrides base workflow args for every cell; `sweep` defines
+the matrix axes. They can be used together:
+
+``` python
+run_workflow(
+    yaml_path="/projects/train.yaml",
+    args={"dataset": "imagenet"},
+    sweep={
+        "matrix": {"lr": [0.001, 0.01, 0.1]},
+        "max_parallel": 3,
+    },
+)
+```
+
+### Return value
+
+``` json
+{
+  "success": true,
+  "sweep_run_id": "sr_abc123",
+  "status": "running",
+  "cell_count": 6,
+  "cells_completed": 0,
+  "cells_failed": 0,
+  "cells_cancelled": 0
+}
+```
+
+!!! warning
+    `python:` arg prefixes and `ShellJob.script_path` values outside the
+    mount root are rejected for security.
+
+See also: [Parameter Sweeps in workflows how-to](workflows.md#parameter-sweeps).
+
 ## Combine Multiple Operations
 
 Claude Code can chain tools in a single conversation turn:
