@@ -338,6 +338,158 @@ CREATE INDEX idx_workflow_runs_sweep_run_id ON workflow_runs(sweep_run_id);
 
 
 # ---------------------------------------------------------------------------
+# v5 schema: CLI transport unification.
+#
+# 1. Rebuild ``jobs`` to add ``transport_type`` / ``profile_name`` /
+#    ``scheduler_key`` columns. The original ``UNIQUE(job_id)`` becomes
+#    ``UNIQUE(scheduler_key, job_id)`` so the same SLURM ``job_id`` can
+#    safely co-exist across multiple clusters (``local`` + ``ssh:<profile>``).
+#    A three-way CHECK constraint keeps ``(transport_type, profile_name,
+#    scheduler_key)`` internally consistent.
+# 2. Rebuild ``workflow_run_jobs`` so the child FK targets ``jobs.id``
+#    (AUTOINCREMENT PK) instead of ``jobs.job_id``. Column renamed
+#    ``job_id`` → ``jobs_row_id``. Backfilled via ``LEFT JOIN jobs``.
+# 3. Rebuild ``job_state_transitions`` the same way.
+# 4. Backfill ``watches.target_ref`` / ``events.source_ref`` that use the
+#    legacy 2-segment ``job:<id>`` form into the new 3-segment
+#    ``job:local:<id>`` form. The 2-segment form is fully retired; the
+#    ``ActiveWatchPoller`` parser no longer accepts it.
+# 5. Force-close every open watch as a mitigation for the pre-V5
+#    WebUI-SSH-submitted jobs that are backfilled as ``transport_type=
+#    'local'`` (the old schema had no column to tell them apart). Those
+#    watches would otherwise drive the poller to query local SLURM for
+#    remote job ids. The user can re-open watches after migration via
+#    the Web UI or CLI.
+#
+# Rebuild is required for (1), (2), (3) because SQLite cannot alter
+# UNIQUE, CHECK, or FK targets in place. All five steps run inside one
+# ``PRAGMA foreign_keys=OFF`` + ``BEGIN IMMEDIATE`` transaction so the
+# migration either fully applies or rolls back cleanly (see
+# ``_apply_fk_off_migration``).
+# ---------------------------------------------------------------------------
+
+SCHEMA_V5 = """
+-- (1) jobs rebuild ---------------------------------------------------
+CREATE TABLE jobs_v5 (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id            INTEGER NOT NULL,
+    transport_type    TEXT NOT NULL DEFAULT 'local'
+                        CHECK (transport_type IN ('local','ssh')),
+    profile_name      TEXT,
+    scheduler_key     TEXT NOT NULL DEFAULT 'local',
+    name              TEXT NOT NULL,
+    command           TEXT,
+    status            TEXT NOT NULL,
+    nodes             INTEGER,
+    gpus_per_node     INTEGER,
+    memory_per_node   TEXT,
+    time_limit        TEXT,
+    partition         TEXT,
+    nodelist          TEXT,
+    conda             TEXT,
+    venv              TEXT,
+    container         TEXT,
+    env_vars          TEXT,
+    submitted_at      TEXT NOT NULL,
+    started_at        TEXT,
+    completed_at      TEXT,
+    duration_secs     INTEGER,
+    workflow_run_id   INTEGER REFERENCES workflow_runs(id) ON DELETE SET NULL,
+    submission_source TEXT NOT NULL CHECK (submission_source IN ('cli','web','workflow')),
+    log_file          TEXT,
+    metadata          TEXT,
+    UNIQUE (scheduler_key, job_id),
+    CHECK (
+        (transport_type = 'local' AND profile_name IS NULL AND scheduler_key = 'local')
+        OR
+        (transport_type = 'ssh'   AND profile_name IS NOT NULL
+                                  AND scheduler_key = 'ssh:' || profile_name)
+    ),
+    CHECK (profile_name IS NULL OR instr(profile_name, ':') = 0)
+);
+INSERT INTO jobs_v5 (
+    id, job_id, transport_type, profile_name, scheduler_key,
+    name, command, status,
+    nodes, gpus_per_node, memory_per_node, time_limit,
+    partition, nodelist, conda, venv, container, env_vars,
+    submitted_at, started_at, completed_at, duration_secs,
+    workflow_run_id, submission_source, log_file, metadata
+)
+    SELECT
+        id, job_id, 'local', NULL, 'local',
+        name, command, status,
+        nodes, gpus_per_node, memory_per_node, time_limit,
+        partition, nodelist, conda, venv, container, env_vars,
+        submitted_at, started_at, completed_at, duration_secs,
+        workflow_run_id, submission_source, log_file, metadata
+    FROM jobs;
+DROP TABLE jobs;
+ALTER TABLE jobs_v5 RENAME TO jobs;
+CREATE INDEX idx_jobs_status          ON jobs(status);
+CREATE INDEX idx_jobs_submitted_at    ON jobs(submitted_at);
+CREATE INDEX idx_jobs_workflow_run_id ON jobs(workflow_run_id);
+CREATE INDEX idx_jobs_scheduler_key   ON jobs(scheduler_key);
+
+-- (2) workflow_run_jobs rebuild --------------------------------------
+CREATE TABLE workflow_run_jobs_v5 (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_run_id INTEGER NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+    jobs_row_id     INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+    job_name        TEXT NOT NULL,
+    depends_on      TEXT,
+    UNIQUE (workflow_run_id, job_name)
+);
+INSERT INTO workflow_run_jobs_v5 (id, workflow_run_id, jobs_row_id, job_name, depends_on)
+    SELECT wrj.id, wrj.workflow_run_id, j.id, wrj.job_name, wrj.depends_on
+    FROM workflow_run_jobs wrj
+    LEFT JOIN jobs j ON j.job_id = wrj.job_id AND j.scheduler_key = 'local';
+DROP TABLE workflow_run_jobs;
+ALTER TABLE workflow_run_jobs_v5 RENAME TO workflow_run_jobs;
+CREATE INDEX idx_wrj_run ON workflow_run_jobs(workflow_run_id);
+
+-- (3) job_state_transitions rebuild ----------------------------------
+CREATE TABLE job_state_transitions_v5 (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    jobs_row_id  INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+    from_status  TEXT,
+    to_status    TEXT NOT NULL,
+    observed_at  TEXT NOT NULL,
+    source       TEXT NOT NULL CHECK (source IN ('poller','cli_monitor','webhook'))
+);
+INSERT INTO job_state_transitions_v5 (
+    id, jobs_row_id, from_status, to_status, observed_at, source
+)
+    SELECT jst.id, j.id, jst.from_status, jst.to_status, jst.observed_at, jst.source
+    FROM job_state_transitions jst
+    LEFT JOIN jobs j ON j.job_id = jst.job_id AND j.scheduler_key = 'local';
+DROP TABLE job_state_transitions;
+ALTER TABLE job_state_transitions_v5 RENAME TO job_state_transitions;
+CREATE INDEX idx_jst_job_id      ON job_state_transitions(jobs_row_id, observed_at);
+CREATE INDEX idx_jst_observed_at ON job_state_transitions(observed_at);
+
+-- (4) target_ref / source_ref backfill -------------------------------
+UPDATE watches
+   SET target_ref = 'job:local:' || substr(target_ref, 5)
+ WHERE kind = 'job'
+   AND target_ref LIKE 'job:%'
+   AND target_ref NOT LIKE 'job:local:%'
+   AND target_ref NOT LIKE 'job:ssh:%';
+
+UPDATE events
+   SET source_ref = 'job:local:' || substr(source_ref, 5)
+ WHERE kind IN ('job.submitted','job.status_changed')
+   AND source_ref LIKE 'job:%'
+   AND source_ref NOT LIKE 'job:local:%'
+   AND source_ref NOT LIKE 'job:ssh:%';
+
+-- (5) force-close pre-V5 open watches --------------------------------
+UPDATE watches
+   SET closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ WHERE closed_at IS NULL;
+"""
+
+
+# ---------------------------------------------------------------------------
 # Migration registry
 # ---------------------------------------------------------------------------
 
@@ -377,6 +529,12 @@ MIGRATIONS: list[Migration] = [
         version=4,
         name="v4_widen_triggered_by_mcp",
         sql=SCHEMA_V4,
+        requires_fk_off=True,
+    ),
+    Migration(
+        version=5,
+        name="v5_transport_scheduler_key",
+        sql=SCHEMA_V5,
         requires_fk_off=True,
     ),
 ]

@@ -125,18 +125,20 @@ def test_history_scoped_by_job(
     assert [t.to_status for t in repo.history_for_job(2)] == ["RUNNING"]
 
 
-def test_job_delete_sets_job_id_null(
+def test_job_delete_sets_jobs_row_id_null(
     conn: sqlite3.Connection, repo: JobStateTransitionRepository
 ) -> None:
     _seed_job(conn, 1)
     repo.insert(1, None, "PENDING", "poller")
-    # FK is ON DELETE SET NULL; transition row survives but job_id goes NULL.
+    # V5: FK is ``jobs_row_id`` → ``jobs.id`` with ON DELETE SET NULL.
+    # Deleting the jobs row orphans the transition but preserves the
+    # append-only log (the SET NULL cascade zeroes ``jobs_row_id``).
     conn.execute("DELETE FROM jobs WHERE job_id = 1")
     conn.commit()
 
     assert repo.latest_for_job(1) is None
     orphan = conn.execute(
-        "SELECT job_id, to_status FROM job_state_transitions"
+        "SELECT jobs_row_id, to_status FROM job_state_transitions"
     ).fetchone()
-    assert orphan["job_id"] is None
+    assert orphan["jobs_row_id"] is None
     assert orphan["to_status"] == "PENDING"

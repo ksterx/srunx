@@ -10,12 +10,56 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from srunx.db.models import Job, SubmissionSource
+from srunx.db.models import Job, SubmissionSource, TransportType
 from srunx.db.repositories.base import BaseRepository, now_iso
+
+# Validate that the (transport_type, profile_name, scheduler_key) triple
+# matches the V5 CHECK constraint on the ``jobs`` table. Raising here
+# gives callers a Python-level error with a clear message instead of a
+# sqlite IntegrityError that surfaces at INSERT time.
+_SCHEDULER_KEY_LOCAL = "local"
+
+
+def _validate_transport_triple(
+    transport_type: TransportType,
+    profile_name: str | None,
+    scheduler_key: str,
+) -> None:
+    if transport_type == "local":
+        if profile_name is not None:
+            raise ValueError("profile_name must be None for transport_type='local'")
+        if scheduler_key != _SCHEDULER_KEY_LOCAL:
+            raise ValueError(
+                f"scheduler_key must be 'local' for transport_type='local'; "
+                f"got {scheduler_key!r}"
+            )
+    elif transport_type == "ssh":
+        if not profile_name:
+            raise ValueError("profile_name is required for transport_type='ssh'")
+        if ":" in profile_name:
+            raise ValueError(f"profile_name must not contain ':'; got {profile_name!r}")
+        expected = f"ssh:{profile_name}"
+        if scheduler_key != expected:
+            raise ValueError(
+                f"scheduler_key must be {expected!r} for "
+                f"transport_type='ssh', profile_name={profile_name!r}; "
+                f"got {scheduler_key!r}"
+            )
+    else:  # pragma: no cover — Literal narrows this out
+        raise ValueError(f"unknown transport_type: {transport_type!r}")
 
 
 class JobRepository(BaseRepository):
-    """CRUD for the ``jobs`` table."""
+    """CRUD for the ``jobs`` table.
+
+    V5 (CLI transport unification) added ``transport_type`` /
+    ``profile_name`` / ``scheduler_key`` columns and broadened the
+    uniqueness key from ``job_id`` alone to ``(scheduler_key, job_id)``
+    so the same SLURM id can safely co-exist across ``local`` and
+    ``ssh:<profile>`` transports. The read / update API stays
+    backwards-compatible by defaulting ``scheduler_key='local'`` on
+    every lookup — pre-V5 callers see no change.
+    """
 
     JSON_FIELDS = ("command", "env_vars", "metadata")
     DATETIME_FIELDS = ("submitted_at", "started_at", "completed_at")
@@ -23,6 +67,9 @@ class JobRepository(BaseRepository):
     _COLUMNS = (
         "id",
         "job_id",
+        "transport_type",
+        "profile_name",
+        "scheduler_key",
         "name",
         "command",
         "status",
@@ -53,6 +100,9 @@ class JobRepository(BaseRepository):
         name: str,
         status: str,
         submission_source: SubmissionSource,
+        transport_type: TransportType = "local",
+        profile_name: str | None = None,
+        scheduler_key: str = "local",
         command: list[str] | None = None,
         nodes: int | None = None,
         gpus_per_node: int | None = None,
@@ -71,40 +121,50 @@ class JobRepository(BaseRepository):
     ) -> int:
         """Insert a new row for a just-submitted job.
 
-        Uses ``INSERT OR IGNORE`` on the ``job_id`` UNIQUE constraint:
-        if a row with this SLURM id already exists, the call is a
-        no-op and returns ``0``. Callers that want to mutate an
-        existing row should use :meth:`update_status` /
+        Uses ``INSERT OR IGNORE`` on the ``(scheduler_key, job_id)``
+        UNIQUE constraint (V5+): if a row with this combined key already
+        exists, the call is a no-op and returns ``0``. Callers that want
+        to mutate an existing row should use :meth:`update_status` /
         :meth:`update_completion` explicitly.
+
+        ``transport_type`` / ``profile_name`` / ``scheduler_key`` default
+        to the local-SLURM triple so pre-V5 callers remain source-compat.
+        For SSH submissions the caller must provide all three with a
+        consistent shape (``transport_type='ssh'``, non-None
+        ``profile_name`` without ``:``, ``scheduler_key='ssh:<profile>'``);
+        :func:`_validate_transport_triple` rejects mismatches up front.
 
         Rationale for **not** using ``INSERT OR REPLACE`` here
         (P1-2 in the Codex review triage): ``REPLACE`` executes
         ``DELETE`` + ``INSERT``, which triggers
         ``ON DELETE SET NULL`` on the FK references in
-        ``workflow_run_jobs.job_id`` and ``job_state_transitions.job_id``.
-        A re-submission path (or a bug-induced double call) would
-        silently orphan every prior transition and membership, which
-        corrupts the poller's dedup / aggregation invariants. It would
-        also reset a poller-advanced ``status='RUNNING'`` row back to
-        ``'PENDING'`` + rewrite ``submitted_at``. With ``IGNORE`` the
-        first call wins; subsequent callers observe ``lastrowid=0``
-        and must decide explicitly what to do.
+        ``workflow_run_jobs.jobs_row_id`` and
+        ``job_state_transitions.jobs_row_id``. A re-submission path
+        would silently orphan every prior transition and membership.
+        With ``IGNORE`` the first call wins; subsequent callers observe
+        ``lastrowid=0`` and must decide explicitly what to do.
         """
+        _validate_transport_triple(transport_type, profile_name, scheduler_key)
+
         submitted_at = submitted_at or now_iso()
         cur = self.conn.execute(
             """
             INSERT OR IGNORE INTO jobs (
-                job_id, name, command, status,
+                job_id, transport_type, profile_name, scheduler_key,
+                name, command, status,
                 nodes, gpus_per_node, memory_per_node, time_limit,
                 partition, nodelist,
                 conda, venv, container, env_vars,
                 submitted_at,
                 workflow_run_id, submission_source,
                 log_file, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id,
+                transport_type,
+                profile_name,
+                scheduler_key,
                 name,
                 self._encode_json(command),
                 status,
@@ -138,6 +198,7 @@ class JobRepository(BaseRepository):
         job_id: int,
         status: str,
         *,
+        scheduler_key: str = "local",
         started_at: str | None = None,
         completed_at: str | None = None,
         duration_secs: int | None = None,
@@ -147,6 +208,9 @@ class JobRepository(BaseRepository):
 
         Called by :class:`~srunx.pollers.active_watch_poller.ActiveWatchPoller`
         on every detected transition. Returns True if a row was updated.
+
+        ``scheduler_key`` defaults to ``'local'`` so pre-V5 callers
+        continue to target the local-SLURM row unchanged.
         """
         sets: list[str] = ["status = ?"]
         vals: list[Any] = [status]
@@ -162,10 +226,10 @@ class JobRepository(BaseRepository):
         if nodelist is not None:
             sets.append("nodelist = ?")
             vals.append(nodelist)
-        vals.append(job_id)
+        vals.extend([scheduler_key, job_id])
 
         cur = self.conn.execute(
-            f"UPDATE jobs SET {', '.join(sets)} WHERE job_id = ?",
+            f"UPDATE jobs SET {', '.join(sets)} WHERE scheduler_key = ? AND job_id = ?",
             vals,
         )
         return cur.rowcount > 0
@@ -175,6 +239,8 @@ class JobRepository(BaseRepository):
         job_id: int,
         status: str,
         completed_at: str | None = None,
+        *,
+        scheduler_key: str = "local",
     ) -> bool:
         """Compatibility wrapper for the historical ``update_job_completion``.
 
@@ -182,7 +248,8 @@ class JobRepository(BaseRepository):
         """
         completed_at = completed_at or now_iso()
         row = self.conn.execute(
-            "SELECT submitted_at FROM jobs WHERE job_id = ?", (job_id,)
+            "SELECT submitted_at FROM jobs WHERE scheduler_key = ? AND job_id = ?",
+            (scheduler_key, job_id),
         ).fetchone()
         duration: int | None = None
         if row is not None:
@@ -196,14 +263,36 @@ class JobRepository(BaseRepository):
         return self.update_status(
             job_id,
             status,
+            scheduler_key=scheduler_key,
             completed_at=completed_at,
             duration_secs=duration,
         )
 
-    def get(self, job_id: int) -> Job | None:
+    def get(self, job_id: int, *, scheduler_key: str = "local") -> Job | None:
+        """Return the jobs row for ``(scheduler_key, job_id)``.
+
+        ``scheduler_key`` defaults to ``'local'`` so callers that only
+        deal with local-SLURM ids work unchanged. Use
+        :meth:`get_by_row_id` when the caller already has ``jobs.id``.
+        """
         row = self.conn.execute(
-            f"SELECT {', '.join(self._COLUMNS)} FROM jobs WHERE job_id = ?",
-            (job_id,),
+            f"SELECT {', '.join(self._COLUMNS)} FROM jobs "
+            "WHERE scheduler_key = ? AND job_id = ?",
+            (scheduler_key, job_id),
+        ).fetchone()
+        return self._row_to_model(row, Job)
+
+    def get_by_row_id(self, row_id: int) -> Job | None:
+        """Return the jobs row for ``jobs.id`` (AUTOINCREMENT PK).
+
+        Used by the V5 FK-retargeted child tables
+        (``workflow_run_jobs.jobs_row_id`` /
+        ``job_state_transitions.jobs_row_id``) that carry the row id
+        directly instead of the SLURM ``job_id``.
+        """
+        row = self.conn.execute(
+            f"SELECT {', '.join(self._COLUMNS)} FROM jobs WHERE id = ?",
+            (row_id,),
         ).fetchone()
         return self._row_to_model(row, Job)
 
@@ -275,8 +364,11 @@ class JobRepository(BaseRepository):
         rows = self.conn.execute(sql, params).fetchall()
         return {r["status"]: int(r["c"]) for r in rows}
 
-    def delete(self, job_id: int) -> bool:
-        cur = self.conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+    def delete(self, job_id: int, *, scheduler_key: str = "local") -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM jobs WHERE scheduler_key = ? AND job_id = ?",
+            (scheduler_key, job_id),
+        )
         return cur.rowcount > 0
 
     # ------------------------------------------------------------------

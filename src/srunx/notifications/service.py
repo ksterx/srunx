@@ -110,6 +110,8 @@ class NotificationService:
         job_id: int,
         endpoint_id: int | None,
         preset: str,
+        *,
+        scheduler_key: str = "local",
     ) -> int:
         """Create a job-kind watch and (optionally) its subscription.
 
@@ -119,11 +121,17 @@ class NotificationService:
                 from the new watch to this endpoint with ``preset``.
             preset: Preset string for the subscription. Ignored when
                 ``endpoint_id`` is ``None``.
+            scheduler_key: ``"local"`` (default) for local SLURM, or
+                ``"ssh:<profile>"`` for an SSH transport. Encoded into
+                the V5 3-segment ``target_ref`` grammar
+                ``job:<scheduler_key>:<id>`` so the poller can route
+                each watch back to the right transport.
 
         Returns:
             The newly-created ``watches.id``.
         """
-        watch_id = self.watch_repo.create(kind="job", target_ref=f"job:{job_id}")
+        target_ref = f"job:{scheduler_key}:{job_id}"
+        watch_id = self.watch_repo.create(kind="job", target_ref=target_ref)
         if endpoint_id is not None:
             self.subscription_repo.create(
                 watch_id=watch_id,

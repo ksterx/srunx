@@ -97,17 +97,25 @@ def test_record_submission_ignore_preserves_fk_references(
 ) -> None:
     """P1-2: ensure the FK references survive a duplicate call.
 
-    ``INSERT OR REPLACE`` would have cascaded a ``SET NULL`` through the
-    ``job_state_transitions.job_id`` FK; ``INSERT OR IGNORE`` preserves.
+    ``INSERT OR REPLACE`` would have cascaded a ``SET NULL`` through
+    the ``job_state_transitions.jobs_row_id`` FK; ``INSERT OR IGNORE``
+    preserves.
     """
     repo.record_submission(
         job_id=210, name="fk-test", status="PENDING", submission_source="web"
     )
+    # Resolve the jobs.id (AUTOINCREMENT PK) so the transition points
+    # at the correct V5 FK target.
+    jobs_row_id = conn.execute(
+        "SELECT id FROM jobs WHERE scheduler_key = 'local' AND job_id = ?",
+        (210,),
+    ).fetchone()[0]
     # Simulate a prior transition observed by the poller.
     conn.execute(
-        "INSERT INTO job_state_transitions (job_id, to_status, observed_at, source) "
+        "INSERT INTO job_state_transitions "
+        "(jobs_row_id, to_status, observed_at, source) "
         "VALUES (?, 'RUNNING', '2026-04-19T00:00:00Z', 'poller')",
-        (210,),
+        (jobs_row_id,),
     )
     conn.commit()
 
@@ -121,9 +129,9 @@ def test_record_submission_ignore_preserves_fk_references(
 
     # The prior transition still references the jobs row — not SET NULL.
     rows = conn.execute(
-        "SELECT job_id FROM job_state_transitions WHERE to_status='RUNNING'"
+        "SELECT jobs_row_id FROM job_state_transitions WHERE to_status='RUNNING'"
     ).fetchall()
-    assert [r[0] for r in rows] == [210]
+    assert [r[0] for r in rows] == [jobs_row_id]
 
 
 def test_update_status_fills_optional_fields(repo: JobRepository) -> None:

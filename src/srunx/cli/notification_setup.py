@@ -44,6 +44,7 @@ def attach_notification_watch(
     endpoint_name: str,
     preset: str = "terminal",
     endpoint_kind: str = DEFAULT_ENDPOINT_KIND,
+    scheduler_key: str = "local",
 ) -> int | None:
     """Attach an endpoint-backed notification watch to a SLURM job.
 
@@ -128,9 +129,15 @@ def attach_notification_watch(
             # ``idempotency_key`` uniqueness, but the DB would still
             # accumulate zombie rows. Reuse an existing open watch +
             # subscription when one already exists.
+            #
+            # V5 grammar: ``target_ref`` is ``job:<scheduler_key>:<id>``
+            # for local, or ``job:ssh:<profile>:<id>`` for SSH. The
+            # ``scheduler_key`` kwarg encodes "local" / "ssh:<profile>"
+            # already, so a single format-string covers both.
+            target_ref = f"job:{scheduler_key}:{job_id}"
             existing = watch_repo.list_by_target(
                 kind="job",
-                target_ref=f"job:{job_id}",
+                target_ref=target_ref,
                 only_open=True,
             )
             for w in existing:
@@ -148,7 +155,7 @@ def attach_notification_watch(
                         )
                         return sub.id
 
-            watch_id = watch_repo.create(kind="job", target_ref=f"job:{job_id}")
+            watch_id = watch_repo.create(kind="job", target_ref=target_ref)
             subscription_id = sub_repo.create(
                 watch_id=watch_id,
                 endpoint_id=endpoint.id,
@@ -156,12 +163,16 @@ def attach_notification_watch(
             )
             # Only insert if no transition exists yet (dual-write may
             # have already seeded one on record_job).
-            if transition_repo.latest_for_job(job_id) is None:
+            if (
+                transition_repo.latest_for_job(job_id, scheduler_key=scheduler_key)
+                is None
+            ):
                 transition_repo.insert(
                     job_id=job_id,
                     from_status=None,
                     to_status="PENDING",
                     source="webhook",
+                    scheduler_key=scheduler_key,
                 )
             return subscription_id
         finally:

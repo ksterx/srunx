@@ -114,18 +114,31 @@ def _dt_to_iso(value: object) -> str | None:
 
 
 def _parse_target_id(target_ref: str, expected_prefix: str) -> int | None:
-    """Return the integer id encoded in ``"<expected_prefix>:<id>"``.
+    """Return the integer id encoded in a watch ``target_ref``.
 
-    Returns ``None`` if the prefix does not match or the id portion
-    cannot be parsed — unexpected rows are simply skipped (logged at
-    debug by the caller) so a malformed watch never takes the cycle
-    down.
+    Accepts both the legacy 2-segment form (``"<prefix>:<id>"``) and the
+    V5+ 3-segment form for ``job`` refs (``"job:local:<id>"`` /
+    ``"job:ssh:<profile>:<id>"``). For non-``job`` prefixes the 2-segment
+    form remains authoritative.
+
+    Returns ``None`` if the prefix does not match or no numeric id can be
+    extracted — malformed rows are skipped rather than taking the cycle
+    down. Phase 6 replaces this helper with
+    :func:`_parse_target_ref` which returns the full
+    ``(scheduler_key, job_id)`` tuple; until then the poller only needs
+    the numeric id so we fall back to the trailing segment.
     """
     prefix, _, remainder = target_ref.partition(":")
     if prefix != expected_prefix or not remainder:
         return None
+    # For job refs the V5 form includes a transport segment (``local`` or
+    # ``ssh:<profile>``) before the numeric id; take the trailing
+    # segment. For workflow_run / sweep_run / etc the 2-segment form is
+    # final, so rsplit on a string with no ``:`` is a no-op and returns
+    # the original remainder.
+    tail = remainder.rsplit(":", 1)[-1]
     try:
-        return int(remainder)
+        return int(tail)
     except ValueError:
         return None
 
@@ -375,7 +388,13 @@ class ActiveWatchPoller:
                     "started_at": started_iso,
                     "completed_at": completed_iso,
                 }
-                source_ref = f"job:{job_id}"
+                # V5: source_ref uses the 3-segment grammar
+                # ``job:<scheduler_key>:<id>``. Phase 3 poller only
+                # watches local SLURM, so ``scheduler_key='local'`` is
+                # correct for every row the producer writes. Phase 6
+                # will make this transport-aware via a scheduler_key
+                # derived from the watch row.
+                source_ref = f"job:local:{job_id}"
                 event_id = event_repo.insert(
                     kind="job.status_changed",
                     source_ref=source_ref,

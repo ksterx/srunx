@@ -170,11 +170,19 @@ def _record_and_watch(
             source="webhook",
         )
         if req.notify and req.endpoint_id is not None:
-            watch_id = watch_repo.create(kind="job", target_ref=f"job:{job_id}")
+            # V5 grammar: ``job:<scheduler_key>:<id>``. Web-submitted
+            # jobs currently go through the legacy
+            # ``SlurmSSHAdapter.submit_job`` alias which backfills the
+            # jobs row as local (Phase 3 preserves this). Keep watch /
+            # event refs consistent with that until the Phase 5a CLI
+            # migration + Phase 6 poller update cut over to the real
+            # SSH scheduler_key.
+            target_ref = f"job:local:{job_id}"
+            watch_id = watch_repo.create(kind="job", target_ref=target_ref)
             sub_repo.create(watch_id, req.endpoint_id, req.preset)
             event_id = event_repo.insert(
                 kind="job.submitted",
-                source_ref=f"job:{job_id}",
+                source_ref=target_ref,
                 payload={"job_id": job_id, "job_name": job_name},
             )
             # Fan out the job.submitted event so ``preset='all'`` subscribers

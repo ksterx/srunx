@@ -707,7 +707,7 @@ class SlurmSSHAdapter:
             info["error"] = ""
         return info
 
-    # ── JobOperationsProtocol surface (Phase 2) ──────
+    # ── JobOperationsProtocol surface ────────────────
     #
     # These methods align SlurmSSHAdapter with
     # :class:`srunx.client_protocol.JobOperationsProtocol` so the Web UI,
@@ -715,15 +715,8 @@ class SlurmSSHAdapter:
     # the same 5 entry points they use for the local ``Slurm`` client.
     # The existing ``submit_job`` / ``cancel_job`` / ``get_job_status`` /
     # ``list_jobs`` / ``get_job_output`` methods are intentionally kept as
-    # backwards-compatible aliases so Phase 2 is non-breaking for callers
-    # that haven't migrated yet.
-    #
-    # Phase 2 note: DB recording via ``record_submission_from_job`` is
-    # deliberately NOT called from :meth:`submit` here. The
-    # ``transport_type`` / ``profile_name`` / ``scheduler_key`` columns
-    # on ``jobs`` do not yet exist (Phase 3 adds them via migration V5),
-    # so recording would either drop metadata or break the schema. Phase
-    # 3 will wire the recording call with the new kwargs.
+    # backwards-compatible aliases so callers that haven't migrated yet
+    # stay working.
 
     def submit(self, job: RunnableJobType) -> RunnableJobType:
         """Submit *job* over SSH and return it with ``job_id`` populated.
@@ -734,6 +727,12 @@ class SlurmSSHAdapter:
         See :meth:`run` for the full lifecycle (render + submit + monitor
         + callbacks). This method is submit-only; it does not block on
         SLURM state transitions.
+
+        Records the submission in the state DB with the
+        (``transport_type='ssh'``, ``profile_name=<this adapter's
+        profile>``, ``scheduler_key='ssh:<profile>'``) triple so the
+        poller can look the job up under the right transport. DB writes
+        are best-effort and never mask an sbatch success.
         """
         import tempfile as _tempfile
 
@@ -788,6 +787,23 @@ class SlurmSSHAdapter:
 
         job.job_id = int(result.job_id)
         job.status = JobStatus.PENDING
+
+        # Record submission with SSH transport metadata. The adapter
+        # cannot observe the caller's ``submission_source`` context
+        # directly (Web / MCP / CLI); Phase 5a CLI integration will
+        # supply it explicitly through a wrapper. Default to ``'web'``
+        # since the Web UI is the dominant caller today.
+        if self._profile_name is not None:
+            self._record_job_submission(
+                job,
+                workflow_name=None,
+                workflow_run_id=None,
+                transport_type="ssh",
+                profile_name=self._profile_name,
+                scheduler_key=f"ssh:{self._profile_name}",
+                submission_source="web",
+            )
+
         return job
 
     def cancel(self, job_id: int) -> None:
@@ -1047,11 +1063,27 @@ class SlurmSSHAdapter:
         logger.debug(f"Submitted job '{job.name}' via SSH with ID {job_id}")
 
         # --- 3. Record submission in state DB (best-effort) ---
-        self._record_job_submission(
-            job,
-            workflow_name=workflow_name,
-            workflow_run_id=workflow_run_id,
-        )
+        # When the adapter knows which SSH profile it represents, record
+        # the true (ssh, profile, scheduler_key) triple so the poller
+        # looks the job up under the right transport. When no profile
+        # is bound (direct hostname constructor, legacy sweep tests),
+        # fall back to the pre-V5 local triple to preserve mock-based
+        # test expectations.
+        if self._profile_name is not None:
+            self._record_job_submission(
+                job,
+                workflow_name=workflow_name,
+                workflow_run_id=workflow_run_id,
+                transport_type="ssh",
+                profile_name=self._profile_name,
+                scheduler_key=f"ssh:{self._profile_name}",
+            )
+        else:
+            self._record_job_submission(
+                job,
+                workflow_name=workflow_name,
+                workflow_run_id=workflow_run_id,
+            )
 
         # --- 4. Fire on_job_submitted callbacks ---
         for callback in self.callbacks:
@@ -1168,20 +1200,50 @@ class SlurmSSHAdapter:
         *,
         workflow_name: str | None,
         workflow_run_id: int | None,
+        transport_type: str = "ssh",
+        profile_name: str | None = None,
+        scheduler_key: str | None = None,
+        submission_source: str | None = None,
     ) -> None:
         """Insert a ``jobs`` row for the SSH-submitted job.
 
         Thin wrapper around :func:`record_submission_from_job` — same
-        best-effort contract as the local :class:`Slurm` executor.
+        best-effort contract as the local :class:`Slurm` executor. For
+        backward compatibility with the :meth:`run` callsite that only
+        passes ``workflow_name`` / ``workflow_run_id``, when
+        ``profile_name`` / ``scheduler_key`` are not provided we record
+        the row as local (the original pre-V5 behaviour); callsites that
+        want the SSH triple must pass them explicitly.
         """
         try:
             from srunx.db.cli_helpers import record_submission_from_job
 
-            record_submission_from_job(
-                job,
-                workflow_name=workflow_name,
-                workflow_run_id=workflow_run_id,
-            )
+            if profile_name is None:
+                # Legacy callsite (pre-V5 style) — pass only the two
+                # original kwargs so tests that mock
+                # ``record_submission_from_job`` with the original
+                # signature (``(job, *, workflow_name, workflow_run_id)``)
+                # keep working. The DB default is local anyway.
+                record_submission_from_job(
+                    job,
+                    workflow_name=workflow_name,
+                    workflow_run_id=workflow_run_id,
+                )
+            else:
+                resolved_scheduler_key = (
+                    scheduler_key
+                    if scheduler_key is not None
+                    else f"ssh:{profile_name}"
+                )
+                record_submission_from_job(
+                    job,
+                    workflow_name=workflow_name,
+                    workflow_run_id=workflow_run_id,
+                    transport_type=transport_type,  # type: ignore[arg-type]
+                    profile_name=profile_name,
+                    scheduler_key=resolved_scheduler_key,
+                    submission_source=submission_source,  # type: ignore[arg-type]
+                )
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.debug(f"_record_job_submission failed: {exc}")
 

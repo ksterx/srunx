@@ -56,7 +56,9 @@ def _seed_job(conn: sqlite3.Connection, job_id: int, *, status: str = "PENDING")
 
 
 def _seed_open_job_watch(conn: sqlite3.Connection, job_id: int) -> int:
-    return WatchRepository(conn).create(kind="job", target_ref=f"job:{job_id}")
+    # V5+ grammar: ``job:<scheduler_key>:<id>``. Local SLURM jobs always
+    # use ``scheduler_key='local'``.
+    return WatchRepository(conn).create(kind="job", target_ref=f"job:local:{job_id}")
 
 
 def _seed_pending_transition(conn: sqlite3.Connection, job_id: int, status: str) -> int:
@@ -123,7 +125,9 @@ class TestJobTransitions:
         status_events = [e for e in recent_events if e.kind == "job.status_changed"]
         assert len(status_events) == 1
         event = status_events[0]
-        assert event.source_ref == f"job:{job_id}"
+        # V5 grammar: ``job:<scheduler_key>:<id>``; local SLURM jobs use
+        # ``scheduler_key='local'``.
+        assert event.source_ref == f"job:local:{job_id}"
         assert event.payload.get("from_status") == "PENDING"
         assert event.payload.get("to_status") == "RUNNING"
         # Payload is enriched with job_id + job_name so adapters do not

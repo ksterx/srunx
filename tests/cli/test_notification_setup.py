@@ -196,7 +196,9 @@ def test_cli_submit_with_endpoint_creates_watch_and_subscription(
     conn = open_connection()
     try:
         watches = WatchRepository(conn).list_open()
-        job_watches = [w for w in watches if w.target_ref == "job:77777"]
+        # V5 grammar: target_ref is ``job:<scheduler_key>:<id>`` so local
+        # SLURM jobs are ``job:local:<id>``.
+        job_watches = [w for w in watches if w.target_ref == "job:local:77777"]
         assert len(job_watches) == 1
 
         assert job_watches[0].id is not None

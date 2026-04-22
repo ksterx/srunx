@@ -153,6 +153,10 @@ class Slurm:
 
         # Record in the state DB (best-effort; failures log at debug
         # and never surface to the caller — see cli_helpers.py).
+        # Local ``Slurm`` only ever writes the local-transport triple;
+        # SSH submissions take the ``SlurmSSHAdapter.submit`` path which
+        # passes its own (transport_type='ssh', profile_name=...,
+        # scheduler_key='ssh:<profile>') values.
         if record_history:
             from srunx.db.cli_helpers import record_submission_from_job
 
@@ -160,6 +164,9 @@ class Slurm:
                 job,
                 workflow_name=workflow_name,
                 workflow_run_id=workflow_run_id,
+                transport_type="local",
+                profile_name=None,
+                scheduler_key="local",
             )
 
         all_callbacks = self.callbacks[:]
