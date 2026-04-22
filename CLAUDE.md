@@ -12,12 +12,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### CLI Usage
 
 #### Job Management
-- `uv run srunx submit <command>` - Submit SLURM job
+- `uv run srunx submit <command>` - Submit SLURM job (local)
+- `uv run srunx submit --script <path>` - Submit a pre-authored sbatch script (ShellJob)
+- `uv run srunx submit --profile <name> <command>` - Submit over SSH to a configured profile
 - `uv run srunx status <job_id>` - Check job status
 - `uv run srunx list` - List jobs
 - `uv run srunx list --show-gpus` - List jobs with GPU allocation
 - `uv run srunx list --format json` - List jobs in JSON format
 - `uv run srunx cancel <job_id>` - Cancel job
+- `uv run srunx logs <job_id> --follow` - Stream job logs (local / `--profile` for SSH)
+
+##### Transport Selection (Phase 1 unified CLI)
+Most commands above accept `--profile <name>` / `--local` / `--quiet`. Resolution order:
+1. `--profile <name>` (explicit)
+2. `--local` (mutually exclusive with `--profile`)
+3. `$SRUNX_SSH_PROFILE` environment variable
+4. local SLURM fallback (no banner, preserves legacy CLI behaviour)
+
+When a non-default transport is selected, a 1-line banner is emitted on stderr
+(`→ transport: ssh:<profile> (from --profile)`). `--quiet` suppresses it.
+
+`srunx ssh submit` / `srunx ssh logs` still work but now print a deprecation
+warning pointing to the unified commands above.
 
 #### Monitoring
 - `uv run srunx monitor jobs <job_id>` - Monitor job until completion
