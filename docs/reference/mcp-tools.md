@@ -287,8 +287,19 @@ prerequisites to complete.
 | `to_job` | str \| null | No | `null` | Stop execution at this job (skip later jobs) |
 | `single_job` | str \| null | No | `null` | Execute only this specific job, ignoring dependencies |
 | `dry_run` | bool | No | `false` | Show what would be executed without running |
+| `args` | dict \| null | No | `null` | Mapping merged over the YAML `args` section before Jinja rendering. `python:`-prefixed values are rejected |
+| `sweep` | dict \| null | No | `null` | Sweep spec (see schema below). When present, the workflow is routed through `SweepOrchestrator` and the return shape changes |
+| `mount` | str \| null | No | `null` | Active-SSH-profile mount name. When set, the run is routed through the configured cluster adapter with mount-aware path translation for `work_dir` / `log_dir`. Default (null) keeps execution on the local SLURM client |
 
-**Return value (execution):**
+**`sweep` schema:**
+
+| Field | Type | Required | Default | Description |
+|----|----|----|----|----|
+| `matrix` | dict\[str, list\[scalar\]\] | Yes |  | Axis name → list of scalar values (str, int, float, bool). Nested structures are rejected |
+| `fail_fast` | bool | No | `false` | Stop launching new cells on first failure (peers already launched continue to terminal state) |
+| `max_parallel` | int | No | `4` | Maximum concurrent cells. Required in YAML; MCP defaults to 4 |
+
+**Return value (normal execution):**
 
 ``` json
 {
@@ -300,6 +311,24 @@ prerequisites to complete.
     "evaluate": {"job_id": "12347", "status": "COMPLETED"}
   },
   "all_completed": true
+}
+```
+
+**Return value (sweep execution):**
+
+When `sweep` is provided, the tool blocks until every cell reaches a
+terminal state and returns the aggregate counters instead of the
+per-job `results` map:
+
+``` json
+{
+  "success": true,
+  "sweep_run_id": 42,
+  "status": "completed",
+  "cell_count": 9,
+  "cells_completed": 8,
+  "cells_failed": 1,
+  "cells_cancelled": 0
 }
 ```
 
@@ -317,6 +346,46 @@ prerequisites to complete.
   "count": 2
 }
 ```
+
+!!! note
+    `sweep` and `dry_run` are mutually distinct code paths: `dry_run`
+    previews a non-sweep workflow, while `sweep` always executes. The
+    sweep's parent `workflow_runs` rows record `submission_source="mcp"`
+    (automatically stamped) and cells record `triggered_by="mcp"` after
+    the V4 migration widens the `workflow_runs.triggered_by` CHECK
+    allowlist.
+
+**Error responses:**
+
+Errors are returned with `{"success": false, "error": "..."}`:
+
+- Mount not present in the active SSH profile →
+  `"Mount '<name>' not found in profile '<profile_name>'"`
+- No current SSH profile selected but `mount=` was passed →
+  `"mount requires a current SSH profile; configure one via `srunx ssh profile add` and select it with `srunx ssh profile use`"`
+- A `ShellJob`'s `script_path` resolves outside every mount's `local`
+  root →
+  `"Script path '<path>' is outside allowed directories"`
+- Any `python:` prefix in `args` or `sweep.matrix` →
+  `"<source> at '<path>' contains 'python:' prefix which is not allowed: '<value>'"`
+- Invalid sweep spec (non-dict matrix, bad types) →
+  `"invalid sweep spec: <detail>"` or `"sweep.matrix must be a mapping"`
+
+**Constraints:**
+
+- MCP sweeps are **blocking** — the tool call returns only after every
+  cell reaches a terminal state. This differs from the Web UI's
+  `POST /api/workflows/{name}/run`, which returns `202` immediately and
+  exposes progress through `GET /api/sweep_runs/{id}`.
+- `max_parallel` is required in YAML and defaults to `4` when the MCP
+  caller omits it.
+- When `mount=` is combined with `sweep`, every cell is submitted
+  through a shared `SlurmSSHExecutorPool(size=min(max_parallel, 8))` so
+  concurrent cells reuse a small set of SSH sessions against the
+  cluster. The pool is closed when the tool call returns.
+- Matrix values must be scalar (`str`, `int`, `float`, `bool`); nested
+  lists or dicts are rejected at load time.
+- The total cell count is capped at 1000 as a safety valve.
 
 ### list_workflows
 

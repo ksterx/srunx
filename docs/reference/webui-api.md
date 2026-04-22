@@ -347,6 +347,207 @@ If some jobs fail to cancel (e.g., already completed), the response includes a `
 - `404` — Run not found
 - `422` — Run is already in a terminal state (completed, failed, or cancelled)
 
+## Sweep Runs
+
+Parameter sweeps expand a workflow into N independent cells across a
+matrix of axes. Each cell is a regular `workflow_runs` row that inherits
+the parent sweep's `sweep_run_id`; the parent `sweep_runs` row tracks
+aggregate counters (`cells_pending`, `cells_running`, `cells_completed`,
+`cells_failed`, `cells_cancelled`) that are updated atomically on every
+cell state transition.
+
+| Method | Endpoint                          | Description                                                     |
+|--------|-----------------------------------|-----------------------------------------------------------------|
+| GET    | `/api/sweep_runs`                 | List all sweep runs (most recent first, capped at 200)          |
+| GET    | `/api/sweep_runs/{id}`            | Get one sweep run with counters and matrix spec                 |
+| GET    | `/api/sweep_runs/{id}/cells`      | List every cell (workflow_run) linked to the sweep              |
+| POST   | `/api/sweep_runs/{id}/cancel`     | Request sweep cancellation (drain pending + scancel running)    |
+
+**Sweep status enum:** `pending | running | draining | completed | failed | cancelled`.
+`draining` is entered after a cancel request while running cells are
+still being stopped; the sweep advances to `cancelled` once every cell
+reaches a terminal state.
+
+Per-cell cancellation reuses the existing workflow-run endpoint —
+`POST /api/workflows/runs/{cell_id}/cancel`, where `cell_id` is the
+`workflow_runs.id` returned by `GET /api/sweep_runs/{id}/cells`.
+
+### GET /api/sweep_runs
+
+List every sweep run. Returns an array ordered by `started_at`
+descending, bounded to 200 rows.
+
+**Response (200):**
+
+``` json
+[
+  {
+    "id": 42,
+    "name": "train-lr-seed-sweep",
+    "workflow_yaml_path": "/workflows/train.yaml",
+    "status": "running",
+    "matrix": {"lr": [0.001, 0.01, 0.1], "seed": [1, 2, 3]},
+    "args": {"dataset": "cifar10"},
+    "fail_fast": false,
+    "max_parallel": 4,
+    "cell_count": 9,
+    "cells_pending": 3,
+    "cells_running": 2,
+    "cells_completed": 4,
+    "cells_failed": 0,
+    "cells_cancelled": 0,
+    "submission_source": "web",
+    "started_at": "2026-04-22T09:00:00+00:00",
+    "completed_at": null,
+    "cancel_requested_at": null,
+    "error": null
+  }
+]
+```
+
+### GET /api/sweep_runs/{id}
+
+Get the full row for a single sweep run. Fields mirror the list
+response.
+
+**Path parameters:**
+
+- `id` — Sweep run ID (integer)
+
+**Example:**
+
+``` http
+GET /api/sweep_runs/42
+```
+
+**Response (200):**
+
+``` json
+{
+  "id": 42,
+  "name": "train-lr-seed-sweep",
+  "workflow_yaml_path": "/workflows/train.yaml",
+  "status": "completed",
+  "matrix": {"lr": [0.001, 0.01, 0.1], "seed": [1, 2, 3]},
+  "args": {"dataset": "cifar10"},
+  "fail_fast": false,
+  "max_parallel": 4,
+  "cell_count": 9,
+  "cells_pending": 0,
+  "cells_running": 0,
+  "cells_completed": 9,
+  "cells_failed": 0,
+  "cells_cancelled": 0,
+  "submission_source": "web",
+  "started_at": "2026-04-22T09:00:00+00:00",
+  "completed_at": "2026-04-22T10:15:00+00:00",
+  "cancel_requested_at": null,
+  "error": null
+}
+```
+
+**Error responses:**
+
+- `404` — Sweep run not found
+
+### GET /api/sweep_runs/{id}/cells
+
+List every cell belonging to the sweep. Each cell is a `workflow_runs`
+row and carries the resolved `args` used for its Jinja render. Ordering
+is `(status, started_at ASC, id ASC)` — grouped by status so callers see
+running/pending cells together.
+
+**Path parameters:**
+
+- `id` — Sweep run ID
+
+**Response (200):**
+
+``` json
+[
+  {
+    "id": "c1f2e3d4-0001-4e00-a000-000000000001",
+    "workflow_name": "train",
+    "status": "completed",
+    "started_at": "2026-04-22T09:00:00+00:00",
+    "completed_at": "2026-04-22T09:20:00+00:00",
+    "args": {"lr": 0.001, "seed": 1, "dataset": "cifar10"},
+    "error": null,
+    "triggered_by": "web"
+  },
+  {
+    "id": "c1f2e3d4-0002-4e00-a000-000000000002",
+    "workflow_name": "train",
+    "status": "running",
+    "started_at": "2026-04-22T09:05:00+00:00",
+    "completed_at": null,
+    "args": {"lr": 0.01, "seed": 1, "dataset": "cifar10"},
+    "error": null,
+    "triggered_by": "web"
+  }
+]
+```
+
+`triggered_by` is `web`, `cli`, `mcp`, or `schedule` (post-V4 migration).
+To cancel a single cell, use `POST /api/workflows/runs/{cell_id}/cancel`
+with the cell's `id` as `cell_id`.
+
+**Error responses:**
+
+- `404` — Sweep run not found
+
+### POST /api/sweep_runs/{id}/cancel
+
+Request sweep cancellation. Stamps `cancel_requested_at` on the sweep
+row, drains all `pending` cells, and fires `scancel` for any `running`
+cells. The sweep transitions to `draining` until every cell reaches a
+terminal state, then to `cancelled` via the aggregator. A
+`sweep_run.status_changed` event is emitted for any subscriber watches.
+
+Calling this endpoint a second time on the same sweep is a no-op: the
+existing `cancel_requested_at` timestamp is preserved and the current
+row is returned.
+
+**Path parameters:**
+
+- `id` — Sweep run ID
+
+**Example:**
+
+``` http
+POST /api/sweep_runs/42/cancel
+```
+
+**Response (202):**
+
+``` json
+{
+  "id": 42,
+  "name": "train-lr-seed-sweep",
+  "workflow_yaml_path": "/workflows/train.yaml",
+  "status": "draining",
+  "matrix": {"lr": [0.001, 0.01, 0.1], "seed": [1, 2, 3]},
+  "args": {"dataset": "cifar10"},
+  "fail_fast": false,
+  "max_parallel": 4,
+  "cell_count": 9,
+  "cells_pending": 0,
+  "cells_running": 2,
+  "cells_completed": 4,
+  "cells_failed": 0,
+  "cells_cancelled": 3,
+  "submission_source": "web",
+  "started_at": "2026-04-22T09:00:00+00:00",
+  "completed_at": null,
+  "cancel_requested_at": "2026-04-22T09:30:00+00:00",
+  "error": null
+}
+```
+
+**Error responses:**
+
+- `404` — Sweep run not found
+
 ## Files
 
 | Method | Endpoint | Description |
