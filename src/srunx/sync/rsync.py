@@ -6,6 +6,7 @@ import os
 import shlex
 import shutil
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -58,7 +59,7 @@ class RsyncClient:
         key_filename: str | None = None,
         proxy_jump: str | None = None,
         ssh_config_path: str | None = None,
-        exclude_patterns: list[str] | None = None,
+        exclude_patterns: Sequence[str] | None = None,
     ) -> None:
         rsync_path = shutil.which("rsync")
         if rsync_path is None:
@@ -113,7 +114,7 @@ class RsyncClient:
         *,
         delete: bool = True,
         dry_run: bool = False,
-        exclude_patterns: list[str] | None = None,
+        exclude_patterns: Sequence[str] | None = None,
     ) -> RsyncResult:
         """Sync a local directory/file to the remote server.
 
@@ -157,7 +158,7 @@ class RsyncClient:
         *,
         delete: bool = False,
         dry_run: bool = False,
-        exclude_patterns: list[str] | None = None,
+        exclude_patterns: Sequence[str] | None = None,
     ) -> RsyncResult:
         """Sync a remote directory/file to the local machine.
 
@@ -266,7 +267,7 @@ class RsyncClient:
         logger.debug("Ensuring remote dir: {}", shlex.join(mkdir_cmd))
         subprocess.run(mkdir_cmd, capture_output=True, text=True)  # noqa: S603
 
-    def _merge_excludes(self, extra: list[str] | None) -> list[str]:
+    def _merge_excludes(self, extra: Sequence[str] | None) -> list[str]:
         """Merge per-call exclude patterns with instance patterns."""
         if not extra:
             return self.exclude_patterns

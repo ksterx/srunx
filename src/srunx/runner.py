@@ -455,16 +455,14 @@ def _transition_workflow_run(
     DB outage never takes down the primary workflow flow.
     """
     try:
-        from srunx.db.connection import init_db, open_connection, transaction
+        from srunx.db.connection import initialized_connection, transaction
         from srunx.db.repositories.base import now_iso
         from srunx.sweep.state_service import WorkflowRunStateService
 
         completed_at = (
             now_iso() if to_status in {"completed", "failed", "cancelled"} else None
         )
-        init_db(delete_legacy=True)
-        conn = open_connection()
-        try:
+        with initialized_connection() as conn:
             with transaction(conn, "IMMEDIATE"):
                 WorkflowRunStateService.update(
                     conn=conn,
@@ -474,8 +472,6 @@ def _transition_workflow_run(
                     error=error,
                     completed_at=completed_at,
                 )
-        finally:
-            conn.close()
     except Exception as exc:  # noqa: BLE001 — best-effort
         logger.debug(f"_transition_workflow_run failed: {exc}")
 

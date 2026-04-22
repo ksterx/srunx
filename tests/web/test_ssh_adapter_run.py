@@ -651,6 +651,33 @@ class TestAdapterFromSpec:
         adapter = SlurmSSHAdapter.from_spec(spec, callbacks=[cb])
         assert adapter.callbacks == [cb]
 
+    def test_spec_with_mounts_is_hashable(self, tmp_path) -> None:
+        """MountConfig is frozen → the entire spec is hashable end-to-end.
+
+        Regression lock: before Phase 4 refactor, ``MountConfig`` held a
+        mutable ``list[str]`` so embedding one in a frozen dataclass gave
+        a non-hashable spec despite the ``@dataclass(frozen=True)`` decorator.
+        """
+        from srunx.ssh.core.config import MountConfig
+
+        mount = MountConfig(
+            name="proj",
+            local=str(tmp_path),
+            remote="/remote/proj",
+            exclude_patterns=["data/", "*.bin"],
+        )
+        spec = SlurmSSHAdapterSpec(
+            profile_name=None,
+            hostname="h",
+            username="u",
+            key_filename=None,
+            port=22,
+            mounts=(mount,),
+        )
+        # Must not raise — proves deep immutability of the mount chain.
+        assert hash(spec) == hash(spec)
+        assert {spec} == {spec}
+
 
 class TestIsConnected:
     def test_is_connected_true_with_active_transport(self) -> None:

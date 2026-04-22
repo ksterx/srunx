@@ -258,6 +258,15 @@ class TestWorkflowsRouter:
         )
         assert resp.status_code == 422
 
+    def test_validate_rejects_python_args_in_list_element(
+        self, client: TestClient
+    ) -> None:
+        # Regression: YAML path previously skipped list elements inside
+        # ``args``. The unified guard scans recursively.
+        yaml_text = "name: test\nargs:\n  x:\n    - safe\n    - 'python: evil'\n"
+        resp = client.post("/api/workflows/validate", json={"yaml": yaml_text})
+        assert resp.status_code == 422, resp.text
+
     def test_upload_rejects_path_traversal(self, client: TestClient) -> None:
         resp = client.post(
             "/api/workflows/upload",

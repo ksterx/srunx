@@ -14,6 +14,7 @@ from srunx.db.connection import (
     get_config_dir,
     get_db_path,
     init_db,
+    initialized_connection,
     open_connection,
     transaction,
 )
@@ -211,3 +212,85 @@ def test_connection_usable_from_another_thread(tmp_path: Path) -> None:
         assert result == [1]
     finally:
         conn.close()
+
+
+# ---- initialized_connection() ----
+
+
+def test_initialized_connection_applies_migrations_on_first_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(conn_mod, "LEGACY_HISTORY_DB_PATH", tmp_path / "nope.db")
+
+    with initialized_connection() as conn:
+        names = {
+            r[0] for r in conn.execute("SELECT name FROM schema_version").fetchall()
+        }
+
+    assert "v1_initial" in names
+
+
+def test_initialized_connection_is_idempotent_across_multiple_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(conn_mod, "LEGACY_HISTORY_DB_PATH", tmp_path / "nope.db")
+
+    with initialized_connection():
+        pass
+    with initialized_connection():
+        pass
+
+    conn = sqlite3.connect(tmp_path / "srunx" / "srunx.db")
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM schema_version WHERE name = 'v1_initial'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 1
+
+
+def test_initialized_connection_closes_on_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(conn_mod, "LEGACY_HISTORY_DB_PATH", tmp_path / "nope.db")
+
+    leaked: list[sqlite3.Connection] = []
+    with pytest.raises(RuntimeError):
+        with initialized_connection() as conn:
+            leaked.append(conn)
+            raise RuntimeError("boom")
+
+    # Using a closed sqlite3.Connection raises ProgrammingError.
+    assert leaked, "context manager did not yield a connection"
+    with pytest.raises(sqlite3.ProgrammingError):
+        leaked[0].execute("SELECT 1")
+
+
+def test_initialized_connection_honors_delete_legacy_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    # Legacy DB seeded in two fake homes so we can test both branches
+    # without cross-talk.
+    legacy_keep = tmp_path / "keep" / "history.db"
+    legacy_keep.parent.mkdir(parents=True)
+    legacy_keep.touch()
+    monkeypatch.setattr(conn_mod, "LEGACY_HISTORY_DB_PATH", legacy_keep)
+
+    with initialized_connection(delete_legacy=False):
+        pass
+    assert legacy_keep.exists(), "delete_legacy=False must preserve legacy DB"
+
+    legacy_gone = tmp_path / "gone" / "history.db"
+    legacy_gone.parent.mkdir(parents=True)
+    legacy_gone.touch()
+    monkeypatch.setattr(conn_mod, "LEGACY_HISTORY_DB_PATH", legacy_gone)
+
+    with initialized_connection(delete_legacy=True):
+        pass
+    assert not legacy_gone.exists(), "delete_legacy=True must remove legacy DB"

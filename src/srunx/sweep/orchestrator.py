@@ -17,7 +17,7 @@ import anyio
 
 from srunx.callbacks import Callback
 from srunx.client_protocol import WorkflowJobExecutorFactory
-from srunx.db.connection import init_db, open_connection, transaction
+from srunx.db.connection import initialized_connection, transaction
 from srunx.db.models import SweepRun, SweepSubmissionSource, WorkflowRunTriggeredBy
 from srunx.db.repositories.base import now_iso
 from srunx.db.repositories.sweep_runs import SweepRunRepository
@@ -114,9 +114,9 @@ class SweepOrchestrator:
         inserted so the sweep remains visible in the UI (R4.7). Raises
         :class:`SweepExecutionError` after the audit row is written.
         """
-        init_db(delete_legacy=True)
-        conn = open_connection()
-        try:
+        # init+open via context manager: callers don't need to know about
+        # migrations; apply_migrations is idempotent on the hot path.
+        with initialized_connection() as conn:
             try:
                 sweep_run_id = self._materialize_happy_path(conn, cells)
             except Exception as exc:
@@ -125,8 +125,6 @@ class SweepOrchestrator:
                 # in listings even though none of its cells exist.
                 self._record_materialize_failure(conn, exc)
                 raise SweepExecutionError(f"sweep materialize failed: {exc!r}") from exc
-        finally:
-            conn.close()
 
         self._sweep_run_id = sweep_run_id
         return sweep_run_id
@@ -400,9 +398,7 @@ class SweepOrchestrator:
         concurrent ``_drain`` already cancelled the cell — the caller
         must skip ``_run_cell_sync`` to avoid a wasted SLURM submission.
         """
-        init_db(delete_legacy=True)
-        conn = open_connection()
-        try:
+        with initialized_connection() as conn:
             with transaction(conn, "IMMEDIATE"):
                 return WorkflowRunStateService.update(
                     conn=conn,
@@ -410,8 +406,6 @@ class SweepOrchestrator:
                     from_status="pending",
                     to_status="running",
                 )
-        finally:
-            conn.close()
 
     def _record_cell_failure(self, cell: CellSpec, error: str) -> None:
         """Best-effort failed transition for a cell the runner never finalized.
@@ -423,9 +417,7 @@ class SweepOrchestrator:
         cannot mask the original cell failure.
         """
         try:
-            init_db(delete_legacy=True)
-            conn = open_connection()
-            try:
+            with initialized_connection() as conn:
                 for from_status in ("pending", "running"):
                     with transaction(conn, "IMMEDIATE"):
                         transitioned = WorkflowRunStateService.update(
@@ -438,8 +430,6 @@ class SweepOrchestrator:
                         )
                     if transitioned:
                         return
-            finally:
-                conn.close()
         except Exception as exc:  # noqa: BLE001 — never mask the original failure
             logger.warning(
                 f"sweep cell {cell.cell_index} "
@@ -513,14 +503,10 @@ class SweepOrchestrator:
             # flag so an in-progress arun() doesn't start new cells.
             return
 
-        init_db(delete_legacy=True)
-        conn = open_connection()
-        try:
+        with initialized_connection() as conn:
             with transaction(conn, "IMMEDIATE"):
                 SweepRunRepository(conn).request_cancel(sweep_run_id)
             self._drain(sweep_run_id)
-        finally:
-            conn.close()
 
     def _drain(self, sweep_run_id: int) -> None:
         """Atomically cancel every still-pending cell and adjust counters.
@@ -537,12 +523,8 @@ class SweepOrchestrator:
 
     def _load_sweep(self, sweep_run_id: int) -> SweepRun:
         """Return the current ``SweepRun`` row, raising if it vanished."""
-        init_db(delete_legacy=True)
-        conn = open_connection()
-        try:
+        with initialized_connection() as conn:
             sweep = SweepRunRepository(conn).get(sweep_run_id)
-        finally:
-            conn.close()
         if sweep is None:
             raise SweepExecutionError(
                 f"sweep_run_id={sweep_run_id} disappeared from DB after materialize"
@@ -563,9 +545,7 @@ def drain_sweep_pending_cells(sweep_run_id: int) -> int:
     no in-process orchestrator is registered (crash-recovery path) and
     by :class:`SweepOrchestrator` itself via :meth:`SweepOrchestrator._drain`.
     """
-    init_db(delete_legacy=True)
-    conn = open_connection()
-    try:
+    with initialized_connection() as conn:
         with transaction(conn, "IMMEDIATE"):
             cur = conn.execute(
                 "UPDATE workflow_runs "
@@ -589,8 +569,6 @@ def drain_sweep_pending_cells(sweep_run_id: int) -> int:
             from srunx.sweep.aggregator import evaluate_and_fire_sweep_status_event
 
             evaluate_and_fire_sweep_status_event(conn=conn, sweep_run_id=sweep_run_id)
-    finally:
-        conn.close()
     return k
 
 

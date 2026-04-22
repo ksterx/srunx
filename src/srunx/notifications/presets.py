@@ -7,18 +7,7 @@ whether a given subscription should generate a delivery for an event.
 
 from __future__ import annotations
 
-# Terminal job statuses, per SLURM conventions.
-_TERMINAL_JOB_STATUSES: frozenset[str] = frozenset(
-    {
-        "COMPLETED",
-        "FAILED",
-        "CANCELLED",
-        "TIMEOUT",
-        "NODE_FAIL",
-        "PREEMPTED",
-        "OUT_OF_MEMORY",
-    }
-)
+from srunx.slurm.states import SLURM_TERMINAL_JOB_STATES
 
 # Terminal workflow_run statuses, per our own domain model.
 _TERMINAL_WORKFLOW_RUN_STATUSES: frozenset[str] = frozenset(
@@ -70,7 +59,7 @@ def should_deliver(
 
     # From here on: preset is 'terminal' or 'running_and_terminal'.
     if event_kind == "job.status_changed":
-        if to_status in _TERMINAL_JOB_STATUSES:
+        if to_status in SLURM_TERMINAL_JOB_STATES:
             return True
         if preset == "running_and_terminal" and to_status == "RUNNING":
             return True

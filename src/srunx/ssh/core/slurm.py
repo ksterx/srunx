@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 # Imported at module level so the facade can reference it
 from .client_types import SlurmJob  # noqa: F401  re-exported for convenience
+from .utils import query_slurm_job_state
 
 _logger = get_logger(__name__)
 
@@ -309,43 +310,8 @@ class SlurmRemoteClient:
     # ------------------------------------------------------------------
 
     def get_job_status(self, job_id: str) -> str:
-        """Get job status using SLURM commands."""
-        try:
-            if not re.match(r"^[0-9]+([._][A-Za-z0-9_-]+)?$", job_id):
-                self.logger.error(f"Invalid job_id format: {job_id!r}")
-                return "ERROR"
-
-            sacct_cmd = f"sacct -j {job_id} --format=JobID,State --noheader | grep -E '^[0-9]+' | head -1"
-            stdout, stderr, exit_code = self.execute_slurm_command(sacct_cmd)
-
-            if exit_code == 0 and stdout.strip():
-                status = stdout.strip().split()[1].split("+")[0]
-                return status
-
-            squeue_cmd = f"squeue -j {job_id} -h -o %T | head -1"
-            stdout, stderr, exit_code = self.execute_slurm_command(squeue_cmd)
-            if exit_code == 0 and stdout.strip():
-                return stdout.strip().split("\n")[0].strip()
-
-            # scontrol fallback: pyxis/slurmdbd-unreachable clusters return
-            # empty sacct output, and finished jobs drop out of squeue. See
-            # srunx.ssh.core.client._parse_scontrol_status for the rationale.
-            from .client import _parse_scontrol_status
-
-            quoted_id = shlex.quote(job_id)
-            scontrol_out, _, scontrol_rc = self.execute_slurm_command(
-                f"scontrol show job {quoted_id} 2>/dev/null"
-            )
-            if scontrol_rc == 0 and scontrol_out.strip():
-                parsed = _parse_scontrol_status(scontrol_out)
-                if parsed is not None:
-                    return parsed
-
-            return "NOT_FOUND"
-
-        except Exception as e:
-            self.logger.error(f"Failed to get job status for job {job_id}: {e}")
-            return "ERROR"
+        """Get job status using SLURM commands (sacct -> squeue -> scontrol)."""
+        return query_slurm_job_state(job_id, self.execute_slurm_command, self.logger)
 
     def monitor_job(
         self, job: SlurmJob, poll_interval: int = 10, timeout: int | None = None

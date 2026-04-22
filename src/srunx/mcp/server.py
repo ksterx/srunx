@@ -522,15 +522,12 @@ def create_workflow(
         from srunx.models import Workflow
         from srunx.runner import WorkflowRunner
 
-        # Reject python: args for security (arbitrary code execution)
+        # Reject python: args for security (arbitrary code execution).
         if args:
-            for arg_key, arg_val in args.items():
-                if isinstance(arg_val, str) and "python:" in arg_val.lower():
-                    return _err(
-                        f"Arg '{arg_key}' contains 'python:' prefix which is not "
-                        "allowed for security reasons. Use plain values or Jinja2 "
-                        "templates instead."
-                    )
+            try:
+                _reject_python_prefix_mcp(args, source="args")
+            except ValueError as exc:
+                return _err(str(exc))
 
         # Validate the workflow structure before writing.
         # Skip job parsing validation when args are present (Jinja templates
@@ -612,24 +609,22 @@ def validate_workflow(yaml_path: str) -> dict[str, Any]:
         return _err(str(e))
 
 
-def _reject_python_in_mcp_mapping(mapping: dict[str, Any], *, source: str) -> None:
-    """Reject ``python:`` prefix in MCP args / sweep payloads.
+def _reject_python_prefix_mcp(payload: Any, *, source: str) -> None:
+    """Reject ``python:``-prefixed strings in MCP tool payloads.
 
-    Mirrors the Web API guard. MCP is reachable by any Claude Code
-    session so we apply the same security rule as the Web path.
+    MCP is reachable by any Claude Code session so we apply the same
+    security rule as the Web path. Raises ``ValueError`` on the first
+    violation; callers convert that to the tool's ``{"success": False}``
+    response shape.
     """
-    for key, val in mapping.items():
-        if isinstance(val, str) and "python:" in val.lower():
-            raise ValueError(
-                f"{source} key '{key}' contains 'python:' which is not allowed"
-            )
-        if isinstance(val, list):
-            for i, element in enumerate(val):
-                if isinstance(element, str) and "python:" in element.lower():
-                    raise ValueError(
-                        f"{source} key '{key}' contains 'python:' at index {i} "
-                        "which is not allowed"
-                    )
+    from srunx.security import find_python_prefix
+
+    violation = find_python_prefix(payload, source=source)
+    if violation is not None:
+        raise ValueError(
+            f"{violation.source} at '{violation.path}' contains 'python:' "
+            f"prefix which is not allowed: {violation.value!r}"
+        )
 
 
 @mcp.tool()
@@ -672,7 +667,7 @@ def run_workflow(
         from srunx.runner import WorkflowRunner
 
         if args is not None:
-            _reject_python_in_mcp_mapping(args, source="args")
+            _reject_python_prefix_mcp(args, source="args")
 
         # MCP runs have no mount context: Phase 1 is local-SLURM only.
         # Passing ``submission_context=None`` explicitly (rather than
@@ -692,7 +687,7 @@ def run_workflow(
             matrix = sweep.get("matrix") or {}
             if not isinstance(matrix, dict):
                 return _err("sweep.matrix must be a mapping")
-            _reject_python_in_mcp_mapping(matrix, source="sweep.matrix")
+            _reject_python_prefix_mcp(matrix, source="sweep.matrix")
 
             try:
                 sweep_spec = SweepSpec(

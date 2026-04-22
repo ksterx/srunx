@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from srunx.ssh.core.config import ConfigManager, MountConfig, ServerProfile
 
@@ -171,11 +172,18 @@ class TestConfigManager:
 
 
 class TestMountConfigExcludePatterns:
-    """Tests for MountConfig.exclude_patterns field."""
+    """Tests for MountConfig.exclude_patterns field.
+
+    Post-refactor: ``exclude_patterns`` is stored as ``tuple[str, ...]``
+    (deep immutability). JSON/YAML ``list[str]`` input is coerced to a
+    tuple by a ``mode='before'`` validator; ``model_dump(mode='json')``
+    round-trips back to a list.
+    """
 
     def test_default_exclude_patterns_is_empty(self, tmp_path):
         mount = MountConfig(name="proj", local=str(tmp_path), remote="/remote/proj")
-        assert mount.exclude_patterns == []
+        assert mount.exclude_patterns == ()
+        assert isinstance(mount.exclude_patterns, tuple)
 
     def test_exclude_patterns_set_on_creation(self, tmp_path):
         patterns = ["data/", "*.bin", "logs/"]
@@ -185,7 +193,10 @@ class TestMountConfigExcludePatterns:
             remote="/remote/proj",
             exclude_patterns=patterns,
         )
-        assert mount.exclude_patterns == patterns
+        # list input is coerced to tuple (deep-immutability guarantee)
+        assert mount.exclude_patterns == tuple(patterns)
+        assert isinstance(mount.exclude_patterns, tuple)
+        assert list(mount.exclude_patterns) == patterns
 
     def test_exclude_patterns_serialized_in_model_dump(self, tmp_path):
         patterns = ["data/", "*.log"]
@@ -195,8 +206,12 @@ class TestMountConfigExcludePatterns:
             remote="/remote/proj",
             exclude_patterns=patterns,
         )
+        # Native dump preserves the tuple
         dumped = mount.model_dump()
-        assert dumped["exclude_patterns"] == patterns
+        assert dumped["exclude_patterns"] == tuple(patterns)
+        # JSON mode converts tuple → list for JSON compatibility
+        dumped_json = mount.model_dump(mode="json")
+        assert dumped_json["exclude_patterns"] == patterns
 
     def test_exclude_patterns_deserialized_from_dict(self, tmp_path):
         data = {
@@ -206,17 +221,17 @@ class TestMountConfigExcludePatterns:
             "exclude_patterns": ["weights/", "*.ckpt"],
         }
         mount = MountConfig.model_validate(data)
-        assert mount.exclude_patterns == ["weights/", "*.ckpt"]
+        assert mount.exclude_patterns == ("weights/", "*.ckpt")
 
     def test_backward_compat_missing_exclude_patterns(self, tmp_path):
-        """Old config without exclude_patterns should deserialize with default []."""
+        """Old config without exclude_patterns should deserialize with default ()."""
         data = {
             "name": "proj",
             "local": str(tmp_path),
             "remote": "/remote/proj",
         }
         mount = MountConfig.model_validate(data)
-        assert mount.exclude_patterns == []
+        assert mount.exclude_patterns == ()
 
     def test_mount_with_excludes_persisted_via_config_manager(self, temp_config_file):
         cm = ConfigManager(temp_config_file)
@@ -231,12 +246,13 @@ class TestMountConfigExcludePatterns:
         )
         cm.add_profile_mount("p", mount)
 
-        # Reload from disk
+        # Reload from disk — JSON round-trip (tuple → list → tuple)
         cm2 = ConfigManager(temp_config_file)
         loaded_profile = cm2.get_profile("p")
         assert loaded_profile is not None
         assert len(loaded_profile.mounts) == 1
-        assert loaded_profile.mounts[0].exclude_patterns == ["data/", "*.bin"]
+        assert loaded_profile.mounts[0].exclude_patterns == ("data/", "*.bin")
+        assert isinstance(loaded_profile.mounts[0].exclude_patterns, tuple)
 
     def test_mount_without_excludes_persisted_via_config_manager(
         self, temp_config_file
@@ -251,7 +267,68 @@ class TestMountConfigExcludePatterns:
         cm2 = ConfigManager(temp_config_file)
         loaded_profile = cm2.get_profile("p")
         assert loaded_profile is not None
-        assert loaded_profile.mounts[0].exclude_patterns == []
+        assert loaded_profile.mounts[0].exclude_patterns == ()
+
+
+class TestMountConfigImmutability:
+    """Verify frozen=True + tuple exclude_patterns cannot be mutated.
+
+    A frozen MountConfig is required so the SSH adapter's frozen
+    SlurmSSHAdapterSpec genuinely has deep immutability (and stays
+    hashable end-to-end).
+    """
+
+    def test_field_assignment_is_blocked(self, tmp_path):
+        mount = MountConfig(name="proj", local=str(tmp_path), remote="/remote/proj")
+        with pytest.raises(ValidationError):
+            mount.local = "/other"  # type: ignore[misc]
+
+    def test_exclude_patterns_assignment_is_blocked(self, tmp_path):
+        mount = MountConfig(
+            name="proj",
+            local=str(tmp_path),
+            remote="/remote/proj",
+            exclude_patterns=["a/"],
+        )
+        with pytest.raises(ValidationError):
+            mount.exclude_patterns = ("b/",)  # type: ignore[misc]
+
+    def test_exclude_patterns_inplace_concat_is_blocked(self, tmp_path):
+        mount = MountConfig(
+            name="proj",
+            local=str(tmp_path),
+            remote="/remote/proj",
+            exclude_patterns=["a/"],
+        )
+        # tuple doesn't support __iadd__ on a field, but frozen would also
+        # block the rebinding that += would attempt.
+        with pytest.raises((ValidationError, TypeError)):
+            mount.exclude_patterns += ("b/",)  # type: ignore[misc]
+
+    def test_exclude_patterns_tuple_has_no_mutation_methods(self, tmp_path):
+        mount = MountConfig(
+            name="proj",
+            local=str(tmp_path),
+            remote="/remote/proj",
+            exclude_patterns=["a/"],
+        )
+        # Proves the contained sequence is a tuple, so list-style
+        # mutation methods simply don't exist.
+        assert not hasattr(mount.exclude_patterns, "append")
+        assert not hasattr(mount.exclude_patterns, "extend")
+
+    def test_frozen_mount_is_hashable(self, tmp_path):
+        mount = MountConfig(
+            name="proj",
+            local=str(tmp_path),
+            remote="/remote/proj",
+            exclude_patterns=["a/", "b/"],
+        )
+        # A hashable MountConfig lets SlurmSSHAdapterSpec (frozen dataclass
+        # containing tuple[MountConfig, ...]) be used as a dict key / set
+        # member, which is the whole point of deep immutability.
+        assert hash(mount) == hash(mount)
+        assert {mount} == {mount}
 
 
 class TestServerProfileKeyFilenameExpansion:

@@ -652,8 +652,10 @@ def sync_mount(
             console.print("  [yellow]Dry run — no files will be transferred[/yellow]")
         console.print()
 
-        # Merge mount-level and CLI-level exclude patterns
-        mount_excludes = mount.exclude_patterns or []
+        # Merge mount-level and CLI-level exclude patterns.
+        # mount.exclude_patterns is an immutable tuple; normalize to list
+        # so list concatenation below works.
+        mount_excludes: list[str] = list(mount.exclude_patterns)
         cli_excludes = exclude or []
         all_excludes = mount_excludes + [
             p for p in cli_excludes if p not in mount_excludes
