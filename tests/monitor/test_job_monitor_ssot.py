@@ -102,7 +102,7 @@ def test_transitions_recorded_with_cli_monitor_source(
         iter([JobStatus.PENDING, JobStatus.RUNNING, JobStatus.COMPLETED]),
     )
 
-    history = repo.history_for_job(job_id)
+    history = repo.history_for_job(job_id, scheduler_key="local")
     # First observation (previous=None) is NOT recorded; only the real
     # transitions are persisted.
     assert [(t.from_status, t.to_status) for t in history] == [
@@ -124,7 +124,7 @@ def test_first_observation_is_not_recorded(
 
     _drive_states(monitor, client, iter([JobStatus.PENDING]))
 
-    assert repo.history_for_job(job_id) == []
+    assert repo.history_for_job(job_id, scheduler_key="local") == []
 
 
 def test_duplicate_status_does_not_produce_extra_rows(
@@ -151,7 +151,7 @@ def test_duplicate_status_does_not_produce_extra_rows(
         ),
     )
 
-    history = repo.history_for_job(job_id)
+    history = repo.history_for_job(job_id, scheduler_key="local")
     assert [(t.from_status, t.to_status) for t in history] == [
         ("PENDING", "RUNNING"),
         ("RUNNING", "COMPLETED"),
@@ -183,8 +183,8 @@ def test_multiple_jobs_tracked_independently(
         )
         monitor._notify_callbacks("state_changed")
 
-    hist_100 = repo.history_for_job(100)
-    hist_200 = repo.history_for_job(200)
+    hist_100 = repo.history_for_job(100, scheduler_key="local")
+    hist_200 = repo.history_for_job(200, scheduler_key="local")
 
     assert [(t.from_status, t.to_status) for t in hist_100] == [
         ("PENDING", "RUNNING"),
@@ -227,7 +227,7 @@ def test_no_repo_injected_no_writes_no_errors(
     )
 
     # Only the terminal transition is mirrored by the history dual-write.
-    history = repo.history_for_job(job_id)
+    history = repo.history_for_job(job_id, scheduler_key="local")
     assert [(t.from_status, t.to_status) for t in history] == [
         (None, "COMPLETED"),
     ]
@@ -286,4 +286,5 @@ def test_repo_insert_called_with_expected_arguments() -> None:
         from_status="PENDING",
         to_status="RUNNING",
         source="cli_monitor",
+        scheduler_key="local",
     )

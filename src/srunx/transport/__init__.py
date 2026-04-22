@@ -13,14 +13,18 @@ from srunx.transport.registry import (
     ResolvedTransport,
     TransportHandle,
     TransportRegistry,
+    emit_transport_banner,
     peek_scheduler_key,
     resolve_transport,
+    resolve_transport_source,
 )
 
 __all__ = [
     "ResolvedTransport",
     "TransportHandle",
     "TransportRegistry",
+    "emit_transport_banner",
     "peek_scheduler_key",
     "resolve_transport",
+    "resolve_transport_source",
 ]

@@ -14,7 +14,12 @@ from srunx.monitor.report_types import ReportConfig
 from srunx.monitor.resource_monitor import ResourceMonitor
 from srunx.monitor.scheduler import ScheduledReporter
 from srunx.monitor.types import MonitorConfig, WatchMode
-from srunx.transport import resolve_transport
+from srunx.transport import (
+    emit_transport_banner,
+    peek_scheduler_key,
+    resolve_transport,
+    resolve_transport_source,
+)
 
 # Create monitor subcommand app
 monitor_app = typer.Typer(
@@ -153,6 +158,7 @@ def monitor_jobs(
                     job_id=int(_jid),
                     endpoint_name=endpoint,
                     preset=effective_preset,
+                    scheduler_key=rt.scheduler_key,
                 )
         if notify:
             console.print(
@@ -186,6 +192,7 @@ def monitor_jobs(
             config=config,
             callbacks=callbacks,
             client=cast(Slurm, rt.job_ops),
+            scheduler_key=rt.scheduler_key,
         )
 
         try:
@@ -269,65 +276,70 @@ def monitor_resources(
         console.print("Usage: srunx monitor resources --min-gpus N")
         sys.exit(1)
 
-    # Call resolve_transport purely for conflict detection + banner
-    # emission. ResourceMonitor still queries local SLURM in Phase 5b;
-    # the SSH-aware refactor belongs to a later phase. ``_`` marks the
-    # resolved handle as intentionally unused for now.
-    with resolve_transport(profile=profile, local=local, quiet=quiet) as _:
-        if profile:
-            console.print(
-                "[yellow]⚠️  ResourceMonitor ignores --profile in this release; "
-                "resource queries still run against the local cluster.[/yellow]"
-            )
+    # SF7: ResourceMonitor is local-only, so skip the full
+    # resolve_transport() path (which would build an SSH handle + open
+    # a pool) and call the pure helpers instead. ``peek_scheduler_key``
+    # still raises on the ``--profile`` + ``--local`` conflict, and
+    # ``emit_transport_banner`` reproduces the same stderr line
+    # ``resolve_transport`` would emit so diffing scripts see no change.
+    scheduler_key = peek_scheduler_key(profile=profile, local=local)
+    source = resolve_transport_source(profile=profile, local=local)
+    emit_transport_banner(label=scheduler_key, source=source, quiet=quiet)
 
-        # Setup callbacks
-        callbacks: list[Callback] = []
-        if notify:
-            try:
-                callbacks.append(SlackCallback(notify))
-            except ValueError as e:
-                console.print(f"[red]Invalid webhook URL: {e}[/red]")
-                sys.exit(1)
-
-        # Create monitor config
-        config = MonitorConfig(
-            poll_interval=interval,
-            timeout=timeout if not continuous else None,
-            mode=WatchMode.CONTINUOUS if continuous else WatchMode.UNTIL_CONDITION,
-            notify_on_change=continuous or bool(notify),
+    if profile:
+        console.print(
+            "[yellow]⚠️  ResourceMonitor ignores --profile in this release; "
+            "resource queries still run against the local cluster.[/yellow]"
         )
 
-        # Create and run resource monitor
-        resource_monitor = ResourceMonitor(
-            min_gpus=min_gpus,
-            partition=partition,
-            config=config,
-            callbacks=callbacks,
-        )
-
+    # Setup callbacks
+    callbacks: list[Callback] = []
+    if notify:
         try:
-            if continuous:
-                console.print(
-                    f"🔄 Continuously monitoring GPU resources "
-                    f"(min={min_gpus}, interval={interval}s)"
-                )
-                resource_monitor.watch_continuous()
-            else:
-                console.print(
-                    f"🎮 Waiting for {min_gpus} GPUs to become available "
-                    f"(partition={partition or 'all'})"
-                )
-                resource_monitor.watch_until()
-                console.print(f"✅ {min_gpus} GPUs now available!")
-        except TimeoutError as e:
-            console.print(f"[red]⏱️  {e}[/red]")
+            callbacks.append(SlackCallback(notify))
+        except ValueError as e:
+            console.print(f"[red]Invalid webhook URL: {e}[/red]")
             sys.exit(1)
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Monitoring stopped by user[/yellow]")
-            sys.exit(0)
-        except Exception as e:
-            console.print(f"[red]Error: {e}[/red]")
-            sys.exit(1)
+
+    # Create monitor config
+    config = MonitorConfig(
+        poll_interval=interval,
+        timeout=timeout if not continuous else None,
+        mode=WatchMode.CONTINUOUS if continuous else WatchMode.UNTIL_CONDITION,
+        notify_on_change=continuous or bool(notify),
+    )
+
+    # Create and run resource monitor
+    resource_monitor = ResourceMonitor(
+        min_gpus=min_gpus,
+        partition=partition,
+        config=config,
+        callbacks=callbacks,
+    )
+
+    try:
+        if continuous:
+            console.print(
+                f"🔄 Continuously monitoring GPU resources "
+                f"(min={min_gpus}, interval={interval}s)"
+            )
+            resource_monitor.watch_continuous()
+        else:
+            console.print(
+                f"🎮 Waiting for {min_gpus} GPUs to become available "
+                f"(partition={partition or 'all'})"
+            )
+            resource_monitor.watch_until()
+            console.print(f"✅ {min_gpus} GPUs now available!")
+    except TimeoutError as e:
+        console.print(f"[red]⏱️  {e}[/red]")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Monitoring stopped by user[/yellow]")
+        sys.exit(0)
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
 
 
 @monitor_app.command("cluster")

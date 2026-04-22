@@ -57,7 +57,7 @@ class TestHistoricalCountsDbFirst:
                 submission_source="cli",
                 submitted_at=ts,
             )
-            repo.update_status(i, status, completed_at=ts)
+            repo.update_status(i, status, completed_at=ts, scheduler_key="local")
         # One CANCELLED row, also finished in-window.
         repo.record_submission(
             job_id=2000,
@@ -66,7 +66,7 @@ class TestHistoricalCountsDbFirst:
             submission_source="cli",
             submitted_at=ts,
         )
-        repo.update_status(2000, "CANCELLED", completed_at=ts)
+        repo.update_status(2000, "CANCELLED", completed_at=ts, scheduler_key="local")
 
         reporter = _make_reporter()
         assert reporter._get_historical_counts() == (2, 1, 1)
@@ -92,7 +92,7 @@ class TestHistoricalCountsDbFirst:
             submission_source="cli",
             submitted_at=stale,
         )
-        repo.update_status(3000, "COMPLETED", completed_at=stale)
+        repo.update_status(3000, "COMPLETED", completed_at=stale, scheduler_key="local")
 
         reporter = _make_reporter(timeframe="24h")
         assert reporter._get_historical_counts() == (0, 0, 0)
@@ -136,7 +136,12 @@ class TestHistoricalCountsDbFirst:
             submission_source="cli",
             submitted_at=stale_submit,  # outside the 24h window
         )
-        repo.update_status(4000, "COMPLETED", completed_at=recent_complete)
+        repo.update_status(
+            4000,
+            "COMPLETED",
+            completed_at=recent_complete,
+            scheduler_key="local",
+        )
 
         reporter = _make_reporter(timeframe="24h")
         assert reporter._get_historical_counts() == (1, 0, 0)

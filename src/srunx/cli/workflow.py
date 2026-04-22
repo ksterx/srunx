@@ -31,6 +31,8 @@ from srunx.transport import (
     resolve_transport,
 )
 
+logger = get_logger(__name__)
+
 
 def _build_workflow_callbacks(
     *,
@@ -80,18 +82,6 @@ def _build_workflow_callbacks(
 
     return callbacks
 
-
-def _pre_resolve_scheduler_key(profile: str | None, local: bool) -> str:
-    """Return the scheduler_key ``resolve_transport`` would select.
-
-    Thin wrapper around :func:`peek_scheduler_key` kept as a module-
-    local helper so the import has a guaranteed call site (ruff's
-    unused-import stripper otherwise drops the transport import).
-    """
-    return peek_scheduler_key(profile=profile, local=local)
-
-
-logger = get_logger(__name__)
 
 # Create Typer app for workflow management
 app = typer.Typer(
@@ -571,7 +561,7 @@ def _execute_workflow(
         # the CLI flags + env, so we can pre-compute it via
         # :func:`peek_scheduler_key` and bind it to
         # ``NotificationWatchCallback`` up front.
-        pre_scheduler_key = _pre_resolve_scheduler_key(profile, local)
+        pre_scheduler_key = peek_scheduler_key(profile=profile, local=local)
         effective_preset = preset or get_config().notifications.default_preset
         is_sweep = sweep_spec is not None
         callbacks = _build_workflow_callbacks(

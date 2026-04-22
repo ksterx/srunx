@@ -14,7 +14,7 @@ from rich.table import Table
 
 from srunx.callbacks import Callback, NotificationWatchCallback, SlackCallback
 from srunx.cli.monitor import monitor_app
-from srunx.cli.transport_options import LocalOpt, ProfileOpt, QuietOpt, ScriptOpt
+from srunx.cli.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.client import Slurm
 from srunx.config import (
     create_example_config,
@@ -39,9 +39,24 @@ from srunx.models import (
 from srunx.runner import WorkflowRunner
 from srunx.ssh.cli.commands import ssh_app
 from srunx.template import get_template_info, get_template_path, list_templates
-from srunx.transport import resolve_transport
+from srunx.transport import peek_scheduler_key, resolve_transport
 
 logger = get_logger(__name__)
+
+
+# Module-local option alias: ``--script`` is only used by the ``submit``
+# subcommand so it does not belong in ``transport_options.py`` (which
+# holds the cross-command transport flags).
+ScriptOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--script",
+        help=(
+            "Submit a pre-authored sbatch script file instead of a command. "
+            "Mutually exclusive with the positional COMMAND argument."
+        ),
+    ),
+]
 
 
 class DebugCallback(Callback):
@@ -616,13 +631,25 @@ def submit(
     # callbacks + template_path + verbose) which the Protocol does not
     # yet expose; SSH path uses the Protocol method, and the adapter
     # owns its own DB recording + callbacks lifecycle.
-    with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+    with resolve_transport(
+        profile=profile,
+        local=local,
+        quiet=quiet,
+        callbacks=callbacks,
+        submission_source="cli",
+    ) as rt:
         client: Slurm | None
         if rt.transport_type == "local":
             client = Slurm(callbacks=callbacks)
             submitted_job = client.submit(job, template_path=template, verbose=verbose)
         else:
-            submitted_job = rt.job_ops.submit(job)
+            # SSH path: callbacks + submission_source were threaded into
+            # ``resolve_transport`` so the adapter + pool fire callbacks
+            # and tag the jobs row correctly. The submission render
+            # context handles ``--work-dir`` / path translation.
+            submitted_job = rt.job_ops.submit(
+                job, submission_context=rt.submission_context
+            )
             client = None
 
         # Attach a durable notification watch if the user asked for one.
@@ -981,10 +1008,29 @@ def logs(
                 # Phase 5b+ concern (loop belongs in the CLI layer, but
                 # the SSH adapter does not yet stream logs).
                 chunk = rt.job_ops.tail_log_incremental(job_id, 0, 0)
-                if chunk.stdout:
-                    sys.stdout.write(chunk.stdout)
-                if chunk.stderr and chunk.stderr != chunk.stdout:
-                    sys.stderr.write(chunk.stderr)
+                # ``--last N`` is applied client-side on the SSH path:
+                # the adapter returns the full log content and we slice
+                # here so the flag isn't silently dropped (SF6). The
+                # local path above already honours ``last_n`` via
+                # ``Slurm.tail_log``.
+                stdout_text = chunk.stdout or ""
+                stderr_text = chunk.stderr or ""
+                if last is not None:
+                    if stdout_text:
+                        stdout_text = "\n".join(stdout_text.splitlines()[-last:])
+                        # Preserve the trailing newline if the original
+                        # chunk ended with one so terminal output stays
+                        # unambiguous.
+                        if chunk.stdout and chunk.stdout.endswith("\n"):
+                            stdout_text += "\n"
+                    if stderr_text and stderr_text != chunk.stdout:
+                        stderr_text = "\n".join(stderr_text.splitlines()[-last:])
+                        if chunk.stderr and chunk.stderr.endswith("\n"):
+                            stderr_text += "\n"
+                if stdout_text:
+                    sys.stdout.write(stdout_text)
+                if stderr_text and stderr_text != (chunk.stdout or ""):
+                    sys.stderr.write(stderr_text)
                 if follow:
                     typer.secho(
                         "--follow is not yet supported for SSH transports.",
@@ -1431,11 +1477,16 @@ def template_apply(
         # lookup failures don't silently drop the user's opt-in.
         callbacks: list[Callback] = []
         effective_preset = preset or get_config().notifications.default_preset
+        # Bind the notification watch to the exact scheduler_key the
+        # transport will resolve to so SSH submissions don't silently
+        # register their watch under the wrong axis (Bug 5).
+        resolved_scheduler_key = peek_scheduler_key(profile=profile, local=local)
         if endpoint:
             callbacks.append(
                 NotificationWatchCallback(
                     endpoint_name=endpoint,
                     preset=effective_preset,
+                    scheduler_key=resolved_scheduler_key,
                 )
             )
         if slack:
@@ -1449,13 +1500,25 @@ def template_apply(
             callbacks.append(SlackCallback(webhook_url=webhook_url))
 
         # Submit job with the specified template.
-        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+        with resolve_transport(
+            profile=profile,
+            local=local,
+            quiet=quiet,
+            callbacks=callbacks,
+            submission_source="cli",
+        ) as rt:
             client: Slurm | None
             if rt.transport_type == "local":
                 client = Slurm(callbacks=callbacks)
                 submitted_job = client.submit(job, template_path=template_path)
             else:
-                submitted_job = rt.job_ops.submit(job)
+                # SSH path: callbacks + submission_source were threaded
+                # into ``resolve_transport`` so the adapter fires callbacks
+                # and tags the jobs row with ``'cli'``. The submission
+                # render context translates ``--work-dir`` / mount paths.
+                submitted_job = rt.job_ops.submit(
+                    job, submission_context=rt.submission_context
+                )
                 client = None
 
             console = Console()

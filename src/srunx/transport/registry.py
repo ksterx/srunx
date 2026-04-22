@@ -156,11 +156,54 @@ def _emit_banner(resolved: ResolvedTransport, quiet: bool) -> None:
     so existing scripts that diff stderr byte-for-byte keep passing.
     ``quiet=True`` suppresses the banner even for explicit sources.
     """
-    if quiet or resolved.source == "default":
+    emit_transport_banner(label=resolved.label, source=resolved.source, quiet=quiet)
+
+
+def emit_transport_banner(
+    *,
+    label: str,
+    source: TransportSource,
+    quiet: bool,
+) -> None:
+    """Emit the transport banner without building a full handle.
+
+    Used by commands that only need banner + conflict detection (e.g.
+    ``srunx monitor resources``, which is local-only in Phase 5b).
+    Keeps the SF7 short-circuit path byte-for-byte identical to the
+    full :func:`resolve_transport` output so scripts that diff stderr
+    don't see a regression when we skip the SSH handle build.
+
+    REQ-7 / AC-10.2: ``source='default'`` stays silent and ``quiet=True``
+    suppresses the banner even for explicit sources.
+    """
+    if quiet or source == "default":
         return
-    Console(file=sys.stderr).print(
-        f"[dim]→ transport: {resolved.label} (from {resolved.source})[/dim]"
-    )
+    Console(file=sys.stderr).print(f"[dim]→ transport: {label} (from {source})[/dim]")
+
+
+def resolve_transport_source(
+    *, profile: str | None = None, local: bool = False
+) -> TransportSource:
+    """Return the :data:`TransportSource` ``resolve_transport`` would pick.
+
+    Pure helper that mirrors the source-detection limb of
+    :func:`resolve_transport` so callers using
+    :func:`emit_transport_banner` directly don't have to duplicate the
+    precedence rules. Raises :class:`typer.BadParameter` on the same
+    ``--profile`` + ``--local`` conflict.
+    """
+    if profile and local:
+        raise typer.BadParameter(
+            "--profile and --local cannot be used together.",
+            param_hint="--profile / --local",
+        )
+    if profile:
+        return "--profile"
+    if local:
+        return "--local"
+    if os.environ.get("SRUNX_SSH_PROFILE"):
+        return "env"
+    return "default"
 
 
 def _build_local_handle(slurm: Slurm | None = None) -> TransportHandle:
@@ -363,16 +406,15 @@ def peek_scheduler_key(*, profile: str | None = None, local: bool = False) -> st
 
 
 def _build_transport_label(handle: TransportHandle) -> str:
-    """Return a human-friendly label for the transport banner.
+    """Return the banner label for *handle*.
 
-    ``scheduler_key`` uses the ``ssh:<profile>`` grammar for machine
-    parsing; the banner is user-facing so we render ``SSH: <profile>``
-    for SSH and ``local SLURM`` for local to avoid looking like an
-    internal identifier.
+    Spec AC-7.3 prescribes the ``scheduler_key`` grammar (``local`` /
+    ``ssh:<profile>``) as the banner text so the same string callers see
+    on stderr matches what they'd see in DB rows / watch targets. Using
+    ``handle.scheduler_key`` directly is the simplest way to keep those
+    two surfaces aligned.
     """
-    if handle.transport_type == "local":
-        return "local SLURM"
-    return f"SSH: {handle.profile_name}"
+    return handle.scheduler_key
 
 
 @contextmanager

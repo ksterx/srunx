@@ -432,9 +432,13 @@ def _build_run_response(conn: sqlite3.Connection, run: DBWorkflowRun) -> dict[st
     job_repo = JobRepository(conn)
     jobs_by_id: dict[int, str] = {}
     for m in memberships:
-        if m.job_id is None:
+        # V5+: ``jobs_row_id`` is the authoritative FK to ``jobs.id``.
+        # Looking up via ``get_by_row_id`` avoids the pre-V5
+        # ``scheduler_key='local'`` default, which would drop SSH
+        # workflow children and miss their statuses in the API response.
+        if m.jobs_row_id is None or m.job_id is None:
             continue
-        job = job_repo.get(m.job_id)
+        job = job_repo.get_by_row_id(m.jobs_row_id)
         if job is not None:
             jobs_by_id[m.job_id] = job.status
     return _serialize_run(run, memberships, jobs_by_id)

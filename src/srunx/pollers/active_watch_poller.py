@@ -697,11 +697,17 @@ class ActiveWatchPoller:
 
         child_statuses: list[str | None] = []
         for membership in memberships:
-            job_id = getattr(membership, "job_id", None)
-            if job_id is None:
+            # V5+: ``workflow_run_jobs.jobs_row_id`` is the authoritative
+            # FK to ``jobs.id``. Using ``jobs_row_id`` via
+            # :meth:`JobRepository.get_by_row_id` avoids the pre-V5
+            # ``scheduler_key='local'`` default, which would drop SSH
+            # workflow children and leave the workflow stuck "not all
+            # completed" forever.
+            jobs_row_id = getattr(membership, "jobs_row_id", None)
+            if jobs_row_id is None:
                 child_statuses.append(None)
                 continue
-            job = job_repo.get(job_id)
+            job = job_repo.get_by_row_id(jobs_row_id)
             child_statuses.append(job.status if job is not None else None)
 
         # Rule 1 — any CANCELLED wins.

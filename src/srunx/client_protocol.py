@@ -55,12 +55,25 @@ class JobOperationsProtocol(Protocol):
     and polling wrappers may call them concurrently.
     """
 
-    def submit(self, job: RunnableJobType) -> RunnableJobType:
+    def submit(
+        self,
+        job: RunnableJobType,
+        *,
+        submission_context: SubmissionRenderContext | None = None,
+    ) -> RunnableJobType:
         """Submit *job* to SLURM and return the populated job object.
 
         The returned object MUST have ``job_id`` set. DB recording (via
         ``record_submission_from_job``) is the implementation's
         responsibility; callers must not record again.
+
+        ``submission_context`` carries mount / default-path metadata that
+        SSH-backed implementations apply via
+        :func:`srunx.rendering.normalize_job_for_submission` before
+        rendering the SLURM script, so CLI-supplied absolute ``work_dir``
+        / ``log_dir`` paths get rewritten to the remote-mount equivalents.
+        Local implementations accept the kwarg for Protocol conformance
+        but ignore it (local submission never performs mount translation).
         """
         ...
 

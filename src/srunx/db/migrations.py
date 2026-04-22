@@ -468,19 +468,22 @@ CREATE INDEX idx_jst_job_id      ON job_state_transitions(jobs_row_id, observed_
 CREATE INDEX idx_jst_observed_at ON job_state_transitions(observed_at);
 
 -- (4) target_ref / source_ref backfill -------------------------------
+-- Only rewrite bare ``job:<slurm_id>`` rows. The ``LIKE`` patterns used
+-- previously would match any future axis prefix (``job:foo:…``) that
+-- lacks a hard-coded NOT LIKE clause, so we match "exactly two colons
+-- don't exist yet" via ``instr(substr(ref, 5), ':') = 0`` — i.e. the
+-- tail after ``job:`` contains no further ``:`` character.
 UPDATE watches
    SET target_ref = 'job:local:' || substr(target_ref, 5)
  WHERE kind = 'job'
-   AND target_ref LIKE 'job:%'
-   AND target_ref NOT LIKE 'job:local:%'
-   AND target_ref NOT LIKE 'job:ssh:%';
+   AND substr(target_ref, 1, 4) = 'job:'
+   AND instr(substr(target_ref, 5), ':') = 0;
 
 UPDATE events
    SET source_ref = 'job:local:' || substr(source_ref, 5)
  WHERE kind IN ('job.submitted','job.status_changed')
-   AND source_ref LIKE 'job:%'
-   AND source_ref NOT LIKE 'job:local:%'
-   AND source_ref NOT LIKE 'job:ssh:%';
+   AND substr(source_ref, 1, 4) = 'job:'
+   AND instr(substr(source_ref, 5), ':') = 0;
 
 -- (5) force-close pre-V5 open job watches ----------------------------
 -- Only ``kind='job'`` watches carry the transport ambiguity the V5

@@ -7,9 +7,13 @@ monitor alike).
 
 V5 note: the on-disk column is ``jobs_row_id`` (FK to ``jobs.id``),
 but the public API still takes ``job_id`` (SLURM id) so existing
-callers work unchanged. ``scheduler_key='local'`` is the default, so
-a ``latest_for_job(123)`` call returns the transition for the local
-SLURM job 123 — which is exactly what the pre-V5 API meant.
+callers work unchanged. SF5 then hardened the API to **require**
+``scheduler_key`` as a keyword argument on :meth:`insert`,
+:meth:`latest_for_job`, and :meth:`history_for_job` — a silent
+fallback to ``'local'`` was the root cause of bugs #1/#2/#3, where
+SSH-backed jobs got their transitions looked up under the wrong axis.
+Callers pass ``scheduler_key='local'`` explicitly for local SLURM, or
+``'ssh:<profile>'`` for SSH transports.
 """
 
 from __future__ import annotations
@@ -53,16 +57,20 @@ class JobStateTransitionRepository(BaseRepository):
         source: TransitionSource,
         observed_at: str | None = None,
         *,
-        scheduler_key: str = "local",
+        scheduler_key: str,
     ) -> int:
         """Insert a new transition row. Returns the row's ``id``.
 
-        Accepts the SLURM ``job_id`` (+ ``scheduler_key``) for backwards
-        compatibility. The ``jobs_row_id`` column on disk is resolved
-        via a lookup against ``jobs``. If no matching jobs row exists
-        the transition is still inserted with ``jobs_row_id=NULL`` so
-        the append-only log is never silently dropped — the poller / CLI
-        still benefits from observability on orphan ids.
+        Accepts the SLURM ``job_id`` (+ ``scheduler_key``). The
+        ``jobs_row_id`` column on disk is resolved via a lookup against
+        ``jobs``. If no matching jobs row exists the transition is
+        still inserted with ``jobs_row_id=NULL`` so the append-only log
+        is never silently dropped — the poller / CLI still benefits
+        from observability on orphan ids.
+
+        ``scheduler_key`` is required (SF5); pass ``'local'`` explicitly
+        for local SLURM. Defaulting would silently dedup SSH transitions
+        against the local row's history.
         """
         observed_at = observed_at or now_iso()
         jobs_row_id = self._resolve_jobs_row_id(job_id, scheduler_key)
@@ -77,7 +85,7 @@ class JobStateTransitionRepository(BaseRepository):
         return int(cur.lastrowid or 0)
 
     def latest_for_job(
-        self, job_id: int, *, scheduler_key: str = "local"
+        self, job_id: int, *, scheduler_key: str
     ) -> JobStateTransition | None:
         """Return the most recent transition for ``(scheduler_key, job_id)``.
 
@@ -86,6 +94,9 @@ class JobStateTransitionRepository(BaseRepository):
         ``jobs_row_id`` from the ``jobs`` lookup so both pre-V5 writes
         (those with ``jobs_row_id`` set by backfill) and newly inserted
         rows match correctly.
+
+        ``scheduler_key`` is required (SF5); pass ``'local'`` explicitly
+        for local SLURM.
         """
         row = self.conn.execute(
             f"SELECT {', '.join(self._SELECT_COLUMNS)} "
@@ -98,9 +109,13 @@ class JobStateTransitionRepository(BaseRepository):
         return self._row_to_model(row, JobStateTransition)
 
     def history_for_job(
-        self, job_id: int, *, scheduler_key: str = "local"
+        self, job_id: int, *, scheduler_key: str
     ) -> list[JobStateTransition]:
-        """Return all transitions for the given job in chronological order."""
+        """Return all transitions for the given job in chronological order.
+
+        ``scheduler_key`` is required (SF5); pass ``'local'`` explicitly
+        for local SLURM.
+        """
         rows = self.conn.execute(
             f"SELECT {', '.join(self._SELECT_COLUMNS)} "
             "FROM job_state_transitions jst "

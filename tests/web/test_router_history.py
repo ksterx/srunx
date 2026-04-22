@@ -81,6 +81,7 @@ def _seed(db_path: Path) -> None:
             "COMPLETED",
             completed_at="2026-01-01T01:00:00Z",
             duration_secs=3600,
+            scheduler_key="local",
         )
         repo.record_submission(
             job_id=101,

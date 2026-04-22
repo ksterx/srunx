@@ -131,6 +131,173 @@ class TestPollerThreadsSchedulerKey:
 
 
 # ---------------------------------------------------------------------------
+# Final-review Bug #2: monitor jobs threads scheduler_key through to
+# attach_notification_watch so the per-job watch targets the right axis.
+# ---------------------------------------------------------------------------
+
+
+class TestMonitorJobsThreadsSchedulerKey:
+    """Final-review Bug #2: ``srunx monitor jobs`` must not drop scheduler_key.
+
+    Before the fix, ``cli/monitor.py:monitor_jobs`` called
+    ``attach_notification_watch(job_id=..., endpoint_name=...,
+    preset=...)`` with no ``scheduler_key=``. The default ``'local'``
+    would then land on the SSH-backed job's watch — the poller would
+    look under ``job:local:<id>`` and never observe the SSH transitions.
+
+    The fix threads ``rt.scheduler_key`` from the resolved transport
+    into every attach call.
+    """
+
+    def test_ssh_monitor_attaches_watch_under_ssh_scheduler_key(
+        self, monkeypatch
+    ) -> None:
+        """A CLI ``monitor jobs --profile dgx 777`` attach must carry
+        ``scheduler_key='ssh:dgx'`` to ``attach_notification_watch``."""
+        from srunx.cli import monitor as monitor_cli
+
+        captured: list[dict[str, object]] = []
+
+        def _fake_attach(**kwargs: object) -> int | None:
+            captured.append(dict(kwargs))
+            return 1
+
+        monkeypatch.setattr(
+            "srunx.cli.notification_setup.attach_notification_watch",
+            _fake_attach,
+        )
+
+        # Drive the attach branch directly. ``monitor_jobs`` is a typer
+        # command; calling the module function with a fabricated
+        # ResolvedTransport exercises the exact code path without
+        # spinning up JobMonitor polling or real SLURM queries.
+        fake_handle = TransportHandle(
+            scheduler_key="ssh:dgx",
+            profile_name="dgx",
+            transport_type="ssh",
+            job_ops=MagicMock(),
+            queue_client=MagicMock(),
+            executor_factory=MagicMock(),
+            submission_context=None,
+        )
+
+        # Patch _build_ssh_handle so resolve_transport returns our stub
+        # without touching paramiko / config manager.
+        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
+        with patch(
+            "srunx.transport.registry._build_ssh_handle",
+            return_value=(fake_handle, None),
+        ):
+            # The real ``JobMonitor`` loop would block on polling; stub
+            # it into a no-op that signals "already terminal" so
+            # monitor_jobs returns after the attach step.
+            class _NoopMonitor:
+                def __init__(self, **_kwargs: object) -> None:
+                    self._kwargs = _kwargs
+
+                def watch_until(self) -> None:
+                    return None
+
+                def watch_continuous(self) -> None:
+                    return None
+
+            monkeypatch.setattr(monitor_cli, "JobMonitor", _NoopMonitor)
+
+            # Invoke the command function directly (bypasses Typer).
+            monitor_cli.monitor_jobs(
+                job_ids=[777],
+                all_jobs=False,
+                schedule=None,
+                interval=60,
+                timeout=None,
+                notify=None,
+                endpoint="ep",
+                preset="terminal",
+                continuous=False,
+                profile="dgx",
+                local=False,
+                quiet=True,
+            )
+
+        assert captured, "attach_notification_watch was not invoked"
+        assert captured[0].get("scheduler_key") == "ssh:dgx", (
+            "Bug #2 regressed: CLI monitor dropped scheduler_key on the "
+            "attach_notification_watch call"
+        )
+        assert captured[0].get("job_id") == 777
+        assert captured[0].get("endpoint_name") == "ep"
+
+
+# ---------------------------------------------------------------------------
+# Final-review Bug #3: web/_build_run_response uses get_by_row_id so SSH
+# workflow children are resolved without the scheduler_key='local' default.
+# ---------------------------------------------------------------------------
+
+
+class TestWorkflowResponseResolvesSSHChildren:
+    """Final-review Bug #3: ``_build_run_response`` must not lose SSH children.
+
+    The pre-fix code called ``job_repo.get(m.job_id)`` which defaulted
+    ``scheduler_key='local'`` — a workflow whose child ran over SSH
+    would show up with status ``None`` in ``job_statuses``. The fix
+    switches to ``job_repo.get_by_row_id(m.jobs_row_id)`` which is
+    axis-free.
+    """
+
+    def test_ssh_workflow_child_status_is_populated(
+        self, tmp_srunx_db: tuple[sqlite3.Connection, Path]
+    ) -> None:
+        from srunx.db.repositories.workflow_run_jobs import (
+            WorkflowRunJobRepository,
+        )
+        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+        from srunx.web.routers.workflows import _build_run_response
+
+        conn, _ = tmp_srunx_db
+
+        # Seed a workflow_run
+        run_id = WorkflowRunRepository(conn).create(
+            workflow_name="wf_ssh",
+            yaml_path=None,
+            args=None,
+            triggered_by="web",
+        )
+
+        # Seed one SSH-backed child job + membership.
+        row_id = JobRepository(conn).record_submission(
+            job_id=8001,
+            name="ssh_child",
+            status="RUNNING",
+            submission_source="workflow",
+            transport_type="ssh",
+            profile_name="dgx",
+            scheduler_key="ssh:dgx",
+            workflow_run_id=run_id,
+        )
+        assert row_id > 0
+
+        WorkflowRunJobRepository(conn).create(
+            workflow_run_id=run_id,
+            job_name="ssh_child",
+            jobs_row_id=row_id,
+        )
+
+        run = WorkflowRunRepository(conn).get(run_id)
+        assert run is not None
+
+        response = _build_run_response(conn, run)
+
+        # Bug #3 fix: the SSH-backed child's status must surface, not be
+        # silently dropped because the axis default was ``'local'``.
+        assert response["job_statuses"].get("ssh_child") == "RUNNING", (
+            "Bug #3 regressed: SSH workflow child was dropped from "
+            "job_statuses (scheduler_key='local' default silently "
+            "matched no row)"
+        )
+        assert response["job_ids"].get("ssh_child") == "8001"
+
+
+# ---------------------------------------------------------------------------
 # Fix #4: V5 migration only force-closes job watches
 # ---------------------------------------------------------------------------
 
@@ -638,19 +805,23 @@ class TestPoolOrphanProtection:
         fake_pool.close.assert_called_once()
 
 
-class TestBannerLabelIsHumanReadable:
-    """F10: ``ResolvedTransport.label`` prefers a human-friendly rendering."""
+class TestBannerLabelMatchesSchedulerKey:
+    """Bug #7 / AC-7.3: ``ResolvedTransport.label`` uses the scheduler_key grammar.
 
-    def test_local_label_is_friendly(self, monkeypatch) -> None:
+    The banner text must match the strings callers see in DB rows, watch
+    targets, and ``scheduler_key`` — i.e. ``local`` and ``ssh:<profile>``
+    — so operators can grep one surface and hit every related row.
+    """
+
+    def test_local_label_matches_scheduler_key(self, monkeypatch) -> None:
         from srunx.transport import resolve_transport
 
         monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
         with resolve_transport(local=True, banner=False) as rt:
-            assert rt.label == "local SLURM"
-            # scheduler_key stays machine-parseable.
+            assert rt.label == "local"
             assert rt.scheduler_key == "local"
 
-    def test_ssh_label_is_friendly(self, monkeypatch) -> None:
+    def test_ssh_label_matches_scheduler_key(self, monkeypatch) -> None:
         from srunx.transport import resolve_transport
 
         monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
@@ -668,7 +839,7 @@ class TestBannerLabelIsHumanReadable:
             return_value=(fake_handle, None),
         ):
             with resolve_transport(profile="dgx", banner=False) as rt:
-                assert rt.label == "SSH: dgx"
+                assert rt.label == "ssh:dgx"
                 assert rt.scheduler_key == "ssh:dgx"
 
 

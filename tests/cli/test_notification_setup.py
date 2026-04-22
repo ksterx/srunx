@@ -83,7 +83,9 @@ def test_attach_watch_happy_path(isolated_db: Path) -> None:
 
         # A PENDING transition should be present so the poller's first
         # observation produces a real state change.
-        latest = JobStateTransitionRepository(conn).latest_for_job(job_id)
+        latest = JobStateTransitionRepository(conn).latest_for_job(
+            job_id, scheduler_key="local"
+        )
         assert latest is not None
         assert latest.to_status == "PENDING"
     finally:

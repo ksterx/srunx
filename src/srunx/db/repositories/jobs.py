@@ -56,9 +56,16 @@ class JobRepository(BaseRepository):
     ``profile_name`` / ``scheduler_key`` columns and broadened the
     uniqueness key from ``job_id`` alone to ``(scheduler_key, job_id)``
     so the same SLURM id can safely co-exist across ``local`` and
-    ``ssh:<profile>`` transports. The read / update API stays
-    backwards-compatible by defaulting ``scheduler_key='local'`` on
-    every lookup — pre-V5 callers see no change.
+    ``ssh:<profile>`` transports.
+
+    SF5 hardened the read / update API: :meth:`get`, :meth:`update_status`,
+    :meth:`update_completion`, and :meth:`delete` now **require**
+    ``scheduler_key`` as a keyword argument. Callers must pass the
+    matching value (``'local'`` for local SLURM, ``'ssh:<profile>'`` for
+    SSH) so the axis is explicit at every call site and bugs #1/#2/#3
+    (silent fallback to ``'local'`` for SSH-backed jobs) cannot recur.
+    :meth:`record_submission` keeps its local-triple default because its
+    three transport columns are consistent with each other.
     """
 
     JSON_FIELDS = ("command", "env_vars", "metadata")
@@ -198,7 +205,7 @@ class JobRepository(BaseRepository):
         job_id: int,
         status: str,
         *,
-        scheduler_key: str = "local",
+        scheduler_key: str,
         started_at: str | None = None,
         completed_at: str | None = None,
         duration_secs: int | None = None,
@@ -209,8 +216,9 @@ class JobRepository(BaseRepository):
         Called by :class:`~srunx.pollers.active_watch_poller.ActiveWatchPoller`
         on every detected transition. Returns True if a row was updated.
 
-        ``scheduler_key`` defaults to ``'local'`` so pre-V5 callers
-        continue to target the local-SLURM row unchanged.
+        ``scheduler_key`` is required (SF5) so callers cannot accidentally
+        target the local-SLURM row when they meant an SSH transport.
+        Pass ``scheduler_key='local'`` explicitly for local SLURM.
         """
         sets: list[str] = ["status = ?"]
         vals: list[Any] = [status]
@@ -240,11 +248,15 @@ class JobRepository(BaseRepository):
         status: str,
         completed_at: str | None = None,
         *,
-        scheduler_key: str = "local",
+        scheduler_key: str,
     ) -> bool:
         """Compatibility wrapper for the historical ``update_job_completion``.
 
         Computes ``duration_secs`` from ``submitted_at`` when not provided.
+
+        ``scheduler_key`` is required (SF5); pass ``'local'`` explicitly
+        for local SLURM. Defaulting silently would silently fall back to
+        the local row for SSH transports.
         """
         completed_at = completed_at or now_iso()
         row = self.conn.execute(
@@ -268,12 +280,14 @@ class JobRepository(BaseRepository):
             duration_secs=duration,
         )
 
-    def get(self, job_id: int, *, scheduler_key: str = "local") -> Job | None:
+    def get(self, job_id: int, *, scheduler_key: str) -> Job | None:
         """Return the jobs row for ``(scheduler_key, job_id)``.
 
-        ``scheduler_key`` defaults to ``'local'`` so callers that only
-        deal with local-SLURM ids work unchanged. Use
-        :meth:`get_by_row_id` when the caller already has ``jobs.id``.
+        ``scheduler_key`` is required (SF5). Bugs #1/#2/#3 all originated
+        from code that forgot to pass it and silently got the local row
+        back for SSH-backed jobs. Pass ``scheduler_key='local'`` for
+        local SLURM, or use :meth:`get_by_row_id` when the caller
+        already has ``jobs.id``.
         """
         row = self.conn.execute(
             f"SELECT {', '.join(self._COLUMNS)} FROM jobs "
@@ -364,7 +378,12 @@ class JobRepository(BaseRepository):
         rows = self.conn.execute(sql, params).fetchall()
         return {r["status"]: int(r["c"]) for r in rows}
 
-    def delete(self, job_id: int, *, scheduler_key: str = "local") -> bool:
+    def delete(self, job_id: int, *, scheduler_key: str) -> bool:
+        """Delete the jobs row for ``(scheduler_key, job_id)``.
+
+        ``scheduler_key`` is required (SF5). Pass ``'local'`` explicitly
+        for local SLURM.
+        """
         cur = self.conn.execute(
             "DELETE FROM jobs WHERE scheduler_key = ? AND job_id = ?",
             (scheduler_key, job_id),

@@ -783,7 +783,12 @@ class SlurmSSHAdapter:
     # backwards-compatible aliases so callers that haven't migrated yet
     # stay working.
 
-    def submit(self, job: RunnableJobType) -> RunnableJobType:
+    def submit(
+        self,
+        job: RunnableJobType,
+        *,
+        submission_context: SubmissionRenderContext | None = None,
+    ) -> RunnableJobType:
         """Submit *job* over SSH and return it with ``job_id`` populated.
 
         Renders the SLURM script locally (Jinja), uploads it via sftp,
@@ -792,6 +797,12 @@ class SlurmSSHAdapter:
         See :meth:`run` for the full lifecycle (render + submit + monitor
         + callbacks). This method is submit-only; it does not block on
         SLURM state transitions.
+
+        ``submission_context`` (when provided) applies mount-aware
+        :func:`normalize_job_for_submission` before rendering so absolute
+        local ``work_dir`` / ``log_dir`` paths get rewritten to the
+        profile's remote mount root. Passing ``None`` preserves the
+        pre-Bug-6 behaviour of rendering the job verbatim.
 
         Records the submission in the state DB with the
         (``transport_type='ssh'``, ``profile_name=<this adapter's
@@ -816,7 +827,15 @@ class SlurmSSHAdapter:
             render_job_script,
             render_shell_job_script,
         )
+        from srunx.rendering import normalize_job_for_submission
         from srunx.template import get_template_path
+
+        # Apply mount-aware path translation before we inspect the job's
+        # type for template resolution. ``normalize_job_for_submission``
+        # returns a ``model_copy`` when a rewrite is needed, so we rebind
+        # ``job`` and use the normalized instance for rendering + DB
+        # recording. See :meth:`run` for the mirror call-site.
+        job = normalize_job_for_submission(job, submission_context)
 
         if isinstance(job, Job):
             template_path = job.template if job.template else get_template_path("base")

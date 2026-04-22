@@ -58,6 +58,8 @@ class Slurm:
         record_history: bool = True,
         workflow_name: str | None = None,
         workflow_run_id: int | None = None,
+        *,
+        submission_context: "SubmissionRenderContext | None" = None,
     ) -> RunnableJobType:
         """Submit a job to SLURM.
 
@@ -72,6 +74,10 @@ class Slurm:
                 submitted from a workflow; persisted on the ``jobs`` row
                 so reports (``srunx report --workflow``, the Web history
                 JOIN) actually pick up CLI-launched workflow jobs.
+            submission_context: Accepted for
+                :class:`~srunx.client_protocol.JobOperationsProtocol`
+                conformance and ignored — local submission performs no
+                mount translation.
 
         Returns:
             Job instance with updated job_id and status.
@@ -79,6 +85,7 @@ class Slurm:
         Raises:
             subprocess.CalledProcessError: If job submission fails.
         """
+        del submission_context  # unused on the local path (see docstring)
         result = None
 
         if isinstance(job, Job):

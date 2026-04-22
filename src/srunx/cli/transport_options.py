@@ -12,7 +12,6 @@ already reserve ``-p`` for ``--partition`` (P-8).
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -56,15 +55,3 @@ QuietOpt = Annotated[
     ),
 ]
 """``--quiet`` / ``-q``: suppress the transport banner (REQ-7)."""
-
-ScriptOpt = Annotated[
-    Path | None,
-    typer.Option(
-        "--script",
-        help=(
-            "Submit a pre-authored sbatch script file instead of a command. "
-            "Mutually exclusive with the positional COMMAND argument."
-        ),
-    ),
-]
-"""``--script <path>``: submit a ShellJob instead of a command list (REQ-6)."""

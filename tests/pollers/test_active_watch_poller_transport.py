@@ -126,12 +126,19 @@ def _seed_watch(conn: sqlite3.Connection, target_ref: str) -> int:
     return WatchRepository(conn).create(kind="job", target_ref=target_ref)
 
 
-def _seed_pending_transition(conn: sqlite3.Connection, job_id: int, status: str) -> int:
+def _seed_pending_transition(
+    conn: sqlite3.Connection,
+    job_id: int,
+    status: str,
+    *,
+    scheduler_key: str = "local",
+) -> int:
     return JobStateTransitionRepository(conn).insert(
         job_id=job_id,
         from_status=None,
         to_status=status,
         source="poller",
+        scheduler_key=scheduler_key,
     )
 
 
