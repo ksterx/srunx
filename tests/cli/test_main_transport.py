@@ -1,0 +1,64 @@
+"""Phase 5a: CLI main.py transport integration tests.
+
+Covers the cross-cutting transport surface added to ``submit`` / ``list``
+in :mod:`srunx.cli.main`:
+
+* ``--script`` vs positional command mutual exclusion (AC-6.5).
+* ``--profile`` + ``--local`` conflict detection (AC-1.2).
+* ``--format json --quiet`` stdout purity (AC-7.1) — also guards the
+  incidental fix where the pre-existing "No jobs in queue" banner used
+  to leak into JSON output.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+from typer.testing import CliRunner
+
+from srunx.cli.main import app
+
+
+class TestSubmitScript:
+    def test_script_and_command_mutually_exclusive(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(app, ["submit", "--script", "/tmp/foo.sh", "echo", "hi"])
+        assert result.exit_code != 0
+        # Typer emits the BadParameter message to either output stream
+        # depending on how the Click error formatter is configured;
+        # accept both so the test stays stable.
+        combined = (result.stderr or "") + (result.output or "")
+        assert "mutually exclusive" in combined.lower()
+
+    def test_no_script_no_command_errors(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(app, ["submit"])
+        assert result.exit_code != 0
+
+
+class TestTransportConflict:
+    def test_profile_and_local_conflict(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            app, ["submit", "--profile", "foo", "--local", "echo", "hi"]
+        )
+        assert result.exit_code != 0
+
+
+class TestListJsonBannerIsolation:
+    """AC-7.1: --format json --quiet stdout must be pure JSON."""
+
+    def test_json_quiet_stdout_is_pure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Mock queue so no SLURM call happens."""
+        from srunx.client import Slurm
+
+        monkeypatch.setattr(Slurm, "queue", lambda self, user=None: [])
+        runner = CliRunner()
+        result = runner.invoke(app, ["list", "--format", "json", "--quiet"])
+        assert result.exit_code == 0
+        # Empty queue should emit ``[]`` now that the pre-existing bug
+        # (human-readable "No jobs in queue" printed before the JSON
+        # branch) is fixed.
+        parsed = json.loads(result.stdout)
+        assert parsed == []

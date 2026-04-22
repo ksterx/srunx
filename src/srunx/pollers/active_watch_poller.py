@@ -38,6 +38,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import anyio
 
@@ -60,6 +61,9 @@ from srunx.logging import get_logger
 from srunx.notifications.service import NotificationService
 from srunx.slurm.states import SLURM_TERMINAL_JOB_STATES
 from srunx.sweep.state_service import WorkflowRunStateService
+
+if TYPE_CHECKING:
+    from srunx.transport.registry import TransportRegistry
 
 logger = get_logger(__name__)
 
@@ -113,29 +117,65 @@ def _dt_to_iso(value: object) -> str | None:
     return str(value)
 
 
+def _parse_target_ref(
+    target_ref: str, expected_kind: str = "job"
+) -> tuple[str, int] | None:
+    """Parse a V5+ ``target_ref`` into ``(scheduler_key, job_id)``.
+
+    Grammar accepted (REQ-8 / AC-8.2 / AC-8.3):
+
+    - ``job:local:<N>``          → ``("local", N)``
+    - ``job:ssh:<profile>:<N>``  → ``(f"ssh:{profile}", N)``
+
+    Returns ``None`` for:
+
+    - legacy 2-segment refs (``job:<N>``) — V5 migration backfills every
+      existing row to 3+ segments, so this should not appear in practice;
+      returning ``None`` here keeps the parser strict (AC-8.4).
+    - malformed refs (non-int tail, unknown kind prefix, empty segments).
+
+    Phase 6 callers use the returned ``scheduler_key`` to group watches
+    by transport and to write ``source_ref`` back with the correct
+    transport segment.
+    """
+    parts = target_ref.split(":")
+    if not parts or parts[0] != expected_kind:
+        return None
+    if len(parts) < 3:
+        # Legacy 2-segment — after V5 migration these should not exist.
+        return None
+    try:
+        job_id = int(parts[-1])
+    except ValueError:
+        return None
+    middle = parts[1:-1]
+    if middle == ["local"]:
+        return ("local", job_id)
+    if len(middle) == 2 and middle[0] == "ssh" and middle[1]:
+        return (f"ssh:{middle[1]}", job_id)
+    return None
+
+
 def _parse_target_id(target_ref: str, expected_prefix: str) -> int | None:
     """Return the integer id encoded in a watch ``target_ref``.
 
-    Accepts both the legacy 2-segment form (``"<prefix>:<id>"``) and the
-    V5+ 3-segment form for ``job`` refs (``"job:local:<id>"`` /
-    ``"job:ssh:<profile>:<id>"``). For non-``job`` prefixes the 2-segment
-    form remains authoritative.
+    Thin wrapper around :func:`_parse_target_ref` for callers that only
+    need the numeric id (``workflow_run:<N>`` / ``sweep_run:<N>`` etc.).
+    For the ``job`` kind it drops the scheduler_key segment; new code
+    that needs transport awareness should call :func:`_parse_target_ref`
+    directly.
 
-    Returns ``None`` if the prefix does not match or no numeric id can be
-    extracted — malformed rows are skipped rather than taking the cycle
-    down. Phase 6 replaces this helper with
-    :func:`_parse_target_ref` which returns the full
-    ``(scheduler_key, job_id)`` tuple; until then the poller only needs
-    the numeric id so we fall back to the trailing segment.
+    Retains backward compatibility for the 2-segment ``workflow_run:<N>``
+    and ``sweep_run:<N>`` forms (those kinds never got the V5 scheduler
+    segment) while deferring to the strict 3+ segment parser for ``job``.
     """
+    if expected_prefix == "job":
+        parsed = _parse_target_ref(target_ref, "job")
+        return parsed[1] if parsed else None
+
     prefix, _, remainder = target_ref.partition(":")
     if prefix != expected_prefix or not remainder:
         return None
-    # For job refs the V5 form includes a transport segment (``local`` or
-    # ``ssh:<profile>``) before the numeric id; take the trailing
-    # segment. For workflow_run / sweep_run / etc the 2-segment form is
-    # final, so rsplit on a string with no ``:`` is a no-op and returns
-    # the original remainder.
     tail = remainder.rsplit(":", 1)[-1]
     try:
         return int(tail)
@@ -164,8 +204,9 @@ class ActiveWatchPoller:
 
     def __init__(
         self,
-        slurm_client: SlurmClientProtocol,
+        slurm_client: SlurmClientProtocol | None = None,
         *,
+        registry: TransportRegistry | None = None,
         db_path: Path | None = None,
         notification_service_factory: NotificationServiceFactory | None = None,
         interval_seconds: float = 15.0,
@@ -173,10 +214,17 @@ class ActiveWatchPoller:
         """Initialise the poller.
 
         Args:
-            slurm_client: Any implementation of :class:`SlurmClientProtocol`
-                (local :class:`~srunx.client.Slurm` or the SSH adapter).
-                ``queue_by_ids`` is invoked from a worker thread via
-                ``anyio.to_thread.run_sync``.
+            slurm_client: Legacy single-transport client kept for
+                backward compatibility with existing tests and the Web
+                app's single-profile lifespan. When provided without a
+                ``registry`` the poller runs in single-transport mode
+                and treats every job watch as belonging to that client
+                (same semantics as pre-Phase 6).
+            registry: V5 :class:`TransportRegistry`. When provided, the
+                poller groups watches by ``scheduler_key`` and routes
+                each group to the matching
+                :class:`SlurmClientProtocol` implementation (REQ-8).
+                Takes precedence over ``slurm_client``.
             db_path: Absolute path to the srunx state DB. ``None``
                 resolves to :func:`srunx.db.connection.get_db_path` at
                 connection time.
@@ -188,7 +236,17 @@ class ActiveWatchPoller:
                 R10.1 (``DeliveryPoller`` uses 10 s so the producer
                 stays slower than the consumer to avoid hammering
                 ``squeue``).
+
+        Raises:
+            ValueError: When neither ``registry`` nor ``slurm_client``
+                is supplied.
         """
+        if registry is None and slurm_client is None:
+            raise ValueError(
+                "ActiveWatchPoller requires either 'registry' (preferred) or "
+                "'slurm_client' (backcompat)."
+            )
+        self._registry = registry
         self._slurm_client = slurm_client
         self._db_path = db_path
         self._notification_service_factory = (
@@ -236,16 +294,24 @@ class ActiveWatchPoller:
             watches = watch_repo.list_open()
             open_watches = len(watches)
 
-            job_watches: list[tuple[int, int]] = []  # (watch_id, job_id)
+            # Group job watches by scheduler_key so each transport group
+            # can be routed to its own queue_client. Each entry is
+            # ``(watch_id, job_id)``; the outer dict key is the
+            # ``scheduler_key`` parsed from ``target_ref`` (REQ-8).
+            job_watches_by_scheduler: dict[str, list[tuple[int, int]]] = {}
             workflow_watches: list[tuple[int, int]] = []  # (watch_id, run_id)
 
             for watch in watches:
                 if watch.id is None:
                     continue
                 if watch.kind == "job":
-                    job_id = _parse_target_id(watch.target_ref, "job")
-                    if job_id is not None:
-                        job_watches.append((watch.id, job_id))
+                    parsed = _parse_target_ref(watch.target_ref, "job")
+                    if parsed is None:
+                        continue
+                    scheduler_key, job_id = parsed
+                    job_watches_by_scheduler.setdefault(scheduler_key, []).append(
+                        (watch.id, job_id)
+                    )
                 elif watch.kind == "workflow_run":
                     run_id = _parse_target_id(watch.target_ref, "workflow_run")
                     if run_id is not None:
@@ -254,28 +320,52 @@ class ActiveWatchPoller:
                 # TBD — Phase 1 ignores them here and lets the owning
                 # pollers handle them once they land.
 
-            # Batch SLURM query — a single round-trip covering every
-            # job-watch in one shot.
-            queue_result: dict[int, JobStatusInfo] = {}
-            job_ids = [job_id for _, job_id in job_watches]
-            if job_ids:
-                queue_result = await anyio.to_thread.run_sync(
-                    self._slurm_client.queue_by_ids, job_ids
-                )
+            # -- Job transitions (per scheduler_key) ---------------------------
+            # Each scheduler_key gets its own ``queue_by_ids`` round-trip
+            # against the matching transport, then produces events whose
+            # ``source_ref`` carries the scheduler_key so downstream
+            # notifications / dedup stay consistent across transports.
+            for scheduler_key, pairs in job_watches_by_scheduler.items():
+                queue_client = self._resolve_queue_client(scheduler_key)
+                if queue_client is None:
+                    logger.warning(
+                        "Unknown scheduler_key %r in %d watch(es); skipping "
+                        "this cycle (profile may have been removed). "
+                        "Watches will be retried next cycle.",
+                        scheduler_key,
+                        len(pairs),
+                    )
+                    continue
 
-            # -- Job transitions ------------------------------------------------
-            job_transitions, job_events = self._process_job_watches(
-                conn=conn,
-                job_watches=job_watches,
-                queue_result=queue_result,
-                job_repo=job_repo,
-                transition_repo=transition_repo,
-                event_repo=event_repo,
-                watch_repo=watch_repo,
-                notification_service=notification_service,
-            )
-            transitions_detected += job_transitions
-            events_emitted += job_events
+                job_ids = [jid for _, jid in pairs]
+                try:
+                    partial_result: dict[
+                        int, JobStatusInfo
+                    ] = await anyio.to_thread.run_sync(
+                        queue_client.queue_by_ids, job_ids
+                    )
+                except Exception as exc:  # noqa: BLE001 — transport failure
+                    logger.warning(
+                        "queue_by_ids failed for scheduler_key %r: %s; "
+                        "skipping this group for this cycle.",
+                        scheduler_key,
+                        exc,
+                    )
+                    continue
+
+                group_transitions, group_events = self._process_job_watches(
+                    conn=conn,
+                    job_watches=pairs,
+                    queue_result=partial_result,
+                    scheduler_key=scheduler_key,
+                    job_repo=job_repo,
+                    transition_repo=transition_repo,
+                    event_repo=event_repo,
+                    watch_repo=watch_repo,
+                    notification_service=notification_service,
+                )
+                transitions_detected += group_transitions
+                events_emitted += group_events
 
             # -- Workflow-run aggregation --------------------------------------
             wf_transitions, wf_events = self._process_workflow_watches(
@@ -304,19 +394,54 @@ class ActiveWatchPoller:
     # Job branch
     # ------------------------------------------------------------------
 
+    def _resolve_queue_client(self, scheduler_key: str) -> SlurmClientProtocol | None:
+        """Resolve ``scheduler_key`` to a ``SlurmClientProtocol``.
+
+        Preference order:
+
+        1. If a :class:`TransportRegistry` was injected, delegate to
+           :meth:`TransportRegistry.resolve` so SSH transports pick up
+           their profile-specific adapter (REQ-8).
+        2. Otherwise, fall back to the legacy single-transport
+           ``slurm_client`` for ``scheduler_key == "local"`` — this
+           keeps existing tests and single-profile Web lifespans
+           working without changes.
+
+        Returns ``None`` for unresolvable keys so the caller can log a
+        warning and skip the affected group (AC-8.5) without aborting
+        the entire cycle.
+        """
+        if self._registry is not None:
+            handle = self._registry.resolve(scheduler_key)
+            return handle.queue_client if handle is not None else None
+        # Backcompat: single-transport mode. Only local watches are
+        # served by the supplied client; SSH watches are skipped so the
+        # poller does not mis-route remote jobs to a local SLURM.
+        if scheduler_key == "local":
+            return self._slurm_client
+        return None
+
     def _process_job_watches(
         self,
         *,
         conn: sqlite3.Connection,
         job_watches: list[tuple[int, int]],
         queue_result: dict[int, JobStatusInfo],
+        scheduler_key: str,
         job_repo: JobRepository,
         transition_repo: JobStateTransitionRepository,
         event_repo: EventRepository,
         watch_repo: WatchRepository,
         notification_service: NotificationService,
     ) -> tuple[int, int]:
-        """Process every job-kind watch. Returns (transitions, events)."""
+        """Process every job-kind watch. Returns (transitions, events).
+
+        ``scheduler_key`` is the transport axis for every watch in the
+        ``job_watches`` slice; it's used to write V5-grammar
+        ``source_ref`` (``job:{scheduler_key}:{job_id}``) so
+        notifications / dedup / Slack templating all see the same
+        transport segment the watch was created with (REQ-8).
+        """
         transitions_count = 0
         events_count = 0
 
@@ -388,13 +513,11 @@ class ActiveWatchPoller:
                     "started_at": started_iso,
                     "completed_at": completed_iso,
                 }
-                # V5: source_ref uses the 3-segment grammar
-                # ``job:<scheduler_key>:<id>``. Phase 3 poller only
-                # watches local SLURM, so ``scheduler_key='local'`` is
-                # correct for every row the producer writes. Phase 6
-                # will make this transport-aware via a scheduler_key
-                # derived from the watch row.
-                source_ref = f"job:local:{job_id}"
+                # V5 grammar: ``job:<scheduler_key>:<id>``. In Phase 6
+                # the scheduler_key is threaded in from the watch row
+                # so SSH-backed watches produce ``job:ssh:<profile>:<id>``
+                # and local watches produce ``job:local:<id>``.
+                source_ref = f"job:{scheduler_key}:{job_id}"
                 event_id = event_repo.insert(
                     kind="job.status_changed",
                     source_ref=source_ref,
