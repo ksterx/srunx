@@ -3,26 +3,51 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class MountConfig(BaseModel):
-    """Local-to-remote path mapping for a project directory."""
+    """Local-to-remote path mapping for a project directory.
+
+    Deeply immutable: ``frozen=True`` locks fields and ``exclude_patterns``
+    is a tuple so nested state cannot be mutated either. This lets the
+    model be safely embedded in ``frozen`` dataclasses (e.g. the SSH
+    adapter pool spec) without a ``list[str]`` escape hatch.
+    """
+
+    model_config = ConfigDict(frozen=True)
 
     name: str
-    local: str  # local path, e.g. "~/projects/ml-project"
-    remote: str  # remote path, e.g. "/home/user/projects/ml-project"
-    exclude_patterns: list[str] = Field(
-        default=[], description="Additional rsync exclude patterns for this mount"
+    local: str  # local path, e.g. "~/projects/ml-project" (resolved absolute after validation)
+    remote: str  # remote path, must be absolute
+    exclude_patterns: tuple[str, ...] = Field(
+        default_factory=tuple,
+        description="Additional rsync exclude patterns for this mount",
     )
 
-    @model_validator(mode="after")
-    def expand_and_validate_paths(self) -> "MountConfig":
-        """Expand ~ in local path. Remote must be absolute."""
-        self.local = str(Path(self.local).expanduser().resolve())
-        if not self.remote.startswith("/"):
-            raise ValueError(f"Mount remote path must be absolute: {self.remote}")
-        return self
+    @field_validator("local", mode="before")
+    @classmethod
+    def _expand_local(cls, v: Any) -> Any:
+        """Expand ``~`` and resolve to an absolute path."""
+        if not isinstance(v, str):
+            return v
+        return str(Path(v).expanduser().resolve())
+
+    @field_validator("remote")
+    @classmethod
+    def _validate_remote(cls, v: str) -> str:
+        if not v.startswith("/"):
+            raise ValueError(f"Mount remote path must be absolute: {v}")
+        return v
+
+    @field_validator("exclude_patterns", mode="before")
+    @classmethod
+    def _coerce_patterns_to_tuple(cls, v: Any) -> Any:
+        # JSON / YAML round-trip produces list[str]; normalize so the stored
+        # field is always a tuple and the model stays hashable-compatible.
+        if isinstance(v, list):
+            return tuple(v)
+        return v
 
 
 class ServerProfile(BaseModel):
