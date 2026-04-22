@@ -35,7 +35,10 @@ type WorkflowRunDialogProps = {
    * can add new keys on top of these — the dialog stays usable when
    * the workflow defines no args at all.
    */
-  args?: Record<string, string>;
+  /** YAML-declared workflow args. Values may be non-string (int / bool /
+   *  float) so the dialog coerces them via ``String(...)`` at seed time;
+   *  the matrix / args_override payloads are string-only. */
+  args?: Record<string, unknown>;
   onClose: () => void;
   onRunStarted: (run: Record<string, unknown>) => void;
   /**
@@ -82,15 +85,22 @@ function parseListValues(raw: string): string[] {
 
 /** Seed the editor with existing workflow-level ``args`` in ``single``
  * mode. When the workflow defines no args we start with a single
- * blank row so the user has a visible target to edit. */
-function seedArgEntries(args: Record<string, string> | undefined): ArgEntry[] {
+ * blank row so the user has a visible target to edit.
+ *
+ * The YAML parser preserves scalar types, so ``value`` arrives as
+ * ``string | number | boolean | null``. The editor operates on strings
+ * (``<input type="text">`` + comma split for list mode), so coerce
+ * here — otherwise toggling to list mode on an int arg blows up with
+ * ``e.split is not a function``. ``null`` / ``undefined`` seed as the
+ * empty string; everything else runs through ``String(...)``. */
+function seedArgEntries(args: Record<string, unknown> | undefined): ArgEntry[] {
   const entries = Object.entries(args ?? {});
   if (entries.length === 0) return [];
   return entries.map<ArgEntry>(([name, value], i) => ({
     id: i,
     name,
     mode: "single",
-    value,
+    value: value == null ? "" : String(value),
   }));
 }
 
@@ -123,11 +133,17 @@ export function WorkflowRunDialog({
   // keys to ``args_override`` at submit time (UI-FIX-2). The backend is
   // idempotent w.r.t. unchanged values, but always sending them makes
   // the Web access log noisy and makes it impossible to tell a deliberate
-  // override from a passthrough.
-  const initialArgs = useMemo<Record<string, string>>(
-    () => ({ ...(args ?? {}) }),
-    [args],
-  );
+  // override from a passthrough. Coerce each value to its string shape
+  // so the diff check at submit time can equality-compare against the
+  // editor's string state without triggering spurious overrides for
+  // workflows whose YAML args are numeric / boolean.
+  const initialArgs = useMemo<Record<string, string>>(() => {
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(args ?? {})) {
+      out[k] = v == null ? "" : String(v);
+    }
+    return out;
+  }, [args]);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [failFast, setFailFast] = useState(false);
   const [maxParallel, setMaxParallel] = useState(4);

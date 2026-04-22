@@ -387,10 +387,13 @@ export function WorkflowBuilder() {
         setOriginalName(workflow.name);
         setDefaultProject(workflow.default_project ?? null);
         if (workflow.args && Object.keys(workflow.args).length > 0) {
+          // ``Workflow.args`` values are ``unknown`` because YAML scalars
+          // (int / bool / float) may arrive non-string; the builder edits
+          // them as plain strings, so coerce at the boundary.
           setArgsEntries(
             Object.entries(workflow.args).map(([key, value]) => ({
               key,
-              value,
+              value: value == null ? "" : String(value),
             })),
           );
         }

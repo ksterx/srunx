@@ -52,7 +52,11 @@ export type RunnableJob = CommandJob | ShellJob;
 
 export type Workflow = {
   name: string;
-  args?: Record<string, string>;
+  /** YAML-declared ``args`` — values are whatever YAML parsed to
+   *  (string / number / boolean / null), mirroring the backend's
+   *  ``Record[str, Any]`` wire shape. Consumers must coerce to string
+   *  before string-only operations. */
+  args?: Record<string, unknown>;
   jobs: RunnableJob[];
   default_project?: string | null;
 };
