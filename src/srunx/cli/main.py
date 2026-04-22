@@ -54,6 +54,7 @@ def _submit_via_transport(
     verbose: bool,
     callbacks: list[Callback],
     config: Any,
+    extra_sbatch_args: list[str] | None = None,
 ) -> Any:
     """Dispatch a submit to the right adapter method + optional mount sync.
 
@@ -64,17 +65,26 @@ def _submit_via_transport(
 
     * IN_PLACE: rsync the owning mount (unless ``--no-sync``),
       translate to the remote path, and invoke
-      ``adapter.submit_remote_sbatch`` — the script stays where the
-      user edits it, preserving their own ``#SBATCH`` directives.
-    * TEMP_UPLOAD: fall through to the existing ``rt.job_ops.submit``
-      path which uploads a rendered script into
-      ``$SRUNX_TEMP_DIR`` (the historical behaviour).
+      ``rt.job_ops.submit_remote_sbatch`` — the script stays where
+      the user edits it, preserving their own ``#SBATCH`` directives.
+      The per-mount sync lock is held across both rsync and sbatch
+      so a concurrent CLI invocation can't rsync stale bytes between
+      our sync and our submission (Codex blocker #3).
+    * TEMP_UPLOAD: fall through to ``rt.job_ops.submit`` which
+      uploads a rendered script into ``$SRUNX_TEMP_DIR`` (legacy).
 
     ``is_rendered_artifact`` is True when the caller forced a template
     render (``--template <name>``): even if the positional script
     happens to sit under a mount, the submitted bytes came from the
     template engine, not the on-disk source, so running "in place"
     would execute the wrong thing.
+
+    ``extra_sbatch_args`` are CLI-side resource flags (``-N`` /
+    ``--gres=gpu:N`` / etc.) that need to reach the cluster's
+    ``sbatch`` command line in IN_PLACE mode. SLURM treats them as
+    overrides of the script's ``#SBATCH`` directives, matching real
+    sbatch's precedence. Closes Codex blocker #1: previously these
+    flags silently no-op'd in ShellJob (positional-script) mode.
     """
     from srunx.cli.submission_plan import (
         SubmissionMode,
@@ -83,7 +93,7 @@ def _submit_via_transport(
     from srunx.exceptions import TransportError
     from srunx.models import ShellJob as _ShellJob
     from srunx.sync.lock import SyncLockTimeoutError
-    from srunx.sync.service import SyncAbortedError, ensure_mount_synced
+    from srunx.sync.service import SyncAbortedError, mount_sync_session
 
     if rt.transport_type == "local":
         client = Slurm(callbacks=callbacks)
@@ -91,13 +101,9 @@ def _submit_via_transport(
 
     # --- SSH transport ---
     sub_ctx = rt.submission_context
-    mounts = tuple(sub_ctx.mounts) if sub_ctx is not None else ()
     effective_sync = config.sync.auto if sync_flag is None else sync_flag
     is_rendered_artifact = template is not None
 
-    # Build a lightweight shim profile object that exposes just ``.mounts``
-    # — the submission planner is duck-typed on mount shape so we avoid
-    # reaching for a second ConfigManager lookup here.
     from srunx.ssh.core.config import ConfigManager
 
     profile = ConfigManager().get_profile(profile_name) if profile_name else None
@@ -115,55 +121,97 @@ def _submit_via_transport(
     if plan.mode == SubmissionMode.TEMP_UPLOAD:
         return rt.job_ops.submit(job, submission_context=sub_ctx)
 
-    # IN_PLACE branch: sync if required, then submit the remote path
-    # through the dedicated adapter method.
+    # IN_PLACE branch: hold the per-(profile,mount) lock across the
+    # entire sync + sbatch handoff so a concurrent invocation can't
+    # rsync different bytes in between.
     assert plan.mount is not None
     assert plan.remote_script_path is not None
     assert profile_name is not None and profile is not None
 
-    if plan.sync_required:
-        try:
-            outcome = ensure_mount_synced(
-                profile_name=profile_name,
-                profile=profile,
-                mount=plan.mount,
-                config=config.sync,
-            )
-            if outcome.performed:
-                Console().print(f"⇅  Synced mount [cyan]{plan.mount.name}[/cyan]")
-        except SyncAbortedError as exc:
-            raise typer.BadParameter(str(exc)) from exc
-        except SyncLockTimeoutError as exc:
-            raise typer.BadParameter(str(exc)) from exc
-        except RuntimeError as exc:
-            # rsync subprocess failure — abort rather than silently
-            # submitting a stale workspace.
-            raise typer.BadParameter(f"rsync failed: {exc}") from exc
-
-    # Reach into the SSH adapter for the dedicated remote-sbatch entry
-    # point. Fall back to the queue_client so both the direct adapter
-    # and the pooled Web executor satisfy the same interface.
-    adapter = getattr(rt.job_ops, "_adapter", rt.job_ops)
-    if not hasattr(adapter, "submit_remote_sbatch"):
+    if not hasattr(rt.job_ops, "submit_remote_sbatch"):
         raise TransportError(
             "Current transport does not support in-place submission; "
             "re-run with --no-sync to force the legacy tmp-upload path."
         )
 
-    job_name = job.name if isinstance(job, _ShellJob) else job.name
-    result = adapter.submit_remote_sbatch(
-        plan.remote_script_path,
-        submit_cwd=plan.submit_cwd,
-        job_name=job_name,
-    )
+    try:
+        with mount_sync_session(
+            profile_name=profile_name,
+            profile=profile,
+            mount=plan.mount,
+            config=config.sync,
+            sync_required=plan.sync_required,
+        ) as outcome:
+            if outcome.performed:
+                Console().print(f"⇅  Synced mount [cyan]{plan.mount.name}[/cyan]")
+            submitted = rt.job_ops.submit_remote_sbatch(
+                plan.remote_script_path,
+                submit_cwd=plan.submit_cwd,
+                job_name=job.name,
+                extra_sbatch_args=extra_sbatch_args or None,
+                callbacks_job=job,
+            )
+    except SyncAbortedError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    except SyncLockTimeoutError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    except RuntimeError as exc:
+        # rsync subprocess failure — abort rather than silently
+        # submitting a stale workspace.
+        raise typer.BadParameter(f"rsync failed: {exc}") from exc
 
-    # Keep downstream code (wait / notification watch) happy by
-    # mutating the original ShellJob so it carries the new job_id +
-    # remote path back out.
+    # Re-mutate the original ShellJob so the wait/notification watch
+    # path (which reads job_id off the original instance the caller
+    # constructed) sees the post-submit state.
     if isinstance(job, _ShellJob):
-        job.job_id = result["job_id"]
         job.script_path = plan.remote_script_path
-    return job
+    return submitted
+
+
+def _build_extra_sbatch_args(
+    *,
+    nodes: int,
+    gpus_per_node: int,
+    ntasks_per_node: int,
+    cpus_per_task: int,
+    memory: str | None,
+    time: str | None,
+    nodelist: str | None,
+    partition: str | None,
+    work_dir: str | None,
+    log_dir: str | None,
+) -> list[str]:
+    """Forward user-supplied CLI flags to ``sbatch`` for ShellJob mode.
+
+    In ShellJob (positional-script) mode the on-disk script owns its
+    own ``#SBATCH`` directives. CLI resource flags override those
+    directives via the sbatch command line — same precedence as real
+    sbatch. Defaults are NOT forwarded so unstated flags don't shadow
+    the script's own values. Closes Codex blocker #1 on PR #134.
+    """
+    args: list[str] = []
+    if nodes != 1:
+        args.append(f"--nodes={nodes}")
+    if gpus_per_node > 0:
+        args.append(f"--gpus-per-node={gpus_per_node}")
+    if ntasks_per_node != 1:
+        args.append(f"--ntasks-per-node={ntasks_per_node}")
+    if cpus_per_task != 1:
+        args.append(f"--cpus-per-task={cpus_per_task}")
+    if memory:
+        args.append(f"--mem={memory}")
+    if time:
+        args.append(f"--time={time}")
+    if nodelist:
+        args.append(f"--nodelist={nodelist}")
+    if partition:
+        args.append(f"--partition={partition}")
+    if work_dir:
+        args.append(f"--chdir={work_dir}")
+    if log_dir:
+        args.append(f"--output={log_dir}/%x_%j.log")
+        args.append(f"--error={log_dir}/%x_%j.log")
+    return args
 
 
 def _parse_gres_gpu(gres: str | None) -> int | None:
@@ -832,6 +880,25 @@ def sbatch(
     # callbacks + template_path + verbose) which the Protocol does not
     # yet expose; SSH path uses the Protocol method, and the adapter
     # owns its own DB recording + callbacks lifecycle.
+    # CLI resource flags need to reach ``sbatch`` in IN_PLACE
+    # mode — they get baked into the rendered Job.resources for the
+    # tmp-upload path, but ShellJob (positional script) on the
+    # in-place path has no such render step. Forward only
+    # user-supplied (non-default) values so unstated flags don't
+    # shadow the script's own ``#SBATCH`` directives.
+    extra_sbatch_args = _build_extra_sbatch_args(
+        nodes=nodes,
+        gpus_per_node=gpus_per_node,
+        ntasks_per_node=ntasks_per_node,
+        cpus_per_task=cpus_per_task,
+        memory=memory,
+        time=time,
+        nodelist=nodelist,
+        partition=partition,
+        work_dir=work_dir,
+        log_dir=log_dir if log_dir != config.log_dir else None,
+    )
+
     with resolve_transport(
         profile=profile,
         local=local,
@@ -850,6 +917,7 @@ def sbatch(
             verbose=verbose,
             callbacks=callbacks,
             config=config,
+            extra_sbatch_args=extra_sbatch_args,
         )
         client = Slurm(callbacks=callbacks) if rt.transport_type == "local" else None
 
@@ -908,6 +976,17 @@ def sbatch(
 
 @app.command("squeue")
 def squeue(
+    job_filter: Annotated[
+        list[int] | None,
+        typer.Option(
+            "-j",
+            "--jobs",
+            help=(
+                "Filter to one or more specific job IDs. Replaces the old "
+                "``srunx status <id>`` command — equivalent to ``squeue -j ID``."
+            ),
+        ),
+    ] = None,
     show_gpus: Annotated[
         bool,
         typer.Option("--show-gpus", "-g", help="Show GPU allocation for each job"),
@@ -924,6 +1003,7 @@ def squeue(
 
     Examples:
         srunx squeue
+        srunx squeue -j 12345
         srunx squeue --show-gpus
         srunx squeue --format json
         srunx squeue --show-gpus --format json
@@ -939,6 +1019,13 @@ def squeue(
                 jobs = client.queue()
             else:
                 jobs = rt.job_ops.queue()
+
+        # Filter to user-specified job IDs after the queue() call so
+        # the dispatch path stays simple; SLURM's own ``squeue -j`` does
+        # the same in-memory filtering at the client side.
+        if job_filter:
+            wanted = {int(j) for j in job_filter}
+            jobs = [j for j in jobs if j.job_id in wanted]
 
         # JSON format output (emit before the "empty queue" banner so
         # --format json stdout stays pure JSON — AC-7.1 / AC-7.2).
@@ -1073,6 +1160,14 @@ def sinfo(
     ] = "table",
 ) -> None:
     """Display current GPU resource availability.
+
+    .. note::
+
+       Local-only in this release. Unlike ``sbatch`` / ``squeue`` /
+       ``scancel`` / ``tail``, ``sinfo`` does not yet accept
+       ``--profile`` — :class:`ResourceMonitor` always queries the
+       local cluster's ``sinfo`` / ``squeue``. SSH parity is tracked in
+       https://github.com/ksterx/srunx/issues/139.
 
     Examples:
         srunx sinfo
@@ -1475,6 +1570,18 @@ def template_show(
 
 @app.command("sacct")
 def sacct(
+    job_filter: Annotated[
+        list[int] | None,
+        typer.Option(
+            "-j",
+            "--jobs",
+            help=(
+                "Filter to one or more specific job IDs. Replaces the old "
+                "``srunx status <id>`` command for finished jobs — equivalent "
+                "to ``sacct -j ID``."
+            ),
+        ),
+    ] = None,
     limit: Annotated[
         int, typer.Option("--limit", "-n", help="Number of jobs to show")
     ] = 50,
@@ -1484,6 +1591,13 @@ def sacct(
         from srunx.db.cli_helpers import list_recent_jobs
 
         jobs = list_recent_jobs(limit=limit)
+
+        # Client-side filter (matches squeue ``-j`` semantics). Cheap
+        # because list_recent_jobs caps at ``limit`` rows; if perf
+        # becomes an issue, push the filter into the SQL query.
+        if job_filter:
+            wanted = {int(j) for j in job_filter}
+            jobs = [j for j in jobs if int(j["job_id"]) in wanted]
 
         if not jobs:
             console = Console()

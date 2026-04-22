@@ -674,6 +674,7 @@ class SSHSlurmClient:
         submit_cwd: str | None = None,
         job_name: str | None = None,
         dependency: str | None = None,
+        extra_sbatch_args: list[str] | None = None,
     ) -> SlurmJob | None:
         """Submit a script that already exists on the remote cluster.
 
@@ -699,6 +700,8 @@ class SSHSlurmClient:
                 if not re.fullmatch(r"[a-z]+:\d+(,[a-z]+:\d+)*", dependency):
                     raise ValueError(f"Invalid dependency format: {dependency!r}")
                 cmd_parts.append(f"--dependency={dependency}")
+            for arg in extra_sbatch_args or ():
+                cmd_parts.append(shlex.quote(arg))
             cmd_parts.append(shlex.quote(remote_path))
 
             cmd = " ".join(cmd_parts)

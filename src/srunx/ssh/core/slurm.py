@@ -312,6 +312,7 @@ class SlurmRemoteClient:
         submit_cwd: str | None = None,
         job_name: str | None = None,
         dependency: str | None = None,
+        extra_sbatch_args: list[str] | None = None,
     ) -> SlurmJob | None:
         """Submit a script that already exists on the remote cluster.
 
@@ -350,6 +351,13 @@ class SlurmRemoteClient:
                 if not re.fullmatch(r"[a-z]+:\d+(,[a-z]+:\d+)*", dependency):
                     raise ValueError(f"Invalid dependency format: {dependency!r}")
                 cmd_parts.append(f"--dependency={dependency}")
+            # ``extra_sbatch_args`` come from the CLI's resource flags
+            # (-N / -t / --gres=gpu:4 / etc.). SLURM's command-line
+            # flags override matching ``#SBATCH`` directives in the
+            # script — same precedence as real ``sbatch``. Quoted
+            # individually so values containing spaces survive.
+            for arg in extra_sbatch_args or ():
+                cmd_parts.append(shlex.quote(arg))
             cmd_parts.append(shlex.quote(remote_path))
 
             cmd = " ".join(cmd_parts)

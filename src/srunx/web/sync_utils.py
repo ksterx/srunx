@@ -1,14 +1,31 @@
-"""Shared rsync sync utilities for web routers."""
+"""Shared rsync sync utilities for web routers.
+
+The mount-rsync helpers (:func:`build_rsync_client`,
+:func:`sync_mount_by_name`) moved to :mod:`srunx.sync.mount_helpers`
+in PR #134's Codex-driven cleanup so the layering reads correctly
+(``srunx.sync`` is shared infra, ``srunx.web`` is one consumer). They
+remain re-exported from here for backward compatibility — every
+existing import site keeps working unchanged.
+
+Web-specific helpers — ``get_current_profile`` (resolves the active
+SSH profile from web config or :class:`ConfigManager`),
+``find_mount`` (404-on-missing lookup), and
+``resolve_mounts_for_workflow`` (longest-prefix mount inference for
+workflow jobs) — stay here.
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from srunx.ssh.core.config import ServerProfile
 
-from srunx.sync.rsync import RsyncClient
+# Re-exports: keep the historical import paths working.
+from srunx.sync.mount_helpers import (
+    build_rsync_client,  # noqa: F401  (re-exported)
+    sync_mount_by_name,  # noqa: F401  (re-exported)
+)
 
 
 def get_current_profile() -> ServerProfile | None:
@@ -45,47 +62,6 @@ def find_mount(profile: ServerProfile, mount_name: str):
         if m.name == mount_name:
             return m
     raise ValueError(f"Mount '{mount_name}' not found")
-
-
-def build_rsync_client(profile: ServerProfile) -> RsyncClient:
-    """Create RsyncClient from SSH profile, handling ssh_host vs hostname.
-
-    When *ssh_host* is set the client delegates all connection parameters
-    (user, key, proxy, port) to ``~/.ssh/config``.
-    """
-    if profile.ssh_host:
-        return RsyncClient(
-            hostname=profile.ssh_host,
-            username="",
-            ssh_config_path=str(Path.home() / ".ssh" / "config"),
-        )
-    return RsyncClient(
-        hostname=profile.hostname,
-        username=profile.username,
-        key_filename=profile.key_filename,
-        port=profile.port,
-        proxy_jump=profile.proxy_jump,
-    )
-
-
-def sync_mount_by_name(profile: ServerProfile, mount_name: str) -> None:
-    """Sync a named mount's local directory to remote via rsync.
-
-    Raises:
-        ValueError: If *mount_name* does not exist in the profile.
-        RuntimeError: If the rsync process exits with a non-zero code.
-    """
-    mount = next((m for m in profile.mounts if m.name == mount_name), None)
-    if mount is None:
-        raise ValueError(f"Mount '{mount_name}' not found in profile")
-    rsync = build_rsync_client(profile)
-    result = rsync.push(
-        mount.local, mount.remote, exclude_patterns=mount.exclude_patterns or None
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"rsync sync failed for mount '{mount_name}': {result.stderr}"
-        )
 
 
 def resolve_mounts_for_workflow(

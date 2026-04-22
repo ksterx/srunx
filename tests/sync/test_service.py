@@ -46,7 +46,7 @@ class TestEnsureMountSynced:
         config = SyncDefaults()  # auto=True, defaults
 
         with (
-            patch("srunx.web.sync_utils.sync_mount_by_name") as fake_rsync,
+            patch("srunx.sync.service.sync_mount_by_name") as fake_rsync,
             patch(
                 "srunx.sync.service.is_dirty_git_worktree",
                 return_value=(False, ""),
@@ -59,7 +59,9 @@ class TestEnsureMountSynced:
                 config=config,
             )
 
-        fake_rsync.assert_called_once_with(profile, "ml")
+        # Auto-sync calls rsync with delete=False (Codex blocker #4):
+        # mount-resident outputs/checkpoints must survive a sync.
+        fake_rsync.assert_called_once_with(profile, "ml", delete=False)
         assert outcome.performed is True
         assert outcome.warnings == ()
 
@@ -70,7 +72,7 @@ class TestEnsureMountSynced:
         config = SyncDefaults(warn_dirty=True, require_clean=False)
 
         with (
-            patch("srunx.web.sync_utils.sync_mount_by_name"),
+            patch("srunx.sync.service.sync_mount_by_name"),
             patch(
                 "srunx.sync.service.is_dirty_git_worktree",
                 return_value=(True, "?? untracked.txt"),
@@ -95,7 +97,7 @@ class TestEnsureMountSynced:
         config = SyncDefaults(warn_dirty=False, require_clean=True)
 
         with (
-            patch("srunx.web.sync_utils.sync_mount_by_name") as fake_rsync,
+            patch("srunx.sync.service.sync_mount_by_name") as fake_rsync,
             patch(
                 "srunx.sync.service.is_dirty_git_worktree",
                 return_value=(True, "?? untracked.txt"),
@@ -120,7 +122,7 @@ class TestEnsureMountSynced:
         config = SyncDefaults(warn_dirty=True)
 
         with (
-            patch("srunx.web.sync_utils.sync_mount_by_name"),
+            patch("srunx.sync.service.sync_mount_by_name"),
             patch(
                 "srunx.sync.service.is_dirty_git_worktree",
                 return_value=(False, ""),
@@ -140,11 +142,11 @@ class TestEnsureMountSynced:
         mount_local.mkdir()
         profile = _profile(tmp_path, mount_local)
 
-        def _boom(_profile, _name):  # type: ignore[no-untyped-def]
+        def _boom(_profile, _name, *, delete=False):  # type: ignore[no-untyped-def]
             raise RuntimeError("rsync exited 23: permission denied")
 
         with (
-            patch("srunx.web.sync_utils.sync_mount_by_name", side_effect=_boom),
+            patch("srunx.sync.service.sync_mount_by_name", side_effect=_boom),
             patch(
                 "srunx.sync.service.is_dirty_git_worktree",
                 return_value=(False, ""),

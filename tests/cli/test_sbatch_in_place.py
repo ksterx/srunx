@@ -1,9 +1,10 @@
 """Integration tests for ``srunx sbatch`` with mount-aware in-place execution.
 
 These exercise the CLI command end-to-end with the SSH adapter +
-sync service mocked out, so we never spawn paramiko or rsync. The
-goal is to lock in the *routing* logic: which adapter method gets
-called, with what remote path, after which sync invocation.
+the rsync helper mocked out, so we never spawn paramiko or rsync.
+The lock layer is left real (``XDG_CONFIG_HOME`` is sandboxed by the
+autouse fixture) so the lock-held-across-submit invariant from
+Codex blocker #3 is exercised by the same code path it protects.
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ from srunx.ssh.core.config import MountConfig, ServerProfile
 @pytest.fixture(autouse=True)
 def isolated_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    # Ensure CLI doesn't accidentally pick up the developer's local config.
     monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
 
 
@@ -41,36 +41,38 @@ def _patch_transport(
     profile: ServerProfile,
     profile_name: str = "ml-cluster",
 ):
-    """Wire up an SSH-flavoured ResolvedTransport with mock job_ops + adapter.
+    """Wire up an SSH-flavoured ResolvedTransport with mock job_ops.
 
-    Returns ``(adapter_mock, job_ops_mock)`` so individual tests can
-    assert exactly which adapter method was called.
+    The mock ``job_ops`` exposes both the legacy ``submit`` (tmp-upload
+    path) and the new ``submit_remote_sbatch`` (in-place path) so each
+    test can assert exactly which one fired. ``submit_remote_sbatch``
+    mutates and returns the supplied ``callbacks_job`` to mimic the
+    real adapter's contract.
     """
+    from srunx.models import JobStatus
     from srunx.rendering import SubmissionRenderContext
     from srunx.transport.registry import TransportHandle
 
-    adapter = MagicMock(name="SlurmSSHAdapter")
-    adapter.submit_remote_sbatch.return_value = {
-        "name": "job",
-        "job_id": 42,
-        "status": "PENDING",
-        "script_path": None,
-        "depends_on": [],
-        "command": [],
-        "resources": {},
-    }
     job_ops = MagicMock(name="JobOperations")
-    job_ops._adapter = adapter
     job_ops.submit.side_effect = lambda j, **_: type(j)(
         **{**j.model_dump(), "job_id": 99}
     )
+
+    def _fake_remote_submit(remote_path, *, callbacks_job, **_kwargs):
+        callbacks_job.job_id = 42
+        callbacks_job.status = JobStatus.PENDING
+        if hasattr(callbacks_job, "script_path"):
+            callbacks_job.script_path = remote_path
+        return callbacks_job
+
+    job_ops.submit_remote_sbatch.side_effect = _fake_remote_submit
 
     handle = TransportHandle(
         scheduler_key=f"ssh:{profile_name}",
         profile_name=profile_name,
         transport_type="ssh",
         job_ops=job_ops,
-        queue_client=adapter,
+        queue_client=job_ops,
         executor_factory=None,
         submission_context=SubmissionRenderContext(
             mount_name=None,
@@ -91,14 +93,11 @@ def _patch_transport(
 
     monkeypatch.setattr("srunx.transport.registry._build_ssh_handle", _fake_build)
 
-    # Make ConfigManager.get_profile return our stub regardless of
-    # the on-disk config (the CLI looks the profile up to feed mounts
-    # into the planner).
     from srunx.ssh.core.config import ConfigManager
 
     monkeypatch.setattr(ConfigManager, "get_profile", lambda self, name: profile)
 
-    return adapter, job_ops
+    return job_ops
 
 
 def test_sbatch_in_place_under_mount_calls_remote_submit(
@@ -113,29 +112,30 @@ def test_sbatch_in_place_under_mount_calls_remote_submit(
     profile = _stub_profile(
         tmp_path, mount_local=mount_local, remote="/cluster/share/ml-project"
     )
-    adapter, job_ops = _patch_transport(monkeypatch, profile)
+    job_ops = _patch_transport(monkeypatch, profile)
 
-    sync_called: list[dict] = []
+    rsync_calls: list[tuple] = []
 
-    def _record_sync(**kw):  # type: ignore[no-untyped-def]
-        sync_called.append(kw)
-        return _ok_outcome(kw["mount"])
+    def _record_rsync(prof, name, *, delete=False):  # type: ignore[no-untyped-def]
+        rsync_calls.append((prof, name, delete))
 
-    monkeypatch.setattr("srunx.sync.service.ensure_mount_synced", _record_sync)
+    monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", _record_rsync)
 
     runner = CliRunner()
     result = runner.invoke(app, ["sbatch", str(script), "--profile", "ml-cluster"])
 
     assert result.exit_code == 0, result.stdout + result.stderr
 
-    # sync ran for the right mount.
-    assert len(sync_called) == 1
-    assert sync_called[0]["mount"].name == "ml"
+    # rsync ran for the right mount, and used delete=False (auto-sync
+    # must not wipe remote-only outputs — Codex blocker #4).
+    assert len(rsync_calls) == 1
+    assert rsync_calls[0][1] == "ml"
+    assert rsync_calls[0][2] is False
 
-    # adapter.submit_remote_sbatch was invoked with the translated
-    # remote path and a remote cwd that sits under the mount.
-    adapter.submit_remote_sbatch.assert_called_once()
-    call_kwargs = adapter.submit_remote_sbatch.call_args
+    # Protocol method (no _adapter reach-in) was invoked with the
+    # translated remote path and a remote cwd under the mount.
+    job_ops.submit_remote_sbatch.assert_called_once()
+    call_kwargs = job_ops.submit_remote_sbatch.call_args
     assert call_kwargs.args[0] == "/cluster/share/ml-project/train.sbatch"
     assert call_kwargs.kwargs["submit_cwd"].startswith("/cluster/share/ml-project")
 
@@ -156,7 +156,7 @@ def test_sbatch_outside_mount_falls_back_to_temp_upload(
     profile = _stub_profile(
         tmp_path, mount_local=mount_local, remote="/cluster/share/ml-project"
     )
-    adapter, job_ops = _patch_transport(monkeypatch, profile)
+    job_ops = _patch_transport(monkeypatch, profile)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -164,30 +164,23 @@ def test_sbatch_outside_mount_falls_back_to_temp_upload(
     )
 
     assert result.exit_code == 0, result.stdout + result.stderr
-    # Legacy path: rt.job_ops.submit (not submit_remote_sbatch).
     job_ops.submit.assert_called_once()
-    adapter.submit_remote_sbatch.assert_not_called()
+    job_ops.submit_remote_sbatch.assert_not_called()
 
 
 def test_no_sync_skips_rsync_but_still_runs_in_place(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``--no-sync`` skips rsync but does NOT downgrade to tmp upload.
-
-    The translated remote path is still used so the user's own
-    ``#SBATCH --output=`` directives keep working — they may just be
-    running against an older copy of the script if the workstation
-    has unsynced edits.
-    """
+    """``--no-sync`` skips rsync but does NOT downgrade to tmp upload."""
     mount_local = tmp_path / "ml-project"
     mount_local.mkdir()
     script = mount_local / "train.sbatch"
     script.write_text("#!/bin/bash\necho hi\n")
 
     profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")
-    adapter, _ = _patch_transport(monkeypatch, profile)
+    job_ops = _patch_transport(monkeypatch, profile)
 
-    with patch("srunx.sync.service.ensure_mount_synced") as fake_sync:
+    with patch("srunx.sync.service.sync_mount_by_name") as fake_rsync:
         runner = CliRunner()
         result = runner.invoke(
             app,
@@ -201,8 +194,9 @@ def test_no_sync_skips_rsync_but_still_runs_in_place(
         )
 
     assert result.exit_code == 0, result.stdout + result.stderr
-    fake_sync.assert_not_called()
-    adapter.submit_remote_sbatch.assert_called_once()
+    # rsync skipped, but the in-place sbatch still ran.
+    fake_rsync.assert_not_called()
+    job_ops.submit_remote_sbatch.assert_called_once()
 
 
 def test_template_flag_forces_temp_upload(
@@ -212,7 +206,7 @@ def test_template_flag_forces_temp_upload(
     mount_local = tmp_path / "ml-project"
     mount_local.mkdir()
     profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")
-    adapter, job_ops = _patch_transport(monkeypatch, profile)
+    job_ops = _patch_transport(monkeypatch, profile)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -229,10 +223,8 @@ def test_template_flag_forces_temp_upload(
     )
 
     assert result.exit_code == 0, result.stdout + result.stderr
-    # --template forces TEMP_UPLOAD even though --wrap had no source
-    # file to consider.
     job_ops.submit.assert_called_once()
-    adapter.submit_remote_sbatch.assert_not_called()
+    job_ops.submit_remote_sbatch.assert_not_called()
 
 
 def test_sync_failure_aborts_submission(
@@ -245,12 +237,12 @@ def test_sync_failure_aborts_submission(
     script.write_text("#!/bin/bash\necho hi\n")
 
     profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")
-    adapter, _ = _patch_transport(monkeypatch, profile)
+    job_ops = _patch_transport(monkeypatch, profile)
 
-    def _boom(**_kwargs):  # type: ignore[no-untyped-def]
+    def _boom(profile_arg, mount_name, *, delete=False):  # type: ignore[no-untyped-def]
         raise RuntimeError("rsync exited 23: permission denied")
 
-    monkeypatch.setattr("srunx.sync.service.ensure_mount_synced", _boom)
+    monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", _boom)
 
     runner = CliRunner()
     result = runner.invoke(app, ["sbatch", str(script), "--profile", "ml-cluster"])
@@ -258,12 +250,69 @@ def test_sync_failure_aborts_submission(
     assert result.exit_code != 0
     combined = (result.stdout or "") + (result.stderr or "")
     assert "rsync" in combined.lower()
-    # Must NOT have submitted anything after rsync failed.
-    adapter.submit_remote_sbatch.assert_not_called()
+    job_ops.submit_remote_sbatch.assert_not_called()
 
 
-def _ok_outcome(mount):  # type: ignore[no-untyped-def]
-    """Build a synthetic SyncOutcome for the mock to return."""
-    from srunx.sync.service import SyncOutcome
+def test_extra_sbatch_args_forwarded_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI resource flags reach sbatch in IN_PLACE mode (Codex blocker #1)."""
+    mount_local = tmp_path / "ml-project"
+    mount_local.mkdir()
+    script = mount_local / "train.sbatch"
+    script.write_text("#!/bin/bash\necho hi\n")
 
-    return SyncOutcome(mount_name=mount.name, performed=True, warnings=())
+    profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")
+    job_ops = _patch_transport(monkeypatch, profile)
+
+    monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", lambda *a, **k: None)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "sbatch",
+            str(script),
+            "--profile",
+            "ml-cluster",
+            "-N",
+            "4",
+            "--gres",
+            "gpu:2",
+            "-t",
+            "1:00:00",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    extra = job_ops.submit_remote_sbatch.call_args.kwargs["extra_sbatch_args"]
+    assert "--nodes=4" in extra
+    assert "--gpus-per-node=2" in extra  # --gres parsed into gpus_per_node
+    assert "--time=1:00:00" in extra
+
+
+def test_default_resource_flags_not_forwarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unstated CLI flags don't shadow the script's own ``#SBATCH`` directives.
+
+    The script may set ``#SBATCH --nodes=8``; we must not stomp on that
+    just because the CLI defaults to ``--nodes=1``.
+    """
+    mount_local = tmp_path / "ml-project"
+    mount_local.mkdir()
+    script = mount_local / "train.sbatch"
+    script.write_text("#!/bin/bash\n#SBATCH --nodes=8\necho hi\n")
+
+    profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")
+    job_ops = _patch_transport(monkeypatch, profile)
+
+    monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", lambda *a, **k: None)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["sbatch", str(script), "--profile", "ml-cluster"])
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    extra = job_ops.submit_remote_sbatch.call_args.kwargs["extra_sbatch_args"]
+    # ``extra_sbatch_args`` is None or empty when no flags were typed.
+    assert not extra
