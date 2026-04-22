@@ -58,6 +58,7 @@ def _bare_adapter(*, connected: bool = True) -> SlurmSSHAdapter:
     adapter._proxy_jump = None
     adapter._env_vars = {}
     adapter._mounts = ()
+    adapter.submission_source = "web"
 
     # Emulate a live paramiko session so ``is_connected`` returns True.
     if connected:

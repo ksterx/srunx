@@ -45,6 +45,7 @@ EventKind = Literal[
 DeliveryStatus = Literal["pending", "sending", "delivered", "abandoned"]
 TransitionSource = Literal["poller", "cli_monitor", "webhook"]
 SubmissionSource = Literal["cli", "web", "workflow"]
+TransportType = Literal["local", "ssh"]
 WorkflowRunStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 WorkflowRunTriggeredBy = Literal["cli", "web", "schedule", "mcp"]
 SweepStatus = Literal[
@@ -164,19 +165,42 @@ class SweepRun(BaseModel):
 
 
 class WorkflowRunJob(BaseModel):
+    """Row model for ``workflow_run_jobs``.
+
+    ``jobs_row_id`` (V5+) points at ``jobs.id`` (AUTOINCREMENT PK), not
+    the SLURM ``job_id``. The legacy ``job_id`` attribute is exposed as
+    a read-only mirror for backwards compatibility with callers that
+    used to read the SLURM id through this model; it is populated by
+    the repository via a ``LEFT JOIN jobs`` at read time.
+    """
+
     model_config = _MODEL_CONFIG
 
     id: int | None = None
     workflow_run_id: int
-    job_id: int | None = None  # filled after SLURM submit
+    jobs_row_id: int | None = None  # V5: FK to jobs.id (AUTOINCREMENT PK)
+    # Populated by the repo via LEFT JOIN jobs ON j.id = jobs_row_id.
+    # Kept for legacy call sites that read ``membership.job_id`` as the
+    # SLURM id. New code should prefer ``jobs_row_id`` + the repository's
+    # join-backed accessor.
+    job_id: int | None = None
     job_name: str
     depends_on: list[str] | None = None
 
 
 class JobStateTransition(BaseModel):
+    """Row model for ``job_state_transitions``.
+
+    ``jobs_row_id`` (V5+) points at ``jobs.id`` (AUTOINCREMENT PK).
+    """
+
     model_config = _MODEL_CONFIG
 
     id: int | None = None
+    jobs_row_id: int | None = None
+    # Mirror of the parent job's SLURM id, resolved by the repo via
+    # ``LEFT JOIN jobs ON j.id = jobs_row_id`` on reads. Legacy callers
+    # still access ``.job_id``; new code should resolve it explicitly.
     job_id: int | None = None
     from_status: str | None = None
     to_status: str
@@ -204,6 +228,9 @@ class Job(BaseModel):
 
     id: int | None = None
     job_id: int
+    transport_type: TransportType = "local"
+    profile_name: str | None = None
+    scheduler_key: str = "local"
     name: str
     command: list[str] | None = None
     status: str

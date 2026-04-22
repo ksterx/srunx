@@ -56,7 +56,9 @@ def _seed_job(conn: sqlite3.Connection, job_id: int, *, status: str = "PENDING")
 
 
 def _seed_open_job_watch(conn: sqlite3.Connection, job_id: int) -> int:
-    return WatchRepository(conn).create(kind="job", target_ref=f"job:{job_id}")
+    # V5+ grammar: ``job:<scheduler_key>:<id>``. Local SLURM jobs always
+    # use ``scheduler_key='local'``.
+    return WatchRepository(conn).create(kind="job", target_ref=f"job:local:{job_id}")
 
 
 def _seed_pending_transition(conn: sqlite3.Connection, job_id: int, status: str) -> int:
@@ -65,6 +67,7 @@ def _seed_pending_transition(conn: sqlite3.Connection, job_id: int, status: str)
         from_status=None,
         to_status=status,
         source="poller",
+        scheduler_key="local",
     )
 
 
@@ -112,7 +115,9 @@ class TestJobTransitions:
         poller = ActiveWatchPoller(stub, db_path=db_path)
         _run_once(poller)
 
-        transitions = JobStateTransitionRepository(conn).history_for_job(job_id)
+        transitions = JobStateTransitionRepository(conn).history_for_job(
+            job_id, scheduler_key="local"
+        )
         assert len(transitions) == 2
         assert transitions[0].to_status == "PENDING"
         assert transitions[1].from_status == "PENDING"
@@ -123,7 +128,9 @@ class TestJobTransitions:
         status_events = [e for e in recent_events if e.kind == "job.status_changed"]
         assert len(status_events) == 1
         event = status_events[0]
-        assert event.source_ref == f"job:{job_id}"
+        # V5 grammar: ``job:<scheduler_key>:<id>``; local SLURM jobs use
+        # ``scheduler_key='local'``.
+        assert event.source_ref == f"job:local:{job_id}"
         assert event.payload.get("from_status") == "PENDING"
         assert event.payload.get("to_status") == "RUNNING"
         # Payload is enriched with job_id + job_name so adapters do not
@@ -131,7 +138,7 @@ class TestJobTransitions:
         assert event.payload.get("job_id") == job_id
         assert event.payload.get("job_name") == f"job_{job_id}"
 
-        job_row = JobRepository(conn).get(job_id)
+        job_row = JobRepository(conn).get(job_id, scheduler_key="local")
         assert job_row is not None
         assert job_row.status == "RUNNING"
         assert job_row.nodelist == "node01"
@@ -160,7 +167,9 @@ class TestJobTransitions:
         _run_once(ActiveWatchPoller(stub, db_path=db_path))
 
         # Transition + event present…
-        transitions = JobStateTransitionRepository(conn).history_for_job(job_id)
+        transitions = JobStateTransitionRepository(conn).history_for_job(
+            job_id, scheduler_key="local"
+        )
         assert any(t.to_status == "RUNNING" for t in transitions)
         events = EventRepository(conn).list_recent()
         assert any(e.kind == "job.status_changed" for e in events)
@@ -198,7 +207,7 @@ class TestJobTransitions:
         assert watch is not None
         assert watch.closed_at is not None
 
-        job_row = JobRepository(conn).get(job_id)
+        job_row = JobRepository(conn).get(job_id, scheduler_key="local")
         assert job_row is not None
         assert job_row.status == "COMPLETED"
         assert job_row.duration_secs == 3600
@@ -217,7 +226,9 @@ class TestJobTransitions:
         stub = StubSlurmClient({job_id: JobStatusInfo(status="RUNNING")})
         _run_once(ActiveWatchPoller(stub, db_path=db_path))
 
-        transitions = JobStateTransitionRepository(conn).history_for_job(job_id)
+        transitions = JobStateTransitionRepository(conn).history_for_job(
+            job_id, scheduler_key="local"
+        )
         # Only the seed transition — the poller should not insert a duplicate.
         assert len(transitions) == 1
 
@@ -239,7 +250,9 @@ class TestJobTransitions:
         stub = StubSlurmClient({})
         _run_once(ActiveWatchPoller(stub, db_path=db_path))
 
-        transitions = JobStateTransitionRepository(conn).history_for_job(job_id)
+        transitions = JobStateTransitionRepository(conn).history_for_job(
+            job_id, scheduler_key="local"
+        )
         assert len(transitions) == 1  # still only the seed row
 
         events = EventRepository(conn).list_recent()
@@ -265,7 +278,9 @@ class TestJobTransitions:
         stub = StubSlurmClient({job_id: JobStatusInfo(status="RUNNING")})
         _run_once(ActiveWatchPoller(stub, db_path=db_path))
 
-        transitions = JobStateTransitionRepository(conn).history_for_job(job_id)
+        transitions = JobStateTransitionRepository(conn).history_for_job(
+            job_id, scheduler_key="local"
+        )
         assert transitions == []
 
         events = EventRepository(conn).list_recent()

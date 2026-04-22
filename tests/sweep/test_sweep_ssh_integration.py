@@ -448,9 +448,11 @@ class TestWebDispatchPoolLifecycle:
                 *,
                 callbacks: Any = None,
                 size: int = 8,
+                submission_source: str = "web",
             ) -> None:
                 self.spec = spec_arg
                 self.size = size
+                self.submission_source = submission_source
                 self.close_calls = 0
                 pool_instances.append(self)
 
@@ -597,7 +599,14 @@ class TestWebDispatchPoolLifecycle:
         sizes: list[int] = []
 
         class _SpyPool:
-            def __init__(self, spec_arg: Any, *, callbacks: Any = None, size: int = 8):
+            def __init__(
+                self,
+                spec_arg: Any,
+                *,
+                callbacks: Any = None,
+                size: int = 8,
+                submission_source: str = "web",
+            ):
                 sizes.append(size)
 
             def lease(self) -> Any:  # pragma: no cover

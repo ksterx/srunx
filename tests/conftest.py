@@ -11,6 +11,23 @@ from srunx.models import Job, JobEnvironment, JobResource
 
 
 @pytest.fixture(autouse=True)
+def _disable_current_profile_fallback(monkeypatch):
+    """Neutralise the Phase 2 current-profile fallback for every test.
+
+    The real ``~/.config/srunx/config.json`` on a developer machine may
+    have ``current_profile`` set via ``srunx ssh profile set``. Without
+    this fixture, tests that expect the "default → local" transport
+    path (AC-10.2 backward compat suite) would fail on that developer's
+    machine because ``resolve_transport`` now falls through to the
+    active SSH profile. Individual tests that *want* to exercise the
+    current-profile fallback should monkeypatch it back in explicitly.
+    """
+    import srunx.transport.registry as _reg
+
+    monkeypatch.setattr(_reg, "_current_profile_name", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_legacy_history_db(tmp_path_factory, monkeypatch):
     """Make sure no test can delete the user's real ``~/.srunx/history.db``.
 

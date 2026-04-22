@@ -36,6 +36,7 @@ def mock_adapter() -> MagicMock:
         "command": [],
         "resources": {},
     }
+    adapter.scheduler_key = "local"
     return adapter
 
 

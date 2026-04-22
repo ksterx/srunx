@@ -39,6 +39,7 @@ def mock_adapter() -> MagicMock:
         "job_id": 10001,
         "status": "PENDING",
     }
+    adapter.scheduler_key = "local"
     return adapter
 
 

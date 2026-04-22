@@ -11,6 +11,7 @@ from srunx.monitor.base import BaseMonitor
 from srunx.monitor.types import MonitorConfig
 
 if TYPE_CHECKING:
+    from srunx.client_protocol import JobOperationsProtocol
     from srunx.db.repositories.job_state_transitions import (
         JobStateTransitionRepository,
     )
@@ -31,6 +32,12 @@ class JobMonitor(BaseMonitor):
     ``job_state_transitions`` table with ``source='cli_monitor'``.
     DB failures are logged but never propagated — the CLI monitor must
     keep running even if the database is unavailable.
+
+    ``scheduler_key`` pins every DB write to the right transport axis
+    (``'local'`` or ``'ssh:<profile>'``). The CLI threads its resolved
+    transport's ``scheduler_key`` in so SSH-backed monitors don't
+    accidentally target the local-SLURM row (the regression the SF5
+    hardening pass closes at the repository layer).
     """
 
     def __init__(
@@ -39,8 +46,9 @@ class JobMonitor(BaseMonitor):
         target_statuses: list[JobStatus] | None = None,
         config: MonitorConfig | None = None,
         callbacks: list[Callback] | None = None,
-        client: Slurm | None = None,
+        client: "JobOperationsProtocol | None" = None,
         transition_repo: "JobStateTransitionRepository | None" = None,
+        scheduler_key: str = "local",
     ) -> None:
         super().__init__(config=config, callbacks=callbacks)
 
@@ -56,10 +64,16 @@ class JobMonitor(BaseMonitor):
         ]
         self.client = client or Slurm()
         self.transition_repo = transition_repo
+        # V5 axis: every DB write (transitions, completions) pins
+        # ``(scheduler_key, job_id)`` together. Defaults to ``'local'`` so
+        # existing local-SLURM callers stay source-compatible; the CLI
+        # monitor command now threads the resolved transport's key in so
+        # SSH-backed monitors write under the correct axis.
+        self.scheduler_key = scheduler_key
         self._previous_states: dict[int, JobStatus] = {}
         self._cached_jobs: list[BaseJob] | None = None
 
-        logger.info(
+        logger.debug(
             f"JobMonitor initialized for jobs {self.job_ids}, "
             f"target statuses: {[s.value for s in self.target_statuses]}"
         )
@@ -67,8 +81,12 @@ class JobMonitor(BaseMonitor):
     def _get_monitored_jobs(self) -> list[BaseJob]:
         """Get monitored jobs, using per-cycle cache.
 
-        First call per cycle fetches from SLURM via client.retrieve();
-        subsequent calls within the same cycle return the cached result.
+        First call per cycle fetches from SLURM via
+        :meth:`JobOperationsProtocol.status`; subsequent calls within
+        the same cycle return the cached result. Uses the Protocol
+        method rather than :meth:`Slurm.retrieve` so SSH-backed
+        monitors (``srunx monitor jobs --profile ...``) work too —
+        ``retrieve`` is a local-Slurm-only legacy name.
         """
         if self._cached_jobs is not None:
             return self._cached_jobs
@@ -78,7 +96,7 @@ class JobMonitor(BaseMonitor):
         jobs: list[BaseJob] = []
         for job_id in self.job_ids:
             try:
-                jobs.append(self.client.retrieve(job_id))
+                jobs.append(self.client.status(job_id))
             except Exception as e:
                 logger.warning(f"Failed to retrieve job {job_id}: {e}")
                 placeholder = Job(
@@ -136,6 +154,7 @@ class JobMonitor(BaseMonitor):
                             from_status=previous_status.value,
                             to_status=current_status.value,
                             source="cli_monitor",
+                            scheduler_key=self.scheduler_key,
                         )
                     except Exception as e:
                         logger.warning(
@@ -166,7 +185,9 @@ class JobMonitor(BaseMonitor):
             from srunx.db.cli_helpers import record_completion
 
             try:
-                record_completion(int(job.job_id), status)
+                record_completion(
+                    int(job.job_id), status, scheduler_key=self.scheduler_key
+                )
             except Exception as exc:
                 # ``record_completion`` is best-effort internally, but a
                 # bug in it (or a monkeypatched test) must never prevent

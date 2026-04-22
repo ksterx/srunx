@@ -290,7 +290,7 @@ class TestJobMonitorHistoryIntegration:
 
         with patch("srunx.db.cli_helpers.record_completion") as rec:
             monitor._notify_transition(job, JobStatus.COMPLETED)
-            rec.assert_called_once_with(123, JobStatus.COMPLETED)
+            rec.assert_called_once_with(123, JobStatus.COMPLETED, scheduler_key="local")
 
     def test_notify_transition_updates_history_on_failure(self):
         from srunx.monitor.job_monitor import JobMonitor
@@ -303,7 +303,7 @@ class TestJobMonitorHistoryIntegration:
 
         with patch("srunx.db.cli_helpers.record_completion") as rec:
             monitor._notify_transition(job, JobStatus.FAILED)
-            rec.assert_called_once_with(456, JobStatus.FAILED)
+            rec.assert_called_once_with(456, JobStatus.FAILED, scheduler_key="local")
 
     def test_notify_transition_skips_history_for_running(self):
         from unittest.mock import MagicMock

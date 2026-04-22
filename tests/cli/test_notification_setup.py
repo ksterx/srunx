@@ -83,7 +83,9 @@ def test_attach_watch_happy_path(isolated_db: Path) -> None:
 
         # A PENDING transition should be present so the poller's first
         # observation produces a real state change.
-        latest = JobStateTransitionRepository(conn).latest_for_job(job_id)
+        latest = JobStateTransitionRepository(conn).latest_for_job(
+            job_id, scheduler_key="local"
+        )
         assert latest is not None
         assert latest.to_status == "PENDING"
     finally:
@@ -196,7 +198,9 @@ def test_cli_submit_with_endpoint_creates_watch_and_subscription(
     conn = open_connection()
     try:
         watches = WatchRepository(conn).list_open()
-        job_watches = [w for w in watches if w.target_ref == "job:77777"]
+        # V5 grammar: target_ref is ``job:<scheduler_key>:<id>`` so local
+        # SLURM jobs are ``job:local:<id>``.
+        job_watches = [w for w in watches if w.target_ref == "job:local:77777"]
         assert len(job_watches) == 1
 
         assert job_watches[0].id is not None

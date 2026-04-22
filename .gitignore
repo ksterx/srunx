@@ -476,3 +476,4 @@ playwright-report/
 
 # Serena
 .serena/
+specs/

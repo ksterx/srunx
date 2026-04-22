@@ -353,7 +353,35 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         pollers: list[Poller] = []
         if os.environ.get("SRUNX_DISABLE_ACTIVE_WATCH_POLLER") != "1":
             if adapter is not None:
-                pollers.append(ActiveWatchPoller(slurm_client=adapter))
+                # Phase 6 REQ-8: hand the poller a TransportRegistry so
+                # watches grouped by ``scheduler_key`` route to the
+                # matching queue_client. We seed the registry's cache
+                # with the already-connected startup adapter under
+                # ``ssh:<profile>`` so we don't re-open a second SSH
+                # session; ``local`` remains resolvable via the default
+                # :class:`Slurm` singleton for any legacy
+                # ``job:local:<id>`` watches still in the DB.
+                from srunx.transport.registry import (
+                    TransportHandle,
+                    TransportRegistry,
+                )
+
+                transport_registry = TransportRegistry()
+                if profile_name:
+                    seeded_key = f"ssh:{profile_name}"
+                    transport_registry.register_handle(
+                        TransportHandle(
+                            scheduler_key=seeded_key,
+                            profile_name=profile_name,
+                            transport_type="ssh",
+                            job_ops=adapter,
+                            queue_client=adapter,
+                            executor_factory=None,
+                            submission_context=None,
+                        )
+                    )
+                app.state.transport_registry = transport_registry
+                pollers.append(ActiveWatchPoller(registry=transport_registry))
             else:
                 logger.info("Skipping ActiveWatchPoller: no SLURM client is available")
         if os.environ.get("SRUNX_DISABLE_DELIVERY_POLLER") != "1":
@@ -449,6 +477,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     logger.warning("Poller shutdown raised", exc_info=True)
             tg.cancel_scope.cancel()
     finally:
+        # Release the TransportRegistry first so any SSH pools it
+        # created (outside the seeded startup adapter) get closed
+        # before we drop the startup adapter below. ``close()`` is
+        # idempotent and never raises to the caller.
+        registry_to_close = getattr(app.state, "transport_registry", None)
+        if registry_to_close is not None:
+            try:
+                registry_to_close.close()
+            except Exception:
+                logger.warning("TransportRegistry close raised", exc_info=True)
+
         # Disconnect the *current* adapter (may differ from startup adapter after profile switch)
         from .deps import get_active_profile_name
 

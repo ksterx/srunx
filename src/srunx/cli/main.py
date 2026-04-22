@@ -14,12 +14,14 @@ from rich.table import Table
 
 from srunx.callbacks import Callback, NotificationWatchCallback, SlackCallback
 from srunx.cli.monitor import monitor_app
+from srunx.cli.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.client import Slurm
 from srunx.config import (
     create_example_config,
     get_config,
     get_config_paths,
 )
+from srunx.exceptions import JobNotFound, TransportError
 from srunx.logging import (
     configure_cli_logging,
     get_logger,
@@ -37,8 +39,24 @@ from srunx.models import (
 from srunx.runner import WorkflowRunner
 from srunx.ssh.cli.commands import ssh_app
 from srunx.template import get_template_info, get_template_path, list_templates
+from srunx.transport import peek_scheduler_key, resolve_transport
 
 logger = get_logger(__name__)
+
+
+# Module-local option alias: ``--script`` is only used by the ``submit``
+# subcommand so it does not belong in ``transport_options.py`` (which
+# holds the cross-command transport flags).
+ScriptOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--script",
+        help=(
+            "Submit a pre-authored sbatch script file instead of a command. "
+            "Mutually exclusive with the positional COMMAND argument."
+        ),
+    ),
+]
 
 
 class DebugCallback(Callback):
@@ -53,9 +71,15 @@ class DebugCallback(Callback):
             # Render the script to get the content
             with tempfile.TemporaryDirectory() as temp_dir:
                 if isinstance(job, Job):
-                    # Get the default template path
-                    client = Slurm()
-                    template_path = client.default_template
+                    # Debug render: we just need the default template path.
+                    # Use ``get_template_path("base")`` instead of constructing a
+                    # full ``Slurm()`` instance — this callback fires from
+                    # inside the submit pipeline, and ``resolve_transport()``
+                    # has already done its job by the time we land here.
+                    # Spinning a second Slurm would risk a nested transport
+                    # resolution and also bypass the test fixture patch of
+                    # ``srunx.cli.main.Slurm``.
+                    template_path = get_template_path("base")
                     script_path = render_job_script(
                         template_path, job, temp_dir, verbose=False
                     )
@@ -328,8 +352,17 @@ def _parse_container_args(container_arg: str | None) -> ContainerResource | None
 @app.command("submit")
 def submit(
     command: Annotated[
-        list[str], typer.Argument(help="Command to execute in the SLURM job")
-    ],
+        list[str] | None,
+        typer.Argument(
+            help=(
+                "Command to execute in the SLURM job. Mutually exclusive with --script."
+            ),
+        ),
+    ] = None,
+    script: ScriptOpt = None,
+    profile: ProfileOpt = None,
+    local: LocalOpt = False,
+    quiet: QuietOpt = False,
     name: Annotated[str, typer.Option("--name", "--job-name", help="Job name")] = "job",
     log_dir: Annotated[
         str | None, typer.Option("--log-dir", help="Log directory")
@@ -439,6 +472,25 @@ def submit(
     ] = False,
 ) -> None:
     """Submit a SLURM job."""
+    # --script and positional command are mutually exclusive (AC-6.5).
+    # Enforce the mutex here so resolve_transport does not run for
+    # pathologically-constructed invocations.
+    if script is not None and command:
+        raise typer.BadParameter(
+            "--script and command arguments are mutually exclusive.",
+            param_hint="--script / COMMAND",
+        )
+    if script is None and not command:
+        # Match the historical Typer message so existing CLI tests that
+        # grep stderr for "Missing argument" keep passing. The
+        # ``command`` argument used to be strictly required; we relaxed
+        # it to allow ``--script`` but want the UX for the unconfigured
+        # case to feel identical.
+        raise typer.BadParameter(
+            "Missing argument 'COMMAND'. Provide a command or use --script <path>.",
+            param_hint="--script / COMMAND",
+        )
+
     config = get_config()
 
     # Use defaults from config if not specified
@@ -503,18 +555,30 @@ def submit(
 
     environment = JobEnvironment.model_validate(env_config)
 
-    job_data = {
-        "name": name,
-        "command": command,
-        "resources": resources,
-        "environment": environment,
-        "log_dir": log_dir,
-    }
-
-    if work_dir is not None:
-        job_data["work_dir"] = work_dir
-
-    job = Job.model_validate(job_data)
+    job: Job | ShellJob
+    if script is not None:
+        # ShellJob's schema is intentionally thin: it only records the
+        # script path + script_vars. Resource / environment configuration
+        # travels with the script itself rather than the model, so we do
+        # not forward ``resources`` / ``environment`` / ``log_dir`` /
+        # ``work_dir`` here. Those CLI flags are accepted for UX symmetry
+        # with command-mode submits but are no-ops under ``--script``.
+        shell_data: dict[str, Any] = {
+            "name": name,
+            "script_path": str(script),
+        }
+        job = ShellJob.model_validate(shell_data)
+    else:
+        job_data: dict[str, Any] = {
+            "name": name,
+            "command": command,
+            "resources": resources,
+            "environment": environment,
+            "log_dir": log_dir,
+        }
+        if work_dir is not None:
+            job_data["work_dir"] = work_dir
+        job = Job.model_validate(job_data)
 
     # Resolve the endpoint for the new watch+subscription pipeline.
     #
@@ -525,6 +589,7 @@ def submit(
     effective_endpoint: str | None = endpoint
     effective_preset: str = preset or config.notifications.default_preset
 
+    callbacks: list[Callback]
     if slack:
         # Legacy in-process callback path — kept as a fallback even when
         # --endpoint is also set so users who ask for notifications
@@ -554,80 +619,140 @@ def submit(
                 else " ".join(job.command or [])
             )
             console.print(f"  Command: {command_str}")
+            console.print(f"  Nodes: {job.resources.nodes}")
+            console.print(f"  GPUs: {job.resources.gpus_per_node}")
         elif isinstance(job, ShellJob):
             console.print(f"  Script: {job.script_path}")
-        console.print(f"  Nodes: {job.resources.nodes}")
-        console.print(f"  GPUs: {job.resources.gpus_per_node}")
         return
 
-    # Submit job
-    client = Slurm(callbacks=callbacks)
-    submitted_job = client.submit(job, template_path=template, verbose=verbose)
-
-    # Attach a durable notification watch if the user asked for one.
-    if effective_endpoint and submitted_job.job_id is not None:
-        from srunx.cli.notification_setup import attach_notification_watch
-
-        attach_notification_watch(
-            job_id=int(submitted_job.job_id),
-            endpoint_name=effective_endpoint,
-            preset=effective_preset,
-        )
-
-    console = Console()
-    console.print(
-        f"✅ Job submitted successfully: [bold green]{submitted_job.job_id}[/bold green]"
-    )
-    console.print(f"   Job name: {submitted_job.name}")
-    if isinstance(submitted_job, Job) and submitted_job.command:
-        command_str = (
-            submitted_job.command
-            if isinstance(submitted_job.command, str)
-            else " ".join(submitted_job.command)
-        )
-        console.print(f"   Command: {command_str}")
-    elif isinstance(submitted_job, ShellJob):
-        console.print(f"   Script: {submitted_job.script_path}")
-
-    if wait:
-        try:
-            final_job = client.monitor(submitted_job)
-            if final_job.status.name == "COMPLETED":
-                console.print("✅ Job completed successfully")
-            else:
-                console.print(f"❌ Job failed with status: {final_job.status.name}")
-                sys.exit(1)
-        except KeyboardInterrupt:
-            console.print("\n⚠️  Monitoring interrupted by user")
-            console.print(
-                f"Job {submitted_job.job_id} is still running in the background"
+    # Submit job through the resolved transport.
+    #
+    # Local path keeps the richer ``Slurm.submit`` signature (accepts
+    # callbacks + template_path + verbose) which the Protocol does not
+    # yet expose; SSH path uses the Protocol method, and the adapter
+    # owns its own DB recording + callbacks lifecycle.
+    with resolve_transport(
+        profile=profile,
+        local=local,
+        quiet=quiet,
+        callbacks=callbacks,
+        submission_source="cli",
+    ) as rt:
+        client: Slurm | None
+        if rt.transport_type == "local":
+            client = Slurm(callbacks=callbacks)
+            submitted_job = client.submit(job, template_path=template, verbose=verbose)
+        else:
+            # SSH path: callbacks + submission_source were threaded into
+            # ``resolve_transport`` so the adapter + pool fire callbacks
+            # and tag the jobs row correctly. The submission render
+            # context handles ``--work-dir`` / path translation.
+            submitted_job = rt.job_ops.submit(
+                job, submission_context=rt.submission_context
             )
+            client = None
+
+        # Attach a durable notification watch if the user asked for one.
+        if effective_endpoint and submitted_job.job_id is not None:
+            from srunx.cli.notification_setup import attach_notification_watch
+
+            attach_notification_watch(
+                job_id=int(submitted_job.job_id),
+                endpoint_name=effective_endpoint,
+                preset=effective_preset,
+                scheduler_key=rt.scheduler_key,
+            )
+
+        console = Console()
+        console.print(
+            f"✅ Job submitted successfully: [bold green]{submitted_job.job_id}[/bold green]"
+        )
+        console.print(f"   Job name: {submitted_job.name}")
+        if isinstance(submitted_job, Job) and submitted_job.command:
+            command_str = (
+                submitted_job.command
+                if isinstance(submitted_job.command, str)
+                else " ".join(submitted_job.command)
+            )
+            console.print(f"   Command: {command_str}")
+        elif isinstance(submitted_job, ShellJob):
+            console.print(f"   Script: {submitted_job.script_path}")
+
+        if wait:
+            if client is None:
+                # JobOperationsProtocol does not define a blocking
+                # monitor method, so --wait on SSH transports is a
+                # no-op until the Protocol grows one (tracked by the
+                # SSH monitor wiring follow-up).
+                console.print(
+                    "⚠️  --wait is not yet supported for SSH transports; "
+                    "submitted job continues to run."
+                )
+            else:
+                try:
+                    final_job = client.monitor(submitted_job)
+                    if final_job.status.name == "COMPLETED":
+                        console.print("✅ Job completed successfully")
+                    else:
+                        console.print(
+                            f"❌ Job failed with status: {final_job.status.name}"
+                        )
+                        raise typer.Exit(code=1)
+                except KeyboardInterrupt:
+                    console.print("\n⚠️  Monitoring interrupted by user")
+                    console.print(
+                        f"Job {submitted_job.job_id} is still running in the background"
+                    )
 
 
 @app.command("status")
 def status(
     job_id: Annotated[int, typer.Argument(help="Job ID to check")],
+    profile: ProfileOpt = None,
+    local: LocalOpt = False,
+    quiet: QuietOpt = False,
 ) -> None:
     """Check job status."""
     try:
-        client = Slurm()
-        job = client.retrieve(job_id)
+        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+            # Local ``Slurm.retrieve`` is preserved for the existing
+            # ``mock_slurm.retrieve.assert_called_once_with(...)`` tests.
+            # Remote transports go through the Protocol's ``status``.
+            if rt.transport_type == "local":
+                client = Slurm()
+                job = client.retrieve(job_id)
+            else:
+                job = rt.job_ops.status(job_id)
 
-        console = Console()
-        console.print(f"Job ID: [bold]{job.job_id}[/bold]")
-        console.print(f"Status: {job.status.name}")
-        console.print(f"Name: {job.name}")
-        if isinstance(job, Job) and job.command:
-            command_str = (
-                job.command if isinstance(job.command, str) else " ".join(job.command)
-            )
-            console.print(f"Command: {command_str}")
-        elif isinstance(job, ShellJob):
-            console.print(f"Script: {job.script_path}")
+            console = Console()
+            console.print(f"Job ID: [bold]{job.job_id}[/bold]")
+            console.print(f"Status: {job.status.name}")
+            console.print(f"Name: {job.name}")
+            if isinstance(job, Job) and job.command:
+                command_str = (
+                    job.command
+                    if isinstance(job.command, str)
+                    else " ".join(job.command)
+                )
+                console.print(f"Command: {command_str}")
+            elif isinstance(job, ShellJob):
+                console.print(f"Script: {job.script_path}")
 
+    except JobNotFound:
+        typer.secho(
+            f"Job {job_id} not found",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1) from None
+    except TransportError as exc:
+        typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from None
     except Exception as e:
-        logger.error(f"Error retrieving job {job_id}: {e}")
-        sys.exit(1)
+        typer.secho(
+            f"Error retrieving job {job_id}: {e}", err=True, fg=typer.colors.RED
+        )
+        raise typer.Exit(code=1) from e
 
 
 @app.command("list")
@@ -640,6 +765,9 @@ def list_jobs(
         str,
         typer.Option("--format", "-f", help="Output format: table or json"),
     ] = "table",
+    profile: ProfileOpt = None,
+    local: LocalOpt = False,
+    quiet: QuietOpt = False,
 ) -> None:
     """List user's jobs in the queue.
 
@@ -652,15 +780,17 @@ def list_jobs(
     import json
 
     try:
-        client = Slurm()
-        jobs = client.queue()
+        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+            # Local keeps the ``Slurm.queue()`` direct call to preserve
+            # existing test fixtures that patch ``srunx.cli.main.Slurm``.
+            if rt.transport_type == "local":
+                client = Slurm()
+                jobs = client.queue()
+            else:
+                jobs = rt.job_ops.queue()
 
-        if not jobs:
-            console = Console()
-            console.print("No jobs in queue")
-            return
-
-        # JSON format output
+        # JSON format output (emit before the "empty queue" banner so
+        # --format json stdout stays pure JSON — AC-7.1 / AC-7.2).
         if format == "json":
             job_data = []
             for job in jobs:
@@ -686,7 +816,25 @@ def list_jobs(
             console.print(json.dumps(job_data, indent=2))
             return
 
-        # Table format output
+        # Empty-queue sentinel only for human-facing table format.
+        # Moved past the json branch to fix the pre-existing bug where
+        # ``srunx list --format json`` on an empty queue emitted the
+        # human-readable line instead of ``[]`` (AC-7.1 prerequisite).
+        if not jobs:
+            console = Console()
+            console.print("No jobs in queue")
+            return
+
+        # Table format output.
+        #
+        # Columns read from ``BaseJob`` top-level fields populated by
+        # both the local and SSH ``queue()`` implementations (squeue
+        # ``%.6D`` / ``%.10M`` / ``%.9l``). Pre-Phase-2 code reached for
+        # ``job.resources.nodes`` etc. but ``BaseJob`` has no
+        # ``resources`` attribute, so every row came back as ``N/A`` —
+        # regardless of transport. Two distinct time columns are shown
+        # because users care about both "how long has this been running"
+        # (Elapsed) and "when will SLURM kill it" (Limit).
         table = Table(title="Job Queue")
         table.add_column("Job ID", style="cyan")
         table.add_column("Name", style="magenta")
@@ -694,52 +842,72 @@ def list_jobs(
         table.add_column("Nodes", justify="right")
         if show_gpus:
             table.add_column("GPUs", justify="right", style="yellow")
-        table.add_column("Time", justify="right")
+        table.add_column("Elapsed", justify="right")
+        table.add_column("Limit", justify="right")
 
         for job in jobs:
             row = [
                 str(job.job_id) if job.job_id else "N/A",
                 job.name,
                 job.status.name if hasattr(job, "status") else "UNKNOWN",
-                str(getattr(getattr(job, "resources", None), "nodes", "N/A") or "N/A"),
+                str(getattr(job, "nodes", None) or "N/A"),
             ]
 
             if show_gpus:
-                resources = getattr(job, "resources", None)
-                if resources:
-                    total_gpus = resources.nodes * resources.gpus_per_node
-                    row.append(str(total_gpus))
-                else:
-                    row.append("0")
+                row.append(str(getattr(job, "gpus", 0) or 0))
 
-            row.append(
-                getattr(getattr(job, "resources", None), "time_limit", None) or "N/A"
-            )
+            row.append(getattr(job, "elapsed_time", None) or "N/A")
+            row.append(getattr(job, "time_limit", None) or "N/A")
             table.add_row(*row)
 
         console = Console()
         console.print(table)
 
+    except TransportError as exc:
+        typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from None
     except Exception as e:
-        logger.error(f"Error retrieving job queue: {e}")
-        sys.exit(1)
+        typer.secho(f"Error retrieving job queue: {e}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
 
 
 @app.command("cancel")
 def cancel(
     job_id: Annotated[int, typer.Argument(help="Job ID to cancel")],
+    profile: ProfileOpt = None,
+    local: LocalOpt = False,
+    quiet: QuietOpt = False,
 ) -> None:
     """Cancel a running job."""
     try:
-        client = Slurm()
-        client.cancel(job_id)
+        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+            # Local keeps the direct ``Slurm`` call so existing tests that
+            # patch ``srunx.cli.main.Slurm`` keep working; SSH goes
+            # through the Protocol.
+            if rt.transport_type == "local":
+                client = Slurm()
+                client.cancel(job_id)
+            else:
+                rt.job_ops.cancel(job_id)
 
         console = Console()
         console.print(f"✅ Job {job_id} cancelled successfully")
 
+    except JobNotFound:
+        typer.secho(
+            f"Job {job_id} not found",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1) from None
+    except TransportError as exc:
+        typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from None
     except Exception as e:
-        logger.error(f"Error cancelling job {job_id}: {e}")
-        sys.exit(1)
+        typer.secho(
+            f"Error cancelling job {job_id}: {e}", err=True, fg=typer.colors.RED
+        )
+        raise typer.Exit(code=1) from e
 
 
 @app.command("resources")
@@ -824,20 +992,77 @@ def logs(
         str | None,
         typer.Option("--name", help="Job name for better log file detection"),
     ] = None,
+    profile: ProfileOpt = None,
+    local: LocalOpt = False,
+    quiet: QuietOpt = False,
 ) -> None:
     """Display job logs with optional real-time streaming."""
     try:
-        client = Slurm()
-        client.tail_log(
-            job_id=job_id,
-            job_name=job_name,
-            follow=follow,
-            last_n=last,
-        )
+        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+            if rt.transport_type == "local":
+                # Local keeps the interactive ``Slurm.tail_log`` path for
+                # follow + last_n + file-discovery behaviour the Protocol
+                # does not yet expose.
+                client = Slurm()
+                client.tail_log(
+                    job_id=job_id,
+                    job_name=job_name,
+                    follow=follow,
+                    last_n=last,
+                )
+            else:
+                # SSH path: use the pure Protocol tail_log_incremental
+                # once for non-follow retrieval. --follow over SSH is a
+                # Phase 5b+ concern (loop belongs in the CLI layer, but
+                # the SSH adapter does not yet stream logs).
+                chunk = rt.job_ops.tail_log_incremental(job_id, 0, 0)
+                # ``--last N`` is applied client-side on the SSH path:
+                # the adapter returns the full log content and we slice
+                # here so the flag isn't silently dropped (SF6). The
+                # local path above already honours ``last_n`` via
+                # ``Slurm.tail_log``.
+                stdout_text = chunk.stdout or ""
+                stderr_text = chunk.stderr or ""
+                if last is not None:
+                    if stdout_text:
+                        stdout_text = "\n".join(stdout_text.splitlines()[-last:])
+                        # Preserve the trailing newline if the original
+                        # chunk ended with one so terminal output stays
+                        # unambiguous.
+                        if chunk.stdout and chunk.stdout.endswith("\n"):
+                            stdout_text += "\n"
+                    if stderr_text and stderr_text != chunk.stdout:
+                        stderr_text = "\n".join(stderr_text.splitlines()[-last:])
+                        if chunk.stderr and chunk.stderr.endswith("\n"):
+                            stderr_text += "\n"
+                if stdout_text:
+                    sys.stdout.write(stdout_text)
+                if stderr_text and stderr_text != (chunk.stdout or ""):
+                    sys.stderr.write(stderr_text)
+                if follow:
+                    typer.secho(
+                        "--follow is not yet supported for SSH transports.",
+                        err=True,
+                        fg=typer.colors.YELLOW,
+                    )
 
+    except JobNotFound:
+        typer.secho(
+            f"Job {job_id} not found",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1) from None
+    except TransportError as exc:
+        typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from None
     except Exception as e:
-        logger.error(f"Error retrieving logs for job {job_id}: {e}")
-        sys.exit(1)
+        typer.secho(
+            f"Error retrieving logs for job {job_id}: {e}",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1) from e
 
 
 @flow_app.command("run")
@@ -916,6 +1141,9 @@ def flow_run(
             help="Maximum concurrent sweep cells (overrides YAML sweep.max_parallel)",
         ),
     ] = None,
+    profile: ProfileOpt = None,
+    local: LocalOpt = False,
+    quiet: QuietOpt = False,
 ) -> None:
     """Execute workflow from YAML file."""
     # Delegate to the shared implementation in srunx.cli.workflow which
@@ -939,6 +1167,9 @@ def flow_run(
         fail_fast=fail_fast,
         max_parallel=max_parallel,
         debug=debug,
+        profile=profile,
+        local=local,
+        quiet=quiet,
     )
 
 
@@ -1185,6 +1416,9 @@ def template_apply(
             ),
         ),
     ] = None,
+    profile: ProfileOpt = None,
+    local: LocalOpt = False,
+    quiet: QuietOpt = False,
 ) -> None:
     """Apply a template and submit a job."""
     try:
@@ -1255,11 +1489,16 @@ def template_apply(
         # lookup failures don't silently drop the user's opt-in.
         callbacks: list[Callback] = []
         effective_preset = preset or get_config().notifications.default_preset
+        # Bind the notification watch to the exact scheduler_key the
+        # transport will resolve to so SSH submissions don't silently
+        # register their watch under the wrong axis (Bug 5).
+        resolved_scheduler_key = peek_scheduler_key(profile=profile, local=local)
         if endpoint:
             callbacks.append(
                 NotificationWatchCallback(
                     endpoint_name=endpoint,
                     preset=effective_preset,
+                    scheduler_key=resolved_scheduler_key,
                 )
             )
         if slack:
@@ -1272,43 +1511,72 @@ def template_apply(
                 raise ValueError("SLACK_WEBHOOK_URL is not set")
             callbacks.append(SlackCallback(webhook_url=webhook_url))
 
-        # Submit job with the specified template
-        client = Slurm(callbacks=callbacks)
-        submitted_job = client.submit(job, template_path=template_path)
-
-        console = Console()
-        console.print(
-            f"✅ Job submitted successfully with template '[cyan]{name}[/cyan]': [bold green]{submitted_job.job_id}[/bold green]"
-        )
-        console.print(f"   Job name: {submitted_job.name}")
-        if isinstance(submitted_job, Job) and submitted_job.command:
-            command_str = (
-                submitted_job.command
-                if isinstance(submitted_job.command, str)
-                else " ".join(submitted_job.command)
-            )
-            console.print(f"   Command: {command_str}")
-
-        if wait:
-            try:
-                final_job = client.monitor(submitted_job)
-                if final_job.status.name == "COMPLETED":
-                    console.print("✅ Job completed successfully")
-                else:
-                    console.print(f"❌ Job failed with status: {final_job.status.name}")
-                    sys.exit(1)
-            except KeyboardInterrupt:
-                console.print("\n⚠️  Monitoring interrupted by user")
-                console.print(
-                    f"Job {submitted_job.job_id} is still running in the background"
+        # Submit job with the specified template.
+        with resolve_transport(
+            profile=profile,
+            local=local,
+            quiet=quiet,
+            callbacks=callbacks,
+            submission_source="cli",
+        ) as rt:
+            client: Slurm | None
+            if rt.transport_type == "local":
+                client = Slurm(callbacks=callbacks)
+                submitted_job = client.submit(job, template_path=template_path)
+            else:
+                # SSH path: callbacks + submission_source were threaded
+                # into ``resolve_transport`` so the adapter fires callbacks
+                # and tags the jobs row with ``'cli'``. The submission
+                # render context translates ``--work-dir`` / mount paths.
+                submitted_job = rt.job_ops.submit(
+                    job, submission_context=rt.submission_context
                 )
+                client = None
+
+            console = Console()
+            console.print(
+                f"✅ Job submitted successfully with template '[cyan]{name}[/cyan]': [bold green]{submitted_job.job_id}[/bold green]"
+            )
+            console.print(f"   Job name: {submitted_job.name}")
+            if isinstance(submitted_job, Job) and submitted_job.command:
+                command_str = (
+                    submitted_job.command
+                    if isinstance(submitted_job.command, str)
+                    else " ".join(submitted_job.command)
+                )
+                console.print(f"   Command: {command_str}")
+
+            if wait:
+                if client is None:
+                    console.print(
+                        "⚠️  --wait is not yet supported for SSH transports; "
+                        "submitted job continues to run."
+                    )
+                else:
+                    try:
+                        final_job = client.monitor(submitted_job)
+                        if final_job.status.name == "COMPLETED":
+                            console.print("✅ Job completed successfully")
+                        else:
+                            console.print(
+                                f"❌ Job failed with status: {final_job.status.name}"
+                            )
+                            raise typer.Exit(code=1)
+                    except KeyboardInterrupt:
+                        console.print("\n⚠️  Monitoring interrupted by user")
+                        console.print(
+                            f"Job {submitted_job.job_id} is still running in the background"
+                        )
 
     except ValueError as e:
-        logger.error(str(e))
-        sys.exit(1)
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+    except TransportError as exc:
+        typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from None
     except Exception as e:
-        logger.error(f"Error applying template: {e}")
-        sys.exit(1)
+        typer.secho(f"Error applying template: {e}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
 
 
 @app.command("history")

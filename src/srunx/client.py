@@ -26,7 +26,7 @@ from srunx.models import (
 from srunx.utils import GPU_TRES_RE, get_job_status, job_status_msg  # noqa: E402
 
 if TYPE_CHECKING:
-    from srunx.client_protocol import JobStatusInfo
+    from srunx.client_protocol import JobStatusInfo, LogChunk
     from srunx.rendering import SubmissionRenderContext
 
 logger = get_logger(__name__)
@@ -58,6 +58,8 @@ class Slurm:
         record_history: bool = True,
         workflow_name: str | None = None,
         workflow_run_id: int | None = None,
+        *,
+        submission_context: "SubmissionRenderContext | None" = None,
     ) -> RunnableJobType:
         """Submit a job to SLURM.
 
@@ -72,6 +74,10 @@ class Slurm:
                 submitted from a workflow; persisted on the ``jobs`` row
                 so reports (``srunx report --workflow``, the Web history
                 JOIN) actually pick up CLI-launched workflow jobs.
+            submission_context: Accepted for
+                :class:`~srunx.client_protocol.JobOperationsProtocol`
+                conformance and ignored — local submission performs no
+                mount translation.
 
         Returns:
             Job instance with updated job_id and status.
@@ -79,6 +85,7 @@ class Slurm:
         Raises:
             subprocess.CalledProcessError: If job submission fails.
         """
+        del submission_context  # unused on the local path (see docstring)
         result = None
 
         if isinstance(job, Job):
@@ -153,6 +160,10 @@ class Slurm:
 
         # Record in the state DB (best-effort; failures log at debug
         # and never surface to the caller — see cli_helpers.py).
+        # Local ``Slurm`` only ever writes the local-transport triple;
+        # SSH submissions take the ``SlurmSSHAdapter.submit`` path which
+        # passes its own (transport_type='ssh', profile_name=...,
+        # scheduler_key='ssh:<profile>') values.
         if record_history:
             from srunx.db.cli_helpers import record_submission_from_job
 
@@ -160,6 +171,9 @@ class Slurm:
                 job,
                 workflow_name=workflow_name,
                 workflow_run_id=workflow_run_id,
+                transport_type="local",
+                profile_name=None,
+                scheduler_key="local",
             )
 
         all_callbacks = self.callbacks[:]
@@ -181,6 +195,112 @@ class Slurm:
             Job object with current status.
         """
         return get_job_status(job_id)
+
+    def status(self, job_id: int) -> BaseJob:
+        """Return a :class:`BaseJob` snapshot of ``job_id``'s state.
+
+        Thin alias for :meth:`retrieve` that satisfies
+        :class:`~srunx.client_protocol.JobOperationsProtocol`. Raises
+        :class:`~srunx.exceptions.JobNotFound` when ``sacct`` has no row
+        for ``job_id`` (the underlying ``get_job_status`` uses
+        ``ValueError`` for that condition, which we rewrap here to match
+        the Protocol contract).
+
+        Note: raw ``subprocess.FileNotFoundError`` / ``CalledProcessError``
+        from the ``sacct`` invocation are intentionally *not* wrapped
+        into transport-level exceptions here. The existing CLI test
+        suite asserts on the subprocess error types, and rewrapping
+        them would force a much larger behavioural change than this
+        Protocol-alignment method needs. A future unification pass
+        (with the CLI tests migrated in lockstep) can tighten this
+        contract.
+        """
+        from srunx.exceptions import JobNotFound
+
+        try:
+            return self.retrieve(job_id)
+        except ValueError as exc:  # get_job_status raises ValueError on miss
+            raise JobNotFound(f"Job {job_id} not found") from exc
+
+    def tail_log_incremental(
+        self,
+        job_id: int,
+        stdout_offset: int = 0,
+        stderr_offset: int = 0,
+    ) -> "LogChunk":
+        """Return new log content since the given byte offsets.
+
+        Reads local log files using ``open`` + ``seek`` instead of a
+        subprocess ``tail``, so the Protocol contract (pure, no side
+        effects, no stdout writes) is honoured. If the log file does not
+        yet exist (e.g. the job is still PENDING), returns an empty chunk
+        with the offsets unchanged — callers should treat a missing file
+        as "no new data" rather than a hard error.
+        """
+        from srunx.client_protocol import LogChunk
+
+        stdout_path, stderr_path = self._find_log_paths(job_id)
+        stdout_content, new_stdout_offset = self._read_file_from_offset(
+            stdout_path, stdout_offset
+        )
+        if stderr_path is not None and stderr_path != stdout_path:
+            stderr_content, new_stderr_offset = self._read_file_from_offset(
+                stderr_path, stderr_offset
+            )
+        else:
+            stderr_content, new_stderr_offset = "", stderr_offset
+        return LogChunk(
+            stdout=stdout_content,
+            stderr=stderr_content,
+            stdout_offset=new_stdout_offset,
+            stderr_offset=new_stderr_offset,
+        )
+
+    @staticmethod
+    def _find_log_paths(
+        job_id: int, job_name: str | None = None
+    ) -> tuple[str | None, str | None]:
+        """Locate (stdout_path, stderr_path) for *job_id*.
+
+        Reuses :meth:`_find_log_files` discovery. When SLURM is configured
+        with a single combined log (the srunx default), both returned
+        paths will be the same — callers must deduplicate to avoid
+        double-counting byte offsets. Returns ``(None, None)`` when no
+        log file has appeared yet (common for PENDING jobs).
+        """
+        found_files, _ = Slurm._find_log_files(job_id, job_name)
+        if not found_files:
+            return None, None
+        stdout_path: str | None = found_files[0]
+        stderr_path: str | None = None
+        for candidate in found_files:
+            if "err" in Path(candidate).name.lower():
+                stderr_path = candidate
+                break
+        if stderr_path is None:
+            # srunx's default template routes stderr into the primary log.
+            stderr_path = stdout_path
+        return stdout_path, stderr_path
+
+    @staticmethod
+    def _read_file_from_offset(path: str | None, offset: int) -> tuple[str, int]:
+        """Read from *offset* to EOF. Missing file → ``("", offset)``."""
+        if not path:
+            return "", offset
+        try:
+            with open(path, "rb") as f:
+                f.seek(offset)
+                data = f.read()
+        except FileNotFoundError:
+            return "", offset
+        except OSError as exc:
+            logger.warning(f"Failed to read log file {path}: {exc}")
+            return "", offset
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = data.decode("utf-8", errors="replace")
+        return text, offset + len(data)
 
     def cancel(self, job_id: int) -> None:
         """Cancel a SLURM job.
@@ -237,6 +357,7 @@ class Slurm:
                 user_name = parts[3] if len(parts) > 3 else None
                 status_str = parts[4]
                 elapsed_time = parts[5] if len(parts) > 5 else None
+                time_limit = parts[6] if len(parts) > 6 else None
                 nodes_str = parts[7] if len(parts) > 7 else "1"
                 tres = parts[9] if len(parts) > 9 else ""
 
@@ -264,6 +385,7 @@ class Slurm:
                     user=user_name,
                     partition=partition,
                     elapsed_time=elapsed_time,
+                    time_limit=time_limit,
                     nodes=nodes,
                     gpus=gpus,
                 )

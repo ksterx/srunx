@@ -28,7 +28,8 @@ from srunx.ssh.core.ssh_config import SSHConfigParser  # noqa: F811
 from srunx.utils import GPU_TRES_RE  # noqa: E402
 
 if TYPE_CHECKING:
-    from srunx.models import JobStatus, RunnableJobType
+    from srunx.client_protocol import LogChunk
+    from srunx.models import BaseJob, JobStatus, RunnableJobType
     from srunx.rendering import SubmissionRenderContext
 
 logger = get_logger(__name__)
@@ -139,12 +140,21 @@ class SlurmSSHAdapter:
         env_vars: dict[str, str] | None = None,
         mounts: Sequence[MountConfig] | None = None,
         callbacks: Sequence[Callback] | None = None,
+        submission_source: str = "web",
     ) -> None:
         # Reentrant lock: some code paths call _ensure_connected() explicitly
         # from inside another locked section (e.g. _run_slurm_cmd). An RLock
         # lets the same thread re-enter without self-deadlocking while still
         # serializing I/O across threads.
         self._io_lock: threading.RLock = threading.RLock()
+
+        # Mutable origin tag for ``record_submission`` writes. The Web router
+        # default is ``'web'``; the CLI wrapper passes ``'cli'`` via
+        # ``_build_ssh_handle(..., submission_source='cli')``. MCP callers
+        # pass ``'mcp'``. Exposed as a public attribute so the transport
+        # registry can rebind it without threading a kwarg through every
+        # Protocol signature (see review fix #7).
+        self.submission_source: str = submission_source
 
         # Resolved connection params — persisted so connection_spec() can
         # reproduce this adapter in Step 4's pool factory. Populated below
@@ -243,6 +253,21 @@ class SlurmSSHAdapter:
         else:
             raise ValueError("Either profile_name or (hostname, username) required")
 
+    # ── Public introspection ──────────────────────
+
+    @property
+    def scheduler_key(self) -> str:
+        """Return the V5 transport axis for this adapter.
+
+        ``"local"`` when no profile is bound (legacy direct-hostname
+        tests) or ``f"ssh:{profile_name}"`` otherwise. Exposed publicly
+        so callers (Web routers, poller, etc.) don't reach into
+        ``_profile_name`` to build target_refs / scheduler_keys.
+        """
+        if self._profile_name is None:
+            return "local"
+        return f"ssh:{self._profile_name}"
+
     # ── Connection spec (for Step 4 pool factory) ─────
 
     @property
@@ -271,6 +296,7 @@ class SlurmSSHAdapter:
         spec: SlurmSSHAdapterSpec,
         *,
         callbacks: Sequence[Callback] | None = None,
+        submission_source: str = "web",
     ) -> SlurmSSHAdapter:
         """Create a fresh adapter from a connection spec.
 
@@ -281,8 +307,21 @@ class SlurmSSHAdapter:
 
         ``callbacks`` are attached on construction so the pool's chosen
         callback list propagates into each cloned adapter's ``run`` path.
+
+        ``submission_source`` is carried through from the pool's origin
+        tag so per-cell sweep jobs record the correct transport origin
+        in the ``jobs.submission_source`` column.
         """
-        return cls(
+        # NOTE: ``profile_name`` is intentionally NOT forwarded into the
+        # clone's constructor — setting ``profile_name`` there triggers
+        # the full ``ConfigManager`` + ``~/.ssh/config`` resolution path,
+        # which would re-parse the profile on every pooled lease (and
+        # fail in test environments that stub out the ConfigManager).
+        # The spec already captures the fully-resolved connection params,
+        # so we use the direct-hostname branch and then manually bind
+        # ``_profile_name`` so ``scheduler_key`` / completion recording
+        # target the correct SSH axis.
+        adapter = cls(
             hostname=spec.hostname,
             username=spec.username,
             key_filename=spec.key_filename,
@@ -291,7 +330,10 @@ class SlurmSSHAdapter:
             env_vars=dict(spec.env_vars) if spec.env_vars else None,
             mounts=list(spec.mounts) if spec.mounts else None,
             callbacks=callbacks,
+            submission_source=submission_source,
         )
+        adapter._profile_name = spec.profile_name
+        return adapter
 
     @property
     def is_connected(self) -> bool:
@@ -329,7 +371,18 @@ class SlurmSSHAdapter:
             self._client.disconnect()
 
     def _ensure_connected(self) -> None:
-        """Reconnect if the SSH connection has dropped.
+        """Connect (or reconnect) the SSH session if needed.
+
+        Three states:
+
+        1. ``ssh_client is None`` — adapter was never connected. Happens
+           for every adapter built by
+           :func:`srunx.transport.registry._build_ssh_handle` (CLI
+           scope, MCP tool handlers, tests). Log as "connecting" —
+           calling this a "reconnect" would be misleading.
+        2. ``transport`` absent or inactive — the session was open but
+           dropped (idle timeout, network blip). Log as "reconnecting".
+        3. Transport active — no-op.
 
         Safe to call from inside another ``_io_lock`` region because the
         lock is reentrant. Callers that invoke SSH I/O directly on
@@ -340,18 +393,23 @@ class SlurmSSHAdapter:
         """
         with self._io_lock:
             ssh = self._client.ssh_client
-            needs_reconnect = ssh is None
-            if not needs_reconnect:
-                transport = ssh.get_transport()  # type: ignore[union-attr]
-                needs_reconnect = transport is None or not transport.is_active()
-
-            if needs_reconnect:
-                logger.warning("SSH connection lost, reconnecting...")
-                self._client.disconnect()
+            if ssh is None:
+                logger.debug("SSH adapter connecting for the first time")
                 if not self._client.connect():
-                    raise RuntimeError("SSH reconnection failed")
+                    raise RuntimeError("SSH connection failed")
                 self._set_keepalive()
-                logger.info("SSH reconnection successful")
+                return
+
+            transport = ssh.get_transport()
+            if transport is not None and transport.is_active():
+                return  # happy path — connection already up
+
+            logger.warning("SSH connection lost, reconnecting...")
+            self._client.disconnect()
+            if not self._client.connect():
+                raise RuntimeError("SSH reconnection failed")
+            self._set_keepalive()
+            logger.info("SSH reconnection successful")
 
     def __enter__(self) -> SlurmSSHAdapter:
         self.connect()
@@ -412,6 +470,7 @@ class SlurmSSHAdapter:
                     "nodes": num_nodes,
                     "gpus": gpus_per_node * num_nodes,
                     "elapsed_time": parts[5].strip(),
+                    "time_limit": parts[6].strip(),
                 }
             )
 
@@ -636,7 +695,16 @@ class SlurmSSHAdapter:
         raise ValueError(f"No job information found for job {job_id}")
 
     def cancel_job(self, job_id: int) -> None:
-        """Cancel a SLURM job via scancel."""
+        """Cancel a SLURM job via scancel.
+
+        Legacy alias retained for pre-Protocol callers
+        (``web.routers.jobs`` / ``web.routers.workflows``). New code
+        should call :meth:`cancel` instead, which raises typed
+        transport exceptions and aligns with
+        :class:`~srunx.client_protocol.JobOperationsProtocol`. This
+        alias will remain until the remaining web router call sites
+        are migrated.
+        """
         _run_slurm_cmd(self, f"scancel {job_id}")
 
     def submit_job(
@@ -645,10 +713,19 @@ class SlurmSSHAdapter:
         job_name: str | None = None,
         dependency: str | None = None,
     ) -> dict[str, Any]:
-        """Submit a job via sbatch. Returns job info dict."""
-        result = self._client.submit_sbatch_job(
-            script_content, job_name=job_name, dependency=dependency
-        )
+        """Submit a job via sbatch. Returns job info dict.
+
+        Legacy alias retained for pre-Protocol callers
+        (``web.routers.jobs`` / ``web.routers.workflows`` /
+        ``web.routers.templates``). New code should call :meth:`submit`
+        with a :class:`~srunx.models.Job` instance. This alias will
+        remain until those routers migrate to the Protocol surface.
+        """
+        with self._io_lock:
+            self._ensure_connected()
+            result = self._client.submit_sbatch_job(
+                script_content, job_name=job_name, dependency=dependency
+            )
         if result is None:
             raise RuntimeError("sbatch submission failed")
         return {
@@ -670,17 +747,36 @@ class SlurmSSHAdapter:
         """Get job stdout/stderr log contents from remote.
 
         Returns ``(stdout, stderr, new_stdout_offset, new_stderr_offset)``.
+
+        Ensures the SSH connection is live before reading — callers that
+        reach this method via a fresh :class:`SlurmSSHAdapter` (e.g. CLI
+        ``srunx logs --profile foo``, which builds the adapter via
+        :func:`srunx.transport.registry._build_ssh_handle` without the
+        Web app's startup connect) would otherwise hit
+        ``SSH client is not connected`` on the first call.
         """
-        return self._client.get_job_output(
-            str(job_id),
-            job_name=job_name,
-            stdout_offset=stdout_offset,
-            stderr_offset=stderr_offset,
-        )
+        with self._io_lock:
+            self._ensure_connected()
+            return self._client.get_job_output(
+                str(job_id),
+                job_name=job_name,
+                stdout_offset=stdout_offset,
+                stderr_offset=stderr_offset,
+            )
 
     def get_job_status(self, job_id: int) -> str:
-        """Get job status string."""
-        return self._client.get_job_status(str(job_id))
+        """Get job status string.
+
+        Legacy alias retained for callers that want just the raw SLURM
+        state string (``mcp.server`` and the adapter's own
+        :meth:`_monitor_until_terminal` loop). New code should call
+        :meth:`status` which returns a full :class:`BaseJob` snapshot
+        conforming to
+        :class:`~srunx.client_protocol.JobOperationsProtocol`.
+        """
+        with self._io_lock:
+            self._ensure_connected()
+            return self._client.get_job_status(str(job_id))
 
     def get_job_output_detailed(
         self,
@@ -705,6 +801,289 @@ class SlurmSSHAdapter:
             info["output"] = ""
             info["error"] = ""
         return info
+
+    # ── JobOperationsProtocol surface ────────────────
+    #
+    # These methods align SlurmSSHAdapter with
+    # :class:`srunx.client_protocol.JobOperationsProtocol` so the Web UI,
+    # MCP, and (future) top-level CLI can all drive a remote SLURM via
+    # the same 5 entry points they use for the local ``Slurm`` client.
+    # The existing ``submit_job`` / ``cancel_job`` / ``get_job_status`` /
+    # ``list_jobs`` / ``get_job_output`` methods are intentionally kept as
+    # backwards-compatible aliases so callers that haven't migrated yet
+    # stay working.
+
+    def submit(
+        self,
+        job: RunnableJobType,
+        *,
+        submission_context: SubmissionRenderContext | None = None,
+    ) -> RunnableJobType:
+        """Submit *job* over SSH and return it with ``job_id`` populated.
+
+        Renders the SLURM script locally (Jinja), uploads it via sftp,
+        invokes ``sbatch`` on the remote, mutates *job* in place to set
+        ``job_id`` and ``status = PENDING``, and returns the same object.
+        See :meth:`run` for the full lifecycle (render + submit + monitor
+        + callbacks). This method is submit-only; it does not block on
+        SLURM state transitions.
+
+        ``submission_context`` (when provided) applies mount-aware
+        :func:`normalize_job_for_submission` before rendering so absolute
+        local ``work_dir`` / ``log_dir`` paths get rewritten to the
+        profile's remote mount root. Passing ``None`` preserves the
+        pre-Bug-6 behaviour of rendering the job verbatim.
+
+        Records the submission in the state DB with the
+        (``transport_type='ssh'``, ``profile_name=<this adapter's
+        profile>``, ``scheduler_key='ssh:<profile>'``) triple so the
+        poller can look the job up under the right transport. DB writes
+        are best-effort and never mask an sbatch success.
+        """
+        import tempfile as _tempfile
+
+        import paramiko
+
+        from srunx.exceptions import (
+            SubmissionError,
+            TransportAuthError,
+            TransportConnectionError,
+            TransportTimeoutError,
+        )
+        from srunx.models import (
+            Job,
+            JobStatus,
+            ShellJob,
+            render_job_script,
+            render_shell_job_script,
+        )
+        from srunx.rendering import normalize_job_for_submission
+        from srunx.template import get_template_path
+
+        # Apply mount-aware path translation before we inspect the job's
+        # type for template resolution. ``normalize_job_for_submission``
+        # returns a ``model_copy`` when a rewrite is needed, so we rebind
+        # ``job`` and use the normalized instance for rendering + DB
+        # recording. See :meth:`run` for the mirror call-site.
+        job = normalize_job_for_submission(job, submission_context)
+
+        if isinstance(job, Job):
+            template_path = job.template if job.template else get_template_path("base")
+        elif isinstance(job, ShellJob):
+            template_path = None
+        else:
+            raise ValueError(f"Unsupported job type: {type(job).__name__}")
+
+        with _tempfile.TemporaryDirectory() as tmpdir:
+            if isinstance(job, Job):
+                assert template_path is not None  # narrow for mypy
+                script_path = render_job_script(template_path, job, output_dir=tmpdir)
+            else:  # ShellJob — narrowed by the elif above
+                script_path = render_shell_job_script(job.script_path, job, tmpdir)
+            with open(script_path, encoding="utf-8") as f:
+                script_content = f.read()
+
+        try:
+            with self._io_lock:
+                self._ensure_connected()
+                result = self._client.submit_sbatch_job(
+                    script_content, job_name=job.name
+                )
+        except paramiko.AuthenticationException as exc:
+            raise TransportAuthError(f"SSH authentication failed: {exc}") from exc
+        except TimeoutError as exc:
+            raise TransportTimeoutError(f"SSH timed out: {exc}") from exc
+        except (paramiko.SSHException, OSError) as exc:
+            raise TransportConnectionError(f"SSH connection failed: {exc}") from exc
+
+        if result is None or not result.job_id:
+            raise SubmissionError(f"sbatch rejected submission for job '{job.name}'")
+
+        job.job_id = int(result.job_id)
+        job.status = JobStatus.PENDING
+
+        # Record submission with SSH transport metadata. The adapter
+        # carries its ``submission_source`` as mutable state set by the
+        # transport registry (``_build_ssh_handle``) — the Web path
+        # leaves the default ``'web'``, the CLI wrapper passes
+        # ``'cli'``, MCP passes ``'mcp'``. This avoids widening the
+        # JobOperationsProtocol signature with a kwarg that would
+        # break every existing Protocol implementor.
+        if self._profile_name is not None:
+            self._record_job_submission(
+                job,
+                workflow_name=None,
+                workflow_run_id=None,
+                transport_type="ssh",
+                profile_name=self._profile_name,
+                scheduler_key=f"ssh:{self._profile_name}",
+                submission_source=self.submission_source,
+            )
+
+        return job
+
+    def cancel(self, job_id: int) -> None:
+        """Cancel *job_id* on the remote cluster.
+
+        Raises :class:`~srunx.exceptions.JobNotFound` when ``scancel``
+        reports the job is missing, :class:`TransportError` subclasses
+        for SSH-layer failures. The legacy :meth:`cancel_job` API is
+        preserved below as a no-op alias for backwards compat.
+        """
+
+        import paramiko
+
+        from srunx.exceptions import (
+            JobNotFound,
+            RemoteCommandError,
+            TransportAuthError,
+            TransportConnectionError,
+            TransportTimeoutError,
+        )
+
+        try:
+            _run_slurm_cmd(self, f"scancel {int(job_id)}")
+        except paramiko.AuthenticationException as exc:
+            raise TransportAuthError(f"SSH authentication failed: {exc}") from exc
+        except TimeoutError as exc:
+            raise TransportTimeoutError(f"SSH timed out: {exc}") from exc
+        except paramiko.SSHException as exc:
+            raise TransportConnectionError(f"SSH connection failed: {exc}") from exc
+        except RuntimeError as exc:
+            # ``_run_slurm_cmd`` wraps non-zero-exit stderr into RuntimeError.
+            # SLURM's scancel emits "Invalid job id specified" for unknown
+            # ids; surface that as JobNotFound so callers can handle it as
+            # a user-level condition rather than a transport failure.
+            msg = str(exc).lower()
+            if "invalid job id" in msg or "invalid job specification" in msg:
+                raise JobNotFound(f"Job {job_id} not found on remote cluster") from exc
+            raise RemoteCommandError(str(exc)) from exc
+
+    def status(self, job_id: int) -> BaseJob:
+        """Return a snapshot :class:`BaseJob` for *job_id*.
+
+        Uses :meth:`queue_by_ids` (already Protocol-compliant) so both
+        active and terminal jobs resolve through the same code path as
+        the notification poller. Raises
+        :class:`~srunx.exceptions.JobNotFound` when SLURM has no record
+        of ``job_id``.
+
+        The returned :class:`BaseJob` is a static snapshot — per the
+        :class:`JobOperationsProtocol.status` contract it must NOT
+        trigger a lazy ``sacct`` refresh on ``.status`` access (a local
+        ``sacct`` probe against an SSH-only job id would either miss
+        entirely or return a misleading result). ``_last_refresh`` is
+        parked in the far future so ``BaseJob.status`` observes the
+        snapshot verbatim.
+        """
+        import time as _time
+
+        from srunx.exceptions import JobNotFound
+        from srunx.models import BaseJob, JobStatus
+
+        info_map = self.queue_by_ids([int(job_id)])
+        info = info_map.get(int(job_id))
+        if info is None:
+            raise JobNotFound(f"Job {job_id} not found on remote cluster")
+
+        try:
+            status_enum = JobStatus(info.status)
+        except ValueError:
+            status_enum = JobStatus.UNKNOWN
+
+        job = BaseJob(
+            name=f"job_{job_id}",
+            job_id=int(job_id),
+            nodelist=info.nodelist,
+        )
+        job.status = status_enum
+        # Park the lazy-refresh clock far in the future so ``.status``
+        # access never triggers a local ``sacct`` subprocess for an SSH
+        # job id. See :class:`JobOperationsProtocol.status` contract.
+        job._last_refresh = _time.time() + 10**9
+        return job
+
+    def queue(self, user: str | None = None) -> list[BaseJob]:
+        """List jobs for *user* (defaults to the profile's username).
+
+        Adapts :meth:`list_jobs` (which yields dicts) into Pydantic
+        :class:`BaseJob` objects so the return type matches
+        :class:`~srunx.client_protocol.JobOperationsProtocol.queue`.
+        ``user=None`` uses the profile's configured username, matching
+        the Protocol's "transport's current user" contract.
+        """
+        from srunx.models import BaseJob, JobStatus
+
+        effective_user = user if user is not None else self._username or None
+
+        raw_entries = self.list_jobs(user=effective_user)
+        out: list[BaseJob] = []
+        for entry in raw_entries:
+            status_str = str(entry.get("status", "UNKNOWN"))
+            try:
+                status_enum = JobStatus(status_str)
+            except ValueError:
+                status_enum = JobStatus.UNKNOWN
+            try:
+                job_id_val = int(entry["job_id"]) if entry.get("job_id") else None
+            except (TypeError, ValueError):
+                continue
+            job = BaseJob(
+                name=str(entry.get("name", "job")),
+                job_id=job_id_val,
+                partition=entry.get("partition"),
+                nodes=entry.get("nodes"),
+                gpus=entry.get("gpus"),
+                elapsed_time=entry.get("elapsed_time"),
+                time_limit=entry.get("time_limit"),
+                user=effective_user,
+            )
+            job.status = status_enum
+            out.append(job)
+        return out
+
+    def tail_log_incremental(
+        self,
+        job_id: int,
+        stdout_offset: int = 0,
+        stderr_offset: int = 0,
+    ) -> LogChunk:
+        """Return new log content since the given byte offsets.
+
+        Thin wrapper around :meth:`get_job_output` which already returns
+        ``(stdout, stderr, new_stdout_offset, new_stderr_offset)``. Pure
+        function: no stdout writes, no blocking. Callers that want
+        ``tail -f`` semantics poll this method in a loop.
+        """
+
+        import paramiko
+
+        from srunx.client_protocol import LogChunk
+        from srunx.exceptions import (
+            TransportAuthError,
+            TransportConnectionError,
+            TransportTimeoutError,
+        )
+
+        try:
+            stdout, stderr, new_stdout_offset, new_stderr_offset = self.get_job_output(
+                int(job_id),
+                stdout_offset=stdout_offset,
+                stderr_offset=stderr_offset,
+            )
+        except paramiko.AuthenticationException as exc:
+            raise TransportAuthError(f"SSH authentication failed: {exc}") from exc
+        except TimeoutError as exc:
+            raise TransportTimeoutError(f"SSH timed out: {exc}") from exc
+        except paramiko.SSHException as exc:
+            raise TransportConnectionError(f"SSH connection failed: {exc}") from exc
+
+        return LogChunk(
+            stdout=stdout,
+            stderr=stderr,
+            stdout_offset=new_stdout_offset,
+            stderr_offset=new_stderr_offset,
+        )
 
     # ── Workflow executor surface (Step 4) ───────────
 
@@ -808,11 +1187,28 @@ class SlurmSSHAdapter:
         logger.debug(f"Submitted job '{job.name}' via SSH with ID {job_id}")
 
         # --- 3. Record submission in state DB (best-effort) ---
-        self._record_job_submission(
-            job,
-            workflow_name=workflow_name,
-            workflow_run_id=workflow_run_id,
-        )
+        # When the adapter knows which SSH profile it represents, record
+        # the true (ssh, profile, scheduler_key) triple so the poller
+        # looks the job up under the right transport. When no profile
+        # is bound (direct hostname constructor, legacy sweep tests),
+        # fall back to the pre-V5 local triple to preserve mock-based
+        # test expectations.
+        if self._profile_name is not None:
+            self._record_job_submission(
+                job,
+                workflow_name=workflow_name,
+                workflow_run_id=workflow_run_id,
+                transport_type="ssh",
+                profile_name=self._profile_name,
+                scheduler_key=f"ssh:{self._profile_name}",
+                submission_source=self.submission_source,
+            )
+        else:
+            self._record_job_submission(
+                job,
+                workflow_name=workflow_name,
+                workflow_run_id=workflow_run_id,
+            )
 
         # --- 4. Fire on_job_submitted callbacks ---
         for callback in self.callbacks:
@@ -929,30 +1325,66 @@ class SlurmSSHAdapter:
         *,
         workflow_name: str | None,
         workflow_run_id: int | None,
+        transport_type: str = "ssh",
+        profile_name: str | None = None,
+        scheduler_key: str | None = None,
+        submission_source: str | None = None,
     ) -> None:
         """Insert a ``jobs`` row for the SSH-submitted job.
 
         Thin wrapper around :func:`record_submission_from_job` — same
-        best-effort contract as the local :class:`Slurm` executor.
+        best-effort contract as the local :class:`Slurm` executor. For
+        backward compatibility with the :meth:`run` callsite that only
+        passes ``workflow_name`` / ``workflow_run_id``, when
+        ``profile_name`` / ``scheduler_key`` are not provided we record
+        the row as local (the original pre-V5 behaviour); callsites that
+        want the SSH triple must pass them explicitly.
         """
         try:
             from srunx.db.cli_helpers import record_submission_from_job
 
-            record_submission_from_job(
-                job,
-                workflow_name=workflow_name,
-                workflow_run_id=workflow_run_id,
-            )
+            if profile_name is None:
+                # Legacy callsite (pre-V5 style) — pass only the two
+                # original kwargs so tests that mock
+                # ``record_submission_from_job`` with the original
+                # signature (``(job, *, workflow_name, workflow_run_id)``)
+                # keep working. The DB default is local anyway.
+                record_submission_from_job(
+                    job,
+                    workflow_name=workflow_name,
+                    workflow_run_id=workflow_run_id,
+                )
+            else:
+                resolved_scheduler_key = (
+                    scheduler_key
+                    if scheduler_key is not None
+                    else f"ssh:{profile_name}"
+                )
+                record_submission_from_job(
+                    job,
+                    workflow_name=workflow_name,
+                    workflow_run_id=workflow_run_id,
+                    transport_type=transport_type,  # type: ignore[arg-type]
+                    profile_name=profile_name,
+                    scheduler_key=resolved_scheduler_key,
+                    submission_source=submission_source,  # type: ignore[arg-type]
+                )
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.debug(f"_record_job_submission failed: {exc}")
 
-    @staticmethod
-    def _record_completion_safe(job_id: int, status: JobStatus) -> None:
-        """Record terminal status in ``jobs`` / ``job_state_transitions``."""
+    def _record_completion_safe(self, job_id: int, status: JobStatus) -> None:
+        """Record terminal status in ``jobs`` / ``job_state_transitions``.
+
+        Targets the adapter's own ``scheduler_key`` so SSH-backed jobs
+        update the remote-cluster row rather than a (possibly
+        nonexistent) local row. When no profile is bound (legacy
+        direct-hostname tests), falls back to ``'local'`` to preserve
+        pre-V5 behaviour.
+        """
         try:
             from srunx.db.cli_helpers import record_completion
 
-            record_completion(job_id, status)
+            record_completion(job_id, status, scheduler_key=self.scheduler_key)
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.debug(f"_record_completion_safe failed: {exc}")
 

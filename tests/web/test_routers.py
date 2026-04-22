@@ -59,6 +59,10 @@ def mock_adapter() -> MagicMock:
         "command": [],
         "resources": {},
     }
+    # Fix #3: the routers now read ``adapter.scheduler_key`` to build the
+    # V5 transport triple. Default to local so existing tests (that
+    # never set this explicitly) continue to behave like pre-V5 mocks.
+    adapter.scheduler_key = "local"
     return adapter
 
 
@@ -589,7 +593,7 @@ class TestWorkflowsRouter:
             # FK: each membership's job_id points at a real jobs row.
             for m in memberships:
                 assert m.job_id is not None
-                job = JobRepository(conn).get(m.job_id)
+                job = JobRepository(conn).get(m.job_id, scheduler_key="local")
                 assert job is not None
                 assert job.status == "PENDING"
                 assert job.submission_source == "workflow"
@@ -599,7 +603,9 @@ class TestWorkflowsRouter:
             # them ActiveWatchPoller would skip the first observation.
             for m in memberships:
                 assert m.job_id is not None
-                latest = JobStateTransitionRepository(conn).latest_for_job(m.job_id)
+                latest = JobStateTransitionRepository(conn).latest_for_job(
+                    m.job_id, scheduler_key="local"
+                )
                 assert latest is not None
                 assert latest.to_status == "PENDING"
                 assert latest.source == "webhook"

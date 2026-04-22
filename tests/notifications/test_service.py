@@ -317,7 +317,8 @@ class TestCreateWatchForJob:
         watch = watches.get(watch_id)
         assert watch is not None
         assert watch.kind == "job"
-        assert watch.target_ref == "job:99"
+        # V5 grammar: ``job:<scheduler_key>:<id>``; default is local.
+        assert watch.target_ref == "job:local:99"
         assert subscriptions.list_by_watch(watch_id) == []
 
     def test_with_endpoint(

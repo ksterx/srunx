@@ -502,6 +502,7 @@ class TestNotificationWatchCallback:
                 endpoint_name="my-slack",
                 preset="terminal",
                 endpoint_kind="slack_webhook",
+                scheduler_key="local",
             )
 
     def test_on_job_submitted_without_job_id_is_noop(self):
@@ -542,4 +543,5 @@ class TestNotificationWatchCallback:
                 endpoint_name="ops",
                 preset="all",
                 endpoint_kind="slack_webhook",
+                scheduler_key="local",
             )

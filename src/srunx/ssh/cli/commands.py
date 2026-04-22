@@ -149,6 +149,12 @@ def submit_job(
     ] = False,
 ):
     """Submit a SLURM job script to a remote server via SSH."""
+    typer.secho(
+        "WARNING: `srunx ssh submit` is deprecated; "
+        "use `srunx submit --script <path> --profile <name>` instead.",
+        err=True,
+        fg=typer.colors.YELLOW,
+    )
     setup_logging(verbose)
 
     # Validate script path
@@ -305,6 +311,12 @@ def show_logs(
     """Display job logs from remote SLURM server via SSH."""
     from rich.syntax import Syntax
 
+    typer.secho(
+        "WARNING: `srunx ssh logs` is deprecated; "
+        "use `srunx logs --profile <name> <job_id>` instead.",
+        err=True,
+        fg=typer.colors.YELLOW,
+    )
     setup_logging(verbose)
 
     try:

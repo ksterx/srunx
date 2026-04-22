@@ -135,6 +135,7 @@ def _record_and_watch(
     job_id: int,
     job_name: str,
     req: JobSubmitRequest,
+    adapter: SlurmSSHAdapter,
 ) -> None:
     """Persist the submission record and (optionally) create a notification watch.
 
@@ -144,7 +145,21 @@ def _record_and_watch(
 
     Endpoint validation is done BEFORE this function is called (in the
     request path, pre-sbatch) so that a 4xx never strands a SLURM job.
+
+    The transport axis (local vs ``ssh:<profile>``) is taken from the
+    adapter so the watch / event rows are keyed to the same transport
+    the poller will query — without this, an SSH-submitted job's watch
+    would be written with ``scheduler_key='local'`` and the poller
+    would look it up on the wrong cluster.
     """
+    scheduler_key = adapter.scheduler_key
+    if scheduler_key.startswith("ssh:"):
+        transport_type = "ssh"
+        profile_name: str | None = scheduler_key[len("ssh:") :]
+    else:
+        transport_type = "local"
+        profile_name = None
+
     job_repo = JobRepository(conn)
     watch_repo = WatchRepository(conn)
     sub_repo = SubscriptionRepository(conn)
@@ -159,6 +174,9 @@ def _record_and_watch(
             name=job_name,
             status="PENDING",
             submission_source="web",
+            transport_type=transport_type,  # type: ignore[arg-type]
+            profile_name=profile_name,
+            scheduler_key=scheduler_key,
         )
         # Seed baseline transition so ActiveWatchPoller's first observation
         # produces a real transition (from_status='PENDING') rather than
@@ -168,13 +186,18 @@ def _record_and_watch(
             from_status=None,
             to_status="PENDING",
             source="webhook",
+            scheduler_key=scheduler_key,
         )
         if req.notify and req.endpoint_id is not None:
-            watch_id = watch_repo.create(kind="job", target_ref=f"job:{job_id}")
+            # V5 grammar: ``job:<scheduler_key>:<id>``. The adapter-owned
+            # ``scheduler_key`` already encodes ``local`` / ``ssh:<profile>``
+            # so a single format-string covers both transports.
+            target_ref = f"job:{scheduler_key}:{job_id}"
+            watch_id = watch_repo.create(kind="job", target_ref=target_ref)
             sub_repo.create(watch_id, req.endpoint_id, req.preset)
             event_id = event_repo.insert(
                 kind="job.submitted",
-                source_ref=f"job:{job_id}",
+                source_ref=target_ref,
                 payload={"job_id": job_id, "job_name": job_name},
             )
             # Fan out the job.submitted event so ``preset='all'`` subscribers
@@ -262,6 +285,7 @@ async def submit_job(
                     job_id=int(job_id),
                     job_name=req.job_name or req.name,
                     req=req,
+                    adapter=adapter,
                 )
             )
         except HTTPException:

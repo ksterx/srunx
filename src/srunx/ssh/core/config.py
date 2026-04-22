@@ -1,9 +1,34 @@
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+# Shared profile-name regex. ``scheduler_key`` uses a colon-delimited
+# grammar (``ssh:<profile>``) that has to round-trip through SQLite
+# target_refs (``job:ssh:<profile>:<id>``), so profile names must not
+# contain ``:``. Length is capped at 64 so oversized names cannot
+# wedge UI tables or log lines.
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
+
+
+def validate_profile_name(name: str) -> None:
+    """Validate *name* against the shared profile-name regex.
+
+    Raises:
+        ValueError: When *name* is empty, too long, or contains any
+            character outside the allowed alphabet. ``':'`` is
+            explicitly called out because it's the scheduler_key
+            delimiter and the most likely accidental violation.
+    """
+    if not isinstance(name, str) or not _PROFILE_NAME_RE.match(name):
+        raise ValueError(
+            f"Invalid profile name {name!r}: must match "
+            f"{_PROFILE_NAME_RE.pattern}. Profile names cannot contain "
+            "':' (reserved for scheduler_key grammar) or exceed 64 characters."
+        )
 
 
 class MountConfig(BaseModel):
@@ -83,6 +108,7 @@ class ConfigManager:
             Path(config_path) if config_path else self._get_default_config_path()
         )
         self.config_data: dict[str, Any] = {}
+        self._loaded_mtime: float | None = None
         self.load_config()
 
     def _get_default_config_path(self) -> Path:
@@ -101,6 +127,7 @@ class ConfigManager:
                         self.save_config()
                     else:
                         self.config_data = json.loads(content)
+                self._loaded_mtime = self.config_path.stat().st_mtime
             except (OSError, json.JSONDecodeError) as e:
                 raise RuntimeError(
                     f"Failed to load config from {self.config_path}: {e}"
@@ -108,6 +135,24 @@ class ConfigManager:
         else:
             self.config_data = {"current_profile": None, "profiles": {}}
             self.save_config()
+
+    def _reload_if_stale(self) -> None:
+        """Re-read the config file when its mtime has advanced.
+
+        Long-lived :class:`ConfigManager` instances (e.g. held by the
+        web app ``TransportRegistry``) must observe external edits
+        (``srunx ssh profile add`` / ``remove``) so cached adapters do
+        not keep routing to stale profiles. The stat call is ~µs and
+        runs before each read-path lookup.
+        """
+        if self._loaded_mtime is None or not self.config_path.exists():
+            return
+        try:
+            current_mtime = self.config_path.stat().st_mtime
+        except OSError:
+            return
+        if current_mtime != self._loaded_mtime:
+            self.load_config()
 
     def save_config(self) -> None:
         """Save SSH profile data, preserving non-SSH keys (e.g. SrunxConfig)."""
@@ -134,6 +179,7 @@ class ConfigManager:
             ) from e
 
     def add_profile(self, name: str, profile: ServerProfile) -> None:
+        validate_profile_name(name)
         if "profiles" not in self.config_data:
             self.config_data["profiles"] = {}
 
@@ -152,12 +198,14 @@ class ConfigManager:
         return False
 
     def get_profile(self, name: str) -> ServerProfile | None:
+        self._reload_if_stale()
         profiles = self.config_data.get("profiles", {})
         if name in profiles:
             return ServerProfile.model_validate(profiles[name])
         return None
 
     def list_profiles(self) -> dict[str, ServerProfile]:
+        self._reload_if_stale()
         profiles = {}
         for name, data in self.config_data.get("profiles", {}).items():
             profiles[name] = ServerProfile.model_validate(data)

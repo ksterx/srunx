@@ -62,11 +62,27 @@ class SlackWebhookDeliveryAdapter:
 
     @staticmethod
     def _id_from_source_ref(source_ref: str, expected_prefix: str) -> str | None:
-        """Extract the numeric id from ``"<prefix>:<id>"`` shaped source_ref."""
+        """Extract the trailing id from a structured ``source_ref``.
+
+        Grammar accepted (V5+):
+
+        - ``job:local:<N>``          → ``"<N>"``
+        - ``job:ssh:<profile>:<N>``  → ``"<N>"``
+        - ``workflow_run:<N>``        → ``"<N>"``
+        - ``sweep_run:<N>``           → ``"<N>"``
+
+        The trailing segment (after the last ``:``) is always the id,
+        so we use :func:`str.rsplit` with ``maxsplit=1`` rather than a
+        prefix-strip — that keeps both the V5 3/4-segment ``job`` forms
+        and the transport-agnostic ``workflow_run`` / ``sweep_run``
+        forms rendering the same id in Slack messages.
+        """
         if not source_ref.startswith(f"{expected_prefix}:"):
             return None
-        suffix = source_ref[len(expected_prefix) + 1 :]
-        return suffix or None
+        head, _, tail = source_ref.rpartition(":")
+        if not head or not tail:
+            return None
+        return tail
 
     @staticmethod
     def _build_message(event: Event) -> tuple[str, list[dict[str, Any]]]:

@@ -83,12 +83,29 @@ class NotificationConfig(BaseModel):
     )
 
 
+class CliTransportConfig(BaseModel):
+    """CLI transport resolution behaviour (REQ-1, Phase 2)."""
+
+    use_current_profile: bool = Field(
+        default=True,
+        description=(
+            "When True (default), top-level CLI commands (submit / cancel / "
+            "status / list / logs / flow run / monitor jobs) fall back to the "
+            "active SSH profile set via 'srunx ssh profile set <name>' when "
+            "no explicit --profile / --local / $SRUNX_SSH_PROFILE is given. "
+            "Set to False to force pre-Phase-2 behaviour where the CLI only "
+            "routes through SSH on an explicit flag or env var."
+        ),
+    )
+
+
 class SrunxConfig(BaseModel):
     """Main srunx configuration."""
 
     resources: ResourceDefaults = Field(default_factory=ResourceDefaults)
     environment: EnvironmentDefaults = Field(default_factory=EnvironmentDefaults)
     notifications: NotificationConfig = Field(default_factory=NotificationConfig)
+    cli: CliTransportConfig = Field(default_factory=CliTransportConfig)
     log_dir: str = Field(default="logs", description="Default log directory")
     work_dir: str | None = Field(default=None, description="Default working directory")
 

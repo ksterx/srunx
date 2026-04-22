@@ -11,11 +11,12 @@ This replaces the dual-write helpers that lived inside
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from srunx.logging import get_logger
 
 if TYPE_CHECKING:
+    from srunx.db.models import SubmissionSource, TransportType
     from srunx.models import JobStatus, JobType
 
 logger = get_logger(__name__)
@@ -26,16 +27,25 @@ def record_submission_from_job(
     *,
     workflow_name: str | None = None,
     workflow_run_id: int | None = None,
+    transport_type: TransportType = "local",
+    profile_name: str | None = None,
+    scheduler_key: str = "local",
+    submission_source: SubmissionSource | None = None,
 ) -> None:
     """Insert a ``jobs`` row + seed a ``PENDING`` transition for ``job``.
 
-    ``workflow_name`` picks the ``submission_source`` (``'workflow'``
-    vs ``'cli'``). ``workflow_run_id`` — when provided — links the job
-    back to its ``workflow_runs`` row so ``compute_workflow_stats``
-    and the Web ``/api/workflows/runs`` history JOIN on
-    ``workflow_run_id`` actually pick up CLI-launched workflow jobs.
-    Passing ``None`` preserves the pre-existing behaviour for plain
-    ``srunx submit`` + standalone ``Slurm.submit`` callers.
+    ``workflow_name`` picks the default ``submission_source`` ("workflow"
+    vs "cli") when the caller does not pass ``submission_source``
+    explicitly. ``workflow_run_id`` — when provided — links the job back
+    to its ``workflow_runs`` row.
+
+    ``transport_type`` / ``profile_name`` / ``scheduler_key`` describe
+    where the job was submitted to. Defaults are the local-SLURM triple
+    so existing callers (CLI ``srunx submit``, local ``Slurm.submit``)
+    record exactly what they did before. SSH callers (``SlurmSSHAdapter``
+    on the Web / MCP / future CLI paths) must pass the matching triple;
+    :func:`srunx.db.repositories.jobs._validate_transport_triple` rejects
+    mismatches before they reach the DB.
 
     Fails closed — any exception is logged at debug and silently
     swallowed. The caller must NOT depend on a non-None return.
@@ -51,6 +61,16 @@ def record_submission_from_job(
         from srunx.db.repositories.jobs import JobRepository
         from srunx.models import Job
 
+        # ``submission_source`` falls back to the original workflow/cli
+        # heuristic when the caller does not set it explicitly. The
+        # Literal cast keeps mypy happy under ``from __future__ import
+        # annotations``.
+        effective_source: Literal["cli", "web", "workflow"]
+        if submission_source is not None:
+            effective_source = submission_source  # type: ignore[assignment]
+        else:
+            effective_source = "workflow" if workflow_name else "cli"
+
         with initialized_connection() as conn:
             resources = getattr(job, "resources", None)
             environment = getattr(job, "environment", None)
@@ -65,7 +85,10 @@ def record_submission_from_job(
                 job_id=int(job.job_id),
                 name=job.name,
                 status=(job._status.value if hasattr(job, "_status") else "PENDING"),
-                submission_source=("workflow" if workflow_name else "cli"),
+                submission_source=effective_source,
+                transport_type=transport_type,
+                profile_name=profile_name,
+                scheduler_key=scheduler_key,
                 command=command_val,
                 nodes=getattr(resources, "nodes", None) if resources else None,
                 gpus_per_node=(
@@ -98,6 +121,7 @@ def record_submission_from_job(
                     from_status=None,
                     to_status="PENDING",
                     source="webhook",
+                    scheduler_key=scheduler_key,
                 )
     except Exception as exc:  # noqa: BLE001 — best-effort
         logger.debug(f"record_submission_from_job failed: {exc}")
@@ -136,7 +160,12 @@ def create_cli_workflow_run(
         return None
 
 
-def record_completion(job_id: int, status: JobStatus) -> None:
+def record_completion(
+    job_id: int,
+    status: JobStatus,
+    *,
+    scheduler_key: str = "local",
+) -> None:
     """Mark ``job_id`` terminal in ``jobs`` + append a cli_monitor transition.
 
     No-ops if the job row doesn't exist in the state DB yet (e.g. the
@@ -144,6 +173,9 @@ def record_completion(job_id: int, status: JobStatus) -> None:
     read-modify-write of ``job_state_transitions`` runs inside a
     ``BEGIN IMMEDIATE`` so two racing observers (e.g. CLI monitor +
     poller) can't both append the same terminal state.
+
+    ``scheduler_key`` defaults to ``'local'`` so the CLI monitor path
+    (which only observes local SLURM) behaves identically to pre-V5.
     """
     try:
         from srunx.db.connection import initialized_connection, transaction
@@ -154,11 +186,13 @@ def record_completion(job_id: int, status: JobStatus) -> None:
 
         with initialized_connection() as conn:
             repo = JobRepository(conn)
-            if repo.get(job_id) is None:
+            if repo.get(job_id, scheduler_key=scheduler_key) is None:
                 return
             transition_repo = JobStateTransitionRepository(conn)
             with transaction(conn, "IMMEDIATE"):
-                latest = transition_repo.latest_for_job(job_id)
+                latest = transition_repo.latest_for_job(
+                    job_id, scheduler_key=scheduler_key
+                )
                 latest_status = latest.to_status if latest is not None else None
                 if latest_status != status.value:
                     transition_repo.insert(
@@ -166,8 +200,11 @@ def record_completion(job_id: int, status: JobStatus) -> None:
                         from_status=latest_status,
                         to_status=status.value,
                         source="cli_monitor",
+                        scheduler_key=scheduler_key,
                     )
-                repo.update_completion(job_id, status.value)
+                repo.update_completion(
+                    job_id, status.value, scheduler_key=scheduler_key
+                )
     except Exception as exc:  # noqa: BLE001 — best-effort
         logger.debug(f"record_completion failed: {exc}")
 

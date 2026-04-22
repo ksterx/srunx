@@ -46,7 +46,7 @@ def test_record_submission_roundtrip(repo: JobRepository) -> None:
     )
     assert row_id > 0
 
-    job = repo.get(101)
+    job = repo.get(101, scheduler_key="local")
     assert job is not None
     assert job.job_id == 101
     assert job.name == "train"
@@ -84,7 +84,7 @@ def test_record_submission_duplicate_job_id_is_noop(
     )
     assert second_row_id == 0  # INSERT OR IGNORE → no row inserted
 
-    job = repo.get(202)
+    job = repo.get(202, scheduler_key="local")
     assert job is not None
     # Original fields preserved — not clobbered to "second" / RUNNING.
     assert job.name == "first"
@@ -97,17 +97,25 @@ def test_record_submission_ignore_preserves_fk_references(
 ) -> None:
     """P1-2: ensure the FK references survive a duplicate call.
 
-    ``INSERT OR REPLACE`` would have cascaded a ``SET NULL`` through the
-    ``job_state_transitions.job_id`` FK; ``INSERT OR IGNORE`` preserves.
+    ``INSERT OR REPLACE`` would have cascaded a ``SET NULL`` through
+    the ``job_state_transitions.jobs_row_id`` FK; ``INSERT OR IGNORE``
+    preserves.
     """
     repo.record_submission(
         job_id=210, name="fk-test", status="PENDING", submission_source="web"
     )
+    # Resolve the jobs.id (AUTOINCREMENT PK) so the transition points
+    # at the correct V5 FK target.
+    jobs_row_id = conn.execute(
+        "SELECT id FROM jobs WHERE scheduler_key = 'local' AND job_id = ?",
+        (210,),
+    ).fetchone()[0]
     # Simulate a prior transition observed by the poller.
     conn.execute(
-        "INSERT INTO job_state_transitions (job_id, to_status, observed_at, source) "
+        "INSERT INTO job_state_transitions "
+        "(jobs_row_id, to_status, observed_at, source) "
         "VALUES (?, 'RUNNING', '2026-04-19T00:00:00Z', 'poller')",
-        (210,),
+        (jobs_row_id,),
     )
     conn.commit()
 
@@ -121,9 +129,9 @@ def test_record_submission_ignore_preserves_fk_references(
 
     # The prior transition still references the jobs row — not SET NULL.
     rows = conn.execute(
-        "SELECT job_id FROM job_state_transitions WHERE to_status='RUNNING'"
+        "SELECT jobs_row_id FROM job_state_transitions WHERE to_status='RUNNING'"
     ).fetchall()
-    assert [r[0] for r in rows] == [210]
+    assert [r[0] for r in rows] == [jobs_row_id]
 
 
 def test_update_status_fills_optional_fields(repo: JobRepository) -> None:
@@ -133,11 +141,12 @@ def test_update_status_fills_optional_fields(repo: JobRepository) -> None:
     updated = repo.update_status(
         303,
         "RUNNING",
+        scheduler_key="local",
         started_at="2026-04-19T01:00:00.000Z",
         nodelist="node01",
     )
     assert updated is True
-    job = repo.get(303)
+    job = repo.get(303, scheduler_key="local")
     assert job is not None
     assert job.status == "RUNNING"
     assert job.nodelist == "node01"
@@ -145,7 +154,7 @@ def test_update_status_fills_optional_fields(repo: JobRepository) -> None:
 
 
 def test_update_status_returns_false_for_missing(repo: JobRepository) -> None:
-    assert repo.update_status(99999, "RUNNING") is False
+    assert repo.update_status(99999, "RUNNING", scheduler_key="local") is False
 
 
 def test_update_completion_computes_duration(repo: JobRepository) -> None:
@@ -157,10 +166,13 @@ def test_update_completion_computes_duration(repo: JobRepository) -> None:
         submitted_at="2026-04-19T10:00:00.000Z",
     )
     ok = repo.update_completion(
-        404, "COMPLETED", completed_at="2026-04-19T11:00:00.000Z"
+        404,
+        "COMPLETED",
+        completed_at="2026-04-19T11:00:00.000Z",
+        scheduler_key="local",
     )
     assert ok is True
-    job = repo.get(404)
+    job = repo.get(404, scheduler_key="local")
     assert job is not None
     assert job.status == "COMPLETED"
     assert job.duration_secs == 3600
@@ -172,8 +184,8 @@ def test_update_completion_defaults_completed_at_to_now(
     repo.record_submission(
         job_id=405, name="t", status="PENDING", submission_source="cli"
     )
-    assert repo.update_completion(405, "COMPLETED") is True
-    job = repo.get(405)
+    assert repo.update_completion(405, "COMPLETED", scheduler_key="local") is True
+    job = repo.get(405, scheduler_key="local")
     assert job is not None and job.completed_at is not None
 
 
@@ -286,7 +298,11 @@ def test_count_by_status_in_range_uses_timestamp_field(repo: JobRepository) -> N
         submitted_at="2026-01-01T00:00:00Z",
     )
     repo.update_status(
-        901, "COMPLETED", completed_at="2026-04-19T12:00:00Z", duration_secs=1
+        901,
+        "COMPLETED",
+        scheduler_key="local",
+        completed_at="2026-04-19T12:00:00Z",
+        duration_secs=1,
     )
     # Submitted inside the window, not yet completed → excluded under
     # completed_at because ``completed_at >= ?`` is false when it's NULL.
@@ -331,9 +347,9 @@ def test_delete_existing_returns_true(repo: JobRepository) -> None:
     repo.record_submission(
         job_id=901, name="t", status="PENDING", submission_source="cli"
     )
-    assert repo.delete(901) is True
-    assert repo.get(901) is None
+    assert repo.delete(901, scheduler_key="local") is True
+    assert repo.get(901, scheduler_key="local") is None
 
 
 def test_delete_missing_returns_false(repo: JobRepository) -> None:
-    assert repo.delete(99999) is False
+    assert repo.delete(99999, scheduler_key="local") is False

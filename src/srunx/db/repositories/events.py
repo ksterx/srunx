@@ -38,13 +38,28 @@ class EventRepository(BaseRepository):
 
     @staticmethod
     def _extract_source_id(source_ref: str) -> str:
-        """Return the id portion of a ``"<kind>:<id>"`` source_ref.
+        """Return the id portion of a structured ``source_ref``.
+
+        Grammar (V5+):
+        - ``job:local:<N>`` → ``<N>``
+        - ``job:ssh:<profile>:<N>`` → ``<N>``
+        - ``workflow_run:<N>`` → ``<N>``
+        - ``sweep_run:<N>`` → ``<N>``
+        - ``resource:<partition>:<threshold>:<window>`` → remainder after first ``:``
+
+        For ``job:*`` refs we always take the trailing numeric segment
+        so the dedup hash is stable across transports. Non-``job`` refs
+        keep the pre-V5 "remainder after first ``:``" semantics.
 
         Falls back to the full string when no ``:`` is present.
         """
-        if ":" in source_ref:
-            return source_ref.split(":", 1)[1]
-        return source_ref
+        if ":" not in source_ref:
+            return source_ref
+        kind, _, remainder = source_ref.partition(":")
+        if kind == "job":
+            # job:local:N → N ; job:ssh:profile:N → N
+            return remainder.rsplit(":", 1)[-1]
+        return remainder
 
     @staticmethod
     def _compute_payload_hash(kind: str, source_ref: str, payload: dict) -> str:

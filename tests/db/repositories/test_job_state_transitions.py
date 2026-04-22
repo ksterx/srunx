@@ -46,7 +46,7 @@ def test_insert_returns_positive_id(
     conn: sqlite3.Connection, repo: JobStateTransitionRepository
 ) -> None:
     _seed_job(conn, 1)
-    row_id = repo.insert(1, None, "PENDING", "poller")
+    row_id = repo.insert(1, None, "PENDING", "poller", scheduler_key="local")
     assert row_id > 0
 
 
@@ -54,8 +54,8 @@ def test_insert_default_observed_at_is_parseable(
     conn: sqlite3.Connection, repo: JobStateTransitionRepository
 ) -> None:
     _seed_job(conn, 1)
-    repo.insert(1, None, "PENDING", "poller")
-    latest = repo.latest_for_job(1)
+    repo.insert(1, None, "PENDING", "poller", scheduler_key="local")
+    latest = repo.latest_for_job(1, scheduler_key="local")
     assert latest is not None
     assert isinstance(latest.observed_at, datetime)
 
@@ -65,9 +65,14 @@ def test_insert_with_explicit_observed_at(
 ) -> None:
     _seed_job(conn, 1)
     repo.insert(
-        1, "PENDING", "RUNNING", "cli_monitor", observed_at="2026-04-18T01:02:03.000Z"
+        1,
+        "PENDING",
+        "RUNNING",
+        "cli_monitor",
+        observed_at="2026-04-18T01:02:03.000Z",
+        scheduler_key="local",
     )
-    latest = repo.latest_for_job(1)
+    latest = repo.latest_for_job(1, scheduler_key="local")
     assert latest is not None
     assert latest.from_status == "PENDING"
     assert latest.to_status == "RUNNING"
@@ -80,23 +85,44 @@ def test_insert_with_explicit_observed_at(
 def test_latest_for_job_missing_returns_none(
     repo: JobStateTransitionRepository,
 ) -> None:
-    assert repo.latest_for_job(9999) is None
+    assert repo.latest_for_job(9999, scheduler_key="local") is None
 
 
 def test_latest_for_job_picks_most_recent(
     conn: sqlite3.Connection, repo: JobStateTransitionRepository
 ) -> None:
     _seed_job(conn, 1)
-    repo.insert(1, None, "PENDING", "poller", observed_at="2026-04-18T00:00:00Z")
-    repo.insert(1, "PENDING", "RUNNING", "poller", observed_at="2026-04-18T00:05:00Z")
-    repo.insert(1, "RUNNING", "COMPLETED", "poller", observed_at="2026-04-18T00:10:00Z")
-    latest = repo.latest_for_job(1)
+    repo.insert(
+        1,
+        None,
+        "PENDING",
+        "poller",
+        observed_at="2026-04-18T00:00:00Z",
+        scheduler_key="local",
+    )
+    repo.insert(
+        1,
+        "PENDING",
+        "RUNNING",
+        "poller",
+        observed_at="2026-04-18T00:05:00Z",
+        scheduler_key="local",
+    )
+    repo.insert(
+        1,
+        "RUNNING",
+        "COMPLETED",
+        "poller",
+        observed_at="2026-04-18T00:10:00Z",
+        scheduler_key="local",
+    )
+    latest = repo.latest_for_job(1, scheduler_key="local")
     assert latest is not None
     assert latest.to_status == "COMPLETED"
 
 
 def test_history_for_job_empty(repo: JobStateTransitionRepository) -> None:
-    assert repo.history_for_job(9999) == []
+    assert repo.history_for_job(9999, scheduler_key="local") == []
 
 
 def test_history_for_job_is_chronological(
@@ -104,11 +130,32 @@ def test_history_for_job_is_chronological(
 ) -> None:
     _seed_job(conn, 1)
     # Insert out of chronological order — repo must still return ASC by observed_at.
-    repo.insert(1, "RUNNING", "COMPLETED", "poller", observed_at="2026-04-18T00:10:00Z")
-    repo.insert(1, None, "PENDING", "poller", observed_at="2026-04-18T00:00:00Z")
-    repo.insert(1, "PENDING", "RUNNING", "poller", observed_at="2026-04-18T00:05:00Z")
+    repo.insert(
+        1,
+        "RUNNING",
+        "COMPLETED",
+        "poller",
+        observed_at="2026-04-18T00:10:00Z",
+        scheduler_key="local",
+    )
+    repo.insert(
+        1,
+        None,
+        "PENDING",
+        "poller",
+        observed_at="2026-04-18T00:00:00Z",
+        scheduler_key="local",
+    )
+    repo.insert(
+        1,
+        "PENDING",
+        "RUNNING",
+        "poller",
+        observed_at="2026-04-18T00:05:00Z",
+        scheduler_key="local",
+    )
 
-    history = repo.history_for_job(1)
+    history = repo.history_for_job(1, scheduler_key="local")
     assert [t.to_status for t in history] == ["PENDING", "RUNNING", "COMPLETED"]
     # Ensure datetime conversion happened for every row.
     assert all(isinstance(t.observed_at, datetime) for t in history)
@@ -119,24 +166,30 @@ def test_history_scoped_by_job(
 ) -> None:
     _seed_job(conn, 1)
     _seed_job(conn, 2)
-    repo.insert(1, None, "PENDING", "poller")
-    repo.insert(2, None, "RUNNING", "webhook")
-    assert [t.to_status for t in repo.history_for_job(1)] == ["PENDING"]
-    assert [t.to_status for t in repo.history_for_job(2)] == ["RUNNING"]
+    repo.insert(1, None, "PENDING", "poller", scheduler_key="local")
+    repo.insert(2, None, "RUNNING", "webhook", scheduler_key="local")
+    assert [t.to_status for t in repo.history_for_job(1, scheduler_key="local")] == [
+        "PENDING"
+    ]
+    assert [t.to_status for t in repo.history_for_job(2, scheduler_key="local")] == [
+        "RUNNING"
+    ]
 
 
-def test_job_delete_sets_job_id_null(
+def test_job_delete_sets_jobs_row_id_null(
     conn: sqlite3.Connection, repo: JobStateTransitionRepository
 ) -> None:
     _seed_job(conn, 1)
-    repo.insert(1, None, "PENDING", "poller")
-    # FK is ON DELETE SET NULL; transition row survives but job_id goes NULL.
+    repo.insert(1, None, "PENDING", "poller", scheduler_key="local")
+    # V5: FK is ``jobs_row_id`` → ``jobs.id`` with ON DELETE SET NULL.
+    # Deleting the jobs row orphans the transition but preserves the
+    # append-only log (the SET NULL cascade zeroes ``jobs_row_id``).
     conn.execute("DELETE FROM jobs WHERE job_id = 1")
     conn.commit()
 
-    assert repo.latest_for_job(1) is None
+    assert repo.latest_for_job(1, scheduler_key="local") is None
     orphan = conn.execute(
-        "SELECT job_id, to_status FROM job_state_transitions"
+        "SELECT jobs_row_id, to_status FROM job_state_transitions"
     ).fetchone()
-    assert orphan["job_id"] is None
+    assert orphan["jobs_row_id"] is None
     assert orphan["to_status"] == "PENDING"
