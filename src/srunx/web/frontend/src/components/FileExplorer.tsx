@@ -17,6 +17,7 @@ import {
   Bell,
   BellOff,
   Code,
+  Copy,
   FileText,
 } from "lucide-react";
 import hljs from "highlight.js/lib/core";
@@ -101,6 +102,67 @@ const SBATCH_EXTENSIONS = [".sh", ".slurm", ".sbatch", ".bash"];
 
 function isSbatchFile(name: string): boolean {
   return SBATCH_EXTENSIONS.some((ext) => name.endsWith(ext));
+}
+
+function joinRemotePath(remote: string, relPath: string): string {
+  const prefix = remote.replace(/\/+$/, "");
+  const suffix = relPath.replace(/^\/+/, "");
+  if (!suffix) return prefix || "/";
+  return prefix ? `${prefix}/${suffix}` : `/${suffix}`;
+}
+
+type CopyButtonProps = {
+  value: string;
+  title?: string;
+  style?: React.CSSProperties;
+};
+
+function CopyButton({ value, title, style }: CopyButtonProps) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy(e: React.MouseEvent) {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable — silently ignore */
+    }
+  }
+
+  const label = title ?? "Copy path";
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      title={copied ? "Copied" : label}
+      aria-label={copied ? `${label} (copied)` : label}
+      style={{
+        background: "transparent",
+        border: "none",
+        color: copied ? "var(--st-completed)" : "var(--text-muted)",
+        cursor: "pointer",
+        padding: 4,
+        borderRadius: "var(--radius-sm)",
+        display: "flex",
+        alignItems: "center",
+        flexShrink: 0,
+        transition: "color var(--duration-fast) var(--ease-out)",
+        ...style,
+      }}
+      onMouseEnter={(e) => {
+        if (!copied) e.currentTarget.style.color = "var(--text-secondary)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.color = copied
+          ? "var(--st-completed)"
+          : "var(--text-muted)";
+      }}
+    >
+      {copied ? <Check size={12} /> : <Copy size={12} />}
+    </button>
+  );
 }
 
 function getFileIcon(name: string, type: FileEntryType, isExpanded: boolean) {
@@ -247,6 +309,7 @@ type SubmitDialogProps = {
   fileName: string;
   filePath: string;
   mountName: string;
+  mountRemote: string;
   onClose: () => void;
 };
 
@@ -254,8 +317,10 @@ function SubmitDialog({
   fileName,
   filePath,
   mountName,
+  mountRemote,
   onClose,
 }: SubmitDialogProps) {
+  const fullRemotePath = joinRemotePath(mountRemote, filePath);
   const [jobName, setJobName] = useState(fileName.replace(/\.[^.]+$/, ""));
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<{ job_id: number | null } | null>(null);
@@ -465,6 +530,9 @@ function SubmitDialog({
             </label>
             <div
               style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "var(--sp-2)",
                 fontFamily: "var(--font-mono)",
                 fontSize: "0.8rem",
                 color: "var(--text-secondary)",
@@ -472,12 +540,20 @@ function SubmitDialog({
                 background: "var(--bg-base)",
                 borderRadius: "var(--radius-md)",
                 border: "1px solid var(--border-subtle)",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
               }}
             >
-              {filePath}
+              <span
+                style={{
+                  flex: 1,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={fullRemotePath}
+              >
+                {fullRemotePath}
+              </span>
+              <CopyButton value={fullRemotePath} title="Copy full path" />
             </div>
           </div>
 
@@ -810,7 +886,12 @@ function SubmitDialog({
 
 /* ── File Viewer ───────────────────────────── */
 
-type SelectedFile = { mount: string; path: string; name: string };
+type SelectedFile = {
+  mount: string;
+  remote: string;
+  path: string;
+  name: string;
+};
 
 type FileViewerProps = {
   selectedFile: SelectedFile | null;
@@ -933,14 +1014,19 @@ function FileViewer({
           style={{ color: "var(--text-muted)", flexShrink: 0 }}
         />
         <span
+          title={joinRemotePath(selectedFile.remote, selectedFile.path)}
           style={{
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
           }}
         >
-          {selectedFile.mount}:{selectedFile.path}
+          {joinRemotePath(selectedFile.remote, selectedFile.path)}
         </span>
+        <CopyButton
+          value={joinRemotePath(selectedFile.remote, selectedFile.path)}
+          title="Copy full path"
+        />
         <span
           style={{
             marginLeft: "auto",
@@ -1454,7 +1540,14 @@ export function FileExplorer() {
     filePath: string;
     fileName: string;
     mountName: string;
+    mountRemote: string;
   } | null>(null);
+
+  const remoteByMount = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const m of mounts) map.set(m.name, m.remote);
+    return map;
+  }, [mounts]);
 
   /* Load mounts on mount */
   useEffect(() => {
@@ -1566,7 +1659,13 @@ export function FileExplorer() {
         return;
       }
       const requestId = ++fileRequestRef.current;
-      setSelectedFile({ mount: mountName, path: filePath, name: fileName });
+      const remote = remoteByMount.get(mountName) ?? "";
+      setSelectedFile({
+        mount: mountName,
+        remote,
+        path: filePath,
+        name: fileName,
+      });
       setFileContent(null);
       setFileLoading(true);
       setFileError(null);
@@ -1585,7 +1684,7 @@ export function FileExplorer() {
         }
       }
     },
-    [selectedFile, fileError],
+    [selectedFile, fileError, remoteByMount],
   );
 
   /* Context menu handler */
@@ -1736,6 +1835,7 @@ export function FileExplorer() {
                       filePath: fp,
                       fileName: entry.name,
                       mountName: mn,
+                      mountRemote: remoteByMount.get(mn) ?? "",
                     })
                   }
                   onFileSelect={(fp, entry, mn) =>
@@ -1786,6 +1886,7 @@ export function FileExplorer() {
               filePath: contextMenu.filePath,
               fileName: contextMenu.fileName,
               mountName: contextMenu.mountName,
+              mountRemote: remoteByMount.get(contextMenu.mountName) ?? "",
             })
           }
           onClose={() => setContextMenu(null)}
@@ -1799,6 +1900,7 @@ export function FileExplorer() {
             fileName={submitTarget.fileName}
             filePath={submitTarget.filePath}
             mountName={submitTarget.mountName}
+            mountRemote={submitTarget.mountRemote}
             onClose={() => setSubmitTarget(null)}
           />
         )}
