@@ -47,7 +47,12 @@ QuietOpt = Annotated[
     typer.Option(
         "--quiet",
         "-q",
-        help="Suppress the transport banner on stderr.",
+        help=(
+            "Suppress the transport banner on stderr. Only meaningful "
+            "when an explicit transport source is selected "
+            "(--profile / --local / $SRUNX_SSH_PROFILE); the default "
+            "local path never prints a banner."
+        ),
     ),
 ]
 """``--quiet`` / ``-q``: suppress the transport banner (REQ-7)."""

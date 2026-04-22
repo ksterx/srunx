@@ -25,7 +25,71 @@ from srunx.sweep.expand import (
     parse_sweep_flags,
 )
 from srunx.sweep.orchestrator import SweepOrchestrator
-from srunx.transport import ResolvedTransport, resolve_transport
+from srunx.transport import (
+    ResolvedTransport,
+    peek_scheduler_key,
+    resolve_transport,
+)
+
+
+def _build_workflow_callbacks(
+    *,
+    endpoint: str | None,
+    effective_preset: str,
+    is_sweep: bool,
+    slack: bool,
+    debug: bool,
+    scheduler_key: str,
+) -> list[Callback]:
+    """Assemble the callback list for a CLI workflow invocation.
+
+    ``NotificationWatchCallback`` is omitted for sweep runs because the
+    orchestrator manages a sweep-level watch + subscription; attaching a
+    per-job callback there would spam one notification per cell. The
+    ``scheduler_key`` is threaded in so the watch the callback creates
+    targets the transport the workflow will actually submit against.
+
+    ``SlackCallback`` is legacy in-process delivery and is still attached
+    in both modes for backward compatibility.
+    """
+    callbacks: list[Callback] = []
+    if endpoint and not is_sweep:
+        callbacks.append(
+            NotificationWatchCallback(
+                endpoint_name=endpoint,
+                preset=effective_preset,
+                scheduler_key=scheduler_key,
+            )
+        )
+    if slack:
+        logger.warning(
+            "`--slack` is deprecated; configure an endpoint via "
+            "Settings → Notifications and pass `--endpoint <name>`."
+        )
+        webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+        if not webhook_url:
+            raise ValueError("SLACK_WEBHOOK_URL environment variable is not set")
+        callbacks.append(SlackCallback(webhook_url=webhook_url))
+
+    if debug:
+        # Imported lazily to avoid pulling main.py's typer surface at
+        # module import time.
+        from srunx.cli.main import DebugCallback
+
+        callbacks.append(DebugCallback())
+
+    return callbacks
+
+
+def _pre_resolve_scheduler_key(profile: str | None, local: bool) -> str:
+    """Return the scheduler_key ``resolve_transport`` would select.
+
+    Thin wrapper around :func:`peek_scheduler_key` kept as a module-
+    local helper so the import has a guaranteed call site (ruff's
+    unused-import stripper otherwise drops the transport import).
+    """
+    return peek_scheduler_key(profile=profile, local=local)
+
 
 logger = get_logger(__name__)
 
@@ -499,49 +563,38 @@ def _execute_workflow(
             max_parallel,
         )
 
+        # Build callbacks BEFORE resolve_transport so the SSH adapter +
+        # pool both see the full callback list at construction time (the
+        # pool copies ``callbacks`` into ``_callbacks`` in ``__init__``,
+        # so a post-hoc mutation wouldn't reach pooled clones). The
+        # scheduler_key the transport will pick is deterministic from
+        # the CLI flags + env, so we can pre-compute it via
+        # :func:`peek_scheduler_key` and bind it to
+        # ``NotificationWatchCallback`` up front.
+        pre_scheduler_key = _pre_resolve_scheduler_key(profile, local)
+        effective_preset = preset or get_config().notifications.default_preset
+        is_sweep = sweep_spec is not None
+        callbacks = _build_workflow_callbacks(
+            endpoint=endpoint,
+            effective_preset=effective_preset,
+            is_sweep=is_sweep,
+            slack=slack,
+            debug=debug,
+            scheduler_key=pre_scheduler_key,
+        )
+
         # Resolve transport once for the whole invocation. The context
         # manager closes any SSH pool on exit. Validation / dry-run /
         # sweep / single-run all branch inside this scope so every path
         # sees the same executor_factory + submission_context.
-        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+        with resolve_transport(
+            profile=profile,
+            local=local,
+            quiet=quiet,
+            callbacks=callbacks,
+            submission_source="cli",
+        ) as rt:
             _warn_missing_mounts(rt)
-
-            # Setup callbacks if requested.
-            # ``NotificationWatchCallback`` attaches a per-job watch on every
-            # submission, which is right for non-sweep workflows but wrong
-            # for sweeps: sweep-level aggregation runs through the sweep_run
-            # watch + subscription created by the orchestrator, so adding
-            # per-job watches would spam one notification per cell job.
-            # ``SlackCallback`` is legacy in-process delivery and is still
-            # attached in both modes for backward compatibility.
-            callbacks: list[Callback] = []
-            effective_preset = preset or get_config().notifications.default_preset
-            is_sweep = sweep_spec is not None
-            if endpoint and not is_sweep:
-                callbacks.append(
-                    NotificationWatchCallback(
-                        endpoint_name=endpoint,
-                        preset=effective_preset,
-                    )
-                )
-            if slack:
-                logger.warning(
-                    "`--slack` is deprecated; configure an endpoint via "
-                    "Settings → Notifications and pass `--endpoint <name>`."
-                )
-                webhook_url = os.getenv("SLACK_WEBHOOK_URL")
-                if not webhook_url:
-                    raise ValueError(
-                        "SLACK_WEBHOOK_URL environment variable is not set"
-                    )
-                callbacks.append(SlackCallback(webhook_url=webhook_url))
-
-            if debug:
-                # Imported lazily to avoid pulling main.py's typer surface at
-                # module import time.
-                from srunx.cli.main import DebugCallback
-
-                callbacks.append(DebugCallback())
 
             if sweep_spec is not None:
                 if validate:

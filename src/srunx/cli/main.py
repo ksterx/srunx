@@ -653,9 +653,10 @@ def submit(
 
         if wait:
             if client is None:
-                # Protocol has no blocking monitor yet; SSH wait is out of
-                # scope for Phase 5a and will land with the SSH monitor
-                # wiring in Phase 5b.
+                # JobOperationsProtocol does not define a blocking
+                # monitor method, so --wait on SSH transports is a
+                # no-op until the Protocol grows one (tracked by the
+                # SSH monitor wiring follow-up).
                 console.print(
                     "⚠️  --wait is not yet supported for SSH transports; "
                     "submitted job continues to run."

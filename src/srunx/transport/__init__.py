@@ -13,6 +13,7 @@ from srunx.transport.registry import (
     ResolvedTransport,
     TransportHandle,
     TransportRegistry,
+    peek_scheduler_key,
     resolve_transport,
 )
 
@@ -20,5 +21,6 @@ __all__ = [
     "ResolvedTransport",
     "TransportHandle",
     "TransportRegistry",
+    "peek_scheduler_key",
     "resolve_transport",
 ]

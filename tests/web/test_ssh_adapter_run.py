@@ -37,6 +37,10 @@ def _bare_adapter(callbacks: list[Callback] | None = None) -> SlurmSSHAdapter:
     adapter._proxy_jump = None
     adapter._env_vars = {}
     adapter._mounts = ()
+    # Review fix #7: submission_source is mutable per-handle state the
+    # transport registry sets; tests that bypass __init__ must provide
+    # a default so submit()/run() branches that rely on it don't AttributeError.
+    adapter.submission_source = "web"
 
     transport = MagicMock()
     transport.is_active.return_value = True

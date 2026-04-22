@@ -332,17 +332,23 @@ class TestTargetRefBackfill:
 
 
 class TestOpenWatchForceClose:
-    """V5 migration force-closes every open watch (P-15 mitigation).
+    """V5 migration force-closes only ``kind='job'`` open watches.
 
     Pre-V5 WebUI-submitted SSH jobs are backfilled as
     ``transport_type='local'`` because the schema had no column to tell
-    them apart. Their open watches would drive the poller to query
+    them apart. Their open job watches would drive the poller to query
     local SLURM for remote job ids, leading to false terminal
-    transitions. The migration closes all open watches so the user can
-    re-open the ones that still matter.
+    transitions. The migration closes all open **job** watches so the
+    user can re-open the ones that still matter.
+
+    Non-job watches (``workflow_run`` / ``sweep_run`` /
+    ``resource_threshold`` / ``scheduled_report``) are transport-
+    agnostic and therefore preserved across migration — closing them
+    would silently break in-flight workflow cancellations, sweep
+    aggregations, and scheduled reports.
     """
 
-    def test_open_watches_force_closed_by_migration(self, tmp_path: Path) -> None:
+    def test_open_job_watches_force_closed_by_migration(self, tmp_path: Path) -> None:
         # Reach into the migration machinery: open the DB, apply only
         # up through V4, insert an open watch, then apply V5 and check.
         from srunx.db.migrations import (
@@ -378,14 +384,14 @@ class TestOpenWatchForceClose:
             _apply_fk_off_migration(conn, v5)
 
             open_after = conn.execute(
-                "SELECT COUNT(*) FROM watches WHERE closed_at IS NULL"
+                "SELECT COUNT(*) FROM watches WHERE closed_at IS NULL AND kind = 'job'"
             ).fetchone()[0]
             backfilled = conn.execute(
                 "SELECT target_ref FROM watches WHERE kind = 'job'"
             ).fetchall()
         finally:
             conn.close()
-        assert open_after == 0, "V5 migration must close every open watch"
+        assert open_after == 0, "V5 migration must close every open job watch"
         # And the target_ref was backfilled to 3-segment form.
         assert all(r[0] == "job:local:555" for r in backfilled), backfilled
 

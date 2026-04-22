@@ -104,7 +104,19 @@ class TestResolveTransport:
             with resolve_transport(profile="cli") as rt:
                 assert rt.source == "--profile"
                 assert rt.scheduler_key == "ssh:cli"
-            build.assert_called_once_with("cli")
+            # Fix #5: callbacks + submission_source are now forwarded
+            # from resolve_transport into _build_ssh_handle so pooled
+            # clones inherit the caller's callback list. F9/F2: the
+            # forwarded kwarg list also carries ``mount_name`` and
+            # ``pool_size`` so we assert on argument presence rather
+            # than an exhaustive signature.
+            build.assert_called_once()
+            args, kwargs = build.call_args
+            assert args == ("cli",)
+            assert kwargs.get("callbacks") is None
+            assert kwargs.get("submission_source") == "cli"
+            assert kwargs.get("mount_name") is None
+            assert kwargs.get("pool_size") == 2
 
     def test_quiet_suppresses_banner(self, capsys, monkeypatch):
         """--quiet silences the banner even when source is explicit."""

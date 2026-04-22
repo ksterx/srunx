@@ -106,12 +106,17 @@ class SlurmSSHExecutorPool:
         *,
         callbacks: Sequence[Callback] | None = None,
         size: int = 8,
+        submission_source: str = "web",
     ) -> None:
         if size <= 0:
             raise ValueError(f"Pool size must be positive, got {size}")
         self._spec = spec
         self._callbacks: list[Callback] = list(callbacks) if callbacks else []
         self._size = size
+        # Propagated into each cloned adapter's ``submission_source`` so
+        # per-cell sweep jobs record the correct transport origin in
+        # ``jobs.submission_source`` (see review fix #7).
+        self._submission_source = submission_source
         # Unbounded internal queue so release is always non-blocking; we
         # gate creation via ``_created`` so ``_free`` never holds more than
         # ``size`` adapters.
@@ -131,7 +136,11 @@ class SlurmSSHExecutorPool:
         Does not connect eagerly — :meth:`SlurmSSHAdapter.run` and sibling
         SSH I/O methods call ``_ensure_connected`` on their first use.
         """
-        return SlurmSSHAdapter.from_spec(self._spec, callbacks=self._callbacks)
+        return SlurmSSHAdapter.from_spec(
+            self._spec,
+            callbacks=self._callbacks,
+            submission_source=self._submission_source,
+        )
 
     def _acquire(self, timeout: float | None = 30.0) -> SlurmSSHAdapter:
         """Pop a free adapter, build a new one, or block up to ``timeout``."""

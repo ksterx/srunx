@@ -199,11 +199,14 @@ class Slurm:
         ``ValueError`` for that condition, which we rewrap here to match
         the Protocol contract).
 
-        TODO (Phase 5a): Wrap ``subprocess.FileNotFoundError`` /
-        ``CalledProcessError`` into ``TransportConnectionError`` /
-        ``RemoteCommandError`` once CLI tests have caught up; leaving the
-        raw ``subprocess.CalledProcessError`` as-is today preserves the
-        existing test expectations.
+        Note: raw ``subprocess.FileNotFoundError`` / ``CalledProcessError``
+        from the ``sacct`` invocation are intentionally *not* wrapped
+        into transport-level exceptions here. The existing CLI test
+        suite asserts on the subprocess error types, and rewrapping
+        them would force a much larger behavioural change than this
+        Protocol-alignment method needs. A future unification pass
+        (with the CLI tests migrated in lockstep) can tighten this
+        contract.
         """
         from srunx.exceptions import JobNotFound
 

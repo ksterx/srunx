@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from ..core.config import ConfigManager, ServerProfile
+from ..core.config import ConfigManager, ServerProfile, validate_profile_name
 
 console = Console()
 
@@ -75,6 +75,16 @@ def add_profile_impl(
 ):
     """Implementation for adding a new profile."""
     try:
+        # Validate the profile name up-front so a bad character fails
+        # with a clear message before we even read the config file (F4).
+        # ``scheduler_key`` grammar reserves ``:`` so profile names
+        # cannot contain it; length is capped at 64.
+        try:
+            validate_profile_name(name)
+        except ValueError as exc:
+            console.print(f"[red]Error: {exc}[/red]")
+            raise typer.Exit(1) from exc
+
         config_manager = ConfigManager(config)
 
         # Validate connection parameters

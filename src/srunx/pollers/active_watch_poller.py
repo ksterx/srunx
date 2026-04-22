@@ -28,12 +28,26 @@ through it, and closes it in ``finally`` — this isolates the
 producer from FastAPI request connections and keeps WAL fsyncs off
 the hot web path.
 
+Single-process assumption
+-------------------------
+Phase 1 deployment is single-process: exactly one
+:class:`ActiveWatchPoller` instance (started from the FastAPI lifespan
+or the CLI worker) drives all open watches. Running more than one
+instance — e.g. scaling FastAPI to multiple worker processes without
+disabling the poller on all but one — would double-process each watch
+because there is no per-watch claim / lease yet.
+
+TODO (Phase 2): add a ``leased_until`` / ``worker_id`` sweep on
+``watches`` before shipping multi-worker deployments, mirroring the
+pattern already in :class:`~srunx.pollers.delivery_poller.DeliveryPoller`.
+
 See ``.claude/specs/notification-and-state-persistence/design.md``
 § ActiveWatchPoller.
 """
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 from collections.abc import Callable
@@ -117,6 +131,22 @@ def _dt_to_iso(value: object) -> str | None:
     return str(value)
 
 
+# SLURM job IDs are allocated as monotonically increasing 32-bit
+# integers; real-world ids are orders of magnitude below 10**12. We
+# reject both 0-and-below (not a valid SLURM id) and values above the
+# ceiling so a malicious ``target_ref`` cannot wedge the poller with
+# a huge int parse + DB probe (F3).
+_MAX_JOB_ID = 10**12
+_MAX_JOB_ID_DIGITS = 12
+
+# Profile names are constrained so they can round-trip through the
+# ``scheduler_key`` grammar (``ssh:<profile>``) unescaped. The same
+# regex is applied at profile creation time (see
+# ``srunx.ssh.core.config.validate_profile_name``) so a watch row can
+# only ever reach this parser with a name that matches (F4).
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
+
+
 def _parse_target_ref(
     target_ref: str, expected_kind: str = "job"
 ) -> tuple[str, int] | None:
@@ -131,8 +161,12 @@ def _parse_target_ref(
 
     - legacy 2-segment refs (``job:<N>``) — V5 migration backfills every
       existing row to 3+ segments, so this should not appear in practice;
-      returning ``None`` here keeps the parser strict (AC-8.4).
+      returning ``None`` here keeps the parser strict (AC-8.4). An
+      unexpected 2-segment row is logged at DEBUG so operators can spot
+      a rogue writer without breaking the cycle (F7).
     - malformed refs (non-int tail, unknown kind prefix, empty segments).
+    - numeric tails outside the accepted job-id range (F3).
+    - profile names that fail :data:`_PROFILE_NAME_RE` (F3/F4).
 
     Phase 6 callers use the returned ``scheduler_key`` to group watches
     by transport and to write ``source_ref`` back with the correct
@@ -143,16 +177,37 @@ def _parse_target_ref(
         return None
     if len(parts) < 3:
         # Legacy 2-segment — after V5 migration these should not exist.
+        logger.debug(
+            "Skipping 2-segment target_ref %r (post-V5 should not occur)",
+            target_ref,
+        )
+        return None
+
+    job_id_str = parts[-1]
+    # ``int()`` would happily eat signs / whitespace / underscores; we
+    # reject anything that isn't a pure digit run plus length-cap it so
+    # pathological inputs never reach the ``int`` cast.
+    if (
+        not job_id_str
+        or not job_id_str.isdigit()
+        or len(job_id_str) > _MAX_JOB_ID_DIGITS
+    ):
         return None
     try:
-        job_id = int(parts[-1])
+        job_id = int(job_id_str)
     except ValueError:
         return None
+    if job_id <= 0 or job_id > _MAX_JOB_ID:
+        return None
+
     middle = parts[1:-1]
     if middle == ["local"]:
         return ("local", job_id)
     if len(middle) == 2 and middle[0] == "ssh" and middle[1]:
-        return (f"ssh:{middle[1]}", job_id)
+        profile = middle[1]
+        if not _PROFILE_NAME_RE.match(profile):
+            return None
+        return (f"ssh:{profile}", job_id)
     return None
 
 
@@ -463,7 +518,7 @@ class ActiveWatchPoller:
                 continue
 
             current_status = status_info.status
-            latest = transition_repo.latest_for_job(job_id)
+            latest = transition_repo.latest_for_job(job_id, scheduler_key=scheduler_key)
 
             if latest is None:
                 # First observation of this job. Skip per design:
@@ -485,7 +540,7 @@ class ActiveWatchPoller:
             # (Slack, email, generic webhooks) can render informative
             # messages without having to re-query the DB or parse
             # source_ref themselves.
-            existing_job = job_repo.get(job_id)
+            existing_job = job_repo.get(job_id, scheduler_key=scheduler_key)
             job_name = existing_job.name if existing_job is not None else None
 
             with transaction(conn, "IMMEDIATE"):
@@ -494,10 +549,12 @@ class ActiveWatchPoller:
                     from_status=from_status,
                     to_status=current_status,
                     source="poller",
+                    scheduler_key=scheduler_key,
                 )
                 job_repo.update_status(
                     job_id,
                     current_status,
+                    scheduler_key=scheduler_key,
                     started_at=started_iso,
                     completed_at=completed_iso,
                     duration_secs=status_info.duration_secs,

@@ -1,9 +1,34 @@
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+# Shared profile-name regex. ``scheduler_key`` uses a colon-delimited
+# grammar (``ssh:<profile>``) that has to round-trip through SQLite
+# target_refs (``job:ssh:<profile>:<id>``), so profile names must not
+# contain ``:``. Length is capped at 64 so oversized names cannot
+# wedge UI tables or log lines.
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
+
+
+def validate_profile_name(name: str) -> None:
+    """Validate *name* against the shared profile-name regex.
+
+    Raises:
+        ValueError: When *name* is empty, too long, or contains any
+            character outside the allowed alphabet. ``':'`` is
+            explicitly called out because it's the scheduler_key
+            delimiter and the most likely accidental violation.
+    """
+    if not isinstance(name, str) or not _PROFILE_NAME_RE.match(name):
+        raise ValueError(
+            f"Invalid profile name {name!r}: must match "
+            f"{_PROFILE_NAME_RE.pattern}. Profile names cannot contain "
+            "':' (reserved for scheduler_key grammar) or exceed 64 characters."
+        )
 
 
 class MountConfig(BaseModel):
@@ -134,6 +159,7 @@ class ConfigManager:
             ) from e
 
     def add_profile(self, name: str, profile: ServerProfile) -> None:
+        validate_profile_name(name)
         if "profiles" not in self.config_data:
             self.config_data["profiles"] = {}
 

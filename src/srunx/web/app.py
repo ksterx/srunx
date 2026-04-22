@@ -369,14 +369,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 transport_registry = TransportRegistry()
                 if profile_name:
                     seeded_key = f"ssh:{profile_name}"
-                    transport_registry._cache[seeded_key] = TransportHandle(
-                        scheduler_key=seeded_key,
-                        profile_name=profile_name,
-                        transport_type="ssh",
-                        job_ops=adapter,
-                        queue_client=adapter,
-                        executor_factory=None,
-                        submission_context=None,
+                    transport_registry.register_handle(
+                        TransportHandle(
+                            scheduler_key=seeded_key,
+                            profile_name=profile_name,
+                            transport_type="ssh",
+                            job_ops=adapter,
+                            queue_client=adapter,
+                            executor_factory=None,
+                            submission_context=None,
+                        )
                     )
                 app.state.transport_registry = transport_registry
                 pollers.append(ActiveWatchPoller(registry=transport_registry))

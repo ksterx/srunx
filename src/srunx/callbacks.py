@@ -331,6 +331,12 @@ class NotificationWatchCallback(Callback):
     Failures are swallowed with a warning: a missing/disabled endpoint
     must never break the submit (matches ``attach_notification_watch``'s
     own best-effort contract).
+
+    ``scheduler_key`` (default ``"local"``) controls which transport
+    axis the watch is created under. Callers driving SSH-backed
+    transports must pass ``f"ssh:{profile_name}"`` so the poller can
+    resolve the watch via the matching :class:`SlurmClientProtocol`
+    implementation.
     """
 
     def __init__(
@@ -338,10 +344,13 @@ class NotificationWatchCallback(Callback):
         endpoint_name: str,
         preset: str = "terminal",
         endpoint_kind: str = "slack_webhook",
+        *,
+        scheduler_key: str = "local",
     ) -> None:
         self.endpoint_name = endpoint_name
         self.preset = preset
         self.endpoint_kind = endpoint_kind
+        self.scheduler_key = scheduler_key
 
     def on_job_submitted(self, job: JobType) -> None:
         if job.job_id is None:
@@ -354,6 +363,7 @@ class NotificationWatchCallback(Callback):
                 endpoint_name=self.endpoint_name,
                 preset=self.preset,
                 endpoint_kind=self.endpoint_kind,
+                scheduler_key=self.scheduler_key,
             )
         except Exception as exc:
             _logger.warning(

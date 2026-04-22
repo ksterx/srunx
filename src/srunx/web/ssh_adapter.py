@@ -140,12 +140,21 @@ class SlurmSSHAdapter:
         env_vars: dict[str, str] | None = None,
         mounts: Sequence[MountConfig] | None = None,
         callbacks: Sequence[Callback] | None = None,
+        submission_source: str = "web",
     ) -> None:
         # Reentrant lock: some code paths call _ensure_connected() explicitly
         # from inside another locked section (e.g. _run_slurm_cmd). An RLock
         # lets the same thread re-enter without self-deadlocking while still
         # serializing I/O across threads.
         self._io_lock: threading.RLock = threading.RLock()
+
+        # Mutable origin tag for ``record_submission`` writes. The Web router
+        # default is ``'web'``; the CLI wrapper passes ``'cli'`` via
+        # ``_build_ssh_handle(..., submission_source='cli')``. MCP callers
+        # pass ``'mcp'``. Exposed as a public attribute so the transport
+        # registry can rebind it without threading a kwarg through every
+        # Protocol signature (see review fix #7).
+        self.submission_source: str = submission_source
 
         # Resolved connection params — persisted so connection_spec() can
         # reproduce this adapter in Step 4's pool factory. Populated below
@@ -244,6 +253,21 @@ class SlurmSSHAdapter:
         else:
             raise ValueError("Either profile_name or (hostname, username) required")
 
+    # ── Public introspection ──────────────────────
+
+    @property
+    def scheduler_key(self) -> str:
+        """Return the V5 transport axis for this adapter.
+
+        ``"local"`` when no profile is bound (legacy direct-hostname
+        tests) or ``f"ssh:{profile_name}"`` otherwise. Exposed publicly
+        so callers (Web routers, poller, etc.) don't reach into
+        ``_profile_name`` to build target_refs / scheduler_keys.
+        """
+        if self._profile_name is None:
+            return "local"
+        return f"ssh:{self._profile_name}"
+
     # ── Connection spec (for Step 4 pool factory) ─────
 
     @property
@@ -272,6 +296,7 @@ class SlurmSSHAdapter:
         spec: SlurmSSHAdapterSpec,
         *,
         callbacks: Sequence[Callback] | None = None,
+        submission_source: str = "web",
     ) -> SlurmSSHAdapter:
         """Create a fresh adapter from a connection spec.
 
@@ -282,8 +307,21 @@ class SlurmSSHAdapter:
 
         ``callbacks`` are attached on construction so the pool's chosen
         callback list propagates into each cloned adapter's ``run`` path.
+
+        ``submission_source`` is carried through from the pool's origin
+        tag so per-cell sweep jobs record the correct transport origin
+        in the ``jobs.submission_source`` column.
         """
-        return cls(
+        # NOTE: ``profile_name`` is intentionally NOT forwarded into the
+        # clone's constructor — setting ``profile_name`` there triggers
+        # the full ``ConfigManager`` + ``~/.ssh/config`` resolution path,
+        # which would re-parse the profile on every pooled lease (and
+        # fail in test environments that stub out the ConfigManager).
+        # The spec already captures the fully-resolved connection params,
+        # so we use the direct-hostname branch and then manually bind
+        # ``_profile_name`` so ``scheduler_key`` / completion recording
+        # target the correct SSH axis.
+        adapter = cls(
             hostname=spec.hostname,
             username=spec.username,
             key_filename=spec.key_filename,
@@ -292,7 +330,10 @@ class SlurmSSHAdapter:
             env_vars=dict(spec.env_vars) if spec.env_vars else None,
             mounts=list(spec.mounts) if spec.mounts else None,
             callbacks=callbacks,
+            submission_source=submission_source,
         )
+        adapter._profile_name = spec.profile_name
+        return adapter
 
     @property
     def is_connected(self) -> bool:
@@ -637,7 +678,16 @@ class SlurmSSHAdapter:
         raise ValueError(f"No job information found for job {job_id}")
 
     def cancel_job(self, job_id: int) -> None:
-        """Cancel a SLURM job via scancel."""
+        """Cancel a SLURM job via scancel.
+
+        Legacy alias retained for pre-Protocol callers
+        (``web.routers.jobs`` / ``web.routers.workflows``). New code
+        should call :meth:`cancel` instead, which raises typed
+        transport exceptions and aligns with
+        :class:`~srunx.client_protocol.JobOperationsProtocol`. This
+        alias will remain until the remaining web router call sites
+        are migrated.
+        """
         _run_slurm_cmd(self, f"scancel {job_id}")
 
     def submit_job(
@@ -646,7 +696,14 @@ class SlurmSSHAdapter:
         job_name: str | None = None,
         dependency: str | None = None,
     ) -> dict[str, Any]:
-        """Submit a job via sbatch. Returns job info dict."""
+        """Submit a job via sbatch. Returns job info dict.
+
+        Legacy alias retained for pre-Protocol callers
+        (``web.routers.jobs`` / ``web.routers.workflows`` /
+        ``web.routers.templates``). New code should call :meth:`submit`
+        with a :class:`~srunx.models.Job` instance. This alias will
+        remain until those routers migrate to the Protocol surface.
+        """
         result = self._client.submit_sbatch_job(
             script_content, job_name=job_name, dependency=dependency
         )
@@ -680,7 +737,15 @@ class SlurmSSHAdapter:
         )
 
     def get_job_status(self, job_id: int) -> str:
-        """Get job status string."""
+        """Get job status string.
+
+        Legacy alias retained for callers that want just the raw SLURM
+        state string (``mcp.server`` and the adapter's own
+        :meth:`_monitor_until_terminal` loop). New code should call
+        :meth:`status` which returns a full :class:`BaseJob` snapshot
+        conforming to
+        :class:`~srunx.client_protocol.JobOperationsProtocol`.
+        """
         return self._client.get_job_status(str(job_id))
 
     def get_job_output_detailed(
@@ -789,10 +854,12 @@ class SlurmSSHAdapter:
         job.status = JobStatus.PENDING
 
         # Record submission with SSH transport metadata. The adapter
-        # cannot observe the caller's ``submission_source`` context
-        # directly (Web / MCP / CLI); Phase 5a CLI integration will
-        # supply it explicitly through a wrapper. Default to ``'web'``
-        # since the Web UI is the dominant caller today.
+        # carries its ``submission_source`` as mutable state set by the
+        # transport registry (``_build_ssh_handle``) — the Web path
+        # leaves the default ``'web'``, the CLI wrapper passes
+        # ``'cli'``, MCP passes ``'mcp'``. This avoids widening the
+        # JobOperationsProtocol signature with a kwarg that would
+        # break every existing Protocol implementor.
         if self._profile_name is not None:
             self._record_job_submission(
                 job,
@@ -801,7 +868,7 @@ class SlurmSSHAdapter:
                 transport_type="ssh",
                 profile_name=self._profile_name,
                 scheduler_key=f"ssh:{self._profile_name}",
-                submission_source="web",
+                submission_source=self.submission_source,
             )
 
         return job
@@ -852,13 +919,16 @@ class SlurmSSHAdapter:
         :class:`~srunx.exceptions.JobNotFound` when SLURM has no record
         of ``job_id``.
 
-        P-14 mitigation: we return a ``BaseJob`` with ``job_id=None``
-        on the returned model would defeat ``refresh()``'s early-out,
-        so we keep ``job_id`` set but set the status to a terminal
-        value when SLURM reports one. Callers in Phase 5a that want a
-        strictly non-refreshing DTO should read :class:`JobStatusInfo`
-        via ``queue_by_ids`` directly.
+        The returned :class:`BaseJob` is a static snapshot — per the
+        :class:`JobOperationsProtocol.status` contract it must NOT
+        trigger a lazy ``sacct`` refresh on ``.status`` access (a local
+        ``sacct`` probe against an SSH-only job id would either miss
+        entirely or return a misleading result). ``_last_refresh`` is
+        parked in the far future so ``BaseJob.status`` observes the
+        snapshot verbatim.
         """
+        import time as _time
+
         from srunx.exceptions import JobNotFound
         from srunx.models import BaseJob, JobStatus
 
@@ -878,6 +948,10 @@ class SlurmSSHAdapter:
             nodelist=info.nodelist,
         )
         job.status = status_enum
+        # Park the lazy-refresh clock far in the future so ``.status``
+        # access never triggers a local ``sacct`` subprocess for an SSH
+        # job id. See :class:`JobOperationsProtocol.status` contract.
+        job._last_refresh = _time.time() + 10**9
         return job
 
     def queue(self, user: str | None = None) -> list[BaseJob]:
@@ -1077,6 +1151,7 @@ class SlurmSSHAdapter:
                 transport_type="ssh",
                 profile_name=self._profile_name,
                 scheduler_key=f"ssh:{self._profile_name}",
+                submission_source=self.submission_source,
             )
         else:
             self._record_job_submission(
@@ -1247,13 +1322,19 @@ class SlurmSSHAdapter:
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.debug(f"_record_job_submission failed: {exc}")
 
-    @staticmethod
-    def _record_completion_safe(job_id: int, status: JobStatus) -> None:
-        """Record terminal status in ``jobs`` / ``job_state_transitions``."""
+    def _record_completion_safe(self, job_id: int, status: JobStatus) -> None:
+        """Record terminal status in ``jobs`` / ``job_state_transitions``.
+
+        Targets the adapter's own ``scheduler_key`` so SSH-backed jobs
+        update the remote-cluster row rather than a (possibly
+        nonexistent) local row. When no profile is bound (legacy
+        direct-hostname tests), falls back to ``'local'`` to preserve
+        pre-V5 behaviour.
+        """
         try:
             from srunx.db.cli_helpers import record_completion
 
-            record_completion(job_id, status)
+            record_completion(job_id, status, scheduler_key=self.scheduler_key)
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.debug(f"_record_completion_safe failed: {exc}")
 

@@ -482,10 +482,16 @@ UPDATE events
    AND source_ref NOT LIKE 'job:local:%'
    AND source_ref NOT LIKE 'job:ssh:%';
 
--- (5) force-close pre-V5 open watches --------------------------------
+-- (5) force-close pre-V5 open job watches ----------------------------
+-- Only ``kind='job'`` watches carry the transport ambiguity the V5
+-- triple resolves. Workflow-run / sweep-run / resource / scheduled-
+-- report watches are transport-agnostic and must survive the migration
+-- so in-flight workflow cancellations, sweep aggregations, and
+-- scheduled reports keep working without re-creation.
 UPDATE watches
    SET closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
- WHERE closed_at IS NULL;
+ WHERE closed_at IS NULL
+   AND kind = 'job';
 """
 
 
@@ -638,6 +644,14 @@ def _split_sql_statements(sql: str) -> list[str]:
     issues an implicit ``COMMIT`` at the start, which would silently
     terminate a surrounding ``BEGIN IMMEDIATE`` and run every DDL in
     autocommit — losing the atomicity contract we rely on for rollback.
+
+    Caveat: the splitter is intentionally simple and does **not**
+    understand SQLite string/identifier quoting. A literal ``;`` inside
+    a ``'...'`` string constant (e.g. a default value or a CHECK
+    constraint) would be treated as a statement boundary and break the
+    parse. Future migrations must therefore avoid embedding ``;`` in
+    string literals; escape with a ``||`` concatenation or a
+    ``char(59)`` expression if one is genuinely needed.
     """
     statements: list[str] = []
     buf: list[str] = []

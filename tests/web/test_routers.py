@@ -59,6 +59,10 @@ def mock_adapter() -> MagicMock:
         "command": [],
         "resources": {},
     }
+    # Fix #3: the routers now read ``adapter.scheduler_key`` to build the
+    # V5 transport triple. Default to local so existing tests (that
+    # never set this explicitly) continue to behave like pre-V5 mocks.
+    adapter.scheduler_key = "local"
     return adapter
 
 

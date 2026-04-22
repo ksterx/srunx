@@ -989,11 +989,27 @@ async def _submit_jobs_bfs(
         # otherwise commit on its own — a mid-sequence failure would
         # leave e.g. the jobs row inserted with no transition or
         # membership to match it, breaking poller dedup downstream.
+        #
+        # Transport axis: pick up the adapter's scheduler_key so SSH-
+        # submitted workflow jobs land on the correct (ssh, profile,
+        # scheduler_key) triple — otherwise the poller would query
+        # local SLURM for remote job ids.
+        wf_scheduler_key = adapter.scheduler_key
+        if wf_scheduler_key.startswith("ssh:"):
+            wf_transport_type = "ssh"
+            wf_profile_name: str | None = wf_scheduler_key[len("ssh:") :]
+        else:
+            wf_transport_type = "local"
+            wf_profile_name = None
+
         def _persist(
             jid: int = slurm_id,
             jname: str = current_name,
             job_obj: Job | ShellJob = current_job,
             deps: list[str] = depends_on,
+            tt: str = wf_transport_type,
+            pn: str | None = wf_profile_name,
+            sk: str = wf_scheduler_key,
         ) -> None:
             resources = getattr(job_obj, "resources", None)
             environment = getattr(job_obj, "environment", None)
@@ -1004,6 +1020,9 @@ async def _submit_jobs_bfs(
                     name=jname,
                     status="PENDING",
                     submission_source="workflow",
+                    transport_type=tt,  # type: ignore[arg-type]
+                    profile_name=pn,
+                    scheduler_key=sk,
                     workflow_run_id=run_id,
                     command=command_val if isinstance(command_val, list) else None,
                     nodes=getattr(resources, "nodes", None) if resources else None,
@@ -1035,12 +1054,14 @@ async def _submit_jobs_bfs(
                     from_status=None,
                     to_status="PENDING",
                     source="webhook",
+                    scheduler_key=sk,
                 )
                 wrj_repo.create(
                     workflow_run_id=run_id,
                     job_name=jname,
                     depends_on=deps or None,
                     job_id=jid,
+                    scheduler_key=sk,
                 )
 
         await anyio.to_thread.run_sync(_persist)
