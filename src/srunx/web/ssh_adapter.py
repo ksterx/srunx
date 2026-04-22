@@ -50,6 +50,42 @@ _TERMINAL_STATES = {
 }
 
 
+class SSHMonitorTimeoutError(RuntimeError):
+    """Raised when ``_monitor_until_terminal`` exceeds its timeout.
+
+    Subclass of ``RuntimeError`` so the sweep orchestrator's existing
+    broad-except cell-failure handler still catches it — the typed
+    subclass just lets targeted callers (e.g. tests, future UI status
+    reporting) distinguish timeout from a genuine SLURM-state-derived
+    failure without widening the exception surface.
+    """
+
+
+def _resolve_monitor_timeout_default() -> float | None:
+    """Return the default per-job monitor timeout from the environment.
+
+    ``SRUNX_SSH_MONITOR_TIMEOUT`` accepts a non-negative float (seconds).
+    An unset / empty / ``"0"`` / non-numeric value means "no timeout",
+    preserving the pre-Phase-3 behaviour for users who haven't opted in.
+    """
+    import os
+
+    raw = os.getenv("SRUNX_SSH_MONITOR_TIMEOUT")
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            f"Ignoring invalid SRUNX_SSH_MONITOR_TIMEOUT={raw!r} "
+            "(expected non-negative seconds)"
+        )
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
 @dataclass(frozen=True)
 class SlurmSSHAdapterSpec:
     """Connection spec used to clone a :class:`SlurmSSHAdapter` for pooling.
@@ -543,6 +579,28 @@ class SlurmSSHAdapter:
                     nodelist=(parts[5].strip() or None),
                 )
 
+        # --- scontrol fallback: pyxis clusters where sacct is unreachable ---
+        # slurmdbd outages leave sacct returning empty for just-finished
+        # jobs. scontrol keeps the record in memory for ~5 minutes
+        # (MinJobAge) without needing the accounting DB, so we probe it
+        # per-missing-id. Per-id cost is acceptable because the poller
+        # runs every 15s and the missing set is only the final-transition
+        # tail, not the full active set.
+        from srunx.ssh.core.client import _parse_scontrol_status
+
+        still_missing = [j for j in job_ids if j not in results]
+        for jid in still_missing:
+            try:
+                scontrol_out = _run_slurm_cmd(
+                    self, f"scontrol show job {jid} 2>/dev/null"
+                )
+            except RuntimeError:
+                continue
+            parsed = _parse_scontrol_status(scontrol_out)
+            if parsed is None:
+                continue
+            results[jid] = JobStatusInfo(status=parsed)
+
         return results
 
     def get_job(self, job_id: int) -> dict[str, Any]:
@@ -773,12 +831,28 @@ class SlurmSSHAdapter:
 
         # --- 5. Monitor to terminal ---
         terminal_status = self._monitor_until_terminal(job_id)
-        try:
-            job.status = JobStatus(terminal_status)
-        except ValueError:
-            # Unknown / NOT_FOUND — treat as FAILED so the runner's retry
-            # path trips instead of silently returning a non-terminal job.
-            job.status = JobStatus.FAILED
+        # NOT_FOUND means all three of sacct/squeue/scontrol lost track of
+        # the job (typically because MinJobAge expired before we polled on
+        # a pyxis cluster where sacct is unreachable). The job almost
+        # certainly ran; we just can't prove COMPLETED vs FAILED. Surfacing
+        # UNKNOWN is strictly more informative than silent FAILED and lets
+        # the sweep runner distinguish "provably failed" from "unknowable".
+        if terminal_status == "NOT_FOUND":
+            logger.warning(
+                f"Job {job_id} ({job.name!r}) disappeared from sacct/squeue/"
+                "scontrol before a terminal status could be confirmed; "
+                "recording UNKNOWN"
+            )
+            job.status = JobStatus.UNKNOWN
+        else:
+            try:
+                job.status = JobStatus(terminal_status)
+            except ValueError:
+                logger.warning(
+                    f"Job {job_id} ({job.name!r}) returned unrecognised "
+                    f"SLURM state {terminal_status!r}; recording UNKNOWN"
+                )
+                job.status = JobStatus.UNKNOWN
 
         # --- 6. Dispatch terminal callback + handle failure ---
         self._record_completion_safe(job_id, job.status)
@@ -798,20 +872,54 @@ class SlurmSSHAdapter:
 
         return job
 
-    def _monitor_until_terminal(self, job_id: int, poll_interval: int = 10) -> str:
+    def _monitor_until_terminal(
+        self,
+        job_id: int,
+        poll_interval: int = 10,
+        *,
+        timeout: float | None = -1.0,
+    ) -> str:
         """Poll remote job status until it reaches a terminal SLURM state.
 
         Returns the raw SLURM state string (e.g. ``"COMPLETED"``). Uses
         :meth:`get_job_status` so the lock + reconnection discipline is
         uniform with the rest of the adapter.
+
+        ``timeout`` caps the total wait (wall-clock seconds); on expiry
+        raises :class:`SSHMonitorTimeoutError` so the sweep orchestrator's
+        cell-failure path records the cell as failed without tearing down
+        the pooled adapter's SSH session. ``None`` waits indefinitely.
+        The ``-1.0`` default is a sentinel meaning "unspecified" — in that
+        case we fall back to ``SRUNX_SSH_MONITOR_TIMEOUT`` (seconds,
+        ``""`` or unset means no timeout) so ops can bound hung jobs
+        cluster-wide without a code change.
         """
         import time as _time
 
+        effective_timeout: float | None
+        if timeout is not None and timeout < 0:
+            # Sentinel — caller did not specify a timeout. Pick up the env
+            # var default (which may itself be None to preserve the
+            # pre-Phase-3 "wait forever" semantics).
+            effective_timeout = _resolve_monitor_timeout_default()
+        else:
+            effective_timeout = timeout
+
         terminal = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "NOT_FOUND"}
+        start = _time.monotonic()
         while True:
             status = self.get_job_status(job_id)
             if status in terminal:
                 return status
+            if (
+                effective_timeout is not None
+                and (_time.monotonic() - start) >= effective_timeout
+            ):
+                raise SSHMonitorTimeoutError(
+                    f"Timed out after {effective_timeout:.1f}s waiting for "
+                    f"job {job_id} to reach a terminal state (last status: "
+                    f"{status!r})"
+                )
             _time.sleep(poll_interval)
 
     @staticmethod

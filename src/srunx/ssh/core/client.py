@@ -48,6 +48,43 @@ __all__ = ["SSHSlurmClient", "SlurmJob"]
 
 _logger = get_logger(__name__)
 
+# scontrol prints whitespace-separated ``Key=Value`` tokens; ``JobState=`` is
+# the observed state (e.g. RUNNING, COMPLETED) and ``ExitCode=N:M`` carries
+# the process exit code (N) and terminating signal (M). Match until the next
+# whitespace so multi-word values stop at the token boundary.
+_SCONTROL_JOBSTATE_RE = re.compile(r"JobState=(\S+)")
+_SCONTROL_EXITCODE_RE = re.compile(r"ExitCode=(\d+):(\d+)")
+
+
+def _parse_scontrol_status(output: str) -> str | None:
+    """Extract a SLURM state string from ``scontrol show job`` output.
+
+    Returns ``None`` when the output is empty or lacks a ``JobState=`` token
+    — callers treat that as "scontrol didn't know either" and fall through
+    to the NOT_FOUND sentinel. When ``JobState=COMPLETED`` appears we also
+    consult ``ExitCode`` to disambiguate: a non-zero exit code or signal
+    means the job actually failed (SLURM reports COMPLETED for any clean
+    exit regardless of the process's own status), so we downgrade to
+    FAILED. Other states pass through unchanged so RUNNING / PENDING /
+    CANCELLED / TIMEOUT remain distinguishable.
+    """
+    if not output or not output.strip():
+        return None
+
+    state_match = _SCONTROL_JOBSTATE_RE.search(output)
+    if not state_match:
+        return None
+
+    state = state_match.group(1).strip().upper()
+    if state == "COMPLETED":
+        exit_match = _SCONTROL_EXITCODE_RE.search(output)
+        if exit_match:
+            exit_code = int(exit_match.group(1))
+            signal = int(exit_match.group(2))
+            if exit_code != 0 or signal != 0:
+                return "FAILED"
+    return state
+
 
 class SSHSlurmClient:
     """Backward-compatible facade composing all SSH/SLURM components.
@@ -687,6 +724,21 @@ class SSHSlurmClient:
             stdout, stderr, exit_code = self._execute_slurm_command(squeue_cmd)
             if exit_code == 0 and stdout.strip():
                 return stdout.strip().split("\n")[0].strip()
+
+            # scontrol fallback: on pyxis/slurmdbd-unreachable clusters sacct
+            # returns empty for finished jobs, and once a job leaves the
+            # queue squeue returns empty too. scontrol keeps the record in
+            # memory for MinJobAge (~5 min default) and does not depend on
+            # slurmdbd, so it disambiguates COMPLETED vs FAILED via ExitCode
+            # for the critical post-completion window.
+            quoted_id = shlex.quote(job_id)
+            scontrol_out, _, scontrol_rc = self._execute_slurm_command(
+                f"scontrol show job {quoted_id} 2>/dev/null"
+            )
+            if scontrol_rc == 0 and scontrol_out.strip():
+                parsed = _parse_scontrol_status(scontrol_out)
+                if parsed is not None:
+                    return parsed
 
             return "NOT_FOUND"
 
