@@ -313,9 +313,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from srunx.pollers.resource_snapshotter import ResourceSnapshotter
     from srunx.pollers.supervisor import Poller, PollerSupervisor
 
-    # 4. Sweep crash-recovery pass. Runs before the poller supervisor so
-    # the active-watch poller never races the orchestrator on observation
-    # of resumed cells. Skipped under --reload / SRUNX_DISABLE_POLLER=1
+    # 4. Sweep crash-recovery pass. Spawned as a background task on the
+    # lifespan task group so the server can become ready without waiting
+    # for every incomplete sweep to be reconciled — with many crashed
+    # sweeps in the DB the sequential per-sweep resume would otherwise
+    # block ``yield`` for tens of seconds. Running concurrently with the
+    # active-watch poller is safe because ``workflow_runs.status`` is the
+    # source of truth; a poller observing a cell before the orchestrator
+    # has registered it just produces an extra transition row, never a
+    # missed terminal. Skipped under --reload / SRUNX_DISABLE_POLLER=1
     # for parity with the poller gating.
     #
     # The Web-side provider restores, for every Web / MCP-originated
@@ -324,11 +330,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # in (see :func:`srunx.web.routers.workflows._dispatch_sweep`). CLI
     # sweeps (``submission_source == 'cli'``) stay on the local
     # :class:`Slurm` path by returning ``None`` from the provider.
+    reconciler_provider: ExecutorFactoryProvider | None = None
     if should_start_pollers():
+        reconciler_provider = _build_web_executor_factory_provider(adapter)
+
+    async def _resume_sweeps_in_background(
+        provider: ExecutorFactoryProvider | None,
+    ) -> None:
         try:
             from srunx.sweep.reconciler import SweepReconciler
 
-            provider = _build_web_executor_factory_provider(adapter)
             await SweepReconciler.scan_and_resume_async(
                 executor_factory_provider=provider,
             )
@@ -426,6 +437,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async with anyio.create_task_group() as tg:
             app.state.task_group = tg
             app.state.poller_supervisor = supervisor
+            if should_start_pollers():
+                tg.start_soon(_resume_sweeps_in_background, reconciler_provider)
             if supervisor is not None:
                 tg.start_soon(supervisor.start_all)
             yield
