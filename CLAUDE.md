@@ -36,6 +36,46 @@ counterpart.
 layer on top. `status` was intentionally dropped — use `squeue -j <id>` or
 `sacct -j <id>` depending on whether the job is active or historical.
 
+##### Auto-sync + in-place execution
+
+When the positional script lives under one of the SSH profile's mounts
+(`mount.local`), srunx:
+
+1. **Auto-rsyncs** that mount to the remote (`mount.remote`) under a
+   per-mount file lock (default ON; opt out with `--no-sync` or
+   `[sync] auto = false`).
+2. Translates the script path to its remote equivalent and invokes
+   `sbatch` **directly on the remote file** — no tmp copy, no
+   ``-o $SLURM_LOG_DIR/%x_%j.log`` auto-injection, your script's own
+   `#SBATCH` directives win.
+3. ``cd``s into the script's mount-translated parent directory before
+   sbatch, so relative paths inside the script (e.g.
+   ``#SBATCH --output=./logs/%j.out``) resolve where you'd expect.
+
+Generated artifacts (``--wrap``, ``--template``, workflow ShellJobs
+with Jinja substitution) always go through the historical
+``$SRUNX_TEMP_DIR`` upload path because the rendered bytes have no
+canonical home in the mount.
+
+Sync defaults are configured under `[sync]` in
+`~/.config/srunx/config.json`:
+
+```json
+{
+  "sync": {
+    "auto": true,
+    "lock_timeout_seconds": 120,
+    "warn_dirty": true,
+    "require_clean": false
+  }
+}
+```
+
+Per-invocation overrides:
+
+- `srunx sbatch --sync` / `--no-sync`
+- `SRUNX_SYNC_AUTO=0` / `SRUNX_SYNC_REQUIRE_CLEAN=1` etc.
+
 ##### Transport Selection (unified CLI)
 All job-management commands above accept `--profile <name>` / `--local` /
 `--quiet`. Resolution order:

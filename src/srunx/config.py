@@ -99,6 +99,50 @@ class CliTransportConfig(BaseModel):
     )
 
 
+class SyncDefaults(BaseModel):
+    """Workspace sync behaviour for job submission.
+
+    srunx can rsync the user's local mount to the remote cluster before
+    invoking sbatch, so that submitted jobs see the freshest source
+    files. This section controls the defaults. Per-invocation overrides
+    (``srunx sbatch --sync`` / ``--no-sync``) always win.
+    """
+
+    auto: bool = Field(
+        default=True,
+        description=(
+            "Run rsync on the script's enclosing mount before sbatch. "
+            "Disable (false) when you manage sync yourself, or when the "
+            "mount sits on shared storage already."
+        ),
+    )
+    lock_timeout_seconds: int = Field(
+        default=120,
+        ge=1,
+        description=(
+            "Maximum time (seconds) to wait for the per-(profile,mount) "
+            "sync lock before aborting. Protects against two concurrent "
+            "rsyncs fighting over the same tree. Increase for huge trees "
+            "or slow networks."
+        ),
+    )
+    warn_dirty: bool = Field(
+        default=True,
+        description=(
+            "Log a concise warning before sync if the mount has "
+            "uncommitted git changes. Informational only — does not "
+            "block submission."
+        ),
+    )
+    require_clean: bool = Field(
+        default=False,
+        description=(
+            "Refuse to sync when the mount has uncommitted git changes. "
+            "Recommended for CI / shared-workstation scenarios."
+        ),
+    )
+
+
 class SrunxConfig(BaseModel):
     """Main srunx configuration."""
 
@@ -106,6 +150,7 @@ class SrunxConfig(BaseModel):
     environment: EnvironmentDefaults = Field(default_factory=EnvironmentDefaults)
     notifications: NotificationConfig = Field(default_factory=NotificationConfig)
     cli: CliTransportConfig = Field(default_factory=CliTransportConfig)
+    sync: SyncDefaults = Field(default_factory=SyncDefaults)
     log_dir: str = Field(default="logs", description="Default log directory")
     work_dir: str | None = Field(default=None, description="Default working directory")
 
@@ -248,6 +293,22 @@ def load_config_from_env() -> dict[str, Any]:
 
     if work_dir := os.getenv("SRUNX_DEFAULT_WORK_DIR"):
         config["work_dir"] = work_dir
+
+    # Sync defaults from environment
+    sync: dict[str, Any] = {}
+    if (auto := os.getenv("SRUNX_SYNC_AUTO")) is not None:
+        sync["auto"] = auto.lower() in ("1", "true", "yes", "on")
+    if (timeout := os.getenv("SRUNX_SYNC_LOCK_TIMEOUT")) is not None:
+        try:
+            sync["lock_timeout_seconds"] = int(timeout)
+        except ValueError:
+            logger.warning(f"Invalid SRUNX_SYNC_LOCK_TIMEOUT value: {timeout}")
+    if (warn := os.getenv("SRUNX_SYNC_WARN_DIRTY")) is not None:
+        sync["warn_dirty"] = warn.lower() in ("1", "true", "yes", "on")
+    if (clean := os.getenv("SRUNX_SYNC_REQUIRE_CLEAN")) is not None:
+        sync["require_clean"] = clean.lower() in ("1", "true", "yes", "on")
+    if sync:
+        config["sync"] = sync
 
     return config
 

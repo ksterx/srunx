@@ -737,6 +737,43 @@ class SlurmSSHAdapter:
             "resources": {},
         }
 
+    def submit_remote_sbatch(
+        self,
+        remote_path: str,
+        *,
+        submit_cwd: str | None = None,
+        job_name: str | None = None,
+        dependency: str | None = None,
+    ) -> dict[str, Any]:
+        """Submit a script already present on the remote cluster.
+
+        Used by the CLI's in-place execution path (mount-resident
+        ShellJob after rsync). Distinct from :meth:`submit_job` —
+        which ships a fresh ``script_content`` to ``/tmp/srunx/`` —
+        because here the script is user-managed under a synced mount
+        and must be executed verbatim without tmp-copy or
+        ``-o`` auto-override.
+        """
+        with self._io_lock:
+            self._ensure_connected()
+            result = self._client.submit_remote_sbatch_file(
+                remote_path,
+                submit_cwd=submit_cwd,
+                job_name=job_name,
+                dependency=dependency,
+            )
+        if result is None:
+            raise RuntimeError("remote sbatch submission failed")
+        return {
+            "name": result.name or job_name or "job",
+            "job_id": int(result.job_id) if result.job_id else None,
+            "status": "PENDING",
+            "script_path": remote_path,
+            "depends_on": [],
+            "command": [],
+            "resources": {},
+        }
+
     def get_job_output(
         self,
         job_id: int,

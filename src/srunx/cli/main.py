@@ -43,6 +43,129 @@ from srunx.transport import resolve_transport
 logger = get_logger(__name__)
 
 
+def _submit_via_transport(
+    *,
+    rt: Any,
+    job: Any,
+    script_path: Path | None,
+    profile_name: str | None,
+    sync_flag: bool | None,
+    template: str | None,
+    verbose: bool,
+    callbacks: list[Callback],
+    config: Any,
+) -> Any:
+    """Dispatch a submit to the right adapter method + optional mount sync.
+
+    Local transport keeps the rich ``Slurm.submit`` signature
+    (callbacks + template_path + verbose). The SSH transport goes
+    through :func:`srunx.cli.submission_plan.plan_sbatch_submission`
+    to decide between:
+
+    * IN_PLACE: rsync the owning mount (unless ``--no-sync``),
+      translate to the remote path, and invoke
+      ``adapter.submit_remote_sbatch`` — the script stays where the
+      user edits it, preserving their own ``#SBATCH`` directives.
+    * TEMP_UPLOAD: fall through to the existing ``rt.job_ops.submit``
+      path which uploads a rendered script into
+      ``$SRUNX_TEMP_DIR`` (the historical behaviour).
+
+    ``is_rendered_artifact`` is True when the caller forced a template
+    render (``--template <name>``): even if the positional script
+    happens to sit under a mount, the submitted bytes came from the
+    template engine, not the on-disk source, so running "in place"
+    would execute the wrong thing.
+    """
+    from srunx.cli.submission_plan import (
+        SubmissionMode,
+        plan_sbatch_submission,
+    )
+    from srunx.exceptions import TransportError
+    from srunx.models import ShellJob as _ShellJob
+    from srunx.sync.lock import SyncLockTimeoutError
+    from srunx.sync.service import SyncAbortedError, ensure_mount_synced
+
+    if rt.transport_type == "local":
+        client = Slurm(callbacks=callbacks)
+        return client.submit(job, template_path=template, verbose=verbose)
+
+    # --- SSH transport ---
+    sub_ctx = rt.submission_context
+    mounts = tuple(sub_ctx.mounts) if sub_ctx is not None else ()
+    effective_sync = config.sync.auto if sync_flag is None else sync_flag
+    is_rendered_artifact = template is not None
+
+    # Build a lightweight shim profile object that exposes just ``.mounts``
+    # — the submission planner is duck-typed on mount shape so we avoid
+    # reaching for a second ConfigManager lookup here.
+    from srunx.ssh.core.config import ConfigManager
+
+    profile = ConfigManager().get_profile(profile_name) if profile_name else None
+    plan = plan_sbatch_submission(
+        script_path=script_path,
+        profile=profile,
+        cwd=Path.cwd(),
+        sync_enabled=effective_sync,
+        is_rendered_artifact=is_rendered_artifact,
+    )
+
+    for w in plan.warnings:
+        logger.warning(w)
+
+    if plan.mode == SubmissionMode.TEMP_UPLOAD:
+        return rt.job_ops.submit(job, submission_context=sub_ctx)
+
+    # IN_PLACE branch: sync if required, then submit the remote path
+    # through the dedicated adapter method.
+    assert plan.mount is not None
+    assert plan.remote_script_path is not None
+    assert profile_name is not None and profile is not None
+
+    if plan.sync_required:
+        try:
+            outcome = ensure_mount_synced(
+                profile_name=profile_name,
+                profile=profile,
+                mount=plan.mount,
+                config=config.sync,
+            )
+            if outcome.performed:
+                Console().print(f"⇅  Synced mount [cyan]{plan.mount.name}[/cyan]")
+        except SyncAbortedError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        except SyncLockTimeoutError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        except RuntimeError as exc:
+            # rsync subprocess failure — abort rather than silently
+            # submitting a stale workspace.
+            raise typer.BadParameter(f"rsync failed: {exc}") from exc
+
+    # Reach into the SSH adapter for the dedicated remote-sbatch entry
+    # point. Fall back to the queue_client so both the direct adapter
+    # and the pooled Web executor satisfy the same interface.
+    adapter = getattr(rt.job_ops, "_adapter", rt.job_ops)
+    if not hasattr(adapter, "submit_remote_sbatch"):
+        raise TransportError(
+            "Current transport does not support in-place submission; "
+            "re-run with --no-sync to force the legacy tmp-upload path."
+        )
+
+    job_name = job.name if isinstance(job, _ShellJob) else job.name
+    result = adapter.submit_remote_sbatch(
+        plan.remote_script_path,
+        submit_cwd=plan.submit_cwd,
+        job_name=job_name,
+    )
+
+    # Keep downstream code (wait / notification watch) happy by
+    # mutating the original ShellJob so it carries the new job_id +
+    # remote path back out.
+    if isinstance(job, _ShellJob):
+        job.job_id = result["job_id"]
+        job.script_path = plan.remote_script_path
+    return job
+
+
 def _parse_gres_gpu(gres: str | None) -> int | None:
     """Parse a sbatch-style ``--gres=gpu:N`` value into an integer GPU count.
 
@@ -515,6 +638,18 @@ def sbatch(
     template: Annotated[
         str | None, typer.Option("--template", help="Custom SLURM script template")
     ] = None,
+    sync: Annotated[
+        bool | None,
+        typer.Option(
+            "--sync/--no-sync",
+            help=(
+                "Rsync the script's enclosing mount before sbatch. Default "
+                "comes from ``config.sync.auto`` (true unless explicitly "
+                "disabled). ``--no-sync`` submits against the remote's "
+                "current state — useful when you manage sync yourself."
+            ),
+        ),
+    ] = None,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Show verbose output")
     ] = False,
@@ -705,18 +840,18 @@ def sbatch(
         submission_source="cli",
     ) as rt:
         client: Slurm | None
-        if rt.transport_type == "local":
-            client = Slurm(callbacks=callbacks)
-            submitted_job = client.submit(job, template_path=template, verbose=verbose)
-        else:
-            # SSH path: callbacks + submission_source were threaded into
-            # ``resolve_transport`` so the adapter + pool fire callbacks
-            # and tag the jobs row correctly. The submission render
-            # context handles ``--work-dir`` / path translation.
-            submitted_job = rt.job_ops.submit(
-                job, submission_context=rt.submission_context
-            )
-            client = None
+        submitted_job = _submit_via_transport(
+            rt=rt,
+            job=job,
+            script_path=script,
+            profile_name=rt.profile_name,
+            sync_flag=sync,
+            template=template,
+            verbose=verbose,
+            callbacks=callbacks,
+            config=config,
+        )
+        client = Slurm(callbacks=callbacks) if rt.transport_type == "local" else None
 
         # Attach a durable notification watch if the user asked for one.
         if effective_endpoint and submitted_job.job_id is not None:
