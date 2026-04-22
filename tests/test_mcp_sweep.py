@@ -160,3 +160,194 @@ class TestMCPBackwardCompat:
 
             result = run_workflow(str(yaml_path))
         assert result["success"] is True
+
+
+class TestMCPMountRouting:
+    """Phase 5a: ``mount=...`` threads MCP runs through the SSH adapter."""
+
+    def test_mount_without_profile_returns_error(
+        self, tmp_path: Path, isolated_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No current SSH profile → readable error, no partial execution."""
+        yaml_path = _write_workflow(tmp_path)
+        monkeypatch.setattr(
+            "srunx.ssh.core.config.ConfigManager.get_current_profile",
+            lambda self: None,
+        )
+        monkeypatch.setattr(
+            "srunx.ssh.core.config.ConfigManager.get_current_profile_name",
+            lambda self: None,
+        )
+        result = run_workflow(str(yaml_path), mount="cookbook2")
+        assert result["success"] is False
+        assert "SSH profile" in result["error"]
+
+    def test_mount_name_not_in_profile_returns_error(
+        self, tmp_path: Path, isolated_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unknown mount name → error, no adapter instantiation."""
+        yaml_path = _write_workflow(tmp_path)
+        fake_profile = MagicMock(
+            mounts=[MagicMock(name="other", local="/l", remote="/r")]
+        )
+        fake_profile.mounts[0].name = "other"
+        monkeypatch.setattr(
+            "srunx.ssh.core.config.ConfigManager.get_current_profile",
+            lambda self: fake_profile,
+        )
+        monkeypatch.setattr(
+            "srunx.ssh.core.config.ConfigManager.get_current_profile_name",
+            lambda self: "pyxis",
+        )
+        result = run_workflow(str(yaml_path), mount="cookbook2")
+        assert result["success"] is False
+        assert "cookbook2" in result["error"]
+
+    def test_mount_routes_sweep_through_pool(
+        self, tmp_path: Path, isolated_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``mount=...`` + sweep constructs a pool and threads executor_factory."""
+        yaml_path = _write_workflow(tmp_path)
+
+        fake_mount = MagicMock()
+        fake_mount.name = "cookbook2"
+        fake_mount.local = str(tmp_path)
+        fake_mount.remote = "/home/remote/cookbook2"
+        fake_profile = MagicMock()
+        fake_profile.mounts = [fake_mount]
+
+        monkeypatch.setattr(
+            "srunx.ssh.core.config.ConfigManager.get_current_profile",
+            lambda self: fake_profile,
+        )
+        monkeypatch.setattr(
+            "srunx.ssh.core.config.ConfigManager.get_current_profile_name",
+            lambda self: "pyxis",
+        )
+        with (
+            patch(
+                "srunx.web.ssh_adapter.SlurmSSHAdapter.__init__", return_value=None
+            ) as adapter_init,
+            patch(
+                "srunx.web.ssh_adapter.SlurmSSHAdapter.connection_spec",
+                new=MagicMock(),
+            ),
+            patch("srunx.web.ssh_executor.SlurmSSHExecutorPool") as pool_cls,
+            patch("srunx.sweep.orchestrator.SweepOrchestrator") as orch_cls,
+        ):
+            mock_pool = MagicMock()
+            pool_cls.return_value = mock_pool
+            mock_orch = MagicMock()
+            mock_orch.run.return_value = _FakeSweepRun()
+            orch_cls.return_value = mock_orch
+
+            result = run_workflow(
+                str(yaml_path),
+                sweep={"matrix": {"lr": [0.1, 0.01]}, "max_parallel": 2},
+                mount="cookbook2",
+            )
+
+        assert result["success"] is True, result
+        assert result["sweep_run_id"] == 77
+        adapter_init.assert_called_once()  # adapter built from the profile
+        pool_cls.assert_called_once()  # pool built once
+        # Orchestrator received the pool's lease + a populated render context.
+        orch_kwargs = orch_cls.call_args.kwargs
+        assert orch_kwargs["executor_factory"] is mock_pool.lease
+        ctx = orch_kwargs["submission_context"]
+        assert ctx is not None
+        assert ctx.mount_name == "cookbook2"
+        assert ctx.default_work_dir == "/home/remote/cookbook2"
+        # Pool is closed after the orchestrator returns (or raises).
+        mock_pool.close.assert_called_once()
+
+    def test_mount_routes_non_sweep_through_pool(
+        self, tmp_path: Path, isolated_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``mount=...`` without sweep still routes the runner through the pool."""
+        yaml_path = _write_workflow(tmp_path)
+
+        fake_mount = MagicMock()
+        fake_mount.name = "cookbook2"
+        fake_mount.local = str(tmp_path)
+        fake_mount.remote = "/home/remote/cookbook2"
+        fake_profile = MagicMock()
+        fake_profile.mounts = [fake_mount]
+
+        monkeypatch.setattr(
+            "srunx.ssh.core.config.ConfigManager.get_current_profile",
+            lambda self: fake_profile,
+        )
+        monkeypatch.setattr(
+            "srunx.ssh.core.config.ConfigManager.get_current_profile_name",
+            lambda self: "pyxis",
+        )
+        with (
+            patch("srunx.web.ssh_adapter.SlurmSSHAdapter.__init__", return_value=None),
+            patch(
+                "srunx.web.ssh_adapter.SlurmSSHAdapter.connection_spec",
+                new=MagicMock(),
+            ),
+            patch("srunx.web.ssh_executor.SlurmSSHExecutorPool") as pool_cls,
+            patch("srunx.runner.WorkflowRunner.from_yaml") as from_yaml,
+        ):
+            mock_pool = MagicMock()
+            pool_cls.return_value = mock_pool
+            mock_runner = MagicMock()
+            mock_runner.workflow.name = "mcp_wf"
+            mock_runner.run.return_value = {}
+            # Two from_yaml calls: ShellJob guard (bare) + run (with factory).
+            from_yaml.return_value = mock_runner
+
+            result = run_workflow(str(yaml_path), mount="cookbook2")
+
+        assert result["success"] is True, result
+        pool_cls.assert_called_once()
+        # Second from_yaml call receives the executor_factory + context.
+        run_call_kwargs = from_yaml.call_args_list[-1].kwargs
+        assert run_call_kwargs["executor_factory"] is mock_pool.lease
+        assert run_call_kwargs["submission_context"].mount_name == "cookbook2"
+        mock_pool.close.assert_called_once()
+
+    def test_mount_rejects_shell_job_escaping_mount_root(
+        self, tmp_path: Path, isolated_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ShellJob ``script_path`` outside mount local root → error."""
+        # Write a ShellJob workflow whose script_path is ../escape.sh
+        mount_root = tmp_path / "proj"
+        mount_root.mkdir()
+        escape = tmp_path / "escape.sh"  # NOT under mount_root
+        escape.write_text("#!/bin/bash\necho hi\n")
+        wf = {
+            "name": "shell_wf",
+            "jobs": [
+                {
+                    "name": "bad",
+                    "template": "shell",
+                    "script_path": str(escape),
+                }
+            ],
+        }
+        yaml_path = tmp_path / "shell_wf.yaml"
+        yaml_path.write_text(yaml.dump(wf))
+
+        fake_mount = MagicMock()
+        fake_mount.name = "cookbook2"
+        fake_mount.local = str(mount_root)
+        fake_mount.remote = "/home/remote/cookbook2"
+        fake_profile = MagicMock()
+        fake_profile.mounts = [fake_mount]
+
+        monkeypatch.setattr(
+            "srunx.ssh.core.config.ConfigManager.get_current_profile",
+            lambda self: fake_profile,
+        )
+        monkeypatch.setattr(
+            "srunx.ssh.core.config.ConfigManager.get_current_profile_name",
+            lambda self: "pyxis",
+        )
+        with patch("srunx.web.ssh_adapter.SlurmSSHAdapter.__init__", return_value=None):
+            result = run_workflow(str(yaml_path), mount="cookbook2")
+
+        assert result["success"] is False
+        assert "outside allowed directories" in result["error"]

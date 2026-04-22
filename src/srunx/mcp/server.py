@@ -627,6 +627,65 @@ def _reject_python_prefix_mcp(payload: Any, *, source: str) -> None:
         )
 
 
+def _enforce_shell_script_roots_mcp(workflow: Any, profile: Any) -> None:
+    """Guard ShellJob script paths for the MCP transport.
+
+    Mirrors the Web router's ``_enforce_shell_script_roots`` semantics:
+    every ShellJob's ``script_path`` must sit under one of the profile's
+    mount ``local`` roots. Raises ``ValueError`` (caller converts to
+    ``_err(...)``) instead of ``HTTPException`` because MCP has no HTTP
+    layer.
+    """
+    from srunx.security import find_shell_script_violation
+
+    allowed_roots = [Path(m.local).resolve() for m in (profile.mounts or [])]
+    violation = find_shell_script_violation(workflow, allowed_roots)
+    if violation is not None:
+        raise ValueError(
+            f"Script path '{violation.script_path}' is outside allowed directories"
+        )
+
+
+def _resolve_mount_context(
+    mount: str,
+) -> tuple[Any, SubmissionRenderContext, Any]:
+    """Resolve ``(adapter, submission_context, profile)`` for an MCP mount run.
+
+    Returns the :class:`SlurmSSHAdapter` for the active SSH profile, a
+    :class:`SubmissionRenderContext` pinned to ``mount.remote`` as the
+    default work dir, and the profile object itself (needed by the
+    ShellJob guard). Raises ``ValueError`` on any misconfiguration —
+    no current profile, unknown mount name, etc.
+    """
+    from srunx.rendering import SubmissionRenderContext
+    from srunx.ssh.core.config import ConfigManager
+    from srunx.web.ssh_adapter import SlurmSSHAdapter
+
+    cm = ConfigManager()
+    profile = cm.get_current_profile()
+    profile_name = cm.get_current_profile_name()
+    if profile is None:
+        raise ValueError(
+            "mount requires a current SSH profile; configure one via "
+            "`srunx ssh profile add` and select it with `srunx ssh profile use`"
+        )
+
+    mount_found = next(
+        (m for m in (profile.mounts or []) if m.name == mount),
+        None,
+    )
+    if mount_found is None:
+        raise ValueError(f"Mount '{mount}' not found in profile '{profile_name}'")
+
+    adapter = SlurmSSHAdapter(profile_name=profile_name)
+    context = SubmissionRenderContext(
+        mount_name=mount,
+        mounts=tuple(profile.mounts),
+        default_work_dir=mount_found.remote,
+    )
+    return adapter, context, profile
+
+
 @mcp.tool()
 def run_workflow(
     yaml_path: str,
@@ -636,19 +695,12 @@ def run_workflow(
     dry_run: bool = False,
     args: dict[str, Any] | None = None,
     sweep: dict[str, Any] | None = None,
+    mount: str | None = None,
 ) -> dict[str, Any]:
     """Execute a SLURM workflow from a YAML file.
 
     Jobs are executed in dependency order - independent jobs run in parallel,
     dependent jobs wait for their prerequisites to complete.
-
-    Phase 1 limitation: MCP-initiated runs use the local SLURM client — the
-    canonical :class:`~srunx.rendering.SubmissionRenderContext` is always
-    passed as ``None``, so no mount translation is performed on
-    ``work_dir`` / ``log_dir``. Remote cluster submission via SSH + mount
-    translation from MCP is out of scope for this phase; use the Web UI or
-    ``srunx ssh submit`` for that path. Phase 3 may thread a ``mount`` arg
-    through this tool.
 
     Args:
         yaml_path: Path to the YAML workflow file
@@ -662,19 +714,30 @@ def run_workflow(
             "max_parallel": int}``. When present, the request goes through
             :class:`SweepOrchestrator` and the response contains
             ``sweep_run_id``.
+        mount: Optional mount name from the active SSH profile. When
+            provided, the run is routed through the configured cluster
+            adapter with mount-aware path translation for ``work_dir`` /
+            ``log_dir``. When omitted (default), the run stays on the
+            local SLURM client — same behaviour as pre-5a.
     """
     try:
         from srunx.runner import WorkflowRunner
+        from srunx.web.ssh_executor import SlurmSSHExecutorPool
 
         if args is not None:
             _reject_python_prefix_mcp(args, source="args")
 
-        # MCP runs have no mount context: Phase 1 is local-SLURM only.
-        # Passing ``submission_context=None`` explicitly (rather than
-        # relying on the default) documents the intent at the call site
-        # and lets tests pin the contract between MCP and the canonical
-        # render entry.
+        # Resolve the SSH adapter + render context + profile when the caller
+        # opted into mount-aware mode. ``submission_context=None`` keeps the
+        # legacy "local SLURM only" path intact when ``mount`` is omitted.
         submission_context: SubmissionRenderContext | None = None
+        adapter = None
+        profile = None
+        if mount is not None:
+            try:
+                adapter, submission_context, profile = _resolve_mount_context(mount)
+            except ValueError as exc:
+                return _err(str(exc))
 
         if sweep is not None:
             from pathlib import Path as _Path
@@ -704,62 +767,126 @@ def run_workflow(
             if not isinstance(raw, dict):
                 raw = {}
 
+            # Mount-aware branch: apply the same ShellJob script-root guard
+            # the Web sweep path runs, and submit every cell through a
+            # bounded :class:`SlurmSSHExecutorPool` so concurrent cells
+            # share a small set of SSH sessions against the cluster.
+            pool: SlurmSSHExecutorPool | None = None
+            executor_factory = None
+            if adapter is not None and profile is not None:
+                try:
+                    guard_runner = WorkflowRunner.from_yaml(
+                        yaml_file,
+                        args_override=args or None,
+                    )
+                    _enforce_shell_script_roots_mcp(guard_runner.workflow, profile)
+                except ValueError as exc:
+                    return _err(str(exc))
+                pool_size = max(1, min(sweep_spec.max_parallel, 8))
+                pool = SlurmSSHExecutorPool(
+                    adapter.connection_spec,
+                    callbacks=[],
+                    size=pool_size,
+                )
+                executor_factory = pool.lease
+
             orchestrator = SweepOrchestrator(
                 workflow_yaml_path=yaml_file,
                 workflow_data=raw,
                 args_override=args or None,
                 sweep_spec=sweep_spec,
                 submission_source="mcp",
+                executor_factory=executor_factory,
                 submission_context=submission_context,
             )
-            sweep_run = orchestrator.run()
-            return _ok(
-                sweep_run_id=sweep_run.id,
-                status=sweep_run.status,
-                cell_count=sweep_run.cell_count,
-                cells_completed=sweep_run.cells_completed,
-                cells_failed=sweep_run.cells_failed,
-                cells_cancelled=sweep_run.cells_cancelled,
+            try:
+                sweep_run = orchestrator.run()
+                return _ok(
+                    sweep_run_id=sweep_run.id,
+                    status=sweep_run.status,
+                    cell_count=sweep_run.cell_count,
+                    cells_completed=sweep_run.cells_completed,
+                    cells_failed=sweep_run.cells_failed,
+                    cells_cancelled=sweep_run.cells_cancelled,
+                )
+            finally:
+                if pool is not None:
+                    pool.close()
+
+        # Non-sweep path — mount-aware branch routes submission through a
+        # small SSH executor pool so WorkflowRunner's parallel execution
+        # (``ThreadPoolExecutor(max_workers=8)``) can submit concurrently
+        # against the remote cluster. The pool is closed in ``finally``.
+        pool = None
+        executor_factory = None
+        if adapter is not None and profile is not None:
+            try:
+                guard_runner = WorkflowRunner.from_yaml(
+                    yaml_path,
+                    args_override=args or None,
+                )
+                _enforce_shell_script_roots_mcp(guard_runner.workflow, profile)
+            except ValueError as exc:
+                return _err(str(exc))
+            pool = SlurmSSHExecutorPool(
+                adapter.connection_spec,
+                callbacks=[],
+                size=8,
+            )
+            executor_factory = pool.lease
+
+        try:
+            runner = WorkflowRunner.from_yaml(
+                yaml_path,
+                args_override=args or None,
+                executor_factory=executor_factory,
+                submission_context=submission_context,
             )
 
-        runner = WorkflowRunner.from_yaml(
-            yaml_path,
-            args_override=args or None,
-            submission_context=submission_context,
-        )
+            if dry_run:
+                jobs_to_execute = runner._get_jobs_to_execute(
+                    from_job, to_job, single_job
+                )
+                jobs_info = []
+                for job in jobs_to_execute:
+                    info: dict[str, Any] = {
+                        "name": job.name,
+                        "depends_on": job.depends_on,
+                    }
+                    if hasattr(job, "command"):
+                        cmd = job.command
+                        info["command"] = (
+                            cmd if isinstance(cmd, str) else " ".join(cmd or [])
+                        )
+                    if hasattr(job, "script_path"):
+                        info["script_path"] = job.script_path
+                    jobs_info.append(info)
+                return _ok(
+                    dry_run=True,
+                    workflow=runner.workflow.name,
+                    jobs_to_execute=jobs_info,
+                    count=len(jobs_info),
+                )
 
-        if dry_run:
-            jobs_to_execute = runner._get_jobs_to_execute(from_job, to_job, single_job)
-            jobs_info = []
-            for job in jobs_to_execute:
-                info: dict[str, Any] = {"name": job.name, "depends_on": job.depends_on}
-                if hasattr(job, "command"):
-                    cmd = job.command
-                    info["command"] = (
-                        cmd if isinstance(cmd, str) else " ".join(cmd or [])
-                    )
-                if hasattr(job, "script_path"):
-                    info["script_path"] = job.script_path
-                jobs_info.append(info)
+            results = runner.run(
+                from_job=from_job, to_job=to_job, single_job=single_job
+            )
+            completed = {}
+            for job_name, job in results.items():
+                completed[job_name] = {
+                    "job_id": job.job_id,
+                    "status": job._status.value,
+                }
             return _ok(
-                dry_run=True,
                 workflow=runner.workflow.name,
-                jobs_to_execute=jobs_info,
-                count=len(jobs_info),
+                results=completed,
+                all_completed=all(
+                    v["status"] == "COMPLETED" for v in completed.values()
+                ),
             )
-
-        results = runner.run(from_job=from_job, to_job=to_job, single_job=single_job)
-        completed = {}
-        for job_name, job in results.items():
-            completed[job_name] = {
-                "job_id": job.job_id,
-                "status": job._status.value,
-            }
-        return _ok(
-            workflow=runner.workflow.name,
-            results=completed,
-            all_completed=all(v["status"] == "COMPLETED" for v in completed.values()),
-        )
+        finally:
+            if pool is not None:
+                pool.close()
     except Exception as e:
         return _err(str(e))
 
