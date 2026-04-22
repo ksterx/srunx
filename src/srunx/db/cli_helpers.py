@@ -209,17 +209,23 @@ def record_completion(
         logger.debug(f"record_completion failed: {exc}")
 
 
-def list_recent_jobs(limit: int = 100) -> list[dict[str, Any]]:
+def list_recent_jobs(
+    limit: int = 100,
+    *,
+    job_ids: list[int] | None = None,
+) -> list[dict[str, Any]]:
     """Return the N most recent jobs as legacy-shaped dicts.
 
-    Thin wrapper around :meth:`JobRepository.list_recent_as_dict` that
-    owns the connection; used by the CLI ``history`` command.
+    Thin wrapper around :meth:`JobRepository.list_recent_as_dict`.
+    When ``job_ids`` is supplied, the SQL filter pushes the IDs down
+    and bypasses the ``LIMIT`` so the CLI's ``srunx sacct -j <id>``
+    finds rows that fell outside the most recent ``limit`` page.
     """
     from srunx.db.connection import initialized_connection
     from srunx.db.repositories.jobs import JobRepository
 
     with initialized_connection() as conn:
-        return JobRepository(conn).list_recent_as_dict(limit=limit)
+        return JobRepository(conn).list_recent_as_dict(limit=limit, job_ids=job_ids)
 
 
 def compute_job_stats(

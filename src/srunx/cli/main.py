@@ -134,16 +134,29 @@ def _submit_via_transport(
             "re-run with --no-sync to force the legacy tmp-upload path."
         )
 
+    # We split the try/except across the sync phase and the submit
+    # phase so a sbatch failure can never wear an "rsync failed"
+    # error message. Codex follow-up on PR #134.
     try:
-        with mount_sync_session(
+        sync_ctx = mount_sync_session(
             profile_name=profile_name,
             profile=profile,
             mount=plan.mount,
             config=config.sync,
             sync_required=plan.sync_required,
-        ) as outcome:
-            if outcome.performed:
-                Console().print(f"⇅  Synced mount [cyan]{plan.mount.name}[/cyan]")
+        )
+        sync_ctx_entered = sync_ctx.__enter__()
+    except SyncAbortedError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    except SyncLockTimeoutError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    except RuntimeError as exc:
+        raise typer.BadParameter(f"rsync failed: {exc}") from exc
+
+    try:
+        if sync_ctx_entered.performed:
+            Console().print(f"⇅  Synced mount [cyan]{plan.mount.name}[/cyan]")
+        try:
             submitted = rt.job_ops.submit_remote_sbatch(
                 plan.remote_script_path,
                 submit_cwd=plan.submit_cwd,
@@ -151,14 +164,13 @@ def _submit_via_transport(
                 extra_sbatch_args=extra_sbatch_args or None,
                 callbacks_job=job,
             )
-    except SyncAbortedError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    except SyncLockTimeoutError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    except RuntimeError as exc:
-        # rsync subprocess failure — abort rather than silently
-        # submitting a stale workspace.
-        raise typer.BadParameter(f"rsync failed: {exc}") from exc
+        except RuntimeError as exc:
+            # In-place sbatch failure: surface the underlying message
+            # verbatim. Distinct from the "rsync failed" wrapper above
+            # so users can tell which phase failed.
+            raise typer.BadParameter(f"sbatch failed: {exc}") from exc
+    finally:
+        sync_ctx.__exit__(None, None, None)
 
     # Re-mutate the original ShellJob so the wait/notification watch
     # path (which reads job_id off the original instance the caller
@@ -168,49 +180,69 @@ def _submit_via_transport(
     return submitted
 
 
-def _build_extra_sbatch_args(
-    *,
-    nodes: int,
-    gpus_per_node: int,
-    ntasks_per_node: int,
-    cpus_per_task: int,
-    memory: str | None,
-    time: str | None,
-    nodelist: str | None,
-    partition: str | None,
-    work_dir: str | None,
-    log_dir: str | None,
-) -> list[str]:
-    """Forward user-supplied CLI flags to ``sbatch`` for ShellJob mode.
+_SBATCH_FLAG_BY_PARAM: dict[str, str] = {
+    "nodes": "--nodes",
+    "gpus_per_node": "--gpus-per-node",
+    "ntasks_per_node": "--ntasks-per-node",
+    "cpus_per_task": "--cpus-per-task",
+    "memory": "--mem",
+    "time": "--time",
+    "nodelist": "--nodelist",
+    "partition": "--partition",
+    "work_dir": "--chdir",
+}
 
-    In ShellJob (positional-script) mode the on-disk script owns its
-    own ``#SBATCH`` directives. CLI resource flags override those
-    directives via the sbatch command line — same precedence as real
-    sbatch. Defaults are NOT forwarded so unstated flags don't shadow
-    the script's own values. Closes Codex blocker #1 on PR #134.
+
+def _build_extra_sbatch_args(
+    ctx: typer.Context,
+    *,
+    values: dict[str, object],
+    log_dir_user: str | None,
+) -> list[str]:
+    """Forward CLI-typed flags to ``sbatch`` for ShellJob mode.
+
+    "CLI-typed" means the user wrote the flag on the command line —
+    determined via Click's :meth:`Context.get_parameter_source`. We
+    deliberately do NOT compare against defaults because that
+    confuses three different cases:
+
+    * ``srunx sbatch script.sh`` — no flag typed, planner default 1.
+    * ``srunx sbatch script.sh --nodes 1`` — explicit 1, must
+      override any ``#SBATCH --nodes=8`` in the script.
+    * ``srunx sbatch script.sh`` with config providing ``work_dir``
+      — config injected, user did NOT type ``-D``, so the script's
+      ``#SBATCH --chdir=`` (if any) wins.
+
+    The default-comparison heuristic the previous version used got
+    all three confused — Codex follow-up on PR #134.
+
+    ``log_dir_user`` is passed in separately because the sbatch flag
+    expansion (``--output=`` + ``--error=``) builds two args from one
+    typed value, and the conversion lives at the call site (caller
+    knows the configured default to suppress).
     """
+    from click.core import ParameterSource
+
     args: list[str] = []
-    if nodes != 1:
-        args.append(f"--nodes={nodes}")
-    if gpus_per_node > 0:
-        args.append(f"--gpus-per-node={gpus_per_node}")
-    if ntasks_per_node != 1:
-        args.append(f"--ntasks-per-node={ntasks_per_node}")
-    if cpus_per_task != 1:
-        args.append(f"--cpus-per-task={cpus_per_task}")
-    if memory:
-        args.append(f"--mem={memory}")
-    if time:
-        args.append(f"--time={time}")
-    if nodelist:
-        args.append(f"--nodelist={nodelist}")
-    if partition:
-        args.append(f"--partition={partition}")
-    if work_dir:
-        args.append(f"--chdir={work_dir}")
-    if log_dir:
-        args.append(f"--output={log_dir}/%x_%j.log")
-        args.append(f"--error={log_dir}/%x_%j.log")
+    for param_name, sbatch_flag in _SBATCH_FLAG_BY_PARAM.items():
+        try:
+            source = ctx.get_parameter_source(param_name)
+        except (LookupError, AttributeError):
+            # No such parameter; defensive against signature drift.
+            source = None
+        if source != ParameterSource.COMMANDLINE:
+            continue
+        value = values.get(param_name)
+        if value is None or value == "":
+            continue
+        args.append(f"{sbatch_flag}={value}")
+
+    if log_dir_user:
+        # ``--log-dir`` was explicitly typed; expand into the
+        # ``--output`` + ``--error`` pair sbatch expects.
+        args.append(f"--output={log_dir_user}/%x_%j.log")
+        args.append(f"--error={log_dir_user}/%x_%j.log")
+
     return args
 
 
@@ -538,6 +570,7 @@ def _parse_container_args(container_arg: str | None) -> ContainerResource | None
 
 @app.command("sbatch")
 def sbatch(
+    ctx: typer.Context,
     script: Annotated[
         Path | None,
         typer.Argument(
@@ -883,21 +916,47 @@ def sbatch(
     # CLI resource flags need to reach ``sbatch`` in IN_PLACE
     # mode — they get baked into the rendered Job.resources for the
     # tmp-upload path, but ShellJob (positional script) on the
-    # in-place path has no such render step. Forward only
-    # user-supplied (non-default) values so unstated flags don't
-    # shadow the script's own ``#SBATCH`` directives.
-    extra_sbatch_args = _build_extra_sbatch_args(
-        nodes=nodes,
-        gpus_per_node=gpus_per_node,
-        ntasks_per_node=ntasks_per_node,
-        cpus_per_task=cpus_per_task,
-        memory=memory,
-        time=time,
-        nodelist=nodelist,
-        partition=partition,
-        work_dir=work_dir,
-        log_dir=log_dir if log_dir != config.log_dir else None,
+    # in-place path has no such render step. Forward only flags the
+    # user actually typed on the command line (via Click's
+    # ParameterSource); never forward defaults nor config-injected
+    # values, so the on-disk ``#SBATCH`` directives stay authoritative
+    # for anything the user did not explicitly override.
+    from click.core import ParameterSource
+
+    log_dir_user = (
+        log_dir
+        if ctx.get_parameter_source("log_dir") == ParameterSource.COMMANDLINE
+        else None
     )
+    extra_sbatch_args = _build_extra_sbatch_args(
+        ctx,
+        values={
+            "nodes": nodes,
+            "gpus_per_node": gpus_per_node,
+            "ntasks_per_node": ntasks_per_node,
+            "cpus_per_task": cpus_per_task,
+            "memory": memory,
+            "time": time,
+            "nodelist": nodelist,
+            "partition": partition,
+            "work_dir": work_dir,
+        },
+        log_dir_user=log_dir_user,
+    )
+
+    # ``--gres=gpu:N`` was parsed earlier into ``gpus_per_node``; if
+    # the user typed ``--gres`` (not ``--gpus-per-node``) we still
+    # need to forward the resulting value as ``--gpus-per-node=N``,
+    # because ParameterSource for ``gpus_per_node`` shows DEFAULT in
+    # that path. Avoid duplication by stripping any earlier entry.
+    if (
+        ctx.get_parameter_source("gres") == ParameterSource.COMMANDLINE
+        and gres is not None
+    ):
+        extra_sbatch_args = [
+            a for a in extra_sbatch_args if not a.startswith("--gpus-per-node")
+        ]
+        extra_sbatch_args.append(f"--gpus-per-node={gpus_per_node}")
 
     with resolve_transport(
         profile=profile,
@@ -1590,14 +1649,10 @@ def sacct(
     try:
         from srunx.db.cli_helpers import list_recent_jobs
 
-        jobs = list_recent_jobs(limit=limit)
-
-        # Client-side filter (matches squeue ``-j`` semantics). Cheap
-        # because list_recent_jobs caps at ``limit`` rows; if perf
-        # becomes an issue, push the filter into the SQL query.
-        if job_filter:
-            wanted = {int(j) for j in job_filter}
-            jobs = [j for j in jobs if int(j["job_id"]) in wanted]
+        # ``-j`` is pushed down into the SQL query so it finds jobs
+        # older than ``--limit``. Codex follow-up #2 on PR #134.
+        wanted_ids = [int(j) for j in job_filter] if job_filter else None
+        jobs = list_recent_jobs(limit=limit, job_ids=wanted_ids)
 
         if not jobs:
             console = Console()

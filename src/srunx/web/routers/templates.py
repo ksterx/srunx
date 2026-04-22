@@ -124,7 +124,7 @@ async def apply_template(
             mount_name = req.mount_name
             try:
                 await anyio.to_thread.run_sync(
-                    lambda: sync_mount_by_name(profile, mount_name)
+                    lambda: sync_mount_by_name(profile, mount_name, delete=True)
                 )
             except ValueError as exc:
                 raise HTTPException(

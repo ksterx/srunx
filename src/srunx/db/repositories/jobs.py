@@ -415,13 +415,57 @@ class JobRepository(BaseRepository):
     # submitted_at, completed_at, log_file, metadata) are passed
     # through unchanged.
 
-    def list_recent_as_dict(self, limit: int = 100) -> list[dict[str, Any]]:
+    def list_recent_as_dict(
+        self,
+        limit: int = 100,
+        *,
+        job_ids: list[int] | None = None,
+    ) -> list[dict[str, Any]]:
         """Return the ``limit`` most recent jobs in the legacy dict shape.
 
-        Used by the ``/api/history`` router + ``srunx history`` CLI to
+        Used by the ``/api/history`` router + ``srunx sacct`` CLI to
         keep the response/display formats stable across the cutover
         from the removed ``srunx.history`` module (P2-4 #A).
+
+        ``job_ids`` filters to a specific subset of jobs and bypasses
+        the ``LIMIT`` so ``srunx sacct -j <id>`` finds the job even
+        when it falls outside the most recent ``limit`` rows. Codex
+        follow-up #2 on PR #134 — without this push-down the CLI
+        would silently report "no history found" for any job older
+        than the page size.
         """
+        if job_ids:
+            placeholders = ",".join("?" * len(job_ids))
+            rows = self.conn.execute(
+                f"""
+                SELECT
+                    j.job_id,
+                    j.name           AS job_name,
+                    j.command,
+                    j.status,
+                    j.nodes,
+                    j.gpus_per_node,
+                    (COALESCE(j.nodes, 0) * COALESCE(j.gpus_per_node, 0)) AS gpus,
+                    NULL             AS cpus_per_task,
+                    j.memory_per_node,
+                    j.time_limit,
+                    j.partition,
+                    j.conda          AS conda_env,
+                    j.submitted_at,
+                    j.completed_at,
+                    j.duration_secs  AS duration_seconds,
+                    wr.workflow_name AS workflow_name,
+                    j.log_file,
+                    j.metadata
+                FROM jobs j
+                LEFT JOIN workflow_runs wr ON wr.id = j.workflow_run_id
+                WHERE j.job_id IN ({placeholders})
+                ORDER BY j.submitted_at DESC
+                """,
+                tuple(job_ids),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
         rows = self.conn.execute(
             """
             SELECT

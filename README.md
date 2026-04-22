@@ -241,8 +241,8 @@ srunx watch cluster --schedule 1h --notify $SLACK_WEBHOOK
 Keep your local editor workflow while running on the cluster:
 
 ```bash
-# Submit to remote cluster
-srunx ssh submit train.py --host dgx-server
+# Submit to remote cluster (auto-syncs the script's mount first, then runs in-place)
+srunx sbatch train.sh --profile dgx-server
 
 # Manage connection profiles
 srunx ssh profile add myserver --ssh-host dgx1

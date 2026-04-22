@@ -228,7 +228,7 @@ srunx flow run pipeline.yaml
 Validate workflow syntax:
 
 ``` bash
-srunx flow validate pipeline.yaml
+srunx flow run --validate pipeline.yaml
 ```
 
 Run with custom parameters:

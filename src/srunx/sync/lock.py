@@ -40,10 +40,16 @@ class SyncLockTimeoutError(RuntimeError):
     """
 
     def __init__(self, lock_path: Path, timeout: float) -> None:
+        # Note: ``--no-sync`` does NOT bypass this lock — we still take
+        # it briefly to make the sbatch handoff race-free against a
+        # concurrent rsync. Tell the user the actual recovery options:
+        # wait for the holder, raise the timeout via config, or remove
+        # the lock file if a previous run crashed without releasing it.
         super().__init__(
             f"Could not acquire sync lock {lock_path} within {timeout:.1f}s. "
             f"Another srunx process is syncing the same mount; wait for it "
-            f"to finish, or override with --no-sync."
+            f"to finish, raise sync.lock_timeout_seconds in config, or "
+            f"delete the lock file if it's stale."
         )
         self.lock_path = lock_path
         self.timeout = timeout

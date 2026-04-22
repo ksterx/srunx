@@ -799,7 +799,7 @@ async def _sync_mounts(
     for mount_name in mount_names:
         try:
             await anyio.to_thread.run_sync(
-                lambda mn=mount_name: sync_mount_by_name(profile, mn)  # type: ignore[misc]
+                lambda mn=mount_name: sync_mount_by_name(profile, mn, delete=True)  # type: ignore[misc]
             )
         except Exception as exc:
             raise HTTPException(

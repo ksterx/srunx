@@ -291,6 +291,95 @@ def test_extra_sbatch_args_forwarded_in_place(
     assert "--time=1:00:00" in extra
 
 
+def test_lock_is_held_during_submit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The per-mount sync lock is held while ``submit_remote_sbatch`` runs.
+
+    Codex follow-up #4 on PR #134: the previous review pointed out
+    that no test directly proves this. We assert the contract by
+    checking that, *during* the adapter call, a parallel
+    ``acquire_sync_lock`` would time out — i.e. the file lock is
+    actually held the whole time the submission is in flight.
+    """
+    from srunx.sync.lock import SyncLockTimeoutError, acquire_sync_lock
+
+    mount_local = tmp_path / "ml-project"
+    mount_local.mkdir()
+    script = mount_local / "train.sbatch"
+    script.write_text("#!/bin/bash\necho hi\n")
+
+    profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")
+    job_ops = _patch_transport(monkeypatch, profile)
+
+    monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", lambda *a, **k: None)
+
+    held_during_submit: dict[str, bool] = {}
+
+    def _check_lock_held(remote_path, *, callbacks_job, **_kwargs):
+        # Try to acquire the same lock with a tiny timeout. If the
+        # outer mount_sync_session is honouring the contract this
+        # second acquire MUST time out, because the OS lock is held.
+        try:
+            with acquire_sync_lock("ml-cluster", "ml", timeout=0.2):
+                held_during_submit["acquired"] = True
+        except SyncLockTimeoutError:
+            held_during_submit["acquired"] = False
+
+        callbacks_job.job_id = 99
+        from srunx.models import JobStatus
+
+        callbacks_job.status = JobStatus.PENDING
+        return callbacks_job
+
+    job_ops.submit_remote_sbatch.side_effect = _check_lock_held
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["sbatch", str(script), "--profile", "ml-cluster"])
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    # The contended acquire timed out → the outer lock was held the
+    # entire time submit_remote_sbatch was running.
+    assert held_during_submit["acquired"] is False, (
+        "mount_sync_session released the lock before submit_remote_sbatch "
+        "finished — a concurrent invocation could rsync stale bytes "
+        "during the sbatch handoff window. (Codex blocker #3 regressed.)"
+    )
+
+
+def test_sbatch_failure_after_sync_uses_distinct_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sbatch failure must NOT wear an "rsync failed" error message.
+
+    Codex follow-up regression #1 on PR #134: the original fix
+    wrapped both the sync and the submit in one ``except RuntimeError
+    as exc: raise BadParameter(f"rsync failed: ...")`` block, so a
+    sbatch error claimed the rsync failed.
+    """
+    mount_local = tmp_path / "ml-project"
+    mount_local.mkdir()
+    script = mount_local / "train.sbatch"
+    script.write_text("#!/bin/bash\necho hi\n")
+
+    profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")
+    job_ops = _patch_transport(monkeypatch, profile)
+
+    monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", lambda *a, **k: None)
+
+    job_ops.submit_remote_sbatch.side_effect = RuntimeError(
+        "remote sbatch submission failed"
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["sbatch", str(script), "--profile", "ml-cluster"])
+
+    assert result.exit_code != 0
+    combined = (result.stdout or "") + (result.stderr or "")
+    assert "sbatch failed" in combined.lower()
+    assert "rsync failed" not in combined.lower()
+
+
 def test_default_resource_flags_not_forwarded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -316,3 +405,86 @@ def test_default_resource_flags_not_forwarded(
     extra = job_ops.submit_remote_sbatch.call_args.kwargs["extra_sbatch_args"]
     # ``extra_sbatch_args`` is None or empty when no flags were typed.
     assert not extra
+
+
+def test_explicit_default_override_is_forwarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``-N 1`` typed explicitly must override a script's ``#SBATCH --nodes=8``.
+
+    Codex follow-up #1 to PR #134's first round: the original
+    "default !=" check would skip explicit default-valued flags
+    because the typed value matches the default. The new
+    ``get_parameter_source``-based check fixes that.
+    """
+    mount_local = tmp_path / "ml-project"
+    mount_local.mkdir()
+    script = mount_local / "train.sbatch"
+    script.write_text("#!/bin/bash\n#SBATCH --nodes=8\necho hi\n")
+
+    profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")
+    job_ops = _patch_transport(monkeypatch, profile)
+    monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", lambda *a, **k: None)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["sbatch", str(script), "--profile", "ml-cluster", "-N", "1"],
+    )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    extra = job_ops.submit_remote_sbatch.call_args.kwargs["extra_sbatch_args"]
+    # The user typed ``-N 1`` explicitly. It must be forwarded so
+    # SLURM overrides the script's ``#SBATCH --nodes=8``.
+    assert "--nodes=1" in extra
+
+
+def test_config_workdir_does_not_inject_chdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Config-default ``work_dir`` must NOT be forwarded as ``--chdir``.
+
+    Codex follow-up #1 (continued): without ParameterSource, a
+    config-injected ``work_dir`` looked indistinguishable from a
+    user-typed ``-D``, so the script's own ``#SBATCH --chdir=`` got
+    silently overridden. ``ParameterSource`` distinguishes the two.
+    """
+    mount_local = tmp_path / "ml-project"
+    mount_local.mkdir()
+    script = mount_local / "train.sbatch"
+    script.write_text(
+        "#!/bin/bash\n#SBATCH --chdir=/cluster/share/ml-project\necho hi\n"
+    )
+
+    # Inject a config-default work_dir that differs from the script's
+    # explicit value. Without the fix the planner forwards the config
+    # default and clobbers the script's choice.
+    # ``srunx.cli/__init__.py`` re-exports the ``main`` function as
+    # ``srunx.cli.main``, shadowing the module attribute lookup
+    # so ``import srunx.cli.main as X`` returns the function. Reach
+    # for the module via ``sys.modules`` directly so the patch lands
+    # on the module's namespace where ``get_config`` is rebound.
+    import sys
+
+    from srunx.config import SrunxConfig
+
+    cli_main_module = sys.modules["srunx.cli.main"]
+    monkeypatch.setattr(
+        cli_main_module,
+        "get_config",
+        lambda: SrunxConfig.model_validate({"work_dir": "/some/config/default"}),
+    )
+
+    profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")
+    job_ops = _patch_transport(monkeypatch, profile)
+    monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", lambda *a, **k: None)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["sbatch", str(script), "--profile", "ml-cluster"])
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    extra = job_ops.submit_remote_sbatch.call_args.kwargs["extra_sbatch_args"]
+    assert not any(a.startswith("--chdir") for a in (extra or [])), (
+        "Config-default work_dir leaked into sbatch CLI args, would have "
+        "overridden the script's own #SBATCH --chdir=."
+    )
