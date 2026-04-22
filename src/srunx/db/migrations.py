@@ -287,6 +287,57 @@ CREATE INDEX idx_watches_open        ON watches(closed_at) WHERE closed_at IS NU
 
 
 # ---------------------------------------------------------------------------
+# v4 schema: widen workflow_runs.triggered_by CHECK to admit 'mcp'.
+#
+# Motivation: Phase 1 sweep orchestrator fudged MCP-originated cells as
+# triggered_by='web' because the v1 CHECK allowlist was
+# ('cli','web','schedule') and SQLite cannot ALTER CHECK in place — the
+# widen requires a full table rebuild. 'schedule' stays in the allowlist
+# as a reserved value even though no writer emits it yet (forward compat
+# with planned scheduled-workflow triggers). The accompanying Phase 3
+# commit removes the orchestrator workaround so MCP cells record their
+# true origin, which the notification + audit paths consume verbatim.
+#
+# Table-rebuild is mandatory because ``workflow_runs`` is referenced by
+# ``jobs.workflow_run_id`` (ON DELETE SET NULL) and
+# ``workflow_run_jobs.workflow_run_id`` (ON DELETE CASCADE); the
+# DROP + RENAME therefore has to run under ``PRAGMA foreign_keys=OFF``
+# (``requires_fk_off=True``). All V3-era columns (notably
+# ``sweep_run_id`` + its index) are re-declared here so V3's work is
+# preserved.
+# ---------------------------------------------------------------------------
+
+SCHEMA_V4 = """
+CREATE TABLE workflow_runs_v4 (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_name      TEXT NOT NULL,
+    workflow_yaml_path TEXT,
+    status             TEXT NOT NULL
+                         CHECK (status IN ('pending','running','completed','failed','cancelled')),
+    started_at         TEXT NOT NULL,
+    completed_at       TEXT,
+    args               TEXT,
+    error              TEXT,
+    triggered_by       TEXT NOT NULL
+                         CHECK (triggered_by IN ('cli','web','schedule','mcp')),
+    sweep_run_id       INTEGER REFERENCES sweep_runs(id) ON DELETE SET NULL
+);
+INSERT INTO workflow_runs_v4 (
+    id, workflow_name, workflow_yaml_path, status, started_at, completed_at,
+    args, error, triggered_by, sweep_run_id
+)
+    SELECT id, workflow_name, workflow_yaml_path, status, started_at, completed_at,
+           args, error, triggered_by, sweep_run_id
+    FROM workflow_runs;
+DROP TABLE workflow_runs;
+ALTER TABLE workflow_runs_v4 RENAME TO workflow_runs;
+CREATE INDEX idx_workflow_runs_status       ON workflow_runs(status);
+CREATE INDEX idx_workflow_runs_started_at   ON workflow_runs(started_at);
+CREATE INDEX idx_workflow_runs_sweep_run_id ON workflow_runs(sweep_run_id);
+"""
+
+
+# ---------------------------------------------------------------------------
 # Migration registry
 # ---------------------------------------------------------------------------
 
@@ -320,6 +371,12 @@ MIGRATIONS: list[Migration] = [
         version=3,
         name="v3_sweep_runs",
         sql=SCHEMA_V3,
+        requires_fk_off=True,
+    ),
+    Migration(
+        version=4,
+        name="v4_widen_triggered_by_mcp",
+        sql=SCHEMA_V4,
         requires_fk_off=True,
     ),
 ]

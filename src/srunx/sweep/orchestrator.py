@@ -46,16 +46,6 @@ def get_active_orchestrator(sweep_run_id: int) -> SweepOrchestrator | None:
 
 logger = get_logger(__name__)
 
-# Map the orchestrator-level submission_source to the child workflow_runs
-# triggered_by CHECK-constraint value. MCP is recorded as 'web' in the
-# child (see design.md § submission_source/triggered_by 対応表) because
-# the v1 CHECK allowlist is ('cli','web','schedule').
-_TRIGGERED_BY_BY_SOURCE: dict[Literal["cli", "web", "mcp"], WorkflowRunTriggeredBy] = {
-    "cli": "cli",
-    "web": "web",
-    "mcp": "web",
-}
-
 
 class SweepOrchestrator:
     """Drive sweep execution: materialize cells, run them, aggregate status."""
@@ -163,7 +153,11 @@ class SweepOrchestrator:
             if self.workflow_yaml_path is not None
             else None
         )
-        triggered_by = _TRIGGERED_BY_BY_SOURCE[self.submission_source]
+        # submission_source ('cli'|'web'|'mcp') is a strict subset of
+        # workflow_runs.triggered_by after the V4 CHECK widening, so the
+        # value flows through unchanged — every origin records its true
+        # identity on the child rows.
+        triggered_by: WorkflowRunTriggeredBy = self.submission_source
 
         sweep_repo = SweepRunRepository(conn)
         wr_repo = WorkflowRunRepository(conn)

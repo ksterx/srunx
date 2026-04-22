@@ -388,12 +388,15 @@ Constraints / Phase 1 limitations:
   CLI and MCP sweeps still run cells through the local `Slurm` singleton —
   the orchestrator's default `executor_factory=None` preserves that
   behaviour bit-for-bit.
-- MCP-originated sweep cells record `workflow_runs.triggered_by='web'` (the
-  v1 CHECK constraint does not yet allow `'mcp'`). Parent `sweep_runs.submission_source`
-  correctly stores `'mcp'` for audit. Widening the child CHECK is Phase 2 scope.
+- MCP-originated sweep cells record `workflow_runs.triggered_by='mcp'`
+  (V4 migration widened the CHECK allowlist); parent
+  `sweep_runs.submission_source` is `'mcp'` for the same sweep so cell
+  and parent origins always agree.
 
 DB schema (V3 migration): `sweep_runs` table + `workflow_runs.sweep_run_id`
-FK + widened `events.kind` / `watches.kind` CHECK allowlist. Each cell has a
+FK + widened `events.kind` / `watches.kind` CHECK allowlist. V4 migration
+widens `workflow_runs.triggered_by` CHECK to admit `'mcp'` alongside
+`'cli'`/`'web'`/`'schedule'`. Each cell has a
 per-cell `workflow_runs` row and inherits the parent's `sweep_run_id`. The
 parent `sweep_runs` row tracks aggregate counters (cells_pending /
 cells_running / cells_completed / cells_failed / cells_cancelled) that the
