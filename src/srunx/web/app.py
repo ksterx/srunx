@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,7 +12,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from srunx.db.models import SweepRun
 from srunx.logging import get_logger
+from srunx.rendering import SubmissionRenderContext
+from srunx.ssh.core.config import MountConfig
+from srunx.sweep.reconciler import ExecutorFactoryBundle, ExecutorFactoryProvider
 
 from .config import get_web_config
 from .deps import set_adapter
@@ -28,6 +33,7 @@ from .routers import subscriptions as subscriptions_router
 from .routers import sweep_runs as sweep_runs_router
 from .routers import watches as watches_router
 from .ssh_adapter import SlurmSSHAdapter
+from .ssh_executor import SlurmSSHExecutorPool
 
 _FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
 logger = get_logger(__name__)
@@ -142,6 +148,73 @@ def _print_ui_banner(
     )
 
 
+def _build_web_executor_factory_provider(
+    adapter: SlurmSSHAdapter | None,
+) -> ExecutorFactoryProvider | None:
+    """Return a :data:`ExecutorFactoryProvider` for Web-originated sweeps.
+
+    The reconciler calls this provider once per resumed sweep. For
+    ``submission_source in {'web','mcp'}`` it constructs a per-sweep
+    :class:`SlurmSSHExecutorPool` clone (from the startup adapter's
+    :class:`SlurmSSHAdapterSpec`) plus the active profile's mounts as a
+    :class:`SubmissionRenderContext`, so the resumed orchestrator routes
+    cells through the same SSH adapter + mount translation the original
+    dispatcher used. Pool cleanup runs when the sweep's resume completes.
+
+    For CLI-originated sweeps the provider returns ``None`` so the
+    reconciler falls back to the local :class:`Slurm` executor — same
+    behaviour as a CLI `srunx flow` invocation.
+
+    When no SSH adapter is configured at startup the provider is
+    ``None`` entirely (the caller sees a plain resume); Web / MCP sweeps
+    then surface the original "workflow_yaml_path missing" or executor
+    failure instead of silently falling back to a local Slurm binary
+    the Web host likely doesn't have.
+    """
+    if adapter is None:
+        return None
+
+    spec = adapter.connection_spec
+    # Cap the pool size — mirrors the dispatcher's
+    # ``min(max_parallel, 8)`` clamp. Resume workloads observe
+    # ``max_parallel`` from the DB, but we don't know it at provider
+    # construction time; cap at 8 here (the dispatcher's ceiling) and
+    # let the orchestrator's semaphore do the real gating.
+    try:
+        pool_size = max(1, int(os.environ.get("SRUNX_SSH_POOL_SIZE", "4")))
+    except ValueError:
+        pool_size = 4
+    pool_size = min(pool_size, 8)
+
+    # Resolve an immutable mounts snapshot for every sweep resumed in
+    # this pass. Each sweep still uses its own ``SubmissionRenderContext``
+    # instance so the reconciler doesn't share mutable state across
+    # sweeps. ``mount_name=None`` / ``default_work_dir=None`` because
+    # the original selected-mount name isn't stored on ``sweep_runs``
+    # (no new columns); absolute ``work_dir`` paths under a mount's
+    # ``local`` still get translated since the full mounts tuple is
+    # present.
+    mounts: tuple[MountConfig, ...] = tuple(spec.mounts)
+
+    def provider(sweep: SweepRun) -> ExecutorFactoryBundle | None:
+        if sweep.submission_source == "cli":
+            return None
+
+        pool = SlurmSSHExecutorPool(spec, callbacks=[], size=pool_size)
+        context = SubmissionRenderContext(
+            mount_name=None,
+            mounts=mounts,
+            default_work_dir=None,
+        )
+        return ExecutorFactoryBundle(
+            factory=pool.lease,
+            submission_context=context,
+            cleanup=pool.close,
+        )
+
+    return provider
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage SSH connection lifecycle + background pollers.
@@ -232,8 +305,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         verbose=config.verbose,
     )
 
-    import os
-
     import anyio
 
     from srunx.pollers.active_watch_poller import ActiveWatchPoller
@@ -246,11 +317,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # the active-watch poller never races the orchestrator on observation
     # of resumed cells. Skipped under --reload / SRUNX_DISABLE_POLLER=1
     # for parity with the poller gating.
+    #
+    # The Web-side provider restores, for every Web / MCP-originated
+    # sweep, the per-sweep :class:`SlurmSSHExecutorPool` + mount-aware
+    # :class:`SubmissionRenderContext` the dispatcher originally wired
+    # in (see :func:`srunx.web.routers.workflows._dispatch_sweep`). CLI
+    # sweeps (``submission_source == 'cli'``) stay on the local
+    # :class:`Slurm` path by returning ``None`` from the provider.
     if should_start_pollers():
         try:
             from srunx.sweep.reconciler import SweepReconciler
 
-            await SweepReconciler.scan_and_resume_async()
+            provider = _build_web_executor_factory_provider(adapter)
+            await SweepReconciler.scan_and_resume_async(
+                executor_factory_provider=provider,
+            )
         except Exception:
             logger.warning("SweepReconciler startup pass raised", exc_info=True)
 
