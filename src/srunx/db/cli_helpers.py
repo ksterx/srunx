@@ -44,16 +44,14 @@ def record_submission_from_job(
         if job.job_id is None:
             return
 
-        from srunx.db.connection import init_db, open_connection
+        from srunx.db.connection import initialized_connection
         from srunx.db.repositories.job_state_transitions import (
             JobStateTransitionRepository,
         )
         from srunx.db.repositories.jobs import JobRepository
         from srunx.models import Job
 
-        init_db(delete_legacy=True)
-        conn = open_connection()
-        try:
+        with initialized_connection() as conn:
             resources = getattr(job, "resources", None)
             environment = getattr(job, "environment", None)
             command_val: list[str] | None = None
@@ -101,8 +99,6 @@ def record_submission_from_job(
                     to_status="PENDING",
                     source="webhook",
                 )
-        finally:
-            conn.close()
     except Exception as exc:  # noqa: BLE001 — best-effort
         logger.debug(f"record_submission_from_job failed: {exc}")
 
@@ -125,20 +121,16 @@ def create_cli_workflow_run(
     treats the link as best-effort and keeps submitting.
     """
     try:
-        from srunx.db.connection import init_db, open_connection
+        from srunx.db.connection import initialized_connection
         from srunx.db.repositories.workflow_runs import WorkflowRunRepository
 
-        init_db(delete_legacy=True)
-        conn = open_connection()
-        try:
+        with initialized_connection() as conn:
             return WorkflowRunRepository(conn).create(
                 workflow_name=workflow_name,
                 yaml_path=yaml_path,
                 args=args,
                 triggered_by="cli",
             )
-        finally:
-            conn.close()
     except Exception as exc:  # noqa: BLE001 — best-effort
         logger.debug(f"create_cli_workflow_run failed: {exc}")
         return None
@@ -154,15 +146,13 @@ def record_completion(job_id: int, status: JobStatus) -> None:
     poller) can't both append the same terminal state.
     """
     try:
-        from srunx.db.connection import init_db, open_connection, transaction
+        from srunx.db.connection import initialized_connection, transaction
         from srunx.db.repositories.job_state_transitions import (
             JobStateTransitionRepository,
         )
         from srunx.db.repositories.jobs import JobRepository
 
-        init_db(delete_legacy=True)
-        conn = open_connection()
-        try:
+        with initialized_connection() as conn:
             repo = JobRepository(conn)
             if repo.get(job_id) is None:
                 return
@@ -178,8 +168,6 @@ def record_completion(job_id: int, status: JobStatus) -> None:
                         source="cli_monitor",
                     )
                 repo.update_completion(job_id, status.value)
-        finally:
-            conn.close()
     except Exception as exc:  # noqa: BLE001 — best-effort
         logger.debug(f"record_completion failed: {exc}")
 
@@ -190,15 +178,11 @@ def list_recent_jobs(limit: int = 100) -> list[dict[str, Any]]:
     Thin wrapper around :meth:`JobRepository.list_recent_as_dict` that
     owns the connection; used by the CLI ``history`` command.
     """
-    from srunx.db.connection import init_db, open_connection
+    from srunx.db.connection import initialized_connection
     from srunx.db.repositories.jobs import JobRepository
 
-    init_db(delete_legacy=True)
-    conn = open_connection()
-    try:
+    with initialized_connection() as conn:
         return JobRepository(conn).list_recent_as_dict(limit=limit)
-    finally:
-        conn.close()
 
 
 def compute_job_stats(
@@ -210,15 +194,11 @@ def compute_job_stats(
     Thin wrapper around :meth:`JobRepository.compute_stats` that owns
     the connection; used by the CLI ``report`` command.
     """
-    from srunx.db.connection import init_db, open_connection
+    from srunx.db.connection import initialized_connection
     from srunx.db.repositories.jobs import JobRepository
 
-    init_db(delete_legacy=True)
-    conn = open_connection()
-    try:
+    with initialized_connection() as conn:
         return JobRepository(conn).compute_stats(from_date=from_date, to_date=to_date)
-    finally:
-        conn.close()
 
 
 def compute_workflow_stats(workflow_name: str) -> dict[str, Any]:
@@ -229,11 +209,9 @@ def compute_workflow_stats(workflow_name: str) -> dict[str, Any]:
     ``avg_duration_seconds``, ``first_submitted``, ``last_submitted``.
     Used by the CLI ``report --workflow`` command.
     """
-    from srunx.db.connection import init_db, open_connection
+    from srunx.db.connection import initialized_connection
 
-    init_db(delete_legacy=True)
-    conn = open_connection()
-    try:
+    with initialized_connection() as conn:
         row = conn.execute(
             """
             SELECT
@@ -247,8 +225,6 @@ def compute_workflow_stats(workflow_name: str) -> dict[str, Any]:
             """,
             (workflow_name,),
         ).fetchone()
-    finally:
-        conn.close()
 
     return {
         "workflow_name": workflow_name,

@@ -186,3 +186,25 @@ def init_db(db_path: Path | None = None, *, delete_legacy: bool = True) -> Path:
     if delete_legacy:
         _delete_legacy_history_db()
     return path
+
+
+@contextlib.contextmanager
+def initialized_connection(
+    db_path: Path | None = None,
+    *,
+    delete_legacy: bool = True,
+) -> Iterator[sqlite3.Connection]:
+    """Yield a migration-applied SQLite connection, closed on exit.
+
+    Encapsulates ``init_db(...) + open_connection(path)`` so callers can
+    treat the connection as "ready to query" without knowing about
+    migrations. Idempotent: ``apply_migrations`` early-returns when the
+    schema is already at the target version, so repeated use from hot
+    paths is safe.
+    """
+    path = init_db(db_path, delete_legacy=delete_legacy)
+    conn = open_connection(path)
+    try:
+        yield conn
+    finally:
+        conn.close()

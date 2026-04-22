@@ -21,7 +21,7 @@ from typing import Any
 import anyio
 
 from srunx.client_protocol import WorkflowJobExecutorFactory
-from srunx.db.connection import init_db, open_connection, transaction
+from srunx.db.connection import initialized_connection, transaction
 from srunx.db.models import SweepRun
 from srunx.db.repositories.sweep_runs import SweepRunRepository
 from srunx.logging import get_logger
@@ -149,12 +149,8 @@ class SweepReconciler:
     @classmethod
     def _load_incomplete_sweeps(cls) -> list[SweepRun]:
         """Load every sweep still in an incomplete status (pending/running/draining)."""
-        init_db(delete_legacy=True)
-        conn = open_connection()
-        try:
+        with initialized_connection() as conn:
             return SweepRunRepository(conn).list_incomplete()
-        finally:
-            conn.close()
 
     # ------------------------------------------------------------------
     # Internals
@@ -211,9 +207,7 @@ class SweepReconciler:
         cases (aggregator evaluate, info logs) are handled inline so the
         caller only has to act on the happy path.
         """
-        init_db(delete_legacy=True)
-        conn = open_connection()
-        try:
+        with initialized_connection() as conn:
             running = _count_cells(conn, sweep_run_id, "running")
             pending = _list_pending_cells(conn, sweep_run_id)
             sweep_row = conn.execute(
@@ -248,8 +242,6 @@ class SweepReconciler:
                 f"reconciler: sweep {sweep_run_id} resuming with "
                 f"{len(pending)} pending cells, headroom={headroom}"
             )
-        finally:
-            conn.close()
 
         return sweep_row, pending
 
