@@ -371,7 +371,18 @@ class SlurmSSHAdapter:
             self._client.disconnect()
 
     def _ensure_connected(self) -> None:
-        """Reconnect if the SSH connection has dropped.
+        """Connect (or reconnect) the SSH session if needed.
+
+        Three states:
+
+        1. ``ssh_client is None`` — adapter was never connected. Happens
+           for every adapter built by
+           :func:`srunx.transport.registry._build_ssh_handle` (CLI
+           scope, MCP tool handlers, tests). Log as "connecting" —
+           calling this a "reconnect" would be misleading.
+        2. ``transport`` absent or inactive — the session was open but
+           dropped (idle timeout, network blip). Log as "reconnecting".
+        3. Transport active — no-op.
 
         Safe to call from inside another ``_io_lock`` region because the
         lock is reentrant. Callers that invoke SSH I/O directly on
@@ -382,18 +393,23 @@ class SlurmSSHAdapter:
         """
         with self._io_lock:
             ssh = self._client.ssh_client
-            needs_reconnect = ssh is None
-            if not needs_reconnect:
-                transport = ssh.get_transport()  # type: ignore[union-attr]
-                needs_reconnect = transport is None or not transport.is_active()
-
-            if needs_reconnect:
-                logger.warning("SSH connection lost, reconnecting...")
-                self._client.disconnect()
+            if ssh is None:
+                logger.debug("SSH adapter connecting for the first time")
                 if not self._client.connect():
-                    raise RuntimeError("SSH reconnection failed")
+                    raise RuntimeError("SSH connection failed")
                 self._set_keepalive()
-                logger.info("SSH reconnection successful")
+                return
+
+            transport = ssh.get_transport()
+            if transport is not None and transport.is_active():
+                return  # happy path — connection already up
+
+            logger.warning("SSH connection lost, reconnecting...")
+            self._client.disconnect()
+            if not self._client.connect():
+                raise RuntimeError("SSH reconnection failed")
+            self._set_keepalive()
+            logger.info("SSH reconnection successful")
 
     def __enter__(self) -> SlurmSSHAdapter:
         self.connect()
@@ -704,9 +720,11 @@ class SlurmSSHAdapter:
         with a :class:`~srunx.models.Job` instance. This alias will
         remain until those routers migrate to the Protocol surface.
         """
-        result = self._client.submit_sbatch_job(
-            script_content, job_name=job_name, dependency=dependency
-        )
+        with self._io_lock:
+            self._ensure_connected()
+            result = self._client.submit_sbatch_job(
+                script_content, job_name=job_name, dependency=dependency
+            )
         if result is None:
             raise RuntimeError("sbatch submission failed")
         return {
@@ -728,13 +746,22 @@ class SlurmSSHAdapter:
         """Get job stdout/stderr log contents from remote.
 
         Returns ``(stdout, stderr, new_stdout_offset, new_stderr_offset)``.
+
+        Ensures the SSH connection is live before reading — callers that
+        reach this method via a fresh :class:`SlurmSSHAdapter` (e.g. CLI
+        ``srunx logs --profile foo``, which builds the adapter via
+        :func:`srunx.transport.registry._build_ssh_handle` without the
+        Web app's startup connect) would otherwise hit
+        ``SSH client is not connected`` on the first call.
         """
-        return self._client.get_job_output(
-            str(job_id),
-            job_name=job_name,
-            stdout_offset=stdout_offset,
-            stderr_offset=stderr_offset,
-        )
+        with self._io_lock:
+            self._ensure_connected()
+            return self._client.get_job_output(
+                str(job_id),
+                job_name=job_name,
+                stdout_offset=stdout_offset,
+                stderr_offset=stderr_offset,
+            )
 
     def get_job_status(self, job_id: int) -> str:
         """Get job status string.
@@ -746,7 +773,9 @@ class SlurmSSHAdapter:
         conforming to
         :class:`~srunx.client_protocol.JobOperationsProtocol`.
         """
-        return self._client.get_job_status(str(job_id))
+        with self._io_lock:
+            self._ensure_connected()
+            return self._client.get_job_status(str(job_id))
 
     def get_job_output_detailed(
         self,
