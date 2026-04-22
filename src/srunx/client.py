@@ -27,6 +27,7 @@ from srunx.utils import GPU_TRES_RE, get_job_status, job_status_msg  # noqa: E40
 
 if TYPE_CHECKING:
     from srunx.client_protocol import JobStatusInfo
+    from srunx.rendering import SubmissionRenderContext
 
 logger = get_logger(__name__)
 
@@ -468,8 +469,19 @@ class Slurm:
         verbose: bool = False,
         workflow_name: str | None = None,
         workflow_run_id: int | None = None,
+        *,
+        submission_context: "SubmissionRenderContext | None" = None,
     ) -> RunnableJobType:
-        """Submit a job and wait for completion."""
+        """Submit a job and wait for completion.
+
+        ``submission_context`` is accepted for
+        :class:`~srunx.client_protocol.WorkflowJobExecutorProtocol`
+        conformance but intentionally ignored: local SLURM submission
+        does not need mount-path translation, so the job is rendered
+        verbatim from its own ``work_dir`` / ``log_dir`` fields. SSH-backed
+        executors consume the context to rewrite local paths before render.
+        """
+        del submission_context  # unused — local path has no mount translation
         submitted_job = self.submit(
             job,
             template_path=template_path,

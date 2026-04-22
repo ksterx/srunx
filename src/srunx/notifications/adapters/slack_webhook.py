@@ -144,6 +144,9 @@ class SlackWebhookDeliveryAdapter:
             )
             return text, [_section(body)]
 
+        if kind == "sweep_run.status_changed":
+            return SlackWebhookDeliveryAdapter._format_sweep_run_event(event)
+
         if kind == "resource.threshold_crossed":
             partition = sanitize_slack_text(str(payload.get("partition", "all")))
             available = sanitize_slack_text(str(payload.get("gpus_available", "?")))
@@ -175,6 +178,53 @@ class SlackWebhookDeliveryAdapter:
         text = f"srunx event: {safe_kind}"
         body = f"*{safe_kind}*\n• source_ref: `{safe_ref}`"
         return text, [_section(body)]
+
+    @staticmethod
+    def _format_sweep_run_event(event: Event) -> tuple[str, list[dict[str, Any]]]:
+        """Render a ``sweep_run.status_changed`` event.
+
+        Uses the aggregator payload schema: ``to_status``, ``from_status``,
+        ``cell_count``, ``cells_completed``, ``cells_failed``,
+        ``cells_cancelled``, ``cells_running``, ``cells_pending``,
+        ``representative_error``, ``sweep_run_id``, ``name``.
+        """
+        payload = event.payload or {}
+        fallback_id = SlackWebhookDeliveryAdapter._id_from_source_ref(
+            event.source_ref, "sweep_run"
+        )
+        sweep_id = sanitize_slack_text(
+            str(payload.get("sweep_run_id") or fallback_id or "?")
+        )
+        name = sanitize_slack_text(str(payload.get("name", "?")))
+        from_status = sanitize_slack_text(str(payload.get("from_status", "?")))
+        to_status = sanitize_slack_text(str(payload.get("to_status", "?")))
+
+        cell_count = int(payload.get("cell_count") or 0)
+        cells_completed = int(payload.get("cells_completed") or 0)
+        cells_failed = int(payload.get("cells_failed") or 0)
+        cells_cancelled = int(payload.get("cells_cancelled") or 0)
+
+        progress = (
+            f"{cells_completed}/{cell_count} completed "
+            f"({cells_failed} failed, {cells_cancelled} cancelled)"
+        )
+        progress_safe = sanitize_slack_text(progress)
+
+        text = f"Sweep {to_status}"
+        body_lines = [
+            "*Sweep status changed*",
+            f"• Sweep: `{sweep_id}`",
+            f"• Name: `{name}`",
+            f"• {from_status} → *{to_status}*",
+            f"• Progress: {progress_safe}",
+        ]
+
+        representative_error = payload.get("representative_error")
+        if representative_error:
+            error_safe = sanitize_slack_text(str(representative_error))
+            body_lines.append(f"• Error: `{error_safe}`")
+
+        return text, [_section("\n".join(body_lines))]
 
 
 def _section(markdown: str) -> dict[str, Any]:

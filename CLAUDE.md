@@ -331,6 +331,79 @@ jobs:
 - No runtime env-file mechanism: `$SRUNX_OUTPUTS`, `$SRUNX_OUTPUTS_DIR`, and dynamic `echo "key=value" >> $SRUNX_OUTPUTS` writes are gone
 - Values that can only be computed at runtime are out of scope — pass them explicitly (e.g. `--out-file /shared/path/result.json`) or make the path deterministic from `args`
 
+### Parameter Sweeps
+
+srunx supports matrix parameter sweeps for running the same workflow with
+different parameter combinations without copying YAML. A sweep expands the
+matrix into N workflow_runs (cells) that execute independently, each with
+its own materialized sbatch. Sweeps are usable from CLI, Web API, and MCP.
+
+Minimal sweep YAML:
+
+```yaml
+name: train
+args:
+  lr: 0.01
+  seed: 1
+  dataset: cifar10
+
+sweep:
+  matrix:
+    lr: [0.001, 0.01, 0.1]
+    seed: [1, 2, 3]
+  fail_fast: false       # default
+  max_parallel: 4        # required
+
+jobs:
+  - name: train
+    command: ["python", "train.py", "--lr", "{{ lr }}", "--seed", "{{ seed }}"]
+    gpus_per_node: 1
+```
+
+CLI invocations:
+
+```bash
+# YAML-declared sweep
+srunx flow run train.yaml
+
+# Ad-hoc sweep (CLI overrides/augments YAML)
+srunx flow run --sweep lr=0.001,0.01,0.1 --max-parallel 2 train.yaml
+
+# Single-arg override (no sweep)
+srunx flow run --arg dataset=imagenet train.yaml
+
+# Dry-run preview (prints cell args without submitting)
+srunx flow run --sweep lr=0.001,0.01 --max-parallel 2 --dry-run train.yaml
+```
+
+Constraints / Phase 1 limitations:
+
+- `max_parallel` is required (YAML or `--max-parallel`; Web API defaults to 4).
+- Matrix values must be scalar (str/int/float/bool); nested structures rejected.
+- Cell count capped at 1000 (safety valve; SLURM MaxSubmitJobs is typically ~4096).
+- `fail_fast` defaults to false; one cell failing does not abort peers.
+- Web UI sweep submission routes through the configured SSH adapter via a
+  per-sweep `SlurmSSHExecutorPool` (capped at `min(max_parallel, 8)` pooled
+  connections); the pool is closed when the background sweep task exits.
+  CLI and MCP sweeps still run cells through the local `Slurm` singleton —
+  the orchestrator's default `executor_factory=None` preserves that
+  behaviour bit-for-bit.
+- MCP-originated sweep cells record `workflow_runs.triggered_by='web'` (the
+  v1 CHECK constraint does not yet allow `'mcp'`). Parent `sweep_runs.submission_source`
+  correctly stores `'mcp'` for audit. Widening the child CHECK is Phase 2 scope.
+
+DB schema (V3 migration): `sweep_runs` table + `workflow_runs.sweep_run_id`
+FK + widened `events.kind` / `watches.kind` CHECK allowlist. Each cell has a
+per-cell `workflow_runs` row and inherits the parent's `sweep_run_id`. The
+parent `sweep_runs` row tracks aggregate counters (cells_pending /
+cells_running / cells_completed / cells_failed / cells_cancelled) that the
+`WorkflowRunStateService` updates atomically on every cell transition.
+
+Notifications for sweeps: only the parent `sweep_run` gets a
+watch+subscription (if `--endpoint` is provided); cells do not produce
+individual Slack messages — a single `sweep_run.status_changed` event fires
+at first-cell-start and at final terminal.
+
 ### Key Improvements
 - **Unified Job Model**: Single `Job` class with comprehensive configuration
 - **Modular Architecture**: Clear separation of concerns

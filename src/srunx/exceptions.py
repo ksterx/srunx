@@ -8,3 +8,7 @@ class WorkflowValidationError(WorkflowError):
 
 class WorkflowExecutionError(WorkflowError):
     """Exception raised when workflow execution fails."""
+
+
+class SweepExecutionError(WorkflowError):
+    """Exception raised when sweep materialize / execution fails at the orchestrator boundary."""

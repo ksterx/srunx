@@ -7,10 +7,16 @@ downstream consumers can target either transparently.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from srunx.models import RunnableJobType
+    from srunx.rendering import SubmissionRenderContext
 
 
 class JobStatusInfo(BaseModel):
@@ -98,3 +104,61 @@ def parse_slurm_duration(value: str | None) -> int | None:
         return None
 
     return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+@runtime_checkable
+class WorkflowJobExecutorProtocol(Protocol):
+    """SLURM job execution interface used by :class:`WorkflowRunner`.
+
+    Narrower than :class:`SlurmClientProtocol`; focused on the single-job
+    submit + monitor cycle that the runner needs. The poller-facing
+    batch-query interface stays in :class:`SlurmClientProtocol` so the
+    two concerns stay independently substitutable (ISP).
+    """
+
+    def run(
+        self,
+        job: RunnableJobType,
+        *,
+        workflow_name: str | None = None,
+        workflow_run_id: int | None = None,
+        submission_context: SubmissionRenderContext | None = None,
+    ) -> RunnableJobType:
+        """Submit *job* to SLURM and block until it reaches a terminal status.
+
+        ``submission_context`` carries mount / default-path metadata that
+        SSH-backed executors need to translate local ``work_dir`` / ``log_dir``
+        values into their remote equivalents before rendering the SLURM
+        script. Local executors (e.g. :class:`srunx.client.Slurm`) accept
+        the kwarg for protocol conformance but ignore it — local submission
+        does not perform mount translation.
+        """
+        ...
+
+    def get_job_output_detailed(
+        self,
+        job_id: int | str,
+        job_name: str | None = None,
+        skip_content: bool = False,
+    ) -> dict[str, str | list[str] | None]:
+        """Return log-file metadata (and optionally content) for *job_id*."""
+        ...
+
+
+WorkflowJobExecutorFactory = Callable[
+    [], AbstractContextManager["WorkflowJobExecutorProtocol"]
+]
+"""Context-manager factory for leasing a workflow executor.
+
+Intended usage::
+
+    with executor_factory() as executor:
+        executor.run(job, workflow_run_id=...)
+
+Implementations:
+
+- Local: returns ``nullcontext(Slurm())`` — singleton reuse, no teardown.
+- SSH pool: returns a lease from a bounded pool of ``SlurmSSHAdapter``
+  clones so concurrent sweep cells don't serialize through one SSH
+  connection.
+"""

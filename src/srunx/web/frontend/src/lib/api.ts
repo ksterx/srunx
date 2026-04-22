@@ -22,6 +22,8 @@ import type {
   SSHTestResult,
   SrunxConfig,
   Subscription,
+  SweepCellRow,
+  SweepRun,
   SyncResult,
   Watch,
   TemplateCreateRequest,
@@ -847,6 +849,50 @@ export const deliveries = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(extractDetail(err, "Failed to fetch stuck count"));
+    }
+    return res.json();
+  },
+};
+
+/* ── Sweep runs ─────────────────────────────── */
+
+export const sweepRuns = {
+  list: async (): Promise<SweepRun[]> => {
+    const res = await fetch("/api/sweep_runs");
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to fetch sweep runs"));
+    }
+    return res.json();
+  },
+
+  get: async (id: number): Promise<SweepRun> => {
+    const res = await fetch(`/api/sweep_runs/${id}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, `Failed to fetch sweep run ${id}`));
+    }
+    return res.json();
+  },
+
+  listCells: async (id: number): Promise<SweepCellRow[]> => {
+    const res = await fetch(`/api/sweep_runs/${id}/cells`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(
+        extractDetail(err, `Failed to fetch cells for sweep ${id}`),
+      );
+    }
+    return res.json();
+  },
+
+  cancel: async (id: number): Promise<SweepRun> => {
+    const res = await fetch(`/api/sweep_runs/${id}/cancel`, {
+      method: "POST",
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, `Failed to cancel sweep run ${id}`));
     }
     return res.json();
   },

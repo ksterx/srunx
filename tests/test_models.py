@@ -425,7 +425,15 @@ class TestJob:
         assert job.resources.nodes == 1
         # Without SLURM_LOG_DIR set, should default to 'logs'
         assert job.log_dir == "logs"
-        assert job.work_dir == os.getcwd()
+        # Phase 2 render-parity fix: default changed from ``os.getcwd()`` to
+        # empty string so ``SubmissionRenderContext.default_work_dir`` (SSH
+        # submissions) can inject ``mount.remote`` without fighting a
+        # process-CWD fallback. Empty string also renders verbatim
+        # (the template's ``{% if work_dir %}`` guard omits ``--chdir``,
+        # and SLURM inherits the sbatch submission directory — same
+        # effective behavior as the old ``os.getcwd()`` default for CLI
+        # use where ``srunx`` is invoked from the user's project dir).
+        assert job.work_dir == ""
 
     def test_job_validation(self):
         """Test Job validation."""

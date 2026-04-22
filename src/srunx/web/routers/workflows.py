@@ -32,7 +32,7 @@ from srunx.db.repositories.jobs import JobRepository
 from srunx.db.repositories.watches import WatchRepository
 from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
 from srunx.db.repositories.workflow_runs import WorkflowRunRepository
-from srunx.exceptions import WorkflowValidationError
+from srunx.exceptions import SweepExecutionError, WorkflowValidationError
 from srunx.logging import get_logger
 from srunx.models import (
     Job,
@@ -41,10 +41,19 @@ from srunx.models import (
     ShellJob,
     Workflow,
 )
+from srunx.rendering import (
+    RenderedWorkflow,
+    SubmissionRenderContext,
+    render_workflow_for_submission,
+)
 from srunx.runner import WorkflowRunner
+from srunx.sweep import SweepSpec
+from srunx.sweep.orchestrator import SweepOrchestrator
+from srunx.sweep.state_service import WorkflowRunStateService
 
 from ..deps import get_adapter, get_db_conn
 from ..ssh_adapter import SlurmSSHAdapter
+from ..ssh_executor import SlurmSSHExecutorPool
 
 logger = get_logger(__name__)
 
@@ -281,6 +290,34 @@ def _reject_python_args(yaml_content: str) -> None:
             )
 
 
+def _reject_python_in_mapping(mapping: dict[str, Any], *, source: str) -> None:
+    """Reject ``python:`` values in structured request payloads.
+
+    Used by the Web API sweep path where ``args_override`` and
+    ``sweep.matrix`` come in as JSON (not YAML text). The YAML path
+    uses :func:`_reject_python_args`.
+    """
+    for key, val in mapping.items():
+        if isinstance(val, str) and "python:" in val.lower():
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{source} key '{key}' contains 'python:' which is not "
+                    "allowed via web for security reasons"
+                ),
+            )
+        if isinstance(val, list):
+            for i, element in enumerate(val):
+                if isinstance(element, str) and "python:" in element.lower():
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"{source} key '{key}' contains 'python:' at index "
+                            f"{i} which is not allowed via web for security reasons"
+                        ),
+                    )
+
+
 def _serialize_workflow(
     runner: WorkflowRunner,
     raw_yaml_jobs: list[dict[str, Any]] | None = None,
@@ -397,6 +434,7 @@ def _serialize_run(
         "job_ids": job_ids,
         "job_statuses": job_statuses,
         "error": run.error,
+        "sweep_run_id": run.sweep_run_id,
     }
 
 
@@ -477,15 +515,44 @@ async def cancel_run(
         except Exception as e:
             errors.append(f"{m.job_name}: {e}")
 
+    # Route through WorkflowRunStateService so a
+    # ``workflow_run.status_changed`` event is emitted and subscribers
+    # receive a delivery. ``run.status`` was captured above and is
+    # guaranteed non-terminal by the 422 guard.
+    current_status = run.status
+
     def _finalize() -> None:
-        run_repo.update_status(rid, "cancelled", completed_at=now_iso())
-        for w in watch_repo.list_by_target(
-            kind="workflow_run",
-            target_ref=f"workflow_run:{rid}",
-            only_open=True,
-        ):
-            if w.id is not None:
-                watch_repo.close(w.id)
+        with transaction(conn, "IMMEDIATE"):
+            transitioned = WorkflowRunStateService.update(
+                conn=conn,
+                workflow_run_id=rid,
+                from_status=current_status,
+                to_status="cancelled",
+                completed_at=now_iso(),
+            )
+            if not transitioned:
+                # Race with the poller: re-read the latest status and
+                # retry once. Skip if the row has reached a terminal
+                # state in the meantime.
+                latest = run_repo.get(rid)
+                if (
+                    latest is not None
+                    and latest.status not in _WORKFLOW_TERMINAL_STATUSES
+                ):
+                    WorkflowRunStateService.update(
+                        conn=conn,
+                        workflow_run_id=rid,
+                        from_status=latest.status,
+                        to_status="cancelled",
+                        completed_at=now_iso(),
+                    )
+            for w in watch_repo.list_by_target(
+                kind="workflow_run",
+                target_ref=f"workflow_run:{rid}",
+                only_open=True,
+            ):
+                if w.id is not None:
+                    watch_repo.close(w.id)
 
     await anyio.to_thread.run_sync(_finalize)
 
@@ -633,6 +700,21 @@ async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
     return _serialize_workflow(runner)
 
 
+class SweepSpecRequest(BaseModel):
+    """Sweep payload accepted by ``POST /api/workflows/{name}/run``.
+
+    Mirrors :class:`srunx.sweep.SweepSpec` but with a server-side default
+    for ``max_parallel`` (R7.9) so the client can omit it for small
+    sweeps.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    matrix: dict[str, list[Any]] = Field(default_factory=dict)
+    fail_fast: bool = False
+    max_parallel: int = 4
+
+
 class WorkflowRunRequest(BaseModel):
     from_job: str | None = None
     to_job: str | None = None
@@ -647,6 +729,11 @@ class WorkflowRunRequest(BaseModel):
     notify: bool = False
     endpoint_id: int | None = Field(default=None, gt=0)
     preset: str = "terminal"
+    # Sweep wiring (Phase G). ``args_override`` expands workflow-level
+    # ``args`` before Jinja rendering; ``sweep`` switches the request
+    # onto the :class:`SweepOrchestrator` path.
+    args_override: dict[str, Any] = Field(default_factory=dict)
+    sweep: SweepSpecRequest | None = None
 
 
 _WORKFLOW_RUN_PRESETS = ("terminal", "running_and_terminal", "all")
@@ -737,84 +824,80 @@ async def _sync_mounts(
     return profile
 
 
-def _prepare_render_context(
-    yaml_path: Path,
-    workflow: Workflow,
-    name: str,
-) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
-    """Parse raw YAML for template/extra args.
+def _build_submission_context(
+    mount_name: str | None,
+    profile: Any,
+) -> SubmissionRenderContext:
+    """Construct a :class:`SubmissionRenderContext` from the Web profile + mount.
 
-    Returns (job_template_map, job_extra_args).
+    - ``mount_name`` is the selected ``?mount=<name>`` query parameter.
+      When ``None``, no mount translation is performed.
+    - ``profile`` is the configured :class:`ServerProfile` (or ``None``
+      when no SSH profile is set up). Its ``mounts`` list is frozen into
+      a tuple so the context stays hashable / immutable.
+    - ``default_work_dir`` is the selected mount's remote path (so jobs
+      whose ``work_dir`` is empty inherit the mount root).
     """
-    import yaml as _yaml
-
-    raw_data = _yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-    raw_jobs = raw_data.get("jobs", [])
-
-    job_template_map: dict[str, str] = {}
-    job_extra_args: dict[str, dict[str, str]] = {}
-    for rj in raw_jobs:
-        rj_name = rj.get("name", "")
-        if rj.get("template"):
-            job_template_map[rj_name] = rj["template"]
-        extras: dict[str, str] = {}
-        if rj.get("srun_args"):
-            extras["srun_args"] = rj["srun_args"]
-        if rj.get("launch_prefix"):
-            extras["launch_prefix"] = rj["launch_prefix"]
-        if extras:
-            job_extra_args[rj_name] = extras
-
-    return job_template_map, job_extra_args
+    mounts: tuple[Any, ...] = tuple(profile.mounts) if profile is not None else ()
+    default_work_dir: str | None = None
+    if mount_name is not None and profile is not None:
+        for m in profile.mounts:
+            if m.name == mount_name:
+                default_work_dir = m.remote
+                break
+    return SubmissionRenderContext(
+        mount_name=mount_name,
+        mounts=mounts,
+        default_work_dir=default_work_dir,
+    )
 
 
-def _render_scripts(
+def _render_workflow(
+    yaml_path: Path,
+    *,
+    submission_context: SubmissionRenderContext,
+    args_override: dict[str, Any] | None = None,
+    single_job: str | None = None,
+) -> RenderedWorkflow:
+    """Thin wrapper around :func:`render_workflow_for_submission`.
+
+    The previous ``_prepare_render_context`` / ``_render_scripts`` pair
+    re-implemented a mount-aware render local to the Web router; this
+    delegates to the canonical helper so Web non-sweep, Web sweep, and
+    MCP all share identical semantics.
+    """
+    return render_workflow_for_submission(
+        yaml_path,
+        args_override=args_override,
+        context=submission_context,
+        single_job=single_job,
+    )
+
+
+def _enforce_shell_script_roots(
     workflow: Workflow,
     mount: str,
     profile: Any,
-    job_template_map: dict[str, str],
-    job_extra_args: dict[str, dict[str, str]],
-) -> dict[str, str]:
-    """Render SLURM scripts for all jobs in the workflow."""
-    from srunx.models import render_job_script
-    from srunx.template import TEMPLATES
+) -> None:
+    """Guard that every :class:`ShellJob`'s script_path stays under allowed roots.
 
-    templates_dir = Path(__file__).resolve().parent.parent.parent / "templates"
-    scripts: dict[str, str] = {}
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        for job in workflow.jobs:
-            if isinstance(job, Job):
-                tpl_name = job_template_map.get(job.name, "base")
-                tpl_info = TEMPLATES.get(tpl_name)
-                if tpl_info:
-                    template_path = templates_dir / tpl_info["path"]
-                else:
-                    template_path = templates_dir / "base.slurm.jinja"
-
-                extras = job_extra_args.get(job.name, {})
-                rendered_path = render_job_script(
-                    template_path,
-                    job,
-                    output_dir=tmpdir,
-                    extra_srun_args=extras.get("srun_args"),
-                    extra_launch_prefix=extras.get("launch_prefix"),
+    The canonical render helper reads :class:`ShellJob` scripts verbatim
+    (``render_shell_job_script`` uses ``script_path`` as the template); we
+    still need the directory-traversal check that the old ``_render_scripts``
+    performed before the file was opened. Called before render so bogus
+    paths surface as 403 with no partial render side effects.
+    """
+    allowed_roots = [_workflow_dir(mount).resolve()]
+    if profile:
+        allowed_roots.extend(Path(m.local).resolve() for m in profile.mounts)
+    for job in workflow.jobs:
+        if isinstance(job, ShellJob):
+            script_path = Path(job.script_path).resolve()
+            if not any(script_path.is_relative_to(root) for root in allowed_roots):
+                raise HTTPException(
+                    403,
+                    f"Script path '{job.script_path}' is outside allowed directories",
                 )
-                scripts[job.name] = Path(rendered_path).read_text()
-            else:
-                script_path = Path(job.script_path).resolve()  # type: ignore[union-attr]
-                allowed_roots = [_workflow_dir(mount).resolve()]
-                if profile:
-                    allowed_roots.extend(
-                        Path(m.local).resolve() for m in profile.mounts
-                    )
-                if not any(script_path.is_relative_to(root) for root in allowed_roots):
-                    raise HTTPException(
-                        403,
-                        f"Script path '{job.script_path}' is outside allowed directories",  # type: ignore[union-attr]
-                    )
-                scripts[job.name] = script_path.read_text()
-    return scripts
 
 
 async def _submit_jobs_bfs(
@@ -989,6 +1072,180 @@ async def _submit_jobs_bfs(
     return submitted
 
 
+async def _run_sweep_background(
+    orchestrator: SweepOrchestrator,
+    sweep_run_id: int,
+    pool: SlurmSSHExecutorPool | None = None,
+) -> None:
+    """Background task body: drive already-materialized cells to completion.
+
+    Exceptions are logged and swallowed — the sweep's status columns in
+    the DB are authoritative, and the aggregator will converge the sweep
+    to a terminal state even if this task crashes mid-flight.
+
+    When a ``pool`` is supplied, every pooled SSH adapter is torn down
+    after the orchestrator returns (success or crash) so a completed
+    sweep never leaks SSH sessions against the cluster.
+    """
+    try:
+        await orchestrator.arun_from_materialized(sweep_run_id)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Background sweep task for sweep_run_id=%s raised",
+            sweep_run_id,
+            exc_info=True,
+        )
+    finally:
+        if pool is not None:
+            try:
+                await anyio.to_thread.run_sync(pool.close)
+            except Exception:  # noqa: BLE001 — pool cleanup is best-effort
+                logger.warning(
+                    "Failed to close SSH executor pool for sweep_run_id=%s",
+                    sweep_run_id,
+                    exc_info=True,
+                )
+
+
+async def _dispatch_sweep(
+    *,
+    yaml_path: Path,
+    name: str,
+    body: WorkflowRunRequest,
+    request: Request,
+    adapter: SlurmSSHAdapter,
+    mount: str | None = None,
+) -> dict[str, Any]:
+    """Materialize synchronously + spawn the orchestrator as a background task.
+
+    Returns 202 as soon as the cells exist in the DB so HTTP clients
+    don't block on the full sweep. Matrix validation (non-scalar
+    values, reserved axis names, oversize matrices) is routed through
+    :class:`WorkflowValidationError` by ``expand_matrix`` and surfaced
+    as HTTP 422.
+
+    Sweep cells run through a per-sweep :class:`SlurmSSHExecutorPool`
+    bounded by ``min(max_parallel, 8)`` so concurrent cells share a small
+    set of pooled SSH sessions against the cluster. The pool is closed in
+    :func:`_run_sweep_background` once the orchestrator returns.
+    """
+    assert body.sweep is not None  # narrowed by caller
+    # ``SweepSpec`` / ``SweepOrchestrator`` are module-imported so
+    # tests can patch them via ``srunx.web.routers.workflows.*``.
+
+    # Read raw YAML once so the orchestrator can see base ``args`` and
+    # the workflow name. ``from_yaml`` would redundantly parse it.
+    def _load_raw() -> dict[str, Any]:
+        raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+
+    workflow_data = await anyio.to_thread.run_sync(_load_raw)
+
+    try:
+        sweep_spec = SweepSpec(
+            matrix=body.sweep.matrix,
+            fail_fast=body.sweep.fail_fast,
+            max_parallel=body.sweep.max_parallel,
+        )
+    except Exception as exc:  # noqa: BLE001 — Pydantic / value errors
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    endpoint_id: int | None = None
+    if body.notify and body.endpoint_id is not None:
+        endpoint_id = body.endpoint_id
+    elif body.notify and body.endpoint_id is None:
+        # Non-fatal — matches the non-sweep path's contract: the sweep
+        # still runs, but no external deliveries are wired.
+        logger.warning("sweep run: notify=true with no endpoint_id; skipping")
+
+    # Build a per-sweep SSH executor pool so each cell's runner submits
+    # through the configured cluster adapter instead of the local
+    # :class:`Slurm` client. Size is capped at 8 to avoid opening more
+    # SSH sessions than most clusters comfortably accept from a single
+    # web host. ``pool.lease`` matches ``WorkflowJobExecutorFactory`` so
+    # it can be handed to the orchestrator without further wrapping.
+    pool_size = max(1, min(sweep_spec.max_parallel, 8))
+    pool = SlurmSSHExecutorPool(
+        adapter.connection_spec,
+        callbacks=[],
+        size=pool_size,
+    )
+
+    # Hand the mount-aware render context through to the orchestrator so
+    # every sweep cell's ``WorkflowRunner`` sees the same ``work_dir`` /
+    # ``log_dir`` translation as the non-sweep path.
+    profile = await anyio.to_thread.run_sync(_get_current_profile)
+    submission_context = _build_submission_context(mount, profile)
+
+    orchestrator = SweepOrchestrator(
+        workflow_yaml_path=yaml_path,
+        workflow_data={"name": name, **workflow_data},
+        args_override=body.args_override or None,
+        sweep_spec=sweep_spec,
+        submission_source="web",
+        endpoint_id=endpoint_id,
+        preset=body.preset,
+        executor_factory=pool.lease,
+        submission_context=submission_context,
+    )
+
+    try:
+        sweep_run_id = await anyio.to_thread.run_sync(orchestrator.materialize)
+    except WorkflowValidationError as exc:
+        pool.close()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SweepExecutionError as exc:
+        pool.close()
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except BaseException:
+        pool.close()
+        raise
+
+    # Spawn the execution loop on the app's lifespan task group so the
+    # HTTP request can return 202 immediately. ``task_group`` is set up
+    # in :func:`srunx.web.app.lifespan`; fall back to a stand-alone
+    # ``asyncio.create_task`` if the app state hasn't been wired (e.g.
+    # a bare ``TestClient`` without lifespan). Either way the pool is
+    # closed inside :func:`_run_sweep_background`.
+    task_group = getattr(request.app.state, "task_group", None)
+    if task_group is not None:
+        task_group.start_soon(_run_sweep_background, orchestrator, sweep_run_id, pool)
+    else:
+        # Fallback for test harnesses that don't run lifespan: keep a
+        # weak-ish reference to the spawned task so it isn't garbage-
+        # collected mid-flight.
+        import asyncio
+
+        pending = getattr(request.app.state, "background_tasks", None)
+        if pending is None:
+            pending = set()
+            request.app.state.background_tasks = pending
+        task = asyncio.create_task(
+            _run_sweep_background(orchestrator, sweep_run_id, pool)
+        )
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
+    # Read the freshly-materialized row so counters + status reflect the
+    # DB state, not the orchestrator's pre-run view.
+    from srunx.db.connection import open_connection as _open
+    from srunx.db.repositories.sweep_runs import SweepRunRepository
+
+    def _load_sweep() -> Any:
+        db_conn = _open()
+        try:
+            return SweepRunRepository(db_conn).get(sweep_run_id)
+        finally:
+            db_conn.close()
+
+    sweep_row = await anyio.to_thread.run_sync(_load_sweep)
+    return {
+        "sweep_run_id": sweep_run_id,
+        "status": sweep_row.status if sweep_row is not None else "pending",
+        "cell_count": sweep_row.cell_count if sweep_row is not None else 0,
+    }
+
+
 @router.post("/{name}/run", status_code=202)
 async def run_workflow(
     name: str,
@@ -1005,7 +1262,10 @@ async def run_workflow(
     consumes to drive aggregate status transitions after the request
     returns.
     """
-    _ = request  # referenced for route-signature compatibility only
+    # ``request`` is forwarded to ``_dispatch_sweep`` so the sweep
+    # branch can spawn the execution loop on the app's lifespan task
+    # group (avoiding a blocked HTTP response). Non-sweep branches
+    # don't need it.
     if not _SAFE_NAME.match(name):
         raise HTTPException(status_code=422, detail="Invalid workflow name")
     if not mount:
@@ -1027,10 +1287,37 @@ async def run_workflow(
             ),
         )
 
+    # R7: sanitize structured sweep / args_override payloads. YAML-level
+    # guard still runs on upload; this catches requests that bypass it.
+    if run_opts.args_override:
+        _reject_python_in_mapping(run_opts.args_override, source="args_override")
+    if run_opts.sweep is not None:
+        _reject_python_in_mapping(run_opts.sweep.matrix, source="sweep.matrix")
+
     yaml_path = _find_yaml(name, mount)
 
+    # Sweep branch: materialize synchronously so the 202 response carries
+    # a real ``sweep_run_id``, then spawn the execution loop on the app's
+    # lifespan task group. Per-cell workflow_run rows are created inside
+    # the orchestrator's happy-path TX; the client polls
+    # ``/api/sweep_runs/{id}``.
+    if run_opts.sweep is not None:
+        return await _dispatch_sweep(
+            yaml_path=yaml_path,
+            name=name,
+            body=run_opts,
+            request=request,
+            adapter=adapter,
+            mount=mount,
+        )
+
     # Load and optionally filter workflow
-    runner = await anyio.to_thread.run_sync(lambda: WorkflowRunner.from_yaml(yaml_path))
+    runner = await anyio.to_thread.run_sync(
+        lambda: WorkflowRunner.from_yaml(
+            yaml_path,
+            args_override=run_opts.args_override or None,
+        )
+    )
     workflow = runner.workflow
     if run_opts.from_job or run_opts.to_job or run_opts.single_job:
         filtered_jobs = _filter_workflow_jobs(
@@ -1054,9 +1341,24 @@ async def run_workflow(
         )
 
     def _fail(reason: str) -> None:
-        if run_id is not None:
-            run_repo.update_status(
-                run_id, "failed", error=reason, completed_at=now_iso()
+        if run_id is None:
+            return
+        # Route through WorkflowRunStateService so a status_changed event
+        # is emitted (subscribers of the auto-created workflow_run watch
+        # then receive a Slack-etc. delivery). Read the current status
+        # fresh — the poller may have already advanced the row before
+        # the failure fires.
+        with transaction(conn, "IMMEDIATE"):
+            latest = run_repo.get(run_id)
+            if latest is None or latest.status in _WORKFLOW_TERMINAL_STATUSES:
+                return
+            WorkflowRunStateService.update(
+                conn=conn,
+                workflow_run_id=run_id,
+                from_status=latest.status,
+                to_status="failed",
+                error=reason,
+                completed_at=now_iso(),
             )
 
     # Phase 1: Sync mounts
@@ -1067,29 +1369,75 @@ async def run_workflow(
         await anyio.to_thread.run_sync(functools.partial(_fail, reason))
         raise
 
-    # Phase 2: Prepare render context and render scripts
-    job_template_map, job_extra_args = await anyio.to_thread.run_sync(
-        lambda: _prepare_render_context(yaml_path, workflow, name)
+    # Phase 2: Render scripts via the canonical helper. Mount translation
+    # and template resolution live in :mod:`srunx.rendering` so Web
+    # non-sweep, Web sweep, and MCP share identical semantics.
+    #
+    # The shell script-root check runs against the set the helper will
+    # actually read. ``single_job`` restricts the helper to that one
+    # target; ``from_job`` / ``to_job`` are post-render filters so the
+    # helper reads every job in the YAML. Checking the full
+    # ``runner.workflow`` in those cases matches the helper's read set.
+    submission_context = _build_submission_context(mount, profile)
+    shell_check_workflow = (
+        Workflow(
+            name=runner.workflow.name,
+            jobs=[j for j in runner.workflow.jobs if j.name == run_opts.single_job],
+        )
+        if run_opts.single_job
+        else runner.workflow
     )
-
     try:
-        scripts = await anyio.to_thread.run_sync(
-            lambda: _render_scripts(
-                workflow,
-                mount,
-                profile,
-                job_template_map,
-                job_extra_args,
+        await anyio.to_thread.run_sync(
+            lambda: _enforce_shell_script_roots(shell_check_workflow, mount, profile)
+        )
+        rendered = await anyio.to_thread.run_sync(
+            lambda: _render_workflow(
+                yaml_path,
+                submission_context=submission_context,
+                args_override=run_opts.args_override or None,
+                single_job=run_opts.single_job,
             )
         )
+    except HTTPException:
+        # 403 shell-script-root violation: propagate without _fail side
+        # effects (no jobs queued, no cluster state to roll back).
+        raise
     except Exception as exc:
         reason = f"Script rendering failed: {exc}"
         await anyio.to_thread.run_sync(functools.partial(_fail, reason))
         raise HTTPException(status_code=500, detail=reason) from exc
 
+    # When ``from_job`` / ``to_job`` are set the canonical helper doesn't
+    # prune; apply the existing filter over the rendered result. The
+    # ``single_job`` case is already handled inside the helper.
+    if run_opts.from_job or run_opts.to_job:
+        filtered_names = {
+            j.name
+            for j in _filter_workflow_jobs(
+                rendered.workflow,
+                run_opts.from_job,
+                run_opts.to_job,
+                None,
+            )
+        }
+        rendered_jobs = tuple(
+            rj for rj in rendered.jobs if rj.job.name in filtered_names
+        )
+    else:
+        rendered_jobs = rendered.jobs
+
+    # The rendered workflow drives everything downstream so ``work_dir`` /
+    # ``log_dir`` translations stay visible to the submit + dry-run paths.
+    submission_workflow = Workflow(
+        name=rendered.workflow.name,
+        jobs=[rj.job for rj in rendered_jobs],
+    )
+    scripts: dict[str, str] = {rj.job.name: rj.script_text for rj in rendered_jobs}
+
     # Phase 3: Dry run early return
     if run_opts.dry_run:
-        job_names_in_wf = {job.name for job in workflow.jobs}
+        job_names_in_wf = {job.name for job in submission_workflow.jobs}
         return {
             "dry_run": True,
             "jobs": [
@@ -1105,16 +1453,16 @@ async def run_workflow(
                     if isinstance(job, Job)
                     else {},
                 }
-                for job in workflow.jobs
+                for job in submission_workflow.jobs
             ],
-            "execution_order": [job.name for job in workflow.jobs],
+            "execution_order": [job.name for job in submission_workflow.jobs],
         }
 
     # Phase 4: Submit each job + persist + link to workflow_run + seed transition
     assert run_id is not None
     try:
         await _submit_jobs_bfs(
-            workflow, scripts, run_opts, adapter, conn=conn, run_id=run_id
+            submission_workflow, scripts, run_opts, adapter, conn=conn, run_id=run_id
         )
     except HTTPException as exc:
         reason = (

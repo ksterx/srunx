@@ -75,6 +75,65 @@ export type WorkflowRun = {
   job_ids: Record<string, string>;
   job_statuses: Record<string, string>;
   error: string | null;
+  sweep_run_id?: number | null;
+};
+
+/* ── Sweep runs ───────────────────────────────── */
+
+export type SweepStatus =
+  | "pending"
+  | "running"
+  | "draining"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type SweepSubmissionSource = "cli" | "web" | "mcp";
+
+export type SweepRun = {
+  id: number;
+  name: string;
+  workflow_yaml_path: string | null;
+  status: SweepStatus;
+  matrix: Record<string, unknown[]>;
+  args: Record<string, unknown> | null;
+  fail_fast: boolean;
+  max_parallel: number;
+  cell_count: number;
+  cells_pending: number;
+  cells_running: number;
+  cells_completed: number;
+  cells_failed: number;
+  cells_cancelled: number;
+  submission_source: SweepSubmissionSource;
+  started_at: string;
+  completed_at: string | null;
+  cancel_requested_at: string | null;
+  error: string | null;
+};
+
+export type SweepSpec = {
+  matrix: Record<string, unknown[]>;
+  fail_fast: boolean;
+  max_parallel: number;
+};
+
+/**
+ * Row returned by ``GET /api/sweep_runs/{id}/cells``. Note this is a
+ * slimmer projection than :type:`WorkflowRun` — the backend only
+ * surfaces the fields needed to build the per-cell table on the Sweep
+ * detail page. For drill-down navigation we use ``id`` to route to the
+ * existing workflow-run detail experience.
+ */
+export type SweepCellRow = {
+  id: number;
+  workflow_name: string;
+  status: WorkflowRunStatus;
+  started_at: string | null;
+  completed_at: string | null;
+  args: Record<string, unknown> | null;
+  error: string | null;
+  triggered_by: string | null;
 };
 
 /* ── Resource snapshot ────────────────────────── */
@@ -391,6 +450,18 @@ export type WorkflowRunOptions = {
   notify?: boolean;
   endpoint_id?: number | null;
   preset?: string;
+  // Sweep wiring (Phase G / I). ``args_override`` expands the
+  // workflow-level ``args`` before Jinja rendering, and ``sweep``
+  // switches the request onto the SweepOrchestrator path. Both are
+  // optional and omitted by the legacy (non-sweep) UX.
+  args_override?: Record<string, unknown>;
+  sweep?: SweepSpec | null;
+};
+
+export type SweepRunStartedResponse = {
+  sweep_run_id: number;
+  status: SweepStatus;
+  cell_count: number;
 };
 
 export type DryRunJobInfo = {

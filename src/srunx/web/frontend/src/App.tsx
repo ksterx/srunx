@@ -11,6 +11,9 @@ import { Resources } from "./pages/Resources.tsx";
 import { Settings } from "./pages/Settings.tsx";
 import { LogViewer } from "./pages/LogViewer.tsx";
 import { NotificationsCenter } from "./pages/NotificationsCenter.tsx";
+import { SweepRunsPage } from "./pages/SweepRunsPage.tsx";
+import { SweepRunDetailPage } from "./pages/SweepRunDetailPage.tsx";
+import { WorkflowRunStandalonePage } from "./pages/WorkflowRunStandalonePage.tsx";
 
 export function App() {
   return (
@@ -24,6 +27,12 @@ export function App() {
           <Route path="workflows/new" element={<WorkflowBuilder />} />
           <Route path="workflows/:name/edit" element={<WorkflowBuilder />} />
           <Route path="workflows/:name" element={<WorkflowDetail />} />
+          <Route path="sweep_runs" element={<SweepRunsPage />} />
+          <Route path="sweep_runs/:id" element={<SweepRunDetailPage />} />
+          <Route
+            path="workflow_runs/:id"
+            element={<WorkflowRunStandalonePage />}
+          />
           <Route path="templates" element={<Templates />} />
           <Route path="resources" element={<Resources />} />
           <Route path="notifications" element={<NotificationsCenter />} />

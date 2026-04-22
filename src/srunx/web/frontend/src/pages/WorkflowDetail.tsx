@@ -657,10 +657,15 @@ export function WorkflowDetail() {
           workflowName={name}
           mount={mount}
           jobNames={workflow.jobs.map((j) => j.name)}
+          args={workflow.args}
           onClose={() => setShowRunDialog(false)}
           onRunStarted={(run) => {
             setShowRunDialog(false);
             handleRunStarted(run);
+          }}
+          onSweepStarted={(sweepId) => {
+            setShowRunDialog(false);
+            navigate(`/sweep_runs/${sweepId}`);
           }}
         />
       )}

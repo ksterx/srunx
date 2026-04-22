@@ -66,6 +66,9 @@ class EventRepository(BaseRepository):
         elif kind == "workflow_run.status_changed":
             to_status = payload.get("to_status", "")
             logical = f"workflow_run:{source_id}:status:{to_status}"
+        elif kind == "sweep_run.status_changed":
+            to_status = payload.get("to_status", "")
+            logical = f"sweep_run:{source_id}:status:{to_status}"
         elif kind == "resource.threshold_crossed":
             partition = payload.get("partition", "")
             threshold_id = payload.get("threshold_id", "")
