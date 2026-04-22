@@ -22,19 +22,40 @@ def mock_jobs():
     jobs = []
 
     # Job 1: With GPUs
-    job1 = Job(name="gpu_job", job_id=12345, command=["python", "train.py"])
+    job1 = Job(
+        name="gpu_job",
+        job_id=12345,
+        command=["python", "train.py"],
+        nodes=2,
+        gpus=8,
+        time_limit="4:00:00",
+    )
     job1._status = JobStatus.RUNNING
     job1.resources = JobResource(nodes=2, gpus_per_node=4, time_limit="4:00:00")
     jobs.append(job1)
 
     # Job 2: No GPUs
-    job2 = Job(name="cpu_job", job_id=12346, command=["python", "process.py"])
+    job2 = Job(
+        name="cpu_job",
+        job_id=12346,
+        command=["python", "process.py"],
+        nodes=1,
+        gpus=0,
+        time_limit="1:00:00",
+    )
     job2._status = JobStatus.PENDING
     job2.resources = JobResource(nodes=1, gpus_per_node=0, time_limit="1:00:00")
     jobs.append(job2)
 
     # Job 3: Multiple GPUs per node
-    job3 = Job(name="multi_gpu", job_id=12347, command=["python", "parallel.py"])
+    job3 = Job(
+        name="multi_gpu",
+        job_id=12347,
+        command=["python", "parallel.py"],
+        nodes=4,
+        gpus=8,
+        time_limit="2:00:00",
+    )
     job3._status = JobStatus.COMPLETED
     job3.resources = JobResource(nodes=4, gpus_per_node=2, time_limit="2:00:00")
     jobs.append(job3)

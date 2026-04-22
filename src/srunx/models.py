@@ -304,6 +304,10 @@ class BaseJob(BaseModel):
         default=None,
         description="Elapsed time in SLURM format (e.g., '1-02:30:45')",
     )
+    time_limit: str | None = Field(
+        default=None,
+        description="SLURM --time request (e.g., '1:00:00', 'UNLIMITED')",
+    )
     nodes: int | None = Field(
         default=None, ge=0, description="Number of nodes allocated to job"
     )

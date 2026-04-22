@@ -33,8 +33,9 @@ class TestDefaultPathSilentBanner:
             slurm_cls.return_value = client
             result = runner.invoke(app, ["submit", "echo", "hi"])
         assert result.exit_code == 0
-        assert "→ transport:" not in result.stderr
-        assert "→ transport:" not in result.output
+        # Banner suppression: no ``●`` bullet + no ``via`` source string.
+        assert "via" not in result.stderr
+        assert "via" not in result.output
 
     def test_list_emits_no_banner_on_default_path(self):
         runner = CliRunner()
@@ -44,7 +45,7 @@ class TestDefaultPathSilentBanner:
             slurm_cls.return_value = client
             result = runner.invoke(app, ["list"])
         assert result.exit_code == 0
-        assert "→ transport:" not in result.stderr
+        assert "via" not in result.stderr
 
 
 class TestExplicitSourceEmitsBanner:
@@ -58,8 +59,8 @@ class TestExplicitSourceEmitsBanner:
             slurm_cls.return_value = client
             result = runner.invoke(app, ["list", "--local"])
         assert result.exit_code == 0
-        assert "→ transport: local" in result.stderr
-        assert "from --local" in result.stderr
+        assert "local" in result.stderr
+        assert "via --local" in result.stderr
 
 
 class TestSSHHappyPath:

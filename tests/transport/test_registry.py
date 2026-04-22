@@ -44,8 +44,8 @@ class TestResolveTransport:
             assert rt.scheduler_key == "local"
             assert rt.source == "--local"
         captured = capsys.readouterr()
-        assert "transport: local" in captured.err
-        assert "from --local" in captured.err
+        assert "local" in captured.err
+        assert "via --local" in captured.err
 
     def test_profile_and_local_conflict(self, monkeypatch):
         """AC-1.2: --profile + --local is rejected at startup."""
@@ -74,7 +74,7 @@ class TestResolveTransport:
                 assert rt.source == "env"
                 assert rt.scheduler_key == "ssh:envprof"
         captured = capsys.readouterr()
-        assert "from env" in captured.err
+        assert "via $SRUNX_SSH_PROFILE" in captured.err
 
     def test_local_flag_overrides_env(self, monkeypatch, capsys):
         """AC-1.4: --local beats $SRUNX_SSH_PROFILE."""
@@ -83,7 +83,7 @@ class TestResolveTransport:
             assert rt.scheduler_key == "local"
             assert rt.source == "--local"
         captured = capsys.readouterr()
-        assert "from --local" in captured.err
+        assert "via --local" in captured.err
 
     def test_profile_flag_beats_env(self, monkeypatch, capsys):
         """REQ-1: --profile beats $SRUNX_SSH_PROFILE."""

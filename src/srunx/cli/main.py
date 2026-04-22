@@ -825,7 +825,16 @@ def list_jobs(
             console.print("No jobs in queue")
             return
 
-        # Table format output
+        # Table format output.
+        #
+        # Columns read from ``BaseJob`` top-level fields populated by
+        # both the local and SSH ``queue()`` implementations (squeue
+        # ``%.6D`` / ``%.10M`` / ``%.9l``). Pre-Phase-2 code reached for
+        # ``job.resources.nodes`` etc. but ``BaseJob`` has no
+        # ``resources`` attribute, so every row came back as ``N/A`` —
+        # regardless of transport. Two distinct time columns are shown
+        # because users care about both "how long has this been running"
+        # (Elapsed) and "when will SLURM kill it" (Limit).
         table = Table(title="Job Queue")
         table.add_column("Job ID", style="cyan")
         table.add_column("Name", style="magenta")
@@ -833,27 +842,22 @@ def list_jobs(
         table.add_column("Nodes", justify="right")
         if show_gpus:
             table.add_column("GPUs", justify="right", style="yellow")
-        table.add_column("Time", justify="right")
+        table.add_column("Elapsed", justify="right")
+        table.add_column("Limit", justify="right")
 
         for job in jobs:
             row = [
                 str(job.job_id) if job.job_id else "N/A",
                 job.name,
                 job.status.name if hasattr(job, "status") else "UNKNOWN",
-                str(getattr(getattr(job, "resources", None), "nodes", "N/A") or "N/A"),
+                str(getattr(job, "nodes", None) or "N/A"),
             ]
 
             if show_gpus:
-                resources = getattr(job, "resources", None)
-                if resources:
-                    total_gpus = resources.nodes * resources.gpus_per_node
-                    row.append(str(total_gpus))
-                else:
-                    row.append("0")
+                row.append(str(getattr(job, "gpus", 0) or 0))
 
-            row.append(
-                getattr(getattr(job, "resources", None), "time_limit", None) or "N/A"
-            )
+            row.append(getattr(job, "elapsed_time", None) or "N/A")
+            row.append(getattr(job, "time_limit", None) or "N/A")
             table.add_row(*row)
 
         console = Console()

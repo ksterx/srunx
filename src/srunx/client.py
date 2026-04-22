@@ -357,6 +357,7 @@ class Slurm:
                 user_name = parts[3] if len(parts) > 3 else None
                 status_str = parts[4]
                 elapsed_time = parts[5] if len(parts) > 5 else None
+                time_limit = parts[6] if len(parts) > 6 else None
                 nodes_str = parts[7] if len(parts) > 7 else "1"
                 tres = parts[9] if len(parts) > 9 else ""
 
@@ -384,6 +385,7 @@ class Slurm:
                     user=user_name,
                     partition=partition,
                     elapsed_time=elapsed_time,
+                    time_limit=time_limit,
                     nodes=nodes,
                     gpus=gpus,
                 )

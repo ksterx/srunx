@@ -64,7 +64,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-TransportSource = Literal["--profile", "--local", "env", "default"]
+TransportSource = Literal["--profile", "--local", "env", "current-profile", "default"]
 
 
 @dataclass(frozen=True)
@@ -184,7 +184,98 @@ def emit_transport_banner(
     # stale reference and raise "I/O operation on closed file" on the
     # second invocation. Construction is cheap (~µs) and banner
     # emission is not on any hot path.
-    Console(file=sys.stderr).print(f"[dim]→ transport: {label} (from {source})[/dim]")
+    #
+    # Rich markup: a colored dot flags transport kind (cyan for SSH,
+    # yellow for local), the scheduler_key is bold so it reads at a
+    # glance, and the source string trails in dim italic to show where
+    # the decision came from without stealing focus from the label.
+    is_ssh = label.startswith("ssh:")
+    dot_color = "cyan" if is_ssh else "yellow"
+    source_display = {
+        "--profile": "--profile",
+        "--local": "--local",
+        "env": "$SRUNX_SSH_PROFILE",
+        "current-profile": "current profile",
+    }.get(source, source)
+    Console(file=sys.stderr).print(
+        f"[{dot_color}]●[/{dot_color}] "
+        f"[bold]{label}[/bold]  "
+        f"[dim italic]· via {source_display}[/dim italic]"
+    )
+
+
+def _current_profile_name() -> str | None:
+    """Return the active SSH profile set via ``srunx ssh profile set``, or None.
+
+    Respects :attr:`srunx.config.CliTransportConfig.use_current_profile` —
+    when the user has opted out (``cli.use_current_profile = false``), this
+    function returns ``None`` so ``resolve_transport`` falls straight
+    through to local.
+
+    Any failure (config file missing, ConfigManager import error) is
+    swallowed and treated as "no current profile" — the resolver must
+    never raise from this path.
+    """
+    try:
+        from srunx.config import get_config
+        from srunx.ssh.core.config import ConfigManager
+    except ImportError:
+        return None
+    try:
+        if not get_config().cli.use_current_profile:
+            return None
+        name = ConfigManager().get_current_profile_name()
+    except Exception as exc:  # noqa: BLE001 — defensive
+        logger.debug("Could not read current SSH profile: %s", exc)
+        return None
+    if not name:
+        return None
+    return name.strip() or None
+
+
+def _resolve_source_and_profile(
+    *, profile: str | None, local: bool
+) -> tuple[TransportSource, str | None]:
+    """Return the resolved ``(source, profile_name)`` pair.
+
+    Shared core between :func:`peek_scheduler_key`,
+    :func:`resolve_transport_source`, and :func:`resolve_transport` so the
+    5-way priority ladder lives in one place.
+
+    Priority:
+
+        1. ``--profile <name>``
+        2. ``--local``
+        3. ``$SRUNX_SSH_PROFILE``
+        4. active SSH profile (``srunx ssh profile set``) when
+           ``cli.use_current_profile`` is True (default)
+        5. local fallback (silent)
+
+    Raises :class:`typer.BadParameter` on the same ``--profile`` +
+    ``--local`` conflict so every entry point fails consistently.
+    """
+    profile = profile.strip() if profile else profile
+    if profile == "":
+        raise typer.BadParameter(
+            "--profile cannot be empty or whitespace.",
+            param_hint="--profile",
+        )
+    if profile and local:
+        raise typer.BadParameter(
+            "--profile and --local cannot be used together.",
+            param_hint="--profile / --local",
+        )
+    if profile:
+        return "--profile", profile
+    if local:
+        return "--local", None
+    env_profile = os.environ.get("SRUNX_SSH_PROFILE", "").strip()
+    if env_profile:
+        return "env", env_profile
+    current = _current_profile_name()
+    if current:
+        return "current-profile", current
+    return "default", None
 
 
 def resolve_transport_source(
@@ -198,18 +289,8 @@ def resolve_transport_source(
     precedence rules. Raises :class:`typer.BadParameter` on the same
     ``--profile`` + ``--local`` conflict.
     """
-    if profile and local:
-        raise typer.BadParameter(
-            "--profile and --local cannot be used together.",
-            param_hint="--profile / --local",
-        )
-    if profile:
-        return "--profile"
-    if local:
-        return "--local"
-    if os.environ.get("SRUNX_SSH_PROFILE"):
-        return "env"
-    return "default"
+    source, _ = _resolve_source_and_profile(profile=profile, local=local)
+    return source
 
 
 def _build_local_handle(slurm: Slurm | None = None) -> TransportHandle:
@@ -401,38 +482,16 @@ def peek_scheduler_key(*, profile: str | None = None, local: bool = False) -> st
 
     Pure function with no side effects — used by callers that need to
     bind callback state (e.g. ``NotificationWatchCallback.scheduler_key``)
-    before entering the transport context manager.
-
-    Resolution order mirrors :func:`resolve_transport` exactly:
-
-        1. ``profile`` → ``f"ssh:{profile}"``
-        2. ``local=True`` → ``"local"``
-        3. ``$SRUNX_SSH_PROFILE`` → ``f"ssh:{env}"``
-        4. default → ``"local"``
+    before entering the transport context manager. Resolution order
+    matches :func:`resolve_transport` including the current-profile
+    fallback (see :func:`_resolve_source_and_profile`).
 
     Raises :class:`typer.BadParameter` on the same ``--profile`` +
     ``--local`` conflict so callers fail consistently whether they
     peek first or go straight to :func:`resolve_transport`.
     """
-    profile = profile.strip() if profile else profile
-    if profile == "":
-        raise typer.BadParameter(
-            "--profile cannot be empty or whitespace.",
-            param_hint="--profile",
-        )
-    if profile and local:
-        raise typer.BadParameter(
-            "--profile and --local cannot be used together.",
-            param_hint="--profile / --local",
-        )
-    if profile:
-        return f"ssh:{profile}"
-    if local:
-        return "local"
-    env_profile = os.environ.get("SRUNX_SSH_PROFILE", "").strip()
-    if env_profile:
-        return f"ssh:{env_profile}"
-    return "local"
+    _, resolved_profile = _resolve_source_and_profile(profile=profile, local=local)
+    return f"ssh:{resolved_profile}" if resolved_profile else "local"
 
 
 def _build_transport_label(handle: TransportHandle) -> str:
@@ -461,12 +520,14 @@ def resolve_transport(
 ) -> Iterator[ResolvedTransport]:
     """Resolve transport for one CLI invocation.
 
-    Resolution order (REQ-1):
+    Resolution order (REQ-1, Phase 2 extended):
 
         1. ``--profile <name>``
         2. ``--local``
         3. ``$SRUNX_SSH_PROFILE``
-        4. local fallback (silent)
+        4. active SSH profile (``srunx ssh profile set``) when
+           ``cli.use_current_profile`` is True (default)
+        5. local fallback (silent)
 
     Args:
         profile: Value of ``--profile`` (explicit SSH profile name).
@@ -501,46 +562,20 @@ def resolve_transport(
         TransportError: When an explicit / env-selected SSH profile is
             unknown or the adapter factory rejects it.
     """
-    profile = profile.strip() if profile else profile
-    if profile == "":
-        raise typer.BadParameter(
-            "--profile cannot be empty or whitespace.",
-            param_hint="--profile",
-        )
-    if profile and local:
-        raise typer.BadParameter(
-            "--profile and --local cannot be used together.",
-            param_hint="--profile / --local",
-        )
+    source, resolved_profile = _resolve_source_and_profile(profile=profile, local=local)
 
-    env_profile = os.environ.get("SRUNX_SSH_PROFILE", "").strip() or None
     pool: Any = None
     handle: TransportHandle
-    source: TransportSource
 
-    if profile:
-        source = "--profile"
+    if resolved_profile is not None:
         handle, pool = _build_ssh_handle(
-            profile,
-            callbacks=callbacks,
-            submission_source=submission_source,
-            mount_name=mount_name,
-            pool_size=pool_size,
-        )
-    elif local:
-        source = "--local"
-        handle = _build_local_handle()
-    elif env_profile:
-        source = "env"
-        handle, pool = _build_ssh_handle(
-            env_profile,
+            resolved_profile,
             callbacks=callbacks,
             submission_source=submission_source,
             mount_name=mount_name,
             pool_size=pool_size,
         )
     else:
-        source = "default"
         handle = _build_local_handle()
 
     resolved = ResolvedTransport(

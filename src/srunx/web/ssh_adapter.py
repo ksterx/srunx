@@ -470,6 +470,7 @@ class SlurmSSHAdapter:
                     "nodes": num_nodes,
                     "gpus": gpus_per_node * num_nodes,
                     "elapsed_time": parts[5].strip(),
+                    "time_limit": parts[6].strip(),
                 }
             )
 
@@ -1034,6 +1035,7 @@ class SlurmSSHAdapter:
                 nodes=entry.get("nodes"),
                 gpus=entry.get("gpus"),
                 elapsed_time=entry.get("elapsed_time"),
+                time_limit=entry.get("time_limit"),
                 user=effective_user,
             )
             job.status = status_enum
