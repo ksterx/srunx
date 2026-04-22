@@ -46,7 +46,7 @@ DeliveryStatus = Literal["pending", "sending", "delivered", "abandoned"]
 TransitionSource = Literal["poller", "cli_monitor", "webhook"]
 SubmissionSource = Literal["cli", "web", "workflow"]
 WorkflowRunStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
-WorkflowRunTriggeredBy = Literal["cli", "web", "schedule"]
+WorkflowRunTriggeredBy = Literal["cli", "web", "schedule", "mcp"]
 SweepStatus = Literal[
     "pending",
     "running",

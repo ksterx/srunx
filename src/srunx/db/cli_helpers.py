@@ -144,42 +144,6 @@ def create_cli_workflow_run(
         return None
 
 
-def mark_workflow_run_status(
-    workflow_run_id: int,
-    status: str,
-    *,
-    error: str | None = None,
-) -> None:
-    """Best-effort ``workflow_runs.status`` update for CLI flows.
-
-    Used by :class:`srunx.runner.WorkflowRunner` to flip the row
-    through ``running`` → ``completed`` / ``failed`` / ``cancelled``
-    as the CLI workflow progresses. Mirrors the Web router's
-    ``update_status`` calls. Silently swallows DB errors.
-    """
-    try:
-        from srunx.db.connection import init_db, open_connection
-        from srunx.db.repositories.base import now_iso
-        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
-
-        init_db(delete_legacy=True)
-        conn = open_connection()
-        try:
-            completed_at = (
-                now_iso() if status in {"completed", "failed", "cancelled"} else None
-            )
-            WorkflowRunRepository(conn).update_status(
-                workflow_run_id,
-                status,  # type: ignore[arg-type]
-                error=error,
-                completed_at=completed_at,
-            )
-        finally:
-            conn.close()
-    except Exception as exc:  # noqa: BLE001 — best-effort
-        logger.debug(f"mark_workflow_run_status failed: {exc}")
-
-
 def record_completion(job_id: int, status: JobStatus) -> None:
     """Mark ``job_id`` terminal in ``jobs`` + append a cli_monitor transition.
 

@@ -327,6 +327,20 @@ class SlurmRemoteClient:
             if exit_code == 0 and stdout.strip():
                 return stdout.strip().split("\n")[0].strip()
 
+            # scontrol fallback: pyxis/slurmdbd-unreachable clusters return
+            # empty sacct output, and finished jobs drop out of squeue. See
+            # srunx.ssh.core.client._parse_scontrol_status for the rationale.
+            from .client import _parse_scontrol_status
+
+            quoted_id = shlex.quote(job_id)
+            scontrol_out, _, scontrol_rc = self.execute_slurm_command(
+                f"scontrol show job {quoted_id} 2>/dev/null"
+            )
+            if scontrol_rc == 0 and scontrol_out.strip():
+                parsed = _parse_scontrol_status(scontrol_out)
+                if parsed is not None:
+                    return parsed
+
             return "NOT_FOUND"
 
         except Exception as e:

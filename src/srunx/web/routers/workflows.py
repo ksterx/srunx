@@ -1150,6 +1150,31 @@ async def _dispatch_sweep(
     except Exception as exc:  # noqa: BLE001 — Pydantic / value errors
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    # C3 (security): apply the same ShellJob script-root guard the
+    # non-sweep path runs, before any DB materialize side effect. The
+    # matrix axes in ``sweep.matrix`` are scalars (validated by
+    # ``expand_matrix``) so a per-cell check would only be redundant;
+    # the base workflow's ShellJob ``script_path`` is the entire attack
+    # surface. ``mount`` is required by the caller (``run_workflow``)
+    # so it is non-None in practice; keep the guard defensive for
+    # direct callers.
+    profile = await anyio.to_thread.run_sync(_get_current_profile)
+    if mount is not None:
+        try:
+            base_runner = await anyio.to_thread.run_sync(
+                lambda: WorkflowRunner.from_yaml(
+                    yaml_path,
+                    args_override=body.args_override or None,
+                )
+            )
+        except WorkflowValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 — YAML load / Jinja errors
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        await anyio.to_thread.run_sync(
+            lambda: _enforce_shell_script_roots(base_runner.workflow, mount, profile)
+        )
+
     endpoint_id: int | None = None
     if body.notify and body.endpoint_id is not None:
         endpoint_id = body.endpoint_id
@@ -1173,8 +1198,8 @@ async def _dispatch_sweep(
 
     # Hand the mount-aware render context through to the orchestrator so
     # every sweep cell's ``WorkflowRunner`` sees the same ``work_dir`` /
-    # ``log_dir`` translation as the non-sweep path.
-    profile = await anyio.to_thread.run_sync(_get_current_profile)
+    # ``log_dir`` translation as the non-sweep path. ``profile`` was
+    # already resolved above for the ShellJob script-root guard.
     submission_context = _build_submission_context(mount, profile)
 
     orchestrator = SweepOrchestrator(

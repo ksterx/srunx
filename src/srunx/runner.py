@@ -9,6 +9,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, nullcontext
+from functools import cached_property
 from pathlib import Path
 from textwrap import dedent
 from typing import TYPE_CHECKING, Any, Self
@@ -521,12 +522,25 @@ class WorkflowRunner:
                 is performed.
         """
         self.workflow = workflow
-        self.slurm = Slurm(callbacks=callbacks)
         self.callbacks = callbacks or []
         self.args = args or {}
         self.default_project = default_project
         self._executor_factory = executor_factory
         self._submission_context = submission_context
+
+    @cached_property
+    def slurm(self) -> Slurm:
+        """Local :class:`Slurm` client, constructed on first access.
+
+        Lazy construction matters when an ``executor_factory`` is
+        injected (SSH-backed pool for the Web sweep path): that path
+        never touches ``self.slurm`` and eagerly instantiating a local
+        :class:`Slurm` on a machine without local SLURM would emit a
+        spurious warning. :func:`_get_executor_cm` guards access behind
+        the ``executor_factory is None`` branch so this property is only
+        materialised when actually needed.
+        """
+        return Slurm(callbacks=self.callbacks)
 
     def _get_executor_cm(
         self,

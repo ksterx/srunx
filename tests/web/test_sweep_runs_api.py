@@ -384,6 +384,164 @@ class TestRunWorkflowWithSweep:
         assert resp.status_code == 422, resp.text
 
 
+class TestDispatchSweepShellJobGuard:
+    """C3: the sweep dispatch path must enforce the ShellJob script-root
+    traversal guard before materializing cells or spawning the orchestrator.
+
+    These tests write a sweep-eligible workflow YAML directly to the
+    mount's workflow directory (bypassing /api/workflows/create so the
+    ``script_path`` isn't validated at creation time) and then submit
+    it via /api/workflows/{name}/run.
+    """
+
+    def _write_sweep_yaml(
+        self,
+        tmp_path: Path,
+        *,
+        name: str,
+        script_path: str,
+    ) -> None:
+        import yaml
+
+        wf_dir = tmp_path / "project" / ".srunx" / "workflows"
+        wf_dir.mkdir(parents=True, exist_ok=True)
+        body = {
+            "name": name,
+            "args": {"lr": "0.01"},
+            "jobs": [
+                {
+                    "name": "train",
+                    "script_path": script_path,
+                }
+            ],
+        }
+        (wf_dir / f"{name}.yaml").write_text(yaml.dump(body))
+
+    def test_rejects_shell_job_traversal_outside_mount(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """``script_path`` resolving outside the mount → 403 before
+        materialize."""
+        self._write_sweep_yaml(
+            tmp_path,
+            name="evil-traversal",
+            script_path="../../../etc/passwd",
+        )
+
+        with patch("srunx.web.routers.workflows.SweepOrchestrator") as orch_cls:
+            resp = client.post(
+                "/api/workflows/evil-traversal/run",
+                params={"mount": MOUNT},
+                json={
+                    "sweep": {
+                        "matrix": {"lr": [0.01, 0.1]},
+                        "max_parallel": 2,
+                    }
+                },
+            )
+
+        assert resp.status_code == 403, resp.text
+        assert "outside allowed directories" in resp.text
+        # Orchestrator must NOT have been constructed — guard runs before
+        # materialize.
+        orch_cls.assert_not_called()
+
+    def test_rejects_shell_job_absolute_path_outside_mount_root(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """An absolute ``script_path`` outside every mount → 403."""
+        self._write_sweep_yaml(
+            tmp_path,
+            name="abs-outside",
+            script_path="/tmp/attacker.sh",
+        )
+
+        with patch("srunx.web.routers.workflows.SweepOrchestrator") as orch_cls:
+            resp = client.post(
+                "/api/workflows/abs-outside/run",
+                params={"mount": MOUNT},
+                json={
+                    "sweep": {
+                        "matrix": {"lr": [0.01, 0.1]},
+                        "max_parallel": 2,
+                    }
+                },
+            )
+
+        assert resp.status_code == 403, resp.text
+        orch_cls.assert_not_called()
+
+    def test_accepts_shell_job_within_mount(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """Legitimate ``script_path`` under the mount passes the guard."""
+        # Place a real script inside the mount's local directory.
+        mount_local = tmp_path / "project"
+        script = mount_local / "train.sh"
+        script.write_text("#!/bin/bash\necho hi\n")
+        self._write_sweep_yaml(
+            tmp_path,
+            name="legit-shell",
+            script_path=str(script),
+        )
+
+        with (
+            patch("srunx.web.routers.workflows.SweepOrchestrator") as orch_cls,
+            patch("srunx.web.routers.workflows.SweepSpec") as spec_cls,
+        ):
+            from srunx.sweep import SweepSpec as _RealSweepSpec
+
+            spec_cls.side_effect = _RealSweepSpec
+
+            from srunx.db.connection import open_connection
+            from srunx.db.repositories.sweep_runs import SweepRunRepository
+
+            conn = open_connection()
+            try:
+                seeded_id = SweepRunRepository(conn).create(
+                    name="legit-shell",
+                    matrix={"lr": [0.01, 0.1]},
+                    args=None,
+                    fail_fast=False,
+                    max_parallel=2,
+                    cell_count=2,
+                    submission_source="web",
+                    status="pending",
+                )
+            finally:
+                conn.close()
+
+            mock_orch = MagicMock()
+            mock_orch.materialize.return_value = seeded_id
+
+            async def _fake_arun(_sweep_run_id: int) -> _FakeSweepRun:
+                return _FakeSweepRun(sweep_id=seeded_id, cell_count=2)
+
+            mock_orch.arun_from_materialized = _fake_arun
+            orch_cls.return_value = mock_orch
+
+            resp = client.post(
+                "/api/workflows/legit-shell/run",
+                params={"mount": MOUNT},
+                json={
+                    "sweep": {
+                        "matrix": {"lr": [0.01, 0.1]},
+                        "max_parallel": 2,
+                    }
+                },
+            )
+
+        # Guard passed → normal sweep dispatch happened.
+        assert resp.status_code == 202, resp.text
+        orch_cls.assert_called_once()
+
+
 class TestSweepRunsReadAPI:
     def _seed_sweep(self, *, name: str = "wf") -> int:
         """Create a minimal sweep_runs row directly in the DB for list tests."""

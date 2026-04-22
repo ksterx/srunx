@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 import yaml  # type: ignore
@@ -56,6 +57,7 @@ def _seed_sweep(
     cells_cancelled: int = 0,
     max_parallel: int = 2,
     fail_fast: bool = False,
+    submission_source: str = "cli",
 ) -> int:
     conn = open_connection()
     try:
@@ -83,7 +85,7 @@ def _seed_sweep(
                 cells_completed,
                 cells_failed,
                 cells_cancelled,
-                "cli",
+                submission_source,
                 now_iso(),
             ),
         )
@@ -164,6 +166,7 @@ class TestReconciler:
             sweep_run_id: int,
             sweep_row: Any,
             pending_cells: list[CellSpec],
+            **_kwargs: Any,
         ) -> None:
             spawn_calls.append(sweep_run_id)
 
@@ -207,6 +210,7 @@ class TestReconciler:
             sweep_run_id: int,
             sweep_row: Any,
             pending_cells: list[CellSpec],
+            **_kwargs: Any,
         ) -> None:
             spawn_calls.append(sweep_run_id)
 
@@ -248,6 +252,7 @@ class TestReconciler:
             sweep_run_id: int,
             sweep_row: Any,
             pending_cells: list[CellSpec],
+            **_kwargs: Any,
         ) -> None:
             spawn_calls.append(
                 (sweep_run_id, [c.workflow_run_id for c in pending_cells])
@@ -292,6 +297,7 @@ class TestReconciler:
             sweep_run_id: int,
             sweep_row: Any,
             pending_cells: list[CellSpec],
+            **_kwargs: Any,
         ) -> None:
             spawn_calls.append(sweep_run_id)
 
@@ -387,3 +393,247 @@ class TestReconciler:
         finally:
             conn.close()
         assert pre_completed["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# C4: executor_factory_provider + submission_source restoration
+# ---------------------------------------------------------------------------
+
+
+class TestReconcilerExecutorFactoryProvider:
+    """C4: the reconciler must restore the SSH executor factory + submission
+    context for Web / MCP sweeps on resume, and must keep the original
+    ``submission_source`` verbatim instead of hard-coding ``'cli'``.
+    """
+
+    def test_uses_provided_executor_factory_for_web_sweeps(
+        self,
+        isolated_db: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Web-originated sweep → provider's factory reaches the orchestrator
+        and is forwarded verbatim to the per-cell ``WorkflowRunner``.
+        """
+        from srunx.sweep.reconciler import ExecutorFactoryBundle
+
+        yaml_path = _write_yaml(tmp_path)
+        sweep_id = _seed_sweep(
+            yaml_path=str(yaml_path),
+            status="running",
+            cell_count=2,
+            cells_pending=1,
+            cells_running=0,
+            cells_completed=1,
+            max_parallel=2,
+            submission_source="web",
+        )
+        _seed_cells(sweep_id, ["completed", "pending"])
+
+        sentinel_factory = MagicMock(name="sentinel_factory")
+        provider_calls: list[Any] = []
+
+        def provider(sweep: Any) -> ExecutorFactoryBundle:
+            provider_calls.append(sweep)
+            return ExecutorFactoryBundle(factory=sentinel_factory)
+
+        captured_kwargs: dict[str, Any] = {}
+
+        def fake_init(self: Any, **kwargs: Any) -> None:
+            captured_kwargs.update(kwargs)
+            # Raise so _reconcile_one returns early without running cells —
+            # we only need to verify the wiring at construction time.
+            raise RuntimeError("abort after construction")
+
+        monkeypatch.setattr(SweepOrchestrator, "__init__", fake_init)
+
+        SweepReconciler.scan_and_resume(executor_factory_provider=provider)
+
+        assert len(provider_calls) == 1
+        assert provider_calls[0].id == sweep_id
+        assert provider_calls[0].submission_source == "web"
+        # Factory was forwarded verbatim.
+        assert captured_kwargs.get("executor_factory") is sentinel_factory
+
+    def test_preserves_submission_source_from_db(
+        self,
+        isolated_db: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The orchestrator's ``submission_source`` must equal the DB value,
+        not the old hard-coded ``'cli'``.
+        """
+        yaml_path = _write_yaml(tmp_path)
+        sweep_id = _seed_sweep(
+            yaml_path=str(yaml_path),
+            status="running",
+            cell_count=2,
+            cells_pending=1,
+            cells_running=0,
+            cells_completed=1,
+            max_parallel=2,
+            submission_source="web",
+        )
+        _seed_cells(sweep_id, ["completed", "pending"])
+
+        captured_kwargs: dict[str, Any] = {}
+
+        def fake_init(self: Any, **kwargs: Any) -> None:
+            captured_kwargs.update(kwargs)
+            raise RuntimeError("abort after construction")
+
+        monkeypatch.setattr(SweepOrchestrator, "__init__", fake_init)
+
+        SweepReconciler.scan_and_resume()
+
+        assert captured_kwargs.get("submission_source") == "web"
+
+    def test_falls_back_to_local_slurm_when_provider_returns_none(
+        self,
+        isolated_db: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Provider returning ``None`` → orchestrator gets ``None`` factory
+        (legacy local-``Slurm`` behaviour preserved for CLI sweeps).
+        """
+        yaml_path = _write_yaml(tmp_path)
+        sweep_id = _seed_sweep(
+            yaml_path=str(yaml_path),
+            status="running",
+            cell_count=2,
+            cells_pending=1,
+            cells_running=0,
+            cells_completed=1,
+            max_parallel=2,
+            submission_source="cli",
+        )
+        _seed_cells(sweep_id, ["completed", "pending"])
+
+        provider_calls: list[Any] = []
+
+        def provider(sweep: Any) -> None:
+            provider_calls.append(sweep)
+            return None
+
+        captured_kwargs: dict[str, Any] = {}
+
+        def fake_init(self: Any, **kwargs: Any) -> None:
+            captured_kwargs.update(kwargs)
+            raise RuntimeError("abort after construction")
+
+        monkeypatch.setattr(SweepOrchestrator, "__init__", fake_init)
+
+        SweepReconciler.scan_and_resume(executor_factory_provider=provider)
+
+        assert len(provider_calls) == 1
+        assert captured_kwargs.get("executor_factory") is None
+        assert captured_kwargs.get("submission_context") is None
+        # Audit trail intact: ``submission_source`` still ``cli``.
+        assert captured_kwargs.get("submission_source") == "cli"
+
+    def test_closes_pool_after_resume_completes(
+        self,
+        isolated_db: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``bundle.cleanup`` MUST run after resume returns (success or crash)."""
+        from srunx.sweep.reconciler import ExecutorFactoryBundle
+
+        yaml_path = _write_yaml(tmp_path)
+        sweep_id = _seed_sweep(
+            yaml_path=str(yaml_path),
+            status="running",
+            cell_count=2,
+            cells_pending=1,
+            cells_running=0,
+            cells_completed=1,
+            max_parallel=2,
+            submission_source="web",
+        )
+        _seed_cells(sweep_id, ["completed", "pending"])
+
+        # Drive cells to completion via the same trick used in
+        # test_resume_drives_pending_cells_to_completion.
+        from srunx.sweep.state_service import WorkflowRunStateService
+
+        def _simulate(cell: CellSpec) -> None:
+            conn = open_connection()
+            try:
+                with transaction(conn, "IMMEDIATE"):
+                    WorkflowRunStateService.update(
+                        conn=conn,
+                        workflow_run_id=cell.workflow_run_id,
+                        from_status="pending",
+                        to_status="running",
+                    )
+                with transaction(conn, "IMMEDIATE"):
+                    WorkflowRunStateService.update(
+                        conn=conn,
+                        workflow_run_id=cell.workflow_run_id,
+                        from_status="running",
+                        to_status="completed",
+                        completed_at=now_iso(),
+                    )
+            finally:
+                conn.close()
+
+        monkeypatch.setattr(
+            SweepOrchestrator,
+            "_run_cell_sync",
+            lambda self, cell: _simulate(cell),
+        )
+
+        cleanup_calls: list[int] = []
+        sentinel_factory = MagicMock(name="sentinel_factory")
+
+        def provider(sweep: Any) -> ExecutorFactoryBundle:
+            return ExecutorFactoryBundle(
+                factory=sentinel_factory,
+                cleanup=lambda: cleanup_calls.append(1),
+            )
+
+        SweepReconciler.scan_and_resume(executor_factory_provider=provider)
+
+        assert cleanup_calls == [1], "bundle.cleanup must run exactly once"
+
+    def test_provider_exception_falls_back_to_none(
+        self,
+        isolated_db: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A provider that raises MUST NOT abort the startup pass —
+        the reconciler falls back to ``None`` and continues.
+        """
+        yaml_path = _write_yaml(tmp_path)
+        sweep_id = _seed_sweep(
+            yaml_path=str(yaml_path),
+            status="running",
+            cell_count=2,
+            cells_pending=1,
+            cells_running=0,
+            cells_completed=1,
+            max_parallel=2,
+            submission_source="web",
+        )
+        _seed_cells(sweep_id, ["completed", "pending"])
+
+        def provider(sweep: Any) -> Any:
+            raise RuntimeError("provider boom")
+
+        captured_kwargs: dict[str, Any] = {}
+
+        def fake_init(self: Any, **kwargs: Any) -> None:
+            captured_kwargs.update(kwargs)
+            raise RuntimeError("abort after construction")
+
+        monkeypatch.setattr(SweepOrchestrator, "__init__", fake_init)
+
+        SweepReconciler.scan_and_resume(executor_factory_provider=provider)
+
+        # Orchestrator still instantiated — with ``None`` factory.
+        assert captured_kwargs.get("executor_factory") is None
+        assert captured_kwargs.get("submission_source") == "web"

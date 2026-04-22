@@ -14,7 +14,6 @@ import pytest
 from srunx.db.cli_helpers import (
     compute_workflow_stats,
     create_cli_workflow_run,
-    mark_workflow_run_status,
     record_submission_from_job,
 )
 from srunx.models import Job, JobEnvironment, JobResource
@@ -105,52 +104,3 @@ class TestWorkflowStatsRoundTrip:
 
         stats = compute_workflow_stats("unlinked_flow")
         assert stats["total_jobs"] == 0  # JOIN misses the row
-
-
-class TestMarkWorkflowRunStatus:
-    def test_updates_status(self, _isolated_db):
-        run_id = create_cli_workflow_run(workflow_name="flow")
-        assert run_id is not None
-
-        mark_workflow_run_status(run_id, "completed")
-
-        from srunx.db.connection import open_connection
-        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
-
-        conn = open_connection()
-        try:
-            row = WorkflowRunRepository(conn).get(run_id)
-        finally:
-            conn.close()
-        assert row is not None
-        assert row.status == "completed"
-        assert row.completed_at is not None
-
-    def test_failed_records_error(self, _isolated_db):
-        run_id = create_cli_workflow_run(workflow_name="flow")
-        assert run_id is not None
-
-        mark_workflow_run_status(run_id, "failed", error="boom")
-
-        from srunx.db.connection import open_connection
-        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
-
-        conn = open_connection()
-        try:
-            row = WorkflowRunRepository(conn).get(run_id)
-        finally:
-            conn.close()
-        assert row is not None
-        assert row.status == "failed"
-        assert row.error == "boom"
-
-    def test_swallows_db_errors(self, _isolated_db, monkeypatch):
-        """Best-effort — caller never sees the exception."""
-        import srunx.db.connection as connection_mod
-
-        def boom(*a, **kw):
-            raise RuntimeError("disk full")
-
-        monkeypatch.setattr(connection_mod, "init_db", boom)
-        # Must not raise.
-        mark_workflow_run_status(12345, "completed")

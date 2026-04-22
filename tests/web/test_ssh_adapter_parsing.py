@@ -539,3 +539,74 @@ class TestClusterSnapshot:
 
         with pytest.raises(RuntimeError, match="ssh dropped"):
             adapter.get_cluster_snapshot()
+
+
+# ── queue_by_ids scontrol fallback (Phase 3 A-1) ──
+
+
+class TestQueueByIdsScontrolFallback:
+    """Phase 3 A-1: on pyxis clusters where sacct is unreachable,
+    queue_by_ids must fall back to scontrol per-id before giving up.
+    """
+
+    def test_scontrol_fills_gap_for_ids_missing_from_sacct_and_squeue(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        scontrol_out = (
+            "JobId=555 JobName=late JobState=COMPLETED Reason=None ExitCode=0:0"
+        )
+
+        def fake_run(_adapter, cmd: str) -> str:
+            if cmd.startswith("squeue"):
+                # squeue has no record of 555 (already finished)
+                return ""
+            if cmd.startswith("sacct"):
+                # sacct returns empty on pyxis (slurmdbd unreachable)
+                return ""
+            if cmd.startswith("scontrol show job 555"):
+                return scontrol_out
+            return ""
+
+        monkeypatch.setattr("srunx.web.ssh_adapter._run_slurm_cmd", fake_run)
+        adapter = object.__new__(SlurmSSHAdapter)
+
+        result = adapter.queue_by_ids([555])
+
+        assert 555 in result
+        assert result[555].status == "COMPLETED"
+
+    def test_scontrol_completed_with_nonzero_exit_is_failed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        scontrol_out = "JobId=556 JobState=COMPLETED Reason=NonZeroExit ExitCode=2:0"
+
+        def fake_run(_adapter, cmd: str) -> str:
+            if cmd.startswith("scontrol show job 556"):
+                return scontrol_out
+            return ""
+
+        monkeypatch.setattr("srunx.web.ssh_adapter._run_slurm_cmd", fake_run)
+        adapter = object.__new__(SlurmSSHAdapter)
+
+        result = adapter.queue_by_ids([556])
+
+        assert 556 in result
+        # ExitCode=2:0 → disambiguated to FAILED (not COMPLETED)
+        assert result[556].status == "FAILED"
+
+    def test_all_three_empty_omits_id_from_results(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When no source knows about a job, it stays out of the result
+        map (unchanged vs. pre-fix behaviour — the caller treats absence
+        as 'no update')."""
+
+        def fake_run(_adapter, _cmd: str) -> str:
+            return ""
+
+        monkeypatch.setattr("srunx.web.ssh_adapter._run_slurm_cmd", fake_run)
+        adapter = object.__new__(SlurmSSHAdapter)
+
+        result = adapter.queue_by_ids([999])
+
+        assert 999 not in result

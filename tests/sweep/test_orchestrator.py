@@ -360,6 +360,115 @@ class TestCellFailure:
 
 
 # ---------------------------------------------------------------------------
+# C1 atomic-claim regression: drain must beat late sem wake to SLURM submit
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicCellClaim:
+    """Regression: drained cell must not call ``_run_cell_sync`` even if a
+    racing task already passed the ``if self._cancelled`` check.
+
+    Simulates the narrow TOCTOU window where a queued cell wakes from the
+    semaphore before the fail-fast drain flips ``_cancelled``. The
+    ``_claim_cell_running`` DB-level optimistic UPDATE must fail (because
+    drain already set the row to ``cancelled``) so ``_run_cell_sync`` is
+    never called.
+    """
+
+    def test_race_drain_vs_acquire_skips_drained_cell(
+        self,
+        isolated_db: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        orch = _build_orchestrator(
+            tmp_path,
+            matrix={"lr": [0.1, 0.01]},
+            fail_fast=False,  # we'll simulate the drain manually
+            max_parallel=2,
+        )
+
+        # Materialize up-front so we know both workflow_run_ids.
+        cells = orch._expand_cells()
+        sweep_run_id = orch._materialize(cells)
+        assert len(orch._cells) == 2
+
+        # Simulate a concurrent drain: flip cell 1's row to cancelled
+        # BEFORE the orchestrator attempts its atomic claim. This mirrors
+        # the fail-fast race where ``_drain`` wins between
+        # ``_cancelled`` being observed False and the claim firing.
+        from srunx.sweep.orchestrator import drain_sweep_pending_cells
+
+        # Drain everything that's still pending. Since no cell has moved
+        # off ``pending`` yet, both cells will be marked ``cancelled``.
+        drain_sweep_pending_cells(sweep_run_id)
+
+        call_counts: dict[int, int] = {}
+
+        def _run_cell_sync(self: SweepOrchestrator, cell: CellSpec) -> None:
+            call_counts[cell.cell_index] = call_counts.get(cell.cell_index, 0) + 1
+            _simulate_cell(cell.workflow_run_id, final_status="completed")
+
+        monkeypatch.setattr(SweepOrchestrator, "_run_cell_sync", _run_cell_sync)
+
+        # Resume with the already-materialized (now drained) cells. Every
+        # cell's atomic claim must return False because the rows are
+        # ``cancelled``, so ``_run_cell_sync`` is never invoked.
+        import anyio
+
+        anyio.run(orch.arun_from_materialized, sweep_run_id)
+
+        assert call_counts == {}, (
+            "atomic claim should have skipped drained cells; "
+            f"_run_cell_sync was invoked for indices: {sorted(call_counts)}"
+        )
+
+        # Every cell remains cancelled; nothing transitioned to running.
+        cells_rows = _read_cells(sweep_run_id)
+        assert [r["status"] for r in cells_rows] == ["cancelled", "cancelled"]
+
+    def test_claim_succeeds_for_normal_cells(
+        self,
+        isolated_db: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Happy path: every cell's atomic claim returns True exactly once."""
+        orch = _build_orchestrator(
+            tmp_path,
+            matrix={"lr": [0.1, 0.01, 0.001]},
+            fail_fast=False,
+            max_parallel=3,
+        )
+
+        claim_results: list[bool] = []
+        original_claim = SweepOrchestrator._claim_cell_running
+
+        def _recording_claim(self: SweepOrchestrator, workflow_run_id: int) -> bool:
+            result = original_claim(self, workflow_run_id)
+            claim_results.append(result)
+            return result
+
+        monkeypatch.setattr(SweepOrchestrator, "_claim_cell_running", _recording_claim)
+        monkeypatch.setattr(
+            SweepOrchestrator,
+            "_run_cell_sync",
+            lambda self, cell: _simulate_cell(cell.workflow_run_id),
+        )
+
+        sweep = orch.run()
+        assert sweep.id is not None
+
+        # Every cell claimed exactly once and each claim won.
+        assert len(claim_results) == 3
+        assert all(claim_results)
+
+        row = _read_sweep(sweep.id)
+        assert row["cells_completed"] == 3
+        assert row["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
 # C2 regression: from_yaml-style failure must transition cell to failed
 # ---------------------------------------------------------------------------
 

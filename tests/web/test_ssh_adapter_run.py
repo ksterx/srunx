@@ -14,7 +14,11 @@ import pytest
 
 from srunx.callbacks import Callback
 from srunx.models import Job, JobStatus
-from srunx.web.ssh_adapter import SlurmSSHAdapter, SlurmSSHAdapterSpec
+from srunx.web.ssh_adapter import (
+    SlurmSSHAdapter,
+    SlurmSSHAdapterSpec,
+    SSHMonitorTimeoutError,
+)
 
 # --- Helpers ---------------------------------------------------------
 
@@ -266,6 +270,149 @@ class TestSSHAdapterRun:
             adapter.run(job)
 
 
+class TestSSHAdapterRunUnknownStatus:
+    """Phase 3 A-1: NOT_FOUND / unrecognised states must not silently FAIL.
+
+    Pre-fix behaviour: any non-COMPLETED/FAILED/CANCELLED/TIMEOUT status
+    hit ``JobStatus(terminal_status)`` → ``ValueError`` → silent FAILED,
+    turning successful-but-dropped-from-sacct jobs into false failures
+    on pyxis clusters. The fix maps these to :attr:`JobStatus.UNKNOWN`
+    with a warning log and skips the failure-raise path.
+    """
+
+    def test_not_found_becomes_unknown_not_silent_failed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cb = _RecordingCallback()
+        adapter = _bare_adapter(callbacks=[cb])
+
+        job = Job(name="disappeared", command=["true"], log_dir="", work_dir="")
+
+        sj = MagicMock()
+        sj.job_id = "501"
+        sj.name = "disappeared"
+        adapter._client.submit_sbatch_job = MagicMock(return_value=sj)  # type: ignore[method-assign]
+
+        monkeypatch.setattr(
+            adapter, "_monitor_until_terminal", lambda _jid: "NOT_FOUND"
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_job_submission",
+            staticmethod(lambda *a, **k: None),
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_completion_safe",
+            staticmethod(lambda *a, **k: None),
+        )
+
+        # run() must return without raising — the pre-fix behaviour would
+        # have silently tagged the job FAILED and raised RuntimeError.
+        result = adapter.run(job)
+
+        assert result.status == JobStatus.UNKNOWN
+        # Neither completed nor failed callbacks fired — UNKNOWN is
+        # explicitly outside the terminal-callback set.
+        assert cb.completed == []
+        assert cb.failed == []
+
+    def test_unrecognised_slurm_state_becomes_unknown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter = _bare_adapter()
+        job = Job(name="weird", command=["true"], log_dir="", work_dir="")
+
+        sj = MagicMock()
+        sj.job_id = "502"
+        sj.name = "weird"
+        adapter._client.submit_sbatch_job = MagicMock(return_value=sj)  # type: ignore[method-assign]
+
+        monkeypatch.setattr(
+            adapter, "_monitor_until_terminal", lambda _jid: "SOME_FUTURE_STATE"
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_job_submission",
+            staticmethod(lambda *a, **k: None),
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_completion_safe",
+            staticmethod(lambda *a, **k: None),
+        )
+
+        result = adapter.run(job)
+        assert result.status == JobStatus.UNKNOWN
+
+
+class TestMonitorTimeout:
+    """Phase 3 A-2: ``_monitor_until_terminal`` must honour a timeout."""
+
+    def test_timeout_raises_ssh_monitor_timeout_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter = _bare_adapter()
+
+        # Job is always RUNNING — the loop never escapes on its own.
+        monkeypatch.setattr(adapter, "get_job_status", lambda _jid: "RUNNING")
+
+        with pytest.raises(SSHMonitorTimeoutError, match="Timed out"):
+            adapter._monitor_until_terminal(123, poll_interval=0, timeout=0.1)
+
+    def test_timeout_none_waits_until_terminal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Explicit timeout=None disables the bound even if the env-var default would."""
+        adapter = _bare_adapter()
+
+        # Env var would otherwise force a very short timeout; None overrides.
+        monkeypatch.setenv("SRUNX_SSH_MONITOR_TIMEOUT", "0.01")
+
+        calls = {"n": 0}
+
+        def _status(_jid):
+            calls["n"] += 1
+            return "COMPLETED" if calls["n"] >= 3 else "RUNNING"
+
+        monkeypatch.setattr(adapter, "get_job_status", _status)
+
+        result = adapter._monitor_until_terminal(42, poll_interval=0, timeout=None)
+        assert result == "COMPLETED"
+        assert calls["n"] == 3
+
+    def test_env_var_default_bounds_wait_when_unspecified(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unset ``timeout`` kwarg picks up SRUNX_SSH_MONITOR_TIMEOUT."""
+        adapter = _bare_adapter()
+        monkeypatch.setenv("SRUNX_SSH_MONITOR_TIMEOUT", "0.1")
+        monkeypatch.setattr(adapter, "get_job_status", lambda _jid: "RUNNING")
+
+        with pytest.raises(SSHMonitorTimeoutError):
+            # No explicit timeout kwarg; env var should kick in.
+            adapter._monitor_until_terminal(99, poll_interval=0)
+
+    def test_invalid_env_var_falls_back_to_no_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Garbage env var is ignored (warning logged) — no timeout applied."""
+        adapter = _bare_adapter()
+        monkeypatch.setenv("SRUNX_SSH_MONITOR_TIMEOUT", "not-a-number")
+
+        # Terminate quickly to avoid hanging the test on the pass-through path.
+        calls = {"n": 0}
+
+        def _status(_jid):
+            calls["n"] += 1
+            return "COMPLETED" if calls["n"] >= 2 else "RUNNING"
+
+        monkeypatch.setattr(adapter, "get_job_status", _status)
+
+        result = adapter._monitor_until_terminal(1, poll_interval=0)
+        assert result == "COMPLETED"
+
+
 class TestSSHAdapterRunSubmissionContext:
     """Batch 2a: ``submission_context`` drives mount-aware path rewriting.
 
@@ -420,6 +567,54 @@ class TestSSHAdapterRunSubmissionContext:
         adapter.run(job, submission_context=ctx)
 
         assert "#SBATCH --chdir=/mnt/injected" in captured["content"]  # type: ignore[operator]
+
+    def test_original_job_gets_terminal_status_when_context_forces_copy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: ``WorkflowRunner.all_jobs`` holds the caller's ``Job``;
+        when ``normalize_job_for_submission`` returns a ``model_copy``
+        the terminal status must still propagate back to the caller's
+        instance so the runner doesn't declare the cell "incomplete"
+        even after SLURM reports COMPLETED.
+        """
+        from srunx.rendering import SubmissionRenderContext
+
+        ctx = SubmissionRenderContext(default_work_dir="/mnt/forced_copy")
+
+        adapter = _bare_adapter()
+        original = Job(
+            name="propagate",
+            command=["echo", "ok"],
+            work_dir="",  # triggers normalize → model_copy
+            log_dir="",
+        )
+
+        def fake_submit(script_content: str, *, job_name=None, dependency=None):
+            sj = MagicMock()
+            sj.job_id = "4242"
+            sj.name = job_name
+            return sj
+
+        adapter._client.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
+        monkeypatch.setattr(
+            adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_job_submission",
+            staticmethod(lambda *a, **k: None),
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_completion_safe",
+            staticmethod(lambda *a, **k: None),
+        )
+
+        returned = adapter.run(original, submission_context=ctx)
+
+        assert returned is original
+        assert original.status == JobStatus.COMPLETED
+        assert original.job_id == 4242
 
 
 class TestAdapterFromSpec:

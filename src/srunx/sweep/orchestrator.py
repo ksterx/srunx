@@ -27,6 +27,7 @@ from srunx.logging import get_logger
 from srunx.notifications.service import NotificationService
 from srunx.rendering import SubmissionRenderContext
 from srunx.sweep import CellSpec, SweepSpec
+from srunx.sweep.state_service import WorkflowRunStateService
 
 # In-process registry of live orchestrators keyed by ``sweep_run_id``.
 # The cancel endpoint (``POST /api/sweep_runs/{id}/cancel``) looks up
@@ -45,16 +46,6 @@ def get_active_orchestrator(sweep_run_id: int) -> SweepOrchestrator | None:
 
 
 logger = get_logger(__name__)
-
-# Map the orchestrator-level submission_source to the child workflow_runs
-# triggered_by CHECK-constraint value. MCP is recorded as 'web' in the
-# child (see design.md § submission_source/triggered_by 対応表) because
-# the v1 CHECK allowlist is ('cli','web','schedule').
-_TRIGGERED_BY_BY_SOURCE: dict[Literal["cli", "web", "mcp"], WorkflowRunTriggeredBy] = {
-    "cli": "cli",
-    "web": "web",
-    "mcp": "web",
-}
 
 
 class SweepOrchestrator:
@@ -163,7 +154,11 @@ class SweepOrchestrator:
             if self.workflow_yaml_path is not None
             else None
         )
-        triggered_by = _TRIGGERED_BY_BY_SOURCE[self.submission_source]
+        # submission_source ('cli'|'web'|'mcp') is a strict subset of
+        # workflow_runs.triggered_by after the V4 CHECK widening, so the
+        # value flows through unchanged — every origin records its true
+        # identity on the child rows.
+        triggered_by: WorkflowRunTriggeredBy = self.submission_source
 
         sweep_repo = SweepRunRepository(conn)
         wr_repo = WorkflowRunRepository(conn)
@@ -365,6 +360,18 @@ class SweepOrchestrator:
         async with sem:
             if self._cancelled:
                 return
+            # Close the drain/fail_fast TOCTOU race via a DB-level optimistic
+            # lock: a concurrent ``_drain`` flips this cell's row to
+            # ``cancelled`` atomically, so the ``pending → running`` UPDATE
+            # either wins (we own the cell and may submit) or loses (drain
+            # got there first — bail out instead of submitting to SLURM).
+            # Runner's own pending→running flip downstream is already
+            # idempotent (``_transition_workflow_run`` swallows ``False``).
+            claimed = await anyio.to_thread.run_sync(
+                partial(self._claim_cell_running, cell.workflow_run_id)
+            )
+            if not claimed:
+                return
             final_status: str = "failed"
             error: str | None = None
             try:
@@ -385,6 +392,27 @@ class SweepOrchestrator:
                 self._record_cell_failure(cell, error)
             self._on_cell_done(cell, sweep_run_id, final_status, error)
 
+    def _claim_cell_running(self, workflow_run_id: int) -> bool:
+        """Atomically flip a cell from ``pending`` to ``running``.
+
+        Returns True iff the caller won the optimistic UPDATE (i.e. the
+        row was still ``pending`` at claim time). A False result means a
+        concurrent ``_drain`` already cancelled the cell — the caller
+        must skip ``_run_cell_sync`` to avoid a wasted SLURM submission.
+        """
+        init_db(delete_legacy=True)
+        conn = open_connection()
+        try:
+            with transaction(conn, "IMMEDIATE"):
+                return WorkflowRunStateService.update(
+                    conn=conn,
+                    workflow_run_id=workflow_run_id,
+                    from_status="pending",
+                    to_status="running",
+                )
+        finally:
+            conn.close()
+
     def _record_cell_failure(self, cell: CellSpec, error: str) -> None:
         """Best-effort failed transition for a cell the runner never finalized.
 
@@ -394,8 +422,6 @@ class SweepOrchestrator:
         before raising. Swallows all exceptions so a DB hiccup here
         cannot mask the original cell failure.
         """
-        from srunx.sweep.state_service import WorkflowRunStateService
-
         try:
             init_db(delete_legacy=True)
             conn = open_connection()
