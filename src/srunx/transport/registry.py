@@ -178,6 +178,12 @@ def emit_transport_banner(
     """
     if quiet or source == "default":
         return
+    # Construct a fresh Console each call so the emitter picks up the
+    # *current* ``sys.stderr``. pytest's capture swaps ``sys.stderr``
+    # between tests, and a module-level cached Console would hold a
+    # stale reference and raise "I/O operation on closed file" on the
+    # second invocation. Construction is cheap (~µs) and banner
+    # emission is not on any hot path.
     Console(file=sys.stderr).print(f"[dim]→ transport: {label} (from {source})[/dim]")
 
 
@@ -231,11 +237,54 @@ def _build_local_handle(slurm: Slurm | None = None) -> TransportHandle:
     )
 
 
+def _resolve_submission_context(
+    *,
+    profile_name: str,
+    profile_mounts: Sequence[Any] | None,
+    mount_name: str | None,
+) -> SubmissionRenderContext | None:
+    """Decide the ``SubmissionRenderContext`` for an SSH profile.
+
+    Split out of :func:`_build_ssh_handle` so the mount auto-selection
+    policy lives in one place and can be tested independently.
+
+    Returns ``None`` when the profile has no mounts at all (no
+    translation possible). Otherwise returns a context with
+    ``mount_name`` set to either the caller's explicit choice, the
+    single mount's name (auto-selection), or ``None`` when the profile
+    declares multiple mounts and the caller did not pick one (logs a
+    warning so the silent no-translation fallback is visible).
+    """
+    from srunx.rendering import SubmissionRenderContext
+
+    mounts = tuple(profile_mounts) if profile_mounts else ()
+    if not mounts:
+        return None
+
+    resolved_mount_name = mount_name
+    if resolved_mount_name is None:
+        if len(mounts) == 1:
+            resolved_mount_name = mounts[0].name
+        else:
+            logger.warning(
+                "SSH profile %r declares %d mounts; no mount selected "
+                "so path translation is disabled. Pass mount_name "
+                "explicitly to enable translation.",
+                profile_name,
+                len(mounts),
+            )
+    return SubmissionRenderContext(
+        mount_name=resolved_mount_name,
+        mounts=mounts,
+        default_work_dir=None,
+    )
+
+
 def _build_ssh_handle(
     profile_name: str,
     *,
+    submission_source: str,
     callbacks: Sequence[Callback] | None = None,
-    submission_source: str = "web",
     mount_name: str | None = None,
     pool_size: int = 2,
 ) -> tuple[TransportHandle, Any]:
@@ -276,7 +325,6 @@ def _build_ssh_handle(
             factory rejects the configuration.
     """
     # Conditional imports — see module docstring.
-    from srunx.rendering import SubmissionRenderContext
     from srunx.ssh.core.config import ConfigManager
     from srunx.web.ssh_adapter import SlurmSSHAdapter, SlurmSSHAdapterSpec
     from srunx.web.ssh_executor import SlurmSSHExecutorPool
@@ -318,35 +366,11 @@ def _build_ssh_handle(
     # orphan the pool's SSH capacity. Wrap the remaining work so the
     # pool is drained before the exception propagates (Fix F8).
     try:
-        # SubmissionRenderContext carries mount information for path
-        # translation. We only construct it when the profile actually
-        # declares mounts; otherwise downstream code should render paths
-        # verbatim.
-        mounts = tuple(profile.mounts) if profile.mounts else ()
-        render_context: SubmissionRenderContext | None = None
-        if mounts:
-            # Auto-select a single mount so the common case (one mount per
-            # profile) gets translation without requiring a --mount flag.
-            # Multi-mount profiles with no explicit ``mount_name`` opt out
-            # of translation and warn — the caller must pass a mount hint
-            # or reconsider the profile layout.
-            resolved_mount_name = mount_name
-            if resolved_mount_name is None:
-                if len(mounts) == 1:
-                    resolved_mount_name = mounts[0].name
-                else:
-                    logger.warning(
-                        "SSH profile %r declares %d mounts; no mount selected "
-                        "so path translation is disabled. Pass mount_name "
-                        "explicitly to enable translation.",
-                        profile_name,
-                        len(mounts),
-                    )
-            render_context = SubmissionRenderContext(
-                mount_name=resolved_mount_name,
-                mounts=mounts,
-                default_work_dir=None,
-            )
+        render_context = _resolve_submission_context(
+            profile_name=profile_name,
+            profile_mounts=profile.mounts,
+            mount_name=mount_name,
+        )
 
         handle = TransportHandle(
             scheduler_key=f"ssh:{profile_name}",
@@ -390,6 +414,12 @@ def peek_scheduler_key(*, profile: str | None = None, local: bool = False) -> st
     ``--local`` conflict so callers fail consistently whether they
     peek first or go straight to :func:`resolve_transport`.
     """
+    profile = profile.strip() if profile else profile
+    if profile == "":
+        raise typer.BadParameter(
+            "--profile cannot be empty or whitespace.",
+            param_hint="--profile",
+        )
     if profile and local:
         raise typer.BadParameter(
             "--profile and --local cannot be used together.",
@@ -399,7 +429,7 @@ def peek_scheduler_key(*, profile: str | None = None, local: bool = False) -> st
         return f"ssh:{profile}"
     if local:
         return "local"
-    env_profile = os.environ.get("SRUNX_SSH_PROFILE")
+    env_profile = os.environ.get("SRUNX_SSH_PROFILE", "").strip()
     if env_profile:
         return f"ssh:{env_profile}"
     return "local"
@@ -471,13 +501,19 @@ def resolve_transport(
         TransportError: When an explicit / env-selected SSH profile is
             unknown or the adapter factory rejects it.
     """
+    profile = profile.strip() if profile else profile
+    if profile == "":
+        raise typer.BadParameter(
+            "--profile cannot be empty or whitespace.",
+            param_hint="--profile",
+        )
     if profile and local:
         raise typer.BadParameter(
             "--profile and --local cannot be used together.",
             param_hint="--profile / --local",
         )
 
-    env_profile = os.environ.get("SRUNX_SSH_PROFILE")
+    env_profile = os.environ.get("SRUNX_SSH_PROFILE", "").strip() or None
     pool: Any = None
     handle: TransportHandle
     source: TransportSource
@@ -545,8 +581,15 @@ class TransportRegistry:
         *,
         local_client: Slurm | None = None,
         profile_loader: Callable[[str], ServerProfile | None] | None = None,
+        submission_source: str = "web",
     ) -> None:
         self._local_client = local_client or Slurm()
+        # Origin tag the registry attaches to every SSH handle it builds.
+        # Web app lifespan uses the default ``"web"``; CLI-scoped registries
+        # (rare today) could construct with ``"cli"``. The value flows into
+        # ``_build_ssh_handle`` so ``jobs.submission_source`` is recorded
+        # with the correct caller identity.
+        self._submission_source = submission_source
         if profile_loader is None:
             # Match _build_ssh_handle's default path — use ConfigManager.
             # We import inside __init__ to keep the module import graph
@@ -619,7 +662,10 @@ class TransportRegistry:
             if not profile_name or self._profile_loader(profile_name) is None:
                 return None
             try:
-                built, pool = _build_ssh_handle(profile_name)
+                built, pool = _build_ssh_handle(
+                    profile_name,
+                    submission_source=self._submission_source,
+                )
             except TransportError as exc:
                 logger.warning(
                     "Failed to build SSH transport %r: %s", scheduler_key, exc

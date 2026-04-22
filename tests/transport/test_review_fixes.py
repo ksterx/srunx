@@ -800,7 +800,7 @@ class TestPoolOrphanProtection:
             ),
             pytest.raises(RuntimeError, match="render setup blew up"),
         ):
-            _build_ssh_handle("foo")
+            _build_ssh_handle("foo", submission_source="cli")
 
         fake_pool.close.assert_called_once()
 

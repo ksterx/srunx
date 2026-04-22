@@ -108,6 +108,7 @@ class ConfigManager:
             Path(config_path) if config_path else self._get_default_config_path()
         )
         self.config_data: dict[str, Any] = {}
+        self._loaded_mtime: float | None = None
         self.load_config()
 
     def _get_default_config_path(self) -> Path:
@@ -126,6 +127,7 @@ class ConfigManager:
                         self.save_config()
                     else:
                         self.config_data = json.loads(content)
+                self._loaded_mtime = self.config_path.stat().st_mtime
             except (OSError, json.JSONDecodeError) as e:
                 raise RuntimeError(
                     f"Failed to load config from {self.config_path}: {e}"
@@ -133,6 +135,24 @@ class ConfigManager:
         else:
             self.config_data = {"current_profile": None, "profiles": {}}
             self.save_config()
+
+    def _reload_if_stale(self) -> None:
+        """Re-read the config file when its mtime has advanced.
+
+        Long-lived :class:`ConfigManager` instances (e.g. held by the
+        web app ``TransportRegistry``) must observe external edits
+        (``srunx ssh profile add`` / ``remove``) so cached adapters do
+        not keep routing to stale profiles. The stat call is ~µs and
+        runs before each read-path lookup.
+        """
+        if self._loaded_mtime is None or not self.config_path.exists():
+            return
+        try:
+            current_mtime = self.config_path.stat().st_mtime
+        except OSError:
+            return
+        if current_mtime != self._loaded_mtime:
+            self.load_config()
 
     def save_config(self) -> None:
         """Save SSH profile data, preserving non-SSH keys (e.g. SrunxConfig)."""
@@ -178,12 +198,14 @@ class ConfigManager:
         return False
 
     def get_profile(self, name: str) -> ServerProfile | None:
+        self._reload_if_stale()
         profiles = self.config_data.get("profiles", {})
         if name in profiles:
             return ServerProfile.model_validate(profiles[name])
         return None
 
     def list_profiles(self) -> dict[str, ServerProfile]:
+        self._reload_if_stale()
         profiles = {}
         for name, data in self.config_data.get("profiles", {}).items():
             profiles[name] = ServerProfile.model_validate(data)

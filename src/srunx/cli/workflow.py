@@ -309,7 +309,7 @@ def _resolve_endpoint_id(endpoint: str | None) -> int | None:
     try:
         from srunx.db.connection import open_connection
         from srunx.db.repositories.endpoints import EndpointRepository
-    except Exception:  # pragma: no cover — DB unreachable
+    except ImportError:  # pragma: no cover — DB module unavailable
         return None
     conn = open_connection()
     try:

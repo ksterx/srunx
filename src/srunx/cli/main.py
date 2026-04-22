@@ -697,7 +697,7 @@ def submit(
                         console.print(
                             f"❌ Job failed with status: {final_job.status.name}"
                         )
-                        sys.exit(1)
+                        raise typer.Exit(code=1)
                 except KeyboardInterrupt:
                     console.print("\n⚠️  Monitoring interrupted by user")
                     console.print(
@@ -749,8 +749,10 @@ def status(
         typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from None
     except Exception as e:
-        logger.error(f"Error retrieving job {job_id}: {e}")
-        sys.exit(1)
+        typer.secho(
+            f"Error retrieving job {job_id}: {e}", err=True, fg=typer.colors.RED
+        )
+        raise typer.Exit(code=1) from e
 
 
 @app.command("list")
@@ -861,8 +863,8 @@ def list_jobs(
         typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from None
     except Exception as e:
-        logger.error(f"Error retrieving job queue: {e}")
-        sys.exit(1)
+        typer.secho(f"Error retrieving job queue: {e}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
 
 
 @app.command("cancel")
@@ -898,8 +900,10 @@ def cancel(
         typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from None
     except Exception as e:
-        logger.error(f"Error cancelling job {job_id}: {e}")
-        sys.exit(1)
+        typer.secho(
+            f"Error cancelling job {job_id}: {e}", err=True, fg=typer.colors.RED
+        )
+        raise typer.Exit(code=1) from e
 
 
 @app.command("resources")
@@ -1049,8 +1053,12 @@ def logs(
         typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from None
     except Exception as e:
-        logger.error(f"Error retrieving logs for job {job_id}: {e}")
-        sys.exit(1)
+        typer.secho(
+            f"Error retrieving logs for job {job_id}: {e}",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1) from e
 
 
 @flow_app.command("run")
@@ -1549,7 +1557,7 @@ def template_apply(
                             console.print(
                                 f"❌ Job failed with status: {final_job.status.name}"
                             )
-                            sys.exit(1)
+                            raise typer.Exit(code=1)
                     except KeyboardInterrupt:
                         console.print("\n⚠️  Monitoring interrupted by user")
                         console.print(
@@ -1557,14 +1565,14 @@ def template_apply(
                         )
 
     except ValueError as e:
-        logger.error(str(e))
-        sys.exit(1)
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
     except TransportError as exc:
         typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from None
     except Exception as e:
-        logger.error(f"Error applying template: {e}")
-        sys.exit(1)
+        typer.secho(f"Error applying template: {e}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
 
 
 @app.command("history")
