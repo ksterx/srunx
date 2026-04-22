@@ -11,6 +11,7 @@ from srunx.monitor.base import BaseMonitor
 from srunx.monitor.types import MonitorConfig
 
 if TYPE_CHECKING:
+    from srunx.client_protocol import JobOperationsProtocol
     from srunx.db.repositories.job_state_transitions import (
         JobStateTransitionRepository,
     )
@@ -45,7 +46,7 @@ class JobMonitor(BaseMonitor):
         target_statuses: list[JobStatus] | None = None,
         config: MonitorConfig | None = None,
         callbacks: list[Callback] | None = None,
-        client: Slurm | None = None,
+        client: "JobOperationsProtocol | None" = None,
         transition_repo: "JobStateTransitionRepository | None" = None,
         scheduler_key: str = "local",
     ) -> None:
@@ -72,7 +73,7 @@ class JobMonitor(BaseMonitor):
         self._previous_states: dict[int, JobStatus] = {}
         self._cached_jobs: list[BaseJob] | None = None
 
-        logger.info(
+        logger.debug(
             f"JobMonitor initialized for jobs {self.job_ids}, "
             f"target statuses: {[s.value for s in self.target_statuses]}"
         )
@@ -80,8 +81,12 @@ class JobMonitor(BaseMonitor):
     def _get_monitored_jobs(self) -> list[BaseJob]:
         """Get monitored jobs, using per-cycle cache.
 
-        First call per cycle fetches from SLURM via client.retrieve();
-        subsequent calls within the same cycle return the cached result.
+        First call per cycle fetches from SLURM via
+        :meth:`JobOperationsProtocol.status`; subsequent calls within
+        the same cycle return the cached result. Uses the Protocol
+        method rather than :meth:`Slurm.retrieve` so SSH-backed
+        monitors (``srunx monitor jobs --profile ...``) work too —
+        ``retrieve`` is a local-Slurm-only legacy name.
         """
         if self._cached_jobs is not None:
             return self._cached_jobs
@@ -91,7 +96,7 @@ class JobMonitor(BaseMonitor):
         jobs: list[BaseJob] = []
         for job_id in self.job_ids:
             try:
-                jobs.append(self.client.retrieve(job_id))
+                jobs.append(self.client.status(job_id))
             except Exception as e:
                 logger.warning(f"Failed to retrieve job {job_id}: {e}")
                 placeholder = Job(

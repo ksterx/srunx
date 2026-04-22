@@ -196,30 +196,32 @@ def monitor_jobs(
         )
 
         try:
+            jobs_str = ", ".join(f"[bold cyan]{jid}[/bold cyan]" for jid in job_ids)
             if continuous:
                 console.print(
-                    f"🔄 Continuously monitoring jobs {job_ids} "
-                    f"(interval={interval}s, press Ctrl+C to stop)"
+                    f"[yellow]🔄[/yellow] Continuously monitoring {jobs_str} "
+                    f"[dim](interval={interval}s · Ctrl+C to stop)[/dim]"
                 )
                 job_monitor.watch_continuous()
-                console.print("✅ Monitoring stopped")
+                console.print("[green]✅[/green] Monitoring stopped")
             else:
+                timeout_display = f"{timeout}s" if timeout else "no timeout"
                 console.print(
-                    f"🔍 Monitoring jobs {job_ids} "
-                    f"(interval={interval}s, timeout={timeout or 'None'}s)"
+                    f"[yellow]🔍[/yellow] Monitoring {jobs_str} "
+                    f"[dim](interval={interval}s · timeout={timeout_display})[/dim]"
                 )
-                console.print("Press Ctrl+C to stop monitoring")
+                console.print("[dim]Press Ctrl+C to stop monitoring[/dim]")
                 job_monitor.watch_until()
-                console.print("✅ All jobs reached terminal status")
+                console.print("[green]✅[/green] All jobs reached terminal status")
         except TimeoutError as e:
             console.print(f"[red]⏱️  {e}[/red]")
-            sys.exit(1)
+            raise typer.Exit(code=1) from e
         except KeyboardInterrupt:
-            console.print("\n[yellow]Monitoring stopped by user[/yellow]")
-            sys.exit(0)
+            console.print("\n[yellow]⚠[/yellow]  [dim]Monitoring stopped by user[/dim]")
+            raise typer.Exit(code=0) from None
         except Exception as e:
-            console.print(f"[red]Error: {e}[/red]")
-            sys.exit(1)
+            console.print(f"[red]✗ {e}[/red]")
+            raise typer.Exit(code=1) from e
 
 
 @monitor_app.command("resources")

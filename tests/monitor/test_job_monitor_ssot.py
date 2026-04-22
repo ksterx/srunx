@@ -75,7 +75,7 @@ def _drive_states(
     """
     for status in states:
         monitor._cached_jobs = None
-        client.retrieve = MagicMock(
+        client.status = MagicMock(
             side_effect=lambda _jid, _s=status: _make_job(_jid, _s)
         )
         monitor._notify_callbacks("state_changed")
@@ -178,7 +178,7 @@ def test_multiple_jobs_tracked_independently(
 
     for cycle in cycle_states:
         monitor._cached_jobs = None
-        client.retrieve = MagicMock(
+        client.status = MagicMock(
             side_effect=lambda jid, _c=cycle: _make_job(jid, _c[jid])
         )
         monitor._notify_callbacks("state_changed")

@@ -122,14 +122,20 @@ class BaseMonitor(ABC):
         self._stop_requested = False
         self._setup_signal_handlers()
         start_time = time.time()
-        logger.info(
+        timeout_display = (
+            f"{self.config.timeout}s" if self.config.timeout else "no timeout"
+        )
+        # Developer trace — user-facing "🔍 Monitoring jobs ..." output
+        # is emitted by the CLI layer, so this stays at DEBUG to avoid
+        # double-printing the same information in different formats.
+        logger.debug(
             f"Starting until-condition monitoring "
-            f"(interval={self.config.poll_interval}s, timeout={self.config.timeout}s)"
+            f"(interval={self.config.poll_interval}s, timeout={timeout_display})"
         )
 
         while not self._stop_requested:
             if self.check_condition():
-                logger.info("Condition met, stopping monitor")
+                logger.debug("Condition met, stopping monitor")
                 self._notify_callbacks("condition_met")
                 return
 
@@ -145,7 +151,7 @@ class BaseMonitor(ABC):
 
             time.sleep(self.config.poll_interval)
 
-        logger.info("Monitor stopped by user request")
+        logger.debug("Monitor stopped by user request")
 
     def watch_continuous(self) -> None:
         """
@@ -166,7 +172,7 @@ class BaseMonitor(ABC):
         self._stop_requested = False
         self._setup_signal_handlers()
         previous_state: dict[str, Any] | None = None
-        logger.info(
+        logger.debug(
             f"Starting continuous monitoring "
             f"(interval={self.config.poll_interval}s, Ctrl+C to stop)"
         )
@@ -176,14 +182,14 @@ class BaseMonitor(ABC):
 
             # Notify only on state change (prevent duplicates)
             if current_state != previous_state and previous_state is not None:
-                logger.info(f"State changed: {previous_state} -> {current_state}")
+                logger.debug(f"State changed: {previous_state} -> {current_state}")
                 if self.config.notify_on_change:
                     self._notify_callbacks("state_changed")
 
             previous_state = current_state
             time.sleep(self.config.poll_interval)
 
-        logger.info("Continuous monitor stopped")
+        logger.debug("Continuous monitor stopped")
 
     @abstractmethod
     def _notify_callbacks(self, event: str) -> None:
