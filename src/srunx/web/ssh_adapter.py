@@ -21,6 +21,7 @@ from srunx.client_protocol import (
     parse_slurm_duration,
 )
 from srunx.logging import get_logger
+from srunx.slurm.states import SLURM_TERMINAL_JOB_STATES
 from srunx.ssh.core.client import SSHSlurmClient
 from srunx.ssh.core.config import ConfigManager, MountConfig
 from srunx.ssh.core.ssh_config import SSHConfigParser  # noqa: F811
@@ -37,17 +38,6 @@ _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 
 # Node states that should be excluded from available counts
 _UNAVAILABLE_STATES = {"down", "drain", "maint", "reserved"}
-
-# SLURM terminal job states (used to filter sacct output)
-_TERMINAL_STATES = {
-    "COMPLETED",
-    "FAILED",
-    "CANCELLED",
-    "TIMEOUT",
-    "NODE_FAIL",
-    "PREEMPTED",
-    "OUT_OF_MEMORY",
-}
 
 
 class SSHMonitorTimeoutError(RuntimeError):
@@ -95,9 +85,8 @@ class SlurmSSHAdapterSpec:
     channels, or in-flight state. Used by Step 4's pool factory to mint
     per-cell adapter clones off a shared singleton template.
 
-    ``mounts`` is a tuple so the spec itself is immutable; the contained
-    :class:`MountConfig` instances are Pydantic models and may not be
-    hashable, so do not rely on ``hash(spec)``.
+    ``mounts`` is a tuple of frozen :class:`MountConfig` instances so the
+    spec is deeply immutable and hashable end-to-end.
     """
 
     profile_name: str | None
@@ -461,7 +450,7 @@ class SlurmSSHAdapter:
                 # Skip non-terminal states (already covered by squeue)
                 raw_state = parts[2].strip()
                 status = raw_state.split()[0] if raw_state else "UNKNOWN"
-                if status not in _TERMINAL_STATES:
+                if status not in SLURM_TERMINAL_JOB_STATES:
                     continue
 
                 gpus = 0
@@ -586,7 +575,7 @@ class SlurmSSHAdapter:
         # per-missing-id. Per-id cost is acceptable because the poller
         # runs every 15s and the missing set is only the final-transition
         # tail, not the full active set.
-        from srunx.ssh.core.client import _parse_scontrol_status
+        from srunx.ssh.core.utils import parse_scontrol_job_state
 
         still_missing = [j for j in job_ids if j not in results]
         for jid in still_missing:
@@ -596,7 +585,7 @@ class SlurmSSHAdapter:
                 )
             except RuntimeError:
                 continue
-            parsed = _parse_scontrol_status(scontrol_out)
+            parsed = parse_scontrol_job_state(scontrol_out)
             if parsed is None:
                 continue
             results[jid] = JobStatusInfo(status=parsed)

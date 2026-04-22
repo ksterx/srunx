@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from srunx.ssh.core.client import SSHSlurmClient, _parse_scontrol_status
+from srunx.ssh.core.client import SSHSlurmClient
+from srunx.ssh.core.utils import parse_scontrol_job_state
 
 # ── Pure parser ──────────────────────────────────────────────────────
 
@@ -18,41 +19,41 @@ from srunx.ssh.core.client import SSHSlurmClient, _parse_scontrol_status
 class TestParseScontrolStatus:
     def test_parses_running(self) -> None:
         out = "JobId=123 JobName=foo JobState=RUNNING Reason=None ExitCode=0:0"
-        assert _parse_scontrol_status(out) == "RUNNING"
+        assert parse_scontrol_job_state(out) == "RUNNING"
 
     def test_parses_pending(self) -> None:
         out = "JobId=1 JobState=PENDING Reason=Resources ExitCode=0:0"
-        assert _parse_scontrol_status(out) == "PENDING"
+        assert parse_scontrol_job_state(out) == "PENDING"
 
     def test_completed_with_clean_exit_is_completed(self) -> None:
         out = "JobId=1 JobState=COMPLETED Reason=None ExitCode=0:0"
-        assert _parse_scontrol_status(out) == "COMPLETED"
+        assert parse_scontrol_job_state(out) == "COMPLETED"
 
     def test_completed_with_nonzero_exit_downgrades_to_failed(self) -> None:
         out = "JobId=1 JobState=COMPLETED Reason=None ExitCode=1:0"
-        assert _parse_scontrol_status(out) == "FAILED"
+        assert parse_scontrol_job_state(out) == "FAILED"
 
     def test_completed_with_signal_downgrades_to_failed(self) -> None:
         out = "JobId=1 JobState=COMPLETED Reason=None ExitCode=0:9"
-        assert _parse_scontrol_status(out) == "FAILED"
+        assert parse_scontrol_job_state(out) == "FAILED"
 
     def test_failed_state_passes_through(self) -> None:
         out = "JobId=1 JobState=FAILED Reason=NonZeroExit ExitCode=1:0"
-        assert _parse_scontrol_status(out) == "FAILED"
+        assert parse_scontrol_job_state(out) == "FAILED"
 
     def test_cancelled_state_passes_through(self) -> None:
         out = "JobId=1 JobState=CANCELLED Reason=None ExitCode=0:15"
-        assert _parse_scontrol_status(out) == "CANCELLED"
+        assert parse_scontrol_job_state(out) == "CANCELLED"
 
     def test_empty_input_returns_none(self) -> None:
-        assert _parse_scontrol_status("") is None
+        assert parse_scontrol_job_state("") is None
 
     def test_whitespace_only_returns_none(self) -> None:
-        assert _parse_scontrol_status("   \n  \t  \n") is None
+        assert parse_scontrol_job_state("   \n  \t  \n") is None
 
     def test_missing_jobstate_returns_none(self) -> None:
         out = "JobId=1 JobName=foo Reason=None"
-        assert _parse_scontrol_status(out) is None
+        assert parse_scontrol_job_state(out) is None
 
     def test_multiline_output(self) -> None:
         out = (
@@ -61,7 +62,7 @@ class TestParseScontrolStatus:
             "   Priority=1 JobState=COMPLETED Reason=None ExitCode=0:0\n"
             "   RunTime=00:05:12 TimeLimit=01:00:00\n"
         )
-        assert _parse_scontrol_status(out) == "COMPLETED"
+        assert parse_scontrol_job_state(out) == "COMPLETED"
 
 
 # ── get_job_status three-tier fallback ───────────────────────────────

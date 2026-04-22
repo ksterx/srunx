@@ -58,25 +58,11 @@ from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
 from srunx.db.repositories.workflow_runs import WorkflowRunRepository
 from srunx.logging import get_logger
 from srunx.notifications.service import NotificationService
+from srunx.slurm.states import SLURM_TERMINAL_JOB_STATES
 from srunx.sweep.state_service import WorkflowRunStateService
 
 logger = get_logger(__name__)
 
-
-# Terminal job statuses per SLURM conventions. Kept in lock-step with
-# ``srunx.notifications.presets._TERMINAL_JOB_STATUSES`` — the poller
-# uses this set to decide when to close the owning watch.
-_TERMINAL_JOB_STATUSES: frozenset[str] = frozenset(
-    {
-        "COMPLETED",
-        "FAILED",
-        "CANCELLED",
-        "TIMEOUT",
-        "NODE_FAIL",
-        "PREEMPTED",
-        "OUT_OF_MEMORY",
-    }
-)
 
 # Terminal workflow_run statuses per our own domain model.
 _TERMINAL_WORKFLOW_RUN_STATUSES: frozenset[str] = frozenset(
@@ -404,7 +390,7 @@ class ActiveWatchPoller:
                 # Close every matching watch once the job hits a
                 # terminal state — a batch of N watches on the same
                 # job collapses to a single transition + N closes.
-                if current_status in _TERMINAL_JOB_STATUSES:
+                if current_status in SLURM_TERMINAL_JOB_STATES:
                     for closing_watch in watch_repo.list_by_target(
                         kind="job",
                         target_ref=source_ref,
@@ -527,7 +513,7 @@ class ActiveWatchPoller:
         # PREEMPTED / OUT_OF_MEMORY). The design.md wording is
         # "FAILED/TIMEOUT" but the other SLURM terminal failures are
         # semantically identical and already in
-        # ``_TERMINAL_JOB_STATUSES`` minus COMPLETED/CANCELLED.
+        # ``SLURM_TERMINAL_JOB_STATES`` minus COMPLETED/CANCELLED.
         if any(
             s in {"FAILED", "TIMEOUT", "NODE_FAIL", "PREEMPTED", "OUT_OF_MEMORY"}
             for s in child_statuses

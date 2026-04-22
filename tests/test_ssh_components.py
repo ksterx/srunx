@@ -140,6 +140,33 @@ class TestSlurmRemoteClient:
         # Should not raise — only logs error details
         slurm._handle_slurm_error("sbatch", "command not found", 127)
 
+    def test_get_job_status_uses_shared_three_stage_fallback(self):
+        """sacct empty + squeue empty -> scontrol parses COMPLETED."""
+        conn = MagicMock(spec=SSHConnection)
+        fm = MagicMock(spec=RemoteFileManager)
+        slurm = SlurmRemoteClient(conn, fm)
+        scontrol_out = (
+            "JobId=42 JobName=train JobState=COMPLETED Reason=None ExitCode=0:0"
+        )
+        responses = iter(
+            [
+                ("", "", 0),  # sacct empty
+                ("", "", 0),  # squeue empty
+                (scontrol_out, "", 0),  # scontrol hit
+            ]
+        )
+        # Bypass the real execute path — the helper only needs the callable.
+        slurm.execute_slurm_command = lambda cmd: next(responses)  # type: ignore[method-assign]
+        assert slurm.get_job_status("42") == "COMPLETED"
+
+    def test_get_job_status_rejects_invalid_job_id(self):
+        conn = MagicMock(spec=SSHConnection)
+        fm = MagicMock(spec=RemoteFileManager)
+        slurm = SlurmRemoteClient(conn, fm)
+        # If the helper touched execute_slurm_command it would raise since
+        # we never stubbed it — asserting "ERROR" confirms the regex guard.
+        assert slurm.get_job_status("not; an id") == "ERROR"
+
 
 class TestRemoteLogReader:
     """Test RemoteLogReader standalone instantiation."""
