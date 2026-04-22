@@ -2,6 +2,7 @@
 
 import os
 import re
+import shlex
 import subprocess
 import time
 from enum import Enum
@@ -528,8 +529,15 @@ class Job(BaseJob):
         description="Directory for log files",
     )
     work_dir: str = Field(
-        default_factory=os.getcwd,
-        description="Working directory",
+        default="",
+        description=(
+            "Working directory. Empty string means 'not specified' — the "
+            "renderer omits ``#SBATCH --chdir`` so SLURM uses the submission "
+            "directory (matches pre-Phase-2 CLI behavior where ``os.getcwd()`` "
+            "default produced the same effective chdir). SSH submission "
+            "contexts populate this from the configured mount's remote path "
+            "via :func:`srunx.rendering.normalize_job_for_submission`."
+        ),
     )
 
     # Render metadata — optional, used by renderer when no explicit arg given.
@@ -796,10 +804,19 @@ def render_job_script(
         FileNotFoundError: If the template file does not exist.
         jinja2.TemplateError: If template rendering fails.
     """
-    # Prepare template variables
-    command_str = (
-        job.command if isinstance(job.command, str) else " ".join(job.command or [])
-    )
+    # Prepare template variables.
+    #
+    # ``list[str]`` commands are rendered with ``shlex.join`` so shell
+    # metacharacters stay quoted. The previous ``" ".join(...)`` silently
+    # collapsed commands like ``["bash", "-c", "echo X; sleep 5; echo Y"]``
+    # into ``bash -c echo X; sleep 5; echo Y`` — the third argument's shell
+    # metacharacters escaped their intended ``-c`` payload and got
+    # reinterpreted by the outer shell. ``shlex.join`` preserves the
+    # original token boundaries via minimal single-quote wrapping.
+    if isinstance(job.command, str):
+        command_str = job.command
+    else:
+        command_str = shlex.join(job.command or [])
     environment_setup, srun_args, launch_prefix = _build_environment_setup(
         job.environment
     )

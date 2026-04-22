@@ -5,9 +5,12 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml  # type: ignore
+
+if TYPE_CHECKING:
+    from srunx.rendering import SubmissionRenderContext
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -644,6 +647,14 @@ def run_workflow(
     Jobs are executed in dependency order - independent jobs run in parallel,
     dependent jobs wait for their prerequisites to complete.
 
+    Phase 1 limitation: MCP-initiated runs use the local SLURM client — the
+    canonical :class:`~srunx.rendering.SubmissionRenderContext` is always
+    passed as ``None``, so no mount translation is performed on
+    ``work_dir`` / ``log_dir``. Remote cluster submission via SSH + mount
+    translation from MCP is out of scope for this phase; use the Web UI or
+    ``srunx ssh submit`` for that path. Phase 3 may thread a ``mount`` arg
+    through this tool.
+
     Args:
         yaml_path: Path to the YAML workflow file
         from_job: Start execution from this job (skip earlier jobs)
@@ -662,6 +673,13 @@ def run_workflow(
 
         if args is not None:
             _reject_python_in_mcp_mapping(args, source="args")
+
+        # MCP runs have no mount context: Phase 1 is local-SLURM only.
+        # Passing ``submission_context=None`` explicitly (rather than
+        # relying on the default) documents the intent at the call site
+        # and lets tests pin the contract between MCP and the canonical
+        # render entry.
+        submission_context: SubmissionRenderContext | None = None
 
         if sweep is not None:
             from pathlib import Path as _Path
@@ -697,6 +715,7 @@ def run_workflow(
                 args_override=args or None,
                 sweep_spec=sweep_spec,
                 submission_source="mcp",
+                submission_context=submission_context,
             )
             sweep_run = orchestrator.run()
             return _ok(
@@ -708,7 +727,11 @@ def run_workflow(
                 cells_cancelled=sweep_run.cells_cancelled,
             )
 
-        runner = WorkflowRunner.from_yaml(yaml_path, args_override=args or None)
+        runner = WorkflowRunner.from_yaml(
+            yaml_path,
+            args_override=args or None,
+            submission_context=submission_context,
+        )
 
         if dry_run:
             jobs_to_execute = runner._get_jobs_to_execute(from_job, to_job, single_job)

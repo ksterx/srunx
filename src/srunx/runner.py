@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 import jinja2
 import yaml  # type: ignore
@@ -34,6 +34,9 @@ from srunx.models import (
     ShellJob,
     Workflow,
 )
+
+if TYPE_CHECKING:
+    from srunx.rendering import SubmissionRenderContext
 
 logger = get_logger(__name__)
 
@@ -491,6 +494,7 @@ class WorkflowRunner:
         default_project: str | None = None,
         *,
         executor_factory: WorkflowJobExecutorFactory | None = None,
+        submission_context: "SubmissionRenderContext | None" = None,
     ) -> None:
         """Initialize workflow runner.
 
@@ -507,6 +511,14 @@ class WorkflowRunner:
                 factory to route submissions through an alternative
                 executor (e.g. SSH-backed pool for the Web UI sweep path)
                 without otherwise changing runner semantics.
+            submission_context: Optional mount / default-path metadata
+                forwarded verbatim to every ``executor.run`` call. SSH
+                executors consume it to rewrite local ``work_dir`` /
+                ``log_dir`` values to their remote equivalents just before
+                render; the local :class:`Slurm` executor accepts it for
+                protocol conformance and ignores it. Defaults to ``None``,
+                matching the pre-Batch-2a CLI path where no translation
+                is performed.
         """
         self.workflow = workflow
         self.slurm = Slurm(callbacks=callbacks)
@@ -514,6 +526,7 @@ class WorkflowRunner:
         self.args = args or {}
         self.default_project = default_project
         self._executor_factory = executor_factory
+        self._submission_context = submission_context
 
     def _get_executor_cm(
         self,
@@ -539,6 +552,7 @@ class WorkflowRunner:
         *,
         args_override: dict[str, Any] | None = None,
         executor_factory: WorkflowJobExecutorFactory | None = None,
+        submission_context: "SubmissionRenderContext | None" = None,
     ) -> Self:
         """Load and validate a workflow from a YAML file.
 
@@ -551,6 +565,9 @@ class WorkflowRunner:
                 key collision; keys absent from the YAML are added.
             executor_factory: Optional executor factory passed through to
                 :class:`WorkflowRunner`; see ``__init__`` for semantics.
+            submission_context: Optional submission-time render context
+                forwarded verbatim to :class:`WorkflowRunner.__init__`.
+                See that method's docstring for semantics.
 
         Returns:
             WorkflowRunner instance with loaded workflow.
@@ -602,6 +619,7 @@ class WorkflowRunner:
             args=args,
             default_project=default_project,
             executor_factory=executor_factory,
+            submission_context=submission_context,
         )
 
     @staticmethod
@@ -916,6 +934,7 @@ class WorkflowRunner:
                         job,
                         workflow_name=self.workflow.name,
                         workflow_run_id=workflow_run_id,
+                        submission_context=self._submission_context,
                     )
                 return result
             except Exception as e:

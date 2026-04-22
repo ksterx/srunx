@@ -266,6 +266,162 @@ class TestSSHAdapterRun:
             adapter.run(job)
 
 
+class TestSSHAdapterRunSubmissionContext:
+    """Batch 2a: ``submission_context`` drives mount-aware path rewriting.
+
+    These tests target the ``normalize_job_for_submission`` hook at the
+    top of :meth:`SlurmSSHAdapter.run`. They verify that the rendered
+    script sent to ``submit_sbatch_job`` reflects the *translated* paths
+    when a context is supplied, and is unchanged when ``submission_context``
+    is ``None`` (pre-Batch-2a semantics).
+    """
+
+    def test_none_context_preserves_local_workdir_in_rendered_script(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter = _bare_adapter()
+        job = Job(
+            name="legacy",
+            command=["echo", "ok"],
+            work_dir="/tmp/local-only",
+            log_dir="",
+        )
+
+        captured: dict[str, object] = {}
+
+        def fake_submit(script_content: str, *, job_name=None, dependency=None):
+            captured["content"] = script_content
+            sj = MagicMock()
+            sj.job_id = "1"
+            sj.name = job_name
+            return sj
+
+        adapter._client.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
+
+        monkeypatch.setattr(
+            adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_job_submission",
+            staticmethod(lambda *a, **k: None),
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_completion_safe",
+            staticmethod(lambda *a, **k: None),
+        )
+
+        # Explicitly pass submission_context=None — legacy semantics.
+        adapter.run(job, submission_context=None)
+
+        # Rendered script uses the raw local path.
+        assert "#SBATCH --chdir=/tmp/local-only" in captured["content"]  # type: ignore[operator]
+
+    def test_context_translates_absolute_local_workdir_to_remote(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Absolute ``work_dir`` under a mount is rewritten before render."""
+        from dataclasses import dataclass
+
+        from srunx.rendering import SubmissionRenderContext
+
+        @dataclass(frozen=True)
+        class _FakeMount:
+            name: str
+            local: str
+            remote: str
+
+        local_root = tmp_path / "proj"
+        local_root.mkdir()
+        mount = _FakeMount(name="ml", local=str(local_root), remote="/home/remote/proj")
+        ctx = SubmissionRenderContext(mount_name="ml", mounts=(mount,))
+
+        adapter = _bare_adapter()
+        job = Job(
+            name="translated",
+            command=["echo", "ok"],
+            work_dir=str(local_root / "subdir"),
+            log_dir="",
+        )
+
+        captured: dict[str, object] = {}
+
+        def fake_submit(script_content: str, *, job_name=None, dependency=None):
+            captured["content"] = script_content
+            sj = MagicMock()
+            sj.job_id = "2"
+            sj.name = job_name
+            return sj
+
+        adapter._client.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
+
+        monkeypatch.setattr(
+            adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_job_submission",
+            staticmethod(lambda *a, **k: None),
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_completion_safe",
+            staticmethod(lambda *a, **k: None),
+        )
+
+        adapter.run(job, submission_context=ctx)
+
+        # Rendered script has the REMOTE path, not the local path.
+        assert "#SBATCH --chdir=/home/remote/proj/subdir" in captured["content"]  # type: ignore[operator]
+        assert str(local_root) not in captured["content"]  # type: ignore[operator]
+
+    def test_context_default_work_dir_fills_missing_workdir(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Empty ``work_dir`` + ``default_work_dir`` → chdir to default."""
+        from srunx.rendering import SubmissionRenderContext
+
+        ctx = SubmissionRenderContext(default_work_dir="/mnt/injected")
+
+        adapter = _bare_adapter()
+        job = Job(
+            name="defwd",
+            command=["echo", "ok"],
+            work_dir="",
+            log_dir="",
+        )
+
+        captured: dict[str, object] = {}
+
+        def fake_submit(script_content: str, *, job_name=None, dependency=None):
+            captured["content"] = script_content
+            sj = MagicMock()
+            sj.job_id = "3"
+            sj.name = job_name
+            return sj
+
+        adapter._client.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
+
+        monkeypatch.setattr(
+            adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_job_submission",
+            staticmethod(lambda *a, **k: None),
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_completion_safe",
+            staticmethod(lambda *a, **k: None),
+        )
+
+        adapter.run(job, submission_context=ctx)
+
+        assert "#SBATCH --chdir=/mnt/injected" in captured["content"]  # type: ignore[operator]
+
+
 class TestAdapterFromSpec:
     def test_from_spec_creates_disconnected_clone(self) -> None:
         spec = SlurmSSHAdapterSpec(

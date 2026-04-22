@@ -582,7 +582,10 @@ class TestEndToEndScenarios:
             assert "#SBATCH --job-name=test_job" in content
             assert "#SBATCH --nodes=1" in content
             assert "#SBATCH --time=00:05:00" in content
-            assert "echo Hello, SLURM!" in content
+            # ``list[str]`` commands are rendered via ``shlex.join`` for
+            # shell-safe quoting (Phase 2 render-parity fix). "Hello, SLURM!"
+            # contains shell-special characters so it ends up single-quoted.
+            assert "echo 'Hello, SLURM!'" in content
 
             # Script should be readable
             assert Path(script_path).is_file()

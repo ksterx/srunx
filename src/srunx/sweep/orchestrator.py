@@ -25,6 +25,7 @@ from srunx.db.repositories.workflow_runs import WorkflowRunRepository
 from srunx.exceptions import SweepExecutionError
 from srunx.logging import get_logger
 from srunx.notifications.service import NotificationService
+from srunx.rendering import SubmissionRenderContext
 from srunx.sweep import CellSpec, SweepSpec
 
 # In-process registry of live orchestrators keyed by ``sweep_run_id``.
@@ -71,6 +72,7 @@ class SweepOrchestrator:
         endpoint_id: int | None = None,
         preset: str = "terminal",
         executor_factory: WorkflowJobExecutorFactory | None = None,
+        submission_context: SubmissionRenderContext | None = None,
     ) -> None:
         self.workflow_yaml_path = workflow_yaml_path
         self.workflow_data = workflow_data
@@ -87,6 +89,12 @@ class SweepOrchestrator:
         # :meth:`SlurmSSHExecutorPool.lease` here to route sweep cells
         # through the configured SSH adapter.
         self.executor_factory = executor_factory
+        # Optional submission context forwarded to each cell's runner so
+        # SSH-backed executors can translate local mount paths before
+        # rendering. ``None`` (default) preserves local CLI semantics —
+        # no mount translation, job ``work_dir`` / ``log_dir`` used
+        # verbatim.
+        self.submission_context = submission_context
 
         self._cancelled: bool = False
         self._sweep_run_id: int | None = None
@@ -436,6 +444,7 @@ class SweepOrchestrator:
             callbacks=self.callbacks,
             args_override=cell.effective_args,
             executor_factory=self.executor_factory,
+            submission_context=self.submission_context,
         )
         runner.run(workflow_run_id=cell.workflow_run_id)
 

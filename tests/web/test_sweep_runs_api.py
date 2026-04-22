@@ -179,6 +179,80 @@ class TestRunWorkflowWithSweep:
         # materialize() was called synchronously.
         mock_orch.materialize.assert_called_once()
 
+    def test_run_with_sweep_wires_submission_context(
+        self, client: TestClient, mock_adapter: MagicMock
+    ) -> None:
+        """Phase 2 Batch 2b: the dispatcher hands a mount-aware
+        ``SubmissionRenderContext`` to ``SweepOrchestrator`` so each cell's
+        runner sees the same mount translation as the non-sweep path.
+        """
+        _create_workflow(client, name="ctx-sweep")
+
+        with (
+            patch("srunx.web.routers.workflows.SweepOrchestrator") as orch_cls,
+            patch("srunx.web.routers.workflows.SweepSpec") as spec_cls,
+        ):
+            from srunx.sweep import SweepSpec as _RealSweepSpec
+
+            spec_cls.side_effect = _RealSweepSpec
+
+            from srunx.db.connection import open_connection
+            from srunx.db.repositories.sweep_runs import SweepRunRepository
+
+            conn = open_connection()
+            try:
+                seeded_id = SweepRunRepository(conn).create(
+                    name="ctx-sweep",
+                    matrix={"lr": [0.01, 0.1]},
+                    args=None,
+                    fail_fast=False,
+                    max_parallel=2,
+                    cell_count=2,
+                    submission_source="web",
+                    status="pending",
+                )
+            finally:
+                conn.close()
+
+            mock_orch = MagicMock()
+            mock_orch.materialize.return_value = seeded_id
+
+            async def fake_arun_from_materialized(_sweep_run_id: int) -> _FakeSweepRun:
+                return _FakeSweepRun(sweep_id=seeded_id, cell_count=2)
+
+            mock_orch.arun_from_materialized = fake_arun_from_materialized
+            orch_cls.return_value = mock_orch
+
+            resp = client.post(
+                "/api/workflows/ctx-sweep/run",
+                params={"mount": MOUNT},
+                json={
+                    "sweep": {
+                        "matrix": {"lr": [0.01, 0.1]},
+                        "max_parallel": 2,
+                    }
+                },
+            )
+
+        assert resp.status_code == 202, resp.text
+
+        kwargs = orch_cls.call_args.kwargs
+        assert "submission_context" in kwargs
+
+        from srunx.rendering import SubmissionRenderContext
+
+        ctx = kwargs["submission_context"]
+        assert isinstance(ctx, SubmissionRenderContext)
+        # Mount was resolved from the fake profile's single mount; default
+        # work_dir mirrors the selected mount's ``remote`` path.
+        assert ctx.mount_name == MOUNT
+        assert ctx.default_work_dir == "/home/user/project"
+        # ``mounts`` is materialized as a tuple so the context stays
+        # immutable/hashable.
+        assert isinstance(ctx.mounts, tuple)
+        assert len(ctx.mounts) == 1
+        assert ctx.mounts[0].name == MOUNT
+
     def test_run_with_sweep_returns_fast_without_blocking_on_cells(
         self, client: TestClient, mock_adapter: MagicMock
     ) -> None:

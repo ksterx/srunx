@@ -127,6 +127,7 @@ class _FakeExecutor:
         *,
         workflow_name: str | None = None,
         workflow_run_id: int | None = None,
+        submission_context: object = None,
     ) -> RunnableJobType:
         self.calls.append(job.name)
         job.job_id = 999
@@ -689,3 +690,142 @@ class TestBackwardCompat:
         # Every from_yaml invocation received ``executor_factory=None``.
         for kwargs in captured_kwargs:
             assert kwargs.get("executor_factory") is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Batch 2b: submission_context passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestSubmissionContextPassthrough:
+    """Orchestrator must forward ``submission_context`` into every cell's runner.
+
+    The Web dispatcher builds a :class:`SubmissionRenderContext` from the
+    configured SSH profile + selected mount and hands it to
+    :class:`SweepOrchestrator`. Each cell's :meth:`WorkflowRunner.from_yaml`
+    call must receive that same context so the SSH adapter can translate
+    local mount paths before rendering.
+    """
+
+    def test_default_submission_context_is_none(self, tmp_path: Path) -> None:
+        """Backward-compat guard: omitting ``submission_context`` keeps it None."""
+        orch = _build_orch(
+            tmp_path,
+            matrix={"lr": [0.1]},
+            submission_source="cli",
+        )
+        assert orch.submission_context is None
+
+    def test_submission_context_is_stored_on_instance(self, tmp_path: Path) -> None:
+        from srunx.rendering import SubmissionRenderContext
+
+        ctx = SubmissionRenderContext(
+            mount_name="proj",
+            mounts=(),
+            default_work_dir="/remote/proj",
+        )
+        orch = SweepOrchestrator(
+            workflow_yaml_path=_write_wf(tmp_path),
+            workflow_data={"name": "ssh_sweep", "args": {"lr": 0.1}},
+            args_override=None,
+            sweep_spec=SweepSpec(
+                matrix={"lr": [0.1]},
+                fail_fast=False,
+                max_parallel=1,
+            ),
+            submission_source="web",
+            submission_context=ctx,
+        )
+        assert orch.submission_context is ctx
+
+    def test_run_cell_sync_forwards_submission_context_to_runner(
+        self,
+        isolated_db: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``_run_cell_sync`` must pass ``submission_context`` into ``from_yaml``."""
+        from srunx.rendering import SubmissionRenderContext
+
+        ctx = SubmissionRenderContext(
+            mount_name="proj",
+            mounts=(),
+            default_work_dir="/remote/proj",
+        )
+        orch = SweepOrchestrator(
+            workflow_yaml_path=_write_wf(tmp_path),
+            workflow_data={"name": "ssh_sweep", "args": {"lr": 0.1}},
+            args_override=None,
+            sweep_spec=SweepSpec(
+                matrix={"lr": [0.1]},
+                fail_fast=False,
+                max_parallel=1,
+            ),
+            submission_source="web",
+            submission_context=ctx,
+        )
+
+        captured: dict[str, Any] = {}
+
+        def fake_from_yaml(*args: Any, **kwargs: Any) -> Any:
+            captured["kwargs"] = kwargs
+
+            class _Stub:
+                def run(
+                    self_inner, *, workflow_run_id: int | None = None
+                ) -> dict[str, Any]:
+                    assert workflow_run_id is not None
+                    _drive_workflow_run(workflow_run_id, "completed")
+                    return {}
+
+            return _Stub()
+
+        from srunx import runner as runner_mod
+
+        monkeypatch.setattr(
+            runner_mod.WorkflowRunner, "from_yaml", staticmethod(fake_from_yaml)
+        )
+        orch.run()
+
+        assert "kwargs" in captured
+        assert captured["kwargs"].get("submission_context") is ctx
+
+    def test_none_submission_context_still_passes_through(
+        self,
+        isolated_db: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``submission_context=None`` (CLI default) reaches ``from_yaml`` verbatim."""
+        orch = _build_orch(
+            tmp_path,
+            matrix={"lr": [0.1]},
+            submission_source="cli",
+        )
+        assert orch.submission_context is None
+
+        captured_kwargs: list[dict[str, Any]] = []
+
+        def fake_from_yaml(*args: Any, **kwargs: Any) -> Any:
+            captured_kwargs.append(kwargs)
+
+            class _Stub:
+                def run(
+                    self_inner, *, workflow_run_id: int | None = None
+                ) -> dict[str, Any]:
+                    assert workflow_run_id is not None
+                    _drive_workflow_run(workflow_run_id, "completed")
+                    return {}
+
+            return _Stub()
+
+        from srunx import runner as runner_mod
+
+        monkeypatch.setattr(
+            runner_mod.WorkflowRunner, "from_yaml", staticmethod(fake_from_yaml)
+        )
+        orch.run()
+
+        assert captured_kwargs, "from_yaml was never called"
+        for kwargs in captured_kwargs:
+            assert kwargs.get("submission_context") is None

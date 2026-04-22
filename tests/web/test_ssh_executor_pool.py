@@ -252,6 +252,7 @@ class TestPoolConcurrency:
             *,
             workflow_name: str | None = None,
             workflow_run_id: int | None = None,
+            submission_context: object = None,
         ) -> Job:
             # Simulate the real ``SlurmSSHAdapter.run`` wrapping the work
             # inside ``self._io_lock``.

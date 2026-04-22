@@ -28,6 +28,7 @@ from srunx.utils import GPU_TRES_RE  # noqa: E402
 
 if TYPE_CHECKING:
     from srunx.models import JobStatus, RunnableJobType
+    from srunx.rendering import SubmissionRenderContext
 
 logger = get_logger(__name__)
 
@@ -666,21 +667,30 @@ class SlurmSSHAdapter:
         *,
         workflow_name: str | None = None,
         workflow_run_id: int | None = None,
+        submission_context: SubmissionRenderContext | None = None,
     ) -> RunnableJobType:
         """Submit *job* over SSH and block until it reaches a terminal status.
 
         Mirrors :meth:`srunx.client.Slurm.run` on the sweep/web path:
 
-        1. Render the SLURM script locally from the job's template
+        1. If ``submission_context`` is provided, apply mount-aware
+           :func:`normalize_job_for_submission` so absolute local
+           ``work_dir`` / ``log_dir`` paths are rewritten to the remote
+           ``mount.remote`` equivalent (and a missing ``work_dir`` falls
+           back to ``context.default_work_dir``). When
+           ``submission_context`` is ``None`` the job is rendered verbatim
+           — preserves pre-Batch-2a behaviour for callers that haven't
+           plumbed a context through yet.
+        2. Render the SLURM script locally from the job's template
            (``job.template`` → default template), using
            :func:`render_job_script` so ``Job.srun_args`` / ``Job.launch_prefix``
            fallbacks apply consistently.
-        2. Submit the rendered content via ``submit_sbatch_job`` (the SSH
+        3. Submit the rendered content via ``submit_sbatch_job`` (the SSH
            client writes it to a remote temp path before ``sbatch``).
-        3. Record the submission in the state DB (best-effort, mirrors
+        4. Record the submission in the state DB (best-effort, mirrors
            ``Slurm.submit``'s ``record_submission_from_job`` call).
-        4. Fire ``on_job_submitted`` callbacks.
-        5. Poll the remote status until terminal, then fire the matching
+        5. Fire ``on_job_submitted`` callbacks.
+        6. Poll the remote status until terminal, then fire the matching
            ``on_job_completed`` / ``on_job_failed`` / ``on_job_cancelled``
            callback and return the updated job. Raises :class:`RuntimeError`
            on terminal failure so the workflow runner's retry / failure
@@ -695,7 +705,14 @@ class SlurmSSHAdapter:
             render_job_script,
             render_shell_job_script,
         )
+        from srunx.rendering import normalize_job_for_submission
         from srunx.template import get_template_path
+
+        # --- 0. Mount-aware path normalization (no-op when context is None). ---
+        # ``normalize_job_for_submission`` returns the same object when no
+        # rewrite is needed, so the ``None`` path is cost-free and the
+        # pre-Batch-2a rendered script stays bit-identical.
+        job = normalize_job_for_submission(job, submission_context)
 
         # Resolve the template path once, honouring the Job-level override
         # if present. ``get_template_path("base")`` returns the packaged

@@ -28,6 +28,7 @@ from srunx.web.ssh_adapter import SlurmSSHAdapter, SlurmSSHAdapterSpec
 if TYPE_CHECKING:
     from srunx.callbacks import Callback
     from srunx.models import RunnableJobType
+    from srunx.rendering import SubmissionRenderContext
 
 logger = get_logger(__name__)
 
@@ -50,12 +51,19 @@ class SSHWorkflowJobExecutor:
         *,
         workflow_name: str | None = None,
         workflow_run_id: int | None = None,
+        submission_context: SubmissionRenderContext | None = None,
     ) -> RunnableJobType:
-        """Delegate to :meth:`SlurmSSHAdapter.run`."""
+        """Delegate to :meth:`SlurmSSHAdapter.run`.
+
+        ``submission_context`` is forwarded so mount-aware path
+        translation happens inside the adapter just before render (see
+        :meth:`SlurmSSHAdapter.run`).
+        """
         return self._adapter.run(
             job,
             workflow_name=workflow_name,
             workflow_run_id=workflow_run_id,
+            submission_context=submission_context,
         )
 
     def get_job_output_detailed(

@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from srunx.models import RunnableJobType
+    from srunx.rendering import SubmissionRenderContext
 
 
 class JobStatusInfo(BaseModel):
@@ -121,8 +122,17 @@ class WorkflowJobExecutorProtocol(Protocol):
         *,
         workflow_name: str | None = None,
         workflow_run_id: int | None = None,
+        submission_context: SubmissionRenderContext | None = None,
     ) -> RunnableJobType:
-        """Submit *job* to SLURM and block until it reaches a terminal status."""
+        """Submit *job* to SLURM and block until it reaches a terminal status.
+
+        ``submission_context`` carries mount / default-path metadata that
+        SSH-backed executors need to translate local ``work_dir`` / ``log_dir``
+        values into their remote equivalents before rendering the SLURM
+        script. Local executors (e.g. :class:`srunx.client.Slurm`) accept
+        the kwarg for protocol conformance but ignore it — local submission
+        does not perform mount translation.
+        """
         ...
 
     def get_job_output_detailed(

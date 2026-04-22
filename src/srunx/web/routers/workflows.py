@@ -41,6 +41,11 @@ from srunx.models import (
     ShellJob,
     Workflow,
 )
+from srunx.rendering import (
+    RenderedWorkflow,
+    SubmissionRenderContext,
+    render_workflow_for_submission,
+)
 from srunx.runner import WorkflowRunner
 from srunx.sweep import SweepSpec
 from srunx.sweep.orchestrator import SweepOrchestrator
@@ -819,84 +824,80 @@ async def _sync_mounts(
     return profile
 
 
-def _prepare_render_context(
-    yaml_path: Path,
-    workflow: Workflow,
-    name: str,
-) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
-    """Parse raw YAML for template/extra args.
+def _build_submission_context(
+    mount_name: str | None,
+    profile: Any,
+) -> SubmissionRenderContext:
+    """Construct a :class:`SubmissionRenderContext` from the Web profile + mount.
 
-    Returns (job_template_map, job_extra_args).
+    - ``mount_name`` is the selected ``?mount=<name>`` query parameter.
+      When ``None``, no mount translation is performed.
+    - ``profile`` is the configured :class:`ServerProfile` (or ``None``
+      when no SSH profile is set up). Its ``mounts`` list is frozen into
+      a tuple so the context stays hashable / immutable.
+    - ``default_work_dir`` is the selected mount's remote path (so jobs
+      whose ``work_dir`` is empty inherit the mount root).
     """
-    import yaml as _yaml
-
-    raw_data = _yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-    raw_jobs = raw_data.get("jobs", [])
-
-    job_template_map: dict[str, str] = {}
-    job_extra_args: dict[str, dict[str, str]] = {}
-    for rj in raw_jobs:
-        rj_name = rj.get("name", "")
-        if rj.get("template"):
-            job_template_map[rj_name] = rj["template"]
-        extras: dict[str, str] = {}
-        if rj.get("srun_args"):
-            extras["srun_args"] = rj["srun_args"]
-        if rj.get("launch_prefix"):
-            extras["launch_prefix"] = rj["launch_prefix"]
-        if extras:
-            job_extra_args[rj_name] = extras
-
-    return job_template_map, job_extra_args
+    mounts: tuple[Any, ...] = tuple(profile.mounts) if profile is not None else ()
+    default_work_dir: str | None = None
+    if mount_name is not None and profile is not None:
+        for m in profile.mounts:
+            if m.name == mount_name:
+                default_work_dir = m.remote
+                break
+    return SubmissionRenderContext(
+        mount_name=mount_name,
+        mounts=mounts,
+        default_work_dir=default_work_dir,
+    )
 
 
-def _render_scripts(
+def _render_workflow(
+    yaml_path: Path,
+    *,
+    submission_context: SubmissionRenderContext,
+    args_override: dict[str, Any] | None = None,
+    single_job: str | None = None,
+) -> RenderedWorkflow:
+    """Thin wrapper around :func:`render_workflow_for_submission`.
+
+    The previous ``_prepare_render_context`` / ``_render_scripts`` pair
+    re-implemented a mount-aware render local to the Web router; this
+    delegates to the canonical helper so Web non-sweep, Web sweep, and
+    MCP all share identical semantics.
+    """
+    return render_workflow_for_submission(
+        yaml_path,
+        args_override=args_override,
+        context=submission_context,
+        single_job=single_job,
+    )
+
+
+def _enforce_shell_script_roots(
     workflow: Workflow,
     mount: str,
     profile: Any,
-    job_template_map: dict[str, str],
-    job_extra_args: dict[str, dict[str, str]],
-) -> dict[str, str]:
-    """Render SLURM scripts for all jobs in the workflow."""
-    from srunx.models import render_job_script
-    from srunx.template import TEMPLATES
+) -> None:
+    """Guard that every :class:`ShellJob`'s script_path stays under allowed roots.
 
-    templates_dir = Path(__file__).resolve().parent.parent.parent / "templates"
-    scripts: dict[str, str] = {}
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        for job in workflow.jobs:
-            if isinstance(job, Job):
-                tpl_name = job_template_map.get(job.name, "base")
-                tpl_info = TEMPLATES.get(tpl_name)
-                if tpl_info:
-                    template_path = templates_dir / tpl_info["path"]
-                else:
-                    template_path = templates_dir / "base.slurm.jinja"
-
-                extras = job_extra_args.get(job.name, {})
-                rendered_path = render_job_script(
-                    template_path,
-                    job,
-                    output_dir=tmpdir,
-                    extra_srun_args=extras.get("srun_args"),
-                    extra_launch_prefix=extras.get("launch_prefix"),
+    The canonical render helper reads :class:`ShellJob` scripts verbatim
+    (``render_shell_job_script`` uses ``script_path`` as the template); we
+    still need the directory-traversal check that the old ``_render_scripts``
+    performed before the file was opened. Called before render so bogus
+    paths surface as 403 with no partial render side effects.
+    """
+    allowed_roots = [_workflow_dir(mount).resolve()]
+    if profile:
+        allowed_roots.extend(Path(m.local).resolve() for m in profile.mounts)
+    for job in workflow.jobs:
+        if isinstance(job, ShellJob):
+            script_path = Path(job.script_path).resolve()
+            if not any(script_path.is_relative_to(root) for root in allowed_roots):
+                raise HTTPException(
+                    403,
+                    f"Script path '{job.script_path}' is outside allowed directories",
                 )
-                scripts[job.name] = Path(rendered_path).read_text()
-            else:
-                script_path = Path(job.script_path).resolve()  # type: ignore[union-attr]
-                allowed_roots = [_workflow_dir(mount).resolve()]
-                if profile:
-                    allowed_roots.extend(
-                        Path(m.local).resolve() for m in profile.mounts
-                    )
-                if not any(script_path.is_relative_to(root) for root in allowed_roots):
-                    raise HTTPException(
-                        403,
-                        f"Script path '{job.script_path}' is outside allowed directories",  # type: ignore[union-attr]
-                    )
-                scripts[job.name] = script_path.read_text()
-    return scripts
 
 
 async def _submit_jobs_bfs(
@@ -1113,6 +1114,7 @@ async def _dispatch_sweep(
     body: WorkflowRunRequest,
     request: Request,
     adapter: SlurmSSHAdapter,
+    mount: str | None = None,
 ) -> dict[str, Any]:
     """Materialize synchronously + spawn the orchestrator as a background task.
 
@@ -1169,6 +1171,12 @@ async def _dispatch_sweep(
         size=pool_size,
     )
 
+    # Hand the mount-aware render context through to the orchestrator so
+    # every sweep cell's ``WorkflowRunner`` sees the same ``work_dir`` /
+    # ``log_dir`` translation as the non-sweep path.
+    profile = await anyio.to_thread.run_sync(_get_current_profile)
+    submission_context = _build_submission_context(mount, profile)
+
     orchestrator = SweepOrchestrator(
         workflow_yaml_path=yaml_path,
         workflow_data={"name": name, **workflow_data},
@@ -1178,6 +1186,7 @@ async def _dispatch_sweep(
         endpoint_id=endpoint_id,
         preset=body.preset,
         executor_factory=pool.lease,
+        submission_context=submission_context,
     )
 
     try:
@@ -1299,6 +1308,7 @@ async def run_workflow(
             body=run_opts,
             request=request,
             adapter=adapter,
+            mount=mount,
         )
 
     # Load and optionally filter workflow
@@ -1359,29 +1369,75 @@ async def run_workflow(
         await anyio.to_thread.run_sync(functools.partial(_fail, reason))
         raise
 
-    # Phase 2: Prepare render context and render scripts
-    job_template_map, job_extra_args = await anyio.to_thread.run_sync(
-        lambda: _prepare_render_context(yaml_path, workflow, name)
+    # Phase 2: Render scripts via the canonical helper. Mount translation
+    # and template resolution live in :mod:`srunx.rendering` so Web
+    # non-sweep, Web sweep, and MCP share identical semantics.
+    #
+    # The shell script-root check runs against the set the helper will
+    # actually read. ``single_job`` restricts the helper to that one
+    # target; ``from_job`` / ``to_job`` are post-render filters so the
+    # helper reads every job in the YAML. Checking the full
+    # ``runner.workflow`` in those cases matches the helper's read set.
+    submission_context = _build_submission_context(mount, profile)
+    shell_check_workflow = (
+        Workflow(
+            name=runner.workflow.name,
+            jobs=[j for j in runner.workflow.jobs if j.name == run_opts.single_job],
+        )
+        if run_opts.single_job
+        else runner.workflow
     )
-
     try:
-        scripts = await anyio.to_thread.run_sync(
-            lambda: _render_scripts(
-                workflow,
-                mount,
-                profile,
-                job_template_map,
-                job_extra_args,
+        await anyio.to_thread.run_sync(
+            lambda: _enforce_shell_script_roots(shell_check_workflow, mount, profile)
+        )
+        rendered = await anyio.to_thread.run_sync(
+            lambda: _render_workflow(
+                yaml_path,
+                submission_context=submission_context,
+                args_override=run_opts.args_override or None,
+                single_job=run_opts.single_job,
             )
         )
+    except HTTPException:
+        # 403 shell-script-root violation: propagate without _fail side
+        # effects (no jobs queued, no cluster state to roll back).
+        raise
     except Exception as exc:
         reason = f"Script rendering failed: {exc}"
         await anyio.to_thread.run_sync(functools.partial(_fail, reason))
         raise HTTPException(status_code=500, detail=reason) from exc
 
+    # When ``from_job`` / ``to_job`` are set the canonical helper doesn't
+    # prune; apply the existing filter over the rendered result. The
+    # ``single_job`` case is already handled inside the helper.
+    if run_opts.from_job or run_opts.to_job:
+        filtered_names = {
+            j.name
+            for j in _filter_workflow_jobs(
+                rendered.workflow,
+                run_opts.from_job,
+                run_opts.to_job,
+                None,
+            )
+        }
+        rendered_jobs = tuple(
+            rj for rj in rendered.jobs if rj.job.name in filtered_names
+        )
+    else:
+        rendered_jobs = rendered.jobs
+
+    # The rendered workflow drives everything downstream so ``work_dir`` /
+    # ``log_dir`` translations stay visible to the submit + dry-run paths.
+    submission_workflow = Workflow(
+        name=rendered.workflow.name,
+        jobs=[rj.job for rj in rendered_jobs],
+    )
+    scripts: dict[str, str] = {rj.job.name: rj.script_text for rj in rendered_jobs}
+
     # Phase 3: Dry run early return
     if run_opts.dry_run:
-        job_names_in_wf = {job.name for job in workflow.jobs}
+        job_names_in_wf = {job.name for job in submission_workflow.jobs}
         return {
             "dry_run": True,
             "jobs": [
@@ -1397,16 +1453,16 @@ async def run_workflow(
                     if isinstance(job, Job)
                     else {},
                 }
-                for job in workflow.jobs
+                for job in submission_workflow.jobs
             ],
-            "execution_order": [job.name for job in workflow.jobs],
+            "execution_order": [job.name for job in submission_workflow.jobs],
         }
 
     # Phase 4: Submit each job + persist + link to workflow_run + seed transition
     assert run_id is not None
     try:
         await _submit_jobs_bfs(
-            workflow, scripts, run_opts, adapter, conn=conn, run_id=run_id
+            submission_workflow, scripts, run_opts, adapter, conn=conn, run_id=run_id
         )
     except HTTPException as exc:
         reason = (

@@ -33,9 +33,17 @@ class _FakeExecutor:
         *,
         workflow_name: str | None = None,
         workflow_run_id: int | None = None,
+        submission_context: Any = None,
     ) -> Any:
         self.run_calls.append(
-            (job, {"workflow_name": workflow_name, "workflow_run_id": workflow_run_id})
+            (
+                job,
+                {
+                    "workflow_name": workflow_name,
+                    "workflow_run_id": workflow_run_id,
+                    "submission_context": submission_context,
+                },
+            )
         )
         job.status = JobStatus.COMPLETED
         return job
@@ -134,7 +142,11 @@ def test_custom_factory_is_leased_and_invoked(
     assert len(fake.run_calls) == 1
     submitted_job, kwargs = fake.run_calls[0]
     assert submitted_job is job
-    assert kwargs == {"workflow_name": "test", "workflow_run_id": 777}
+    assert kwargs == {
+        "workflow_name": "test",
+        "workflow_run_id": 777,
+        "submission_context": None,
+    }
 
     # Context manager lifecycle: every lease must be paired with a release.
     assert enter_count == exit_count == 1
@@ -162,6 +174,7 @@ def test_custom_factory_is_used_for_log_retrieval_on_failure(
         *,
         workflow_name: str | None = None,
         workflow_run_id: int | None = None,
+        submission_context: Any = None,
     ) -> Any:
         job.job_id = 5555
         job.status = JobStatus.FAILED
@@ -218,3 +231,99 @@ jobs:
     runner = WorkflowRunner.from_yaml(yaml_path, executor_factory=factory)
 
     assert runner._executor_factory is factory
+
+
+# ---------------------------------------------------------------------------
+# Batch 2a: submission_context passthrough
+# ---------------------------------------------------------------------------
+
+
+@patch("srunx.runner._transition_workflow_run")
+@patch("srunx.db.cli_helpers.create_cli_workflow_run")
+@patch("srunx.runner.Slurm")
+def test_submission_context_is_forwarded_to_executor_run(
+    _mock_slurm_class: Mock,
+    mock_create: Mock,
+    _mock_transition: Mock,
+) -> None:
+    """``WorkflowRunner(submission_context=ctx)`` → kwarg on ``executor.run``.
+
+    Regression anchor for Batch 2a: the runner must forward its
+    stored ``submission_context`` verbatim to every ``executor.run``
+    invocation, so SSH-backed executors can apply mount-aware path
+    translation before rendering.
+    """
+    from srunx.rendering import SubmissionRenderContext
+
+    mock_create.return_value = 999
+    ctx = SubmissionRenderContext(mount_name="ml", default_work_dir="/home/user/ml")
+
+    fake = _FakeExecutor()
+
+    @contextmanager
+    def factory():  # noqa: ANN202
+        yield fake
+
+    workflow, job = _make_workflow()
+    runner = WorkflowRunner(
+        workflow,
+        executor_factory=factory,
+        submission_context=ctx,
+    )
+
+    runner.run()
+
+    assert len(fake.run_calls) == 1
+    _submitted, kwargs = fake.run_calls[0]
+    assert kwargs["submission_context"] is ctx
+
+
+@patch("srunx.runner._transition_workflow_run")
+@patch("srunx.db.cli_helpers.create_cli_workflow_run")
+@patch("srunx.runner.Slurm")
+def test_default_submission_context_is_none(
+    _mock_slurm_class: Mock,
+    mock_create: Mock,
+    _mock_transition: Mock,
+) -> None:
+    """Without an explicit ``submission_context`` the kwarg is ``None``.
+
+    Local CLI path must not spontaneously synthesize a context — keeps
+    the pre-Batch-2a rendered script bit-identical.
+    """
+    mock_create.return_value = 12
+    fake = _FakeExecutor()
+
+    @contextmanager
+    def factory():  # noqa: ANN202
+        yield fake
+
+    workflow, _job = _make_workflow()
+    runner = WorkflowRunner(workflow, executor_factory=factory)
+
+    assert runner._submission_context is None
+    runner.run()
+
+    assert len(fake.run_calls) == 1
+    _submitted, kwargs = fake.run_calls[0]
+    assert kwargs["submission_context"] is None
+
+
+def test_from_yaml_passes_submission_context_through(tmp_path: Any) -> None:
+    """``from_yaml(submission_context=ctx)`` stores the context on the runner."""
+    from srunx.rendering import SubmissionRenderContext
+
+    yaml_path = tmp_path / "wf.yaml"
+    yaml_path.write_text(
+        """
+name: passthrough_ctx
+jobs:
+  - name: only
+    command: ["echo", "hi"]
+""".strip()
+    )
+
+    ctx = SubmissionRenderContext(mount_name="m", default_work_dir="/remote")
+    runner = WorkflowRunner.from_yaml(yaml_path, submission_context=ctx)
+
+    assert runner._submission_context is ctx

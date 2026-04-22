@@ -71,6 +71,30 @@ class TestMCPArgsOverride:
         call = from_yaml.call_args
         assert call.kwargs["args_override"] == {"lr": 0.5}
 
+    def test_submission_context_none_reaches_runner(
+        self, tmp_path: Path, isolated_db: Path
+    ) -> None:
+        """MCP non-sweep path must forward ``submission_context=None``.
+
+        Phase 1 MCP runs always pin the canonical render context to
+        ``None`` (local SLURM, no mount translation). The kwarg is passed
+        explicitly so tests can pin the contract between MCP and the
+        canonical render entry.
+        """
+        yaml_path = _write_workflow(tmp_path)
+        with patch("srunx.runner.WorkflowRunner.from_yaml") as from_yaml:
+            mock_runner = MagicMock()
+            mock_runner.run.return_value = {}
+            mock_runner.workflow.name = "mcp_wf"
+            from_yaml.return_value = mock_runner
+
+            result = run_workflow(str(yaml_path))
+
+        assert result["success"] is True
+        call = from_yaml.call_args
+        assert "submission_context" in call.kwargs
+        assert call.kwargs["submission_context"] is None
+
     def test_python_prefix_rejected_in_args(
         self, tmp_path: Path, isolated_db: Path
     ) -> None:
@@ -104,6 +128,9 @@ class TestMCPSweep:
         assert result["cell_count"] == 3
         kwargs = orch_cls.call_args.kwargs
         assert kwargs["submission_source"] == "mcp"
+        # Phase 1: MCP sweep cells always run with no mount translation.
+        assert "submission_context" in kwargs
+        assert kwargs["submission_context"] is None
 
     def test_python_prefix_rejected_in_sweep_matrix(
         self, tmp_path: Path, isolated_db: Path
