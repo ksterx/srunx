@@ -767,9 +767,14 @@ class SlurmSSHAdapter:
         from srunx.template import get_template_path
 
         # --- 0. Mount-aware path normalization (no-op when context is None). ---
-        # ``normalize_job_for_submission`` returns the same object when no
-        # rewrite is needed, so the ``None`` path is cost-free and the
-        # pre-Batch-2a rendered script stays bit-identical.
+        # ``normalize_job_for_submission`` returns a ``model_copy`` when any
+        # path needs rewriting, so the normalized copy is only safe to use
+        # for rendering/submission; we must propagate the terminal status
+        # and ``job_id`` back to the caller's original instance at the end
+        # of :meth:`run`, otherwise ``WorkflowRunner``'s ``all_jobs`` check
+        # sees the untouched PENDING status and declares the cell
+        # incomplete even when SLURM reported COMPLETED.
+        original_job = job
         job = normalize_job_for_submission(job, submission_context)
 
         # Resolve the template path once, honouring the Job-level override
@@ -867,10 +872,17 @@ class SlurmSSHAdapter:
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"Terminal callback failed for job {job.name}: {exc}")
 
+        # Propagate terminal status + job_id back to the caller's
+        # original instance so the ``WorkflowRunner.all_jobs`` check
+        # observes them. See the rationale above step 0.
+        if original_job is not job:
+            original_job.status = job.status
+            original_job.job_id = job.job_id
+
         if job.status in {JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.TIMEOUT}:
             raise RuntimeError(f"Job '{job.name}' ended with status {job.status.value}")
 
-        return job
+        return original_job
 
     def _monitor_until_terminal(
         self,

@@ -568,6 +568,54 @@ class TestSSHAdapterRunSubmissionContext:
 
         assert "#SBATCH --chdir=/mnt/injected" in captured["content"]  # type: ignore[operator]
 
+    def test_original_job_gets_terminal_status_when_context_forces_copy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: ``WorkflowRunner.all_jobs`` holds the caller's ``Job``;
+        when ``normalize_job_for_submission`` returns a ``model_copy``
+        the terminal status must still propagate back to the caller's
+        instance so the runner doesn't declare the cell "incomplete"
+        even after SLURM reports COMPLETED.
+        """
+        from srunx.rendering import SubmissionRenderContext
+
+        ctx = SubmissionRenderContext(default_work_dir="/mnt/forced_copy")
+
+        adapter = _bare_adapter()
+        original = Job(
+            name="propagate",
+            command=["echo", "ok"],
+            work_dir="",  # triggers normalize → model_copy
+            log_dir="",
+        )
+
+        def fake_submit(script_content: str, *, job_name=None, dependency=None):
+            sj = MagicMock()
+            sj.job_id = "4242"
+            sj.name = job_name
+            return sj
+
+        adapter._client.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
+        monkeypatch.setattr(
+            adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_job_submission",
+            staticmethod(lambda *a, **k: None),
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_completion_safe",
+            staticmethod(lambda *a, **k: None),
+        )
+
+        returned = adapter.run(original, submission_context=ctx)
+
+        assert returned is original
+        assert original.status == JobStatus.COMPLETED
+        assert original.job_id == 4242
+
 
 class TestAdapterFromSpec:
     def test_from_spec_creates_disconnected_clone(self) -> None:
