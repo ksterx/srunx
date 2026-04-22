@@ -47,6 +47,7 @@ from srunx.rendering import (
     render_workflow_for_submission,
 )
 from srunx.runner import WorkflowRunner
+from srunx.security import find_python_prefix
 from srunx.sweep import SweepSpec
 from srunx.sweep.orchestrator import SweepOrchestrator
 from srunx.sweep.state_service import WorkflowRunStateService
@@ -263,16 +264,34 @@ def _find_yaml(name: str, mount_name: str) -> Path:
     raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found")
 
 
-def _reject_python_args(yaml_content: str) -> None:
-    """Reject YAML whose args section contains python: values (case-insensitive).
+def _reject_python_prefix_web(payload: Any, *, source: str) -> None:
+    """Reject ``python:``-prefixed strings in Web API payloads.
 
-    Parses the YAML first so legitimate uses of "python:" in commands or
-    comments are not blocked.
+    Centralizes the guard applied to both YAML args (pre-parsed by the
+    caller) and JSON ``args_override`` / ``sweep.matrix`` payloads.
+    Raises ``HTTPException(422)`` on the first violation.
+    """
+    violation = find_python_prefix(payload, source=source)
+    if violation is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{violation.source} at '{violation.path}' contains 'python:' "
+                "prefix which is not allowed via web for security reasons"
+            ),
+        )
+
+
+def _reject_python_prefix_in_yaml_args(yaml_content: str) -> None:
+    """Parse YAML text and apply the ``python:`` guard to its ``args`` section.
+
+    Uses ``yaml.safe_load`` so legitimate uses of ``python:`` in commands
+    or comments are not blocked. Malformed YAML is left to downstream
+    validation to report.
     """
     try:
         data = yaml.safe_load(yaml_content)
     except Exception:
-        # Let downstream validation handle malformed YAML
         return
 
     if not isinstance(data, dict):
@@ -282,40 +301,7 @@ def _reject_python_args(yaml_content: str) -> None:
     if not isinstance(args, dict):
         return
 
-    for key, val in args.items():
-        if isinstance(val, str) and "python:" in val.lower():
-            raise HTTPException(
-                status_code=422,
-                detail=f"Arg '{key}' contains 'python:' prefix which is not allowed via web for security reasons",
-            )
-
-
-def _reject_python_in_mapping(mapping: dict[str, Any], *, source: str) -> None:
-    """Reject ``python:`` values in structured request payloads.
-
-    Used by the Web API sweep path where ``args_override`` and
-    ``sweep.matrix`` come in as JSON (not YAML text). The YAML path
-    uses :func:`_reject_python_args`.
-    """
-    for key, val in mapping.items():
-        if isinstance(val, str) and "python:" in val.lower():
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"{source} key '{key}' contains 'python:' which is not "
-                    "allowed via web for security reasons"
-                ),
-            )
-        if isinstance(val, list):
-            for i, element in enumerate(val):
-                if isinstance(element, str) and "python:" in element.lower():
-                    raise HTTPException(
-                        status_code=422,
-                        detail=(
-                            f"{source} key '{key}' contains 'python:' at index "
-                            f"{i} which is not allowed via web for security reasons"
-                        ),
-                    )
+    _reject_python_prefix_web(args, source="args")
 
 
 def _serialize_workflow(
@@ -568,7 +554,7 @@ async def validate_workflow(body: dict[str, str]) -> dict[str, Any]:
     if not yaml_content:
         return {"valid": False, "errors": ["Empty YAML content"]}
 
-    _reject_python_args(yaml_content)
+    _reject_python_prefix_in_yaml_args(yaml_content)
 
     with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
         f.write(yaml_content)
@@ -599,7 +585,7 @@ async def upload_workflow(body: dict[str, str]) -> dict[str, Any]:
             status_code=422, detail="'yaml', 'filename', and 'mount' are required"
         )
 
-    _reject_python_args(yaml_content)
+    _reject_python_prefix_in_yaml_args(yaml_content)
 
     if len(yaml_content) > 1_000_000:
         raise HTTPException(status_code=413, detail="YAML content exceeds 1MB limit")
@@ -657,13 +643,8 @@ async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
                     detail=f"Workflow '{name}' already exists",
                 )
 
-    # Reject python: args from web for security (case-insensitive)
-    for val in body.args.values():
-        if isinstance(val, str) and "python:" in val.lower():
-            raise HTTPException(
-                status_code=422,
-                detail="Args with 'python:' values are not allowed via web for security reasons",
-            )
+    # Reject python: args from web for security (shared guard).
+    _reject_python_prefix_web(body.args, source="args")
 
     # Build the raw dict list from the request for validation + serialization
     jobs_raw: list[dict[str, Any]] = [
@@ -1315,9 +1296,9 @@ async def run_workflow(
     # R7: sanitize structured sweep / args_override payloads. YAML-level
     # guard still runs on upload; this catches requests that bypass it.
     if run_opts.args_override:
-        _reject_python_in_mapping(run_opts.args_override, source="args_override")
+        _reject_python_prefix_web(run_opts.args_override, source="args_override")
     if run_opts.sweep is not None:
-        _reject_python_in_mapping(run_opts.sweep.matrix, source="sweep.matrix")
+        _reject_python_prefix_web(run_opts.sweep.matrix, source="sweep.matrix")
 
     yaml_path = _find_yaml(name, mount)
 
