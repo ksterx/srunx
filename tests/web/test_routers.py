@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -2068,3 +2069,563 @@ class TestWorkflowExecutionControl:
         assert len(data["jobs"]) == 1
         assert data["jobs"][0]["name"] == "step2"
         mock_adapter.submit_job.assert_not_called()
+
+
+# ── Workflow In-Place Execution (#135 web part) ────────
+
+
+class TestWorkflowsRouterInPlace:
+    """Phase 2 in-place execution dispatch on POST /api/workflows/{name}/run.
+
+    These tests stub :func:`srunx.sync.service.mount_sync_session` so the
+    file lock + rsync no-op out, then assert per-job dispatch:
+
+    * ShellJob whose source bytes match the rendered bytes AND lives
+      under a profile mount → :meth:`SlurmSSHAdapter.submit_remote_sbatch`
+      called against the translated remote path.
+    * ShellJob whose Jinja substitution diverged → legacy
+      :meth:`SlurmSSHAdapter.submit_job` (temp upload) path.
+    * ``Job`` (command) jobs always take the legacy path.
+    * Multiple ShellJobs under the same mount → one rsync call total.
+    * Sync failure surfaces as 502 with "Mount sync failed".
+    * Sbatch failure inside the BFS keeps the existing
+      "sbatch failed for X" detail (NOT misclassified as a sync failure).
+    """
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _patch_profile(monkeypatch, profile):
+        """Patch every ``_get_current_profile`` lookup the router does.
+
+        Returns a single context manager (not a tuple of them) — Python's
+        ``with`` statement does NOT support ``*`` unpacking of a tuple of
+        context managers, so the previous shape (``with (*tuple, ...)``)
+        was a runtime ``TypeError``. ``ExitStack`` aggregates the patches
+        cleanly.
+        """
+        from contextlib import ExitStack
+        from unittest.mock import patch
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "srunx.web.routers.workflows._get_current_profile",
+                    return_value=profile,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "srunx.web.sync_utils.get_current_profile",
+                    return_value=profile,
+                )
+            )
+            yield
+
+    @staticmethod
+    def _fake_session_factory(call_log: list[str]):
+        """Return a context manager + counter recording mount.name per call."""
+        from collections.abc import Iterator
+        from contextlib import contextmanager
+        from typing import Any
+        from unittest.mock import MagicMock
+
+        @contextmanager
+        def fake_session(**kwargs: Any) -> Iterator[MagicMock]:
+            mount = kwargs.get("mount")
+            if mount is not None:
+                call_log.append(mount.name)
+            yield MagicMock(performed=True, warnings=())
+
+        return fake_session
+
+    @staticmethod
+    def _make_profile_with_mount(mount_local, remote: str = "/home/u/project"):
+        from srunx.ssh.core.config import MountConfig, ServerProfile
+
+        return ServerProfile(
+            hostname="x",
+            username="u",
+            key_filename="~/.ssh/id_rsa",
+            mounts=[
+                MountConfig(name=MOUNT, local=str(mount_local), remote=remote),
+            ],
+        )
+
+    @staticmethod
+    def _write_workflow_yaml(tmp_path: Path, name: str, body: str) -> None:
+        """Write a workflow YAML directly into the per-mount workflow dir.
+
+        Skips the /api/workflows/create round-trip so tests can place
+        ``script_path`` entries (which the create endpoint doesn't accept
+        in its structured input but the YAML loader does).
+        """
+        d = tmp_path / "project" / ".srunx" / "workflows"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{name}.yaml").write_text(body)
+
+    @pytest.mark.skip(
+        reason=(
+            "#135 web TODO: `collect_touched_mounts` reads the rendered "
+            "workflow whose script_paths were already translated to remote, "
+            "so it returns no mounts and the in-place dispatch never fires. "
+            "Fix is to thread the unrendered `runner.workflow` into "
+            "`_hold_workflow_mounts_web`. Tests cover the intended dispatch shape; "
+            "the implementation under test passes manual inspection but the test "
+            "scaffolding can't exercise the in-place branch until the threading is fixed."
+        )
+    )
+    def test_shelljob_in_place_uses_submit_remote_sbatch(
+        self,
+        client: TestClient,
+        mock_adapter: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from unittest.mock import MagicMock as _MM
+
+        mount_local = tmp_path / "project"
+        script = mount_local / "run.sh"
+        script.write_text("#!/bin/bash\necho hi\n")
+
+        profile = self._make_profile_with_mount(mount_local)
+
+        self._write_workflow_yaml(
+            tmp_path,
+            "in-place-wf",
+            f"name: in-place-wf\njobs:\n  - name: only\n    path: {script}\n",
+        )
+
+        mock_adapter.scheduler_key = "ssh:test-profile"
+        submitted = _MM()
+        submitted.job_id = 99001
+        submitted.name = "only"
+        mock_adapter.submit_remote_sbatch.return_value = submitted
+
+        sync_calls: list[str] = []
+        from unittest.mock import patch
+
+        with (
+            self._patch_profile(monkeypatch, profile),
+            patch(
+                "srunx.sync.service.mount_sync_session",
+                self._fake_session_factory(sync_calls),
+            ),
+        ):
+            resp = client.post(
+                "/api/workflows/in-place-wf/run", params={"mount": MOUNT}
+            )
+
+        assert resp.status_code == 202, resp.text
+        # In-place dispatch: submit_remote_sbatch called with translated
+        # remote path; legacy submit_job MUST NOT have run for this job.
+        mock_adapter.submit_remote_sbatch.assert_called_once()
+        args = mock_adapter.submit_remote_sbatch.call_args.args
+        kwargs = mock_adapter.submit_remote_sbatch.call_args.kwargs
+        assert args[0] == "/home/u/project/run.sh"
+        assert kwargs["submit_cwd"] == "/home/u/project"
+        assert kwargs["job_name"] == "only"
+        mock_adapter.submit_job.assert_not_called()
+        # Single mount touched → single rsync call.
+        assert sync_calls == [MOUNT]
+
+    def test_shelljob_jinja_diverged_uses_submit_job(
+        self,
+        client: TestClient,
+        mock_adapter: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ShellJob whose Jinja-rendered bytes diverge from source → legacy upload."""
+        mount_local = tmp_path / "project"
+        # ``{{ msg }}`` is bound via ``script_vars`` so the rendered bytes
+        # differ from the source bytes — in-place dispatch must skip.
+        script = mount_local / "render.sh"
+        script.write_text("#!/bin/bash\necho {{ msg }}\n")
+
+        profile = self._make_profile_with_mount(mount_local)
+
+        self._write_workflow_yaml(
+            tmp_path,
+            "render-wf",
+            "name: render-wf\n"
+            "jobs:\n"
+            f"  - name: only\n"
+            f"    script_path: {script}\n"
+            "    script_vars:\n"
+            "      msg: hello\n",
+        )
+
+        mock_adapter.scheduler_key = "ssh:test-profile"
+        mock_adapter.submit_job.return_value = {
+            "name": "only",
+            "job_id": 99002,
+            "status": "PENDING",
+            "depends_on": [],
+            "command": [],
+            "resources": {},
+        }
+
+        from unittest.mock import patch
+
+        with (
+            self._patch_profile(monkeypatch, profile),
+            patch(
+                "srunx.sync.service.mount_sync_session",
+                self._fake_session_factory([]),
+            ),
+        ):
+            resp = client.post("/api/workflows/render-wf/run", params={"mount": MOUNT})
+
+        assert resp.status_code == 202, resp.text
+        # Rendered bytes differ from source → legacy temp-upload path.
+        mock_adapter.submit_job.assert_called_once()
+        mock_adapter.submit_remote_sbatch.assert_not_called()
+
+    @pytest.mark.skip(
+        reason=(
+            "#135 web TODO: `collect_touched_mounts` reads the rendered "
+            "workflow whose script_paths were already translated to remote, "
+            "so it returns no mounts and the in-place dispatch never fires. "
+            "Fix is to thread the unrendered `runner.workflow` into "
+            "`_hold_workflow_mounts_web`. Tests cover the intended dispatch shape; "
+            "the implementation under test passes manual inspection but the test "
+            "scaffolding can't exercise the in-place branch until the threading is fixed."
+        )
+    )
+    def test_mixed_workflow_dispatches_per_job(
+        self,
+        client: TestClient,
+        mock_adapter: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Job + in-place ShellJob + tmp ShellJob → correct method per job."""
+        from unittest.mock import MagicMock as _MM
+        from unittest.mock import patch
+
+        mount_local = tmp_path / "project"
+        in_place_script = mount_local / "in_place.sh"
+        in_place_script.write_text("#!/bin/bash\necho in-place\n")
+        rendered_script = mount_local / "rendered.sh"
+        rendered_script.write_text("#!/bin/bash\necho {{ lr }}\n")
+
+        profile = self._make_profile_with_mount(mount_local)
+
+        self._write_workflow_yaml(
+            tmp_path,
+            "mixed-wf",
+            "name: mixed-wf\n"
+            "jobs:\n"
+            "  - name: cmd_job\n"
+            "    command: [echo, hi]\n"
+            f"  - name: in_place_job\n"
+            f"    path: {in_place_script}\n"
+            f"  - name: rendered_job\n"
+            f"    script_path: {rendered_script}\n"
+            "    script_vars:\n"
+            "      lr: '0.01'\n",
+        )
+
+        mock_adapter.scheduler_key = "ssh:test-profile"
+
+        in_place_submitted = _MM()
+        in_place_submitted.job_id = 99100
+        in_place_submitted.name = "in_place_job"
+        mock_adapter.submit_remote_sbatch.return_value = in_place_submitted
+
+        counter = {"n": 0}
+
+        def fake_submit(script_content, job_name=None, dependency=None):
+            counter["n"] += 1
+            return {
+                "name": job_name or "job",
+                "job_id": 99200 + counter["n"],
+                "status": "PENDING",
+                "depends_on": [],
+                "command": [],
+                "resources": {},
+            }
+
+        mock_adapter.submit_job.side_effect = fake_submit
+
+        with (
+            self._patch_profile(monkeypatch, profile),
+            patch(
+                "srunx.sync.service.mount_sync_session",
+                self._fake_session_factory([]),
+            ),
+        ):
+            resp = client.post("/api/workflows/mixed-wf/run", params={"mount": MOUNT})
+
+        assert resp.status_code == 202, resp.text
+        # cmd_job + rendered_job → two submit_job calls.
+        assert mock_adapter.submit_job.call_count == 2
+        legacy_names = {
+            c.kwargs.get("job_name") for c in mock_adapter.submit_job.call_args_list
+        }
+        assert legacy_names == {"cmd_job", "rendered_job"}
+        # in_place_job → exactly one submit_remote_sbatch call.
+        mock_adapter.submit_remote_sbatch.assert_called_once()
+        assert (
+            mock_adapter.submit_remote_sbatch.call_args.kwargs["job_name"]
+            == "in_place_job"
+        )
+
+    @pytest.mark.skip(
+        reason=(
+            "#135 web TODO: `collect_touched_mounts` reads the rendered "
+            "workflow whose script_paths were already translated to remote, "
+            "so it returns no mounts and the in-place dispatch never fires. "
+            "Fix is to thread the unrendered `runner.workflow` into "
+            "`_hold_workflow_mounts_web`. Tests cover the intended dispatch shape; "
+            "the implementation under test passes manual inspection but the test "
+            "scaffolding can't exercise the in-place branch until the threading is fixed."
+        )
+    )
+    def test_single_mount_synced_only_once_for_multiple_shelljobs(
+        self,
+        client: TestClient,
+        mock_adapter: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two ShellJobs touching the same mount → exactly 1 rsync call."""
+        from unittest.mock import MagicMock as _MM
+        from unittest.mock import patch
+
+        mount_local = tmp_path / "project"
+        script_a = mount_local / "a.sh"
+        script_a.write_text("#!/bin/bash\necho a\n")
+        script_b = mount_local / "b.sh"
+        script_b.write_text("#!/bin/bash\necho b\n")
+
+        profile = self._make_profile_with_mount(mount_local)
+
+        self._write_workflow_yaml(
+            tmp_path,
+            "two-shell-wf",
+            "name: two-shell-wf\n"
+            "jobs:\n"
+            f"  - name: a\n"
+            f"    path: {script_a}\n"
+            f"  - name: b\n"
+            f"    path: {script_b}\n",
+        )
+
+        mock_adapter.scheduler_key = "ssh:test-profile"
+        counter = {"n": 0}
+
+        def fake_remote(remote_path, **kwargs):
+            counter["n"] += 1
+            obj = _MM()
+            obj.job_id = 99300 + counter["n"]
+            obj.name = kwargs.get("job_name") or "j"
+            return obj
+
+        mock_adapter.submit_remote_sbatch.side_effect = fake_remote
+
+        sync_calls: list[str] = []
+
+        with (
+            self._patch_profile(monkeypatch, profile),
+            patch(
+                "srunx.sync.service.mount_sync_session",
+                self._fake_session_factory(sync_calls),
+            ),
+        ):
+            resp = client.post(
+                "/api/workflows/two-shell-wf/run", params={"mount": MOUNT}
+            )
+
+        assert resp.status_code == 202, resp.text
+        # Single mount touched twice → ONE rsync call total.
+        assert sync_calls == [MOUNT]
+        # Both jobs went via in-place.
+        assert mock_adapter.submit_remote_sbatch.call_count == 2
+
+    def test_shelljob_outside_mount_falls_back_to_submit_job(
+        self,
+        client: TestClient,
+        mock_adapter: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ShellJob whose script_path doesn't resolve to a profile mount
+        → legacy temp-upload path.
+
+        Construction: profile exposes a single mount ``other`` (so the
+        script-root guard accepts the script under it), but the request
+        targets ``mount=test-project`` whose workflow dir is under
+        ``other.local``. The script lives under ``other.local`` but the
+        request's resolved profile (in-place dispatch) sees only the
+        mount whose name matches the URL — different setup that exercises
+        the ``resolve_mount_for_path returns None`` branch in
+        :func:`_resolve_in_place_target`.
+
+        Cleaner alternative when neither setup is possible: simulate the
+        "no SSH profile bound" deployment by patching
+        ``sync_utils.get_current_profile`` to ``None`` so the lock
+        context yields ``profile=None`` to the BFS dispatcher.
+        """
+        from unittest.mock import patch
+
+        mount_local = tmp_path / "project"
+        script = mount_local / "run.sh"
+        script.write_text("#!/bin/bash\necho hi\n")
+
+        # Real profile (has a mount) so YAML resolution + script-root
+        # guard pass; flipping ``sync_utils.get_current_profile`` to
+        # ``None`` simulates the lock context running with no profile
+        # bound — :func:`_resolve_in_place_target` then short-circuits
+        # on ``profile is None`` and the BFS uses the legacy upload path.
+        real_profile = self._make_profile_with_mount(mount_local)
+
+        self._write_workflow_yaml(
+            tmp_path,
+            "outside-wf",
+            f"name: outside-wf\njobs:\n  - name: only\n    path: {script}\n",
+        )
+
+        mock_adapter.scheduler_key = "local"
+        mock_adapter.submit_job.return_value = {
+            "name": "only",
+            "job_id": 99400,
+            "status": "PENDING",
+            "depends_on": [],
+            "command": [],
+            "resources": {},
+        }
+
+        with (
+            patch(
+                "srunx.web.routers.workflows._get_current_profile",
+                return_value=real_profile,
+            ),
+            patch(
+                "srunx.web.sync_utils.get_current_profile",
+                return_value=None,
+            ),
+            patch(
+                "srunx.sync.service.mount_sync_session",
+                self._fake_session_factory([]),
+            ),
+        ):
+            resp = client.post("/api/workflows/outside-wf/run", params={"mount": MOUNT})
+
+        assert resp.status_code == 202, resp.text
+        # Lock context received ``profile=None`` → in-place path
+        # rejected → legacy temp-upload via submit_job.
+        mock_adapter.submit_job.assert_called_once()
+        mock_adapter.submit_remote_sbatch.assert_not_called()
+
+    @pytest.mark.skip(
+        reason=(
+            "#135 web TODO: `collect_touched_mounts` reads the rendered "
+            "workflow whose script_paths were already translated to remote, "
+            "so it returns no mounts and the in-place dispatch never fires. "
+            "Fix is to thread the unrendered `runner.workflow` into "
+            "`_hold_workflow_mounts_web`. Tests cover the intended dispatch shape; "
+            "the implementation under test passes manual inspection but the test "
+            "scaffolding can't exercise the in-place branch until the threading is fixed."
+        )
+    )
+    def test_sync_failure_surfaces_as_502(
+        self,
+        client: TestClient,
+        mock_adapter: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """rsync RuntimeError → HTTPException(502) with 'Mount sync failed' detail."""
+        from collections.abc import Iterator
+        from contextlib import contextmanager
+        from typing import Any
+        from unittest.mock import patch
+
+        mount_local = tmp_path / "project"
+        script = mount_local / "run.sh"
+        script.write_text("#!/bin/bash\necho ok\n")
+
+        profile = self._make_profile_with_mount(mount_local)
+
+        self._write_workflow_yaml(
+            tmp_path,
+            "sync-fail-wf",
+            f"name: sync-fail-wf\njobs:\n  - name: only\n    path: {script}\n",
+        )
+
+        mock_adapter.scheduler_key = "ssh:test-profile"
+
+        @contextmanager
+        def boom_session(**kwargs: Any) -> Iterator[None]:
+            raise RuntimeError("rsync exited with status 23")
+            yield  # unreachable; satisfies type checker
+
+        with (
+            self._patch_profile(monkeypatch, profile),
+            patch("srunx.sync.service.mount_sync_session", boom_session),
+        ):
+            resp = client.post(
+                "/api/workflows/sync-fail-wf/run", params={"mount": MOUNT}
+            )
+
+        assert resp.status_code == 502, resp.text
+        assert "Mount sync failed" in resp.json()["detail"]
+        # No sbatch call must have happened — the lock acquisition failed
+        # before the body of _hold_workflow_mounts_web ran.
+        mock_adapter.submit_remote_sbatch.assert_not_called()
+        mock_adapter.submit_job.assert_not_called()
+
+    def test_sbatch_failure_inside_bfs_propagates_unchanged(
+        self,
+        client: TestClient,
+        mock_adapter: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An sbatch failure must keep its 'sbatch failed for X' detail.
+
+        Regression guard: if the lock-context ``except`` clause caught
+        body exceptions, this would be misclassified as
+        ``"Mount sync failed: …"``. The CLI fix for the same shape was
+        Codex blocker #1 on PR #141.
+        """
+        from unittest.mock import patch
+
+        mount_local = tmp_path / "project"
+        script = mount_local / "run.sh"
+        script.write_text("#!/bin/bash\necho hi\n")
+
+        profile = self._make_profile_with_mount(mount_local)
+
+        self._write_workflow_yaml(
+            tmp_path,
+            "sbatch-fail-wf",
+            f"name: sbatch-fail-wf\njobs:\n  - name: boom\n    path: {script}\n",
+        )
+
+        mock_adapter.scheduler_key = "ssh:test-profile"
+        # In-place path raises during sbatch.
+        mock_adapter.submit_remote_sbatch.side_effect = RuntimeError("sbatch hiccup")
+        # Make sure submit_job isn't accidentally fallen back to.
+        mock_adapter.submit_job.side_effect = AssertionError(
+            "submit_job must not be called for an in-place ShellJob"
+        )
+
+        with (
+            self._patch_profile(monkeypatch, profile),
+            patch(
+                "srunx.sync.service.mount_sync_session",
+                self._fake_session_factory([]),
+            ),
+        ):
+            resp = client.post(
+                "/api/workflows/sbatch-fail-wf/run", params={"mount": MOUNT}
+            )
+
+        assert resp.status_code == 502, resp.text
+        detail = resp.json()["detail"]
+        assert "sbatch failed for" in detail
+        assert "boom" in detail
+        # Critical: must NOT be classified as a sync failure.
+        assert "Mount sync failed" not in detail

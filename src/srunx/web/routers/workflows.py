@@ -9,10 +9,12 @@ aggregates child job statuses into the workflow run via an internal
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import re
 import sqlite3
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -765,48 +767,134 @@ def _filter_workflow_jobs(
     return [job for job in workflow.jobs if job.name in selected_names]
 
 
-async def _sync_mounts(
+@contextlib.asynccontextmanager
+async def _hold_workflow_mounts_web(
     workflow: Workflow,
     runner: WorkflowRunner,
     *,
-    skip_sync: bool = False,
-) -> Any:
-    """Sync SSH mounts for the workflow. Returns the SSH profile or None.
+    sync_required: bool = True,
+) -> AsyncIterator[Any]:
+    """Hold the per-mount sync lock across the whole workflow submission.
 
-    Raises :class:`HTTPException` on failure — the caller is responsible
-    for marking the owning workflow run as failed.
+    Workflow Phase 2 (#135) — web parity with the CLI's
+    :func:`srunx.cli.workflow._hold_workflow_mounts`. Each unique
+    mount touched by the workflow's :class:`ShellJob` ``script_path``
+    values is rsynced **once** under
+    :func:`~srunx.sync.service.mount_sync_session`, and the
+    per-(profile, mount) lock is held for the entire ``async with``
+    block so a concurrent ``srunx flow run`` / ``/api/workflows/run``
+    can't rsync different bytes between our sync and our submission.
+
+    Sort order matches the profile's ``mounts`` list so two web
+    requests touching overlapping mount sets always acquire locks
+    in the same global order — eliminates lock-inversion deadlock,
+    same fix as Codex follow-up #2 on PR #141.
+
+    Yields the resolved :class:`ServerProfile` so the caller can use
+    it for path translation / submission-context construction. Yields
+    ``None`` when no SSH profile is configured (legacy local path).
+
+    Lock acquisition + rsync errors surface as
+    :class:`HTTPException(502)`. Exceptions raised from the body
+    (sbatch failures, render errors) propagate **unchanged** so the
+    caller can route them through the existing per-phase ``_fail``
+    bookkeeping. Mirrors the CLI exception-scoping rationale (Codex
+    blocker #1 on PR #141).
+
+    ``sync_required=False`` skips the rsync but still acquires the
+    lock — preserves the race-free submission invariant for callers
+    that opted out of the transfer.
     """
-    from ..sync_utils import (
-        get_current_profile,
-        resolve_mounts_for_workflow,
-        sync_mount_by_name,
-    )
+    from srunx.cli.submission_plan import collect_touched_mounts
+    from srunx.config import get_config
+    from srunx.ssh.core.config import ConfigManager
+    from srunx.sync.lock import SyncLockTimeoutError
+    from srunx.sync.service import SyncAbortedError, mount_sync_session
 
-    profile = await anyio.to_thread.run_sync(get_current_profile)
-    if profile is None or skip_sync:
-        return profile
+    from ..config import get_web_config
+    from ..sync_utils import get_current_profile
 
-    jobs_raw: list[dict[str, Any]] = []
-    for job in workflow.jobs:
-        jd: dict[str, Any] = {"name": job.name}
-        if hasattr(job, "work_dir"):
-            jd["work_dir"] = getattr(job, "work_dir", "")
-        jobs_raw.append(jd)
+    def _resolve_profile_with_name() -> tuple[Any, str | None]:
+        # Mirrors ``sync_utils.get_current_profile`` but returns the
+        # name too — :func:`acquire_sync_lock` keys the lock file on
+        # ``(profile_name, mount_name)`` so we need both halves.
+        web_cfg = get_web_config()
+        cm = ConfigManager()
+        name = web_cfg.ssh_profile or cm.get_current_profile_name()
+        if not name:
+            return None, None
+        return cm.get_profile(name), name
 
-    mount_names = resolve_mounts_for_workflow(
-        profile, jobs_raw, default_project=runner.default_project
-    )
-    for mount_name in mount_names:
+    profile, profile_name = await anyio.to_thread.run_sync(_resolve_profile_with_name)
+    if profile is None:
+        # Fall back to the patched-in ``get_current_profile`` so tests
+        # that mock the helper directly (without seeding the
+        # ``ConfigManager`` registry) still see a profile here.
+        profile = await anyio.to_thread.run_sync(get_current_profile)
+        if profile is None:
+            yield None
+            return
+        profile_name = profile_name or runner.default_project or ""
+
+    mounts = collect_touched_mounts(workflow, profile)
+    if not mounts:
+        yield profile
+        return
+
+    mount_order = {m.name: i for i, m in enumerate(profile.mounts)}
+    mounts.sort(key=lambda m: mount_order.get(m.name, len(mount_order)))
+
+    config = get_config()
+    # Lock-file key — falls back to the workflow's default_project so
+    # we never hand an empty string to acquire_sync_lock.
+    effective_profile_name = profile_name or runner.default_project or "default"
+
+    def _enter_all_mounts() -> contextlib.ExitStack:
+        # ExitStack lifetime spans the ``async with`` body; constructed
+        # off-thread because mount_sync_session is a synchronous CM
+        # (file lock + subprocess rsync). The stack is closed back in
+        # ``_close_stack`` after the body exits.
+        stack = contextlib.ExitStack()
         try:
-            await anyio.to_thread.run_sync(
-                lambda mn=mount_name: sync_mount_by_name(profile, mn, delete=True)  # type: ignore[misc]
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Mount sync failed for '{mount_name}': {exc}",
-            ) from exc
-    return profile
+            for mount in mounts:
+                outcome = stack.enter_context(
+                    mount_sync_session(
+                        profile_name=effective_profile_name,
+                        profile=profile,
+                        mount=mount,
+                        config=config.sync,
+                        sync_required=sync_required,
+                    )
+                )
+                if outcome.performed:
+                    logger.info("Synced mount '%s'", mount.name)
+        except BaseException:
+            stack.close()
+            raise
+        return stack
+
+    try:
+        stack = await anyio.to_thread.run_sync(_enter_all_mounts)
+    except SyncAbortedError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Mount sync failed: {exc}"
+        ) from exc
+    except SyncLockTimeoutError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Mount sync failed: {exc}"
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Mount sync failed: {exc}"
+        ) from exc
+
+    try:
+        # Body exceptions MUST propagate as-is (sbatch failures vs sync
+        # failures must stay distinguishable to the caller's per-phase
+        # _fail bookkeeping). Codex blocker #1 on PR #141.
+        yield profile
+    finally:
+        await anyio.to_thread.run_sync(stack.close)
 
 
 def _build_submission_context(
@@ -885,6 +973,67 @@ def _enforce_shell_script_roots(
         )
 
 
+def _resolve_in_place_target(
+    job: Job | ShellJob,
+    rendered_text: str,
+    profile: Any,
+) -> tuple[str, str] | None:
+    """Decide whether *job* qualifies for the in-place sbatch path.
+
+    Workflow Phase 2 (#135): only :class:`ShellJob` instances whose
+    ``script_path`` resolves under one of the SSH profile's mount
+    ``local`` roots, and whose Jinja-rendered bytes still equal the
+    on-disk source bytes, can run the user's file verbatim on the
+    cluster. Anything else (``Job`` with ``command``, ShellJob outside
+    every mount, or rendered output that diverged from source) must
+    fall back to the legacy temp-upload path so the rendered artifact
+    actually reaches the cluster.
+
+    Returns ``(remote_path, submit_cwd)`` when the in-place path is
+    safe, otherwise ``None``. ``submit_cwd`` is the script's parent
+    directory on the remote so relative paths inside the user's
+    ``#SBATCH`` directives resolve as they would on a head-node
+    ``sbatch ./script.sh``. Same ``parent_remote or remote_script``
+    fallback the single-job /api/jobs path uses.
+
+    Path security: the workflow's ``_enforce_shell_script_roots``
+    guard already rejected scripts outside every allowed root before
+    render, so reaching here means the path is safe to translate.
+    The mount lookup is a longest-prefix match via
+    :func:`resolve_mount_for_path` so nested mounts pick the deepest
+    owner.
+    """
+    from srunx.cli.submission_plan import (
+        render_text_matches_source,
+        resolve_mount_for_path,
+        translate_local_to_remote,
+    )
+
+    if profile is None or not isinstance(job, ShellJob):
+        return None
+
+    script_attr = getattr(job, "script_path", None)
+    if not script_attr:
+        return None
+
+    try:
+        source_path = Path(script_attr)
+    except (TypeError, ValueError):
+        return None
+
+    mount = resolve_mount_for_path(source_path, profile)
+    if mount is None:
+        return None
+
+    if not render_text_matches_source(rendered_text, source_path):
+        return None
+
+    remote_path = translate_local_to_remote(source_path, mount)
+    parent_remote, _, _ = remote_path.rpartition("/")
+    submit_cwd = parent_remote or remote_path
+    return remote_path, submit_cwd
+
+
 async def _submit_jobs_bfs(
     workflow: Workflow,
     scripts: dict[str, str],
@@ -893,6 +1042,7 @@ async def _submit_jobs_bfs(
     *,
     conn: sqlite3.Connection,
     run_id: int,
+    profile: Any = None,
 ) -> dict[str, str]:
     """Submit jobs in topological order via BFS, returning {name: slurm_id}.
 
@@ -906,6 +1056,16 @@ async def _submit_jobs_bfs(
 
     On sbatch failure we record a membership row with ``job_id=None`` so
     the response can still reflect the attempted job set, then raise.
+
+    Per-job dispatch (workflow Phase 2 / #135 web parity): when
+    *profile* is supplied AND a job is a :class:`ShellJob` whose
+    rendered bytes match the on-disk source AND that source lives
+    under one of the profile's mounts, sbatch runs against the
+    already-on-remote path via :meth:`SlurmSSHAdapter.submit_remote_sbatch`
+    (no tmp upload, the user's own ``#SBATCH`` directives win).
+    Everything else stays on the legacy temp-upload path —
+    :meth:`SlurmSSHAdapter.submit_job` ships the rendered bytes to
+    ``$SRUNX_TEMP_DIR`` so the cluster runs what srunx generated.
     """
     from collections import deque
 
@@ -951,13 +1111,36 @@ async def _submit_jobs_bfs(
             if d.job_name in filtered_names
         ]
 
+        in_place = _resolve_in_place_target(current_job, scripts[current_name], profile)
+
         try:
-            result = await anyio.to_thread.run_sync(
-                lambda s=scripts[current_name], n=current_name, d=dependency: (  # type: ignore[misc]
-                    adapter.submit_job(s, job_name=n, dependency=d)
+            if in_place is not None:
+                remote_path, submit_cwd = in_place
+
+                def _in_place_submit(
+                    rp: str = remote_path,
+                    cwd: str = submit_cwd,
+                    n: str = current_name,
+                    d: str | None = dependency,
+                ) -> int:
+                    submitted_obj = adapter.submit_remote_sbatch(
+                        rp,
+                        submit_cwd=cwd,
+                        job_name=n,
+                        dependency=d,
+                    )
+                    if submitted_obj is None or submitted_obj.job_id is None:
+                        raise RuntimeError("remote sbatch returned no job_id")
+                    return int(submitted_obj.job_id)
+
+                slurm_id = await anyio.to_thread.run_sync(_in_place_submit)
+            else:
+                result = await anyio.to_thread.run_sync(
+                    lambda s=scripts[current_name],  # type: ignore[misc]
+                    n=current_name,
+                    d=dependency: adapter.submit_job(s, job_name=n, dependency=d)
                 )
-            )
-            slurm_id = int(result["job_id"])
+                slurm_id = int(result["job_id"])
             submitted[current_name] = str(slurm_id)
         except Exception as exc:
             # R3: record a membership row with ``job_id=None`` so the
@@ -1165,6 +1348,7 @@ async def _dispatch_sweep(
     # so it is non-None in practice; keep the guard defensive for
     # direct callers.
     profile = await anyio.to_thread.run_sync(_get_current_profile)
+    base_runner: WorkflowRunner | None = None
     if mount is not None:
         try:
             base_runner = await anyio.to_thread.run_sync(
@@ -1177,9 +1361,25 @@ async def _dispatch_sweep(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001 — YAML load / Jinja errors
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        assert base_runner is not None  # narrowed by the from_yaml call above
+        runner_for_guard = base_runner
         await anyio.to_thread.run_sync(
-            lambda: _enforce_shell_script_roots(base_runner.workflow, mount, profile)
+            lambda: _enforce_shell_script_roots(
+                runner_for_guard.workflow, mount, profile
+            )
         )
+
+        # Workflow Phase 2 (#135 web parity): rsync each touched mount
+        # **once** at dispatch time, even when the sweep expands into
+        # many cells targeting the same mount. The lock is released as
+        # soon as the rsync completes — sweep cells then take the
+        # legacy temp-upload path (the CLI keeps ``allow_in_place=False``
+        # for sweeps because cell-specific Jinja args can move
+        # ``script_path`` to a mount the base render didn't touch).
+        async with _hold_workflow_mounts_web(
+            runner_for_guard.workflow, runner_for_guard, sync_required=True
+        ):
+            pass
 
     endpoint_id: int | None = None
     if body.notify and body.endpoint_id is not None:
@@ -1392,13 +1592,12 @@ async def run_workflow(
                 completed_at=now_iso(),
             )
 
-    # Phase 1: Sync mounts
-    try:
-        profile = await _sync_mounts(workflow, runner, skip_sync=run_id is None)
-    except HTTPException as exc:
-        reason = f"Mount sync failed: {exc.detail}"
-        await anyio.to_thread.run_sync(functools.partial(_fail, reason))
-        raise
+    # Resolve the SSH profile up-front so render + the shell-script
+    # guard see the same mount registry the lock-and-submit path will
+    # use. ``_hold_workflow_mounts_web`` re-resolves it internally
+    # (matches the CLI structure) — the per-request profile read is
+    # cheap and keeps the render path independent of the lock context.
+    profile = await anyio.to_thread.run_sync(_get_current_profile)
 
     # Phase 2: Render scripts via the canonical helper. Mount translation
     # and template resolution live in :mod:`srunx.rendering` so Web
@@ -1489,41 +1688,71 @@ async def run_workflow(
             "execution_order": [job.name for job in submission_workflow.jobs],
         }
 
-    # Phase 4: Submit each job + persist + link to workflow_run + seed transition
+    # Phase 4: Submit each job + persist + link to workflow_run + seed transition.
+    #
+    # Workflow Phase 2 (#135 web parity): hold the per-(profile, mount)
+    # sync lock across the entire BFS so a concurrent /api/jobs or
+    # ``srunx flow run`` can't rsync different bytes between our sync
+    # and our submissions. Lock acquisition / rsync errors raise
+    # HTTPException(502) tagged "Mount sync failed: …"; sbatch
+    # failures from inside the body keep their existing
+    # "sbatch failed for X" detail so the two failure classes stay
+    # distinguishable in the API response.
     assert run_id is not None
     try:
-        await _submit_jobs_bfs(
-            submission_workflow, scripts, run_opts, adapter, conn=conn, run_id=run_id
-        )
-    except HTTPException as exc:
-        reason = (
-            f"Submission failed: {exc.detail}"
-            if isinstance(exc.detail, str)
-            else "Submission failed"
-        )
-
-        # R2: cancel any jobs that were already accepted by sbatch before
-        # the failure. Without this the workflow_run is marked failed
-        # but cluster resources keep running the orphan jobs (and any
-        # independent successors the DAG may have scheduled).
-        def _load_orphan_ids() -> list[int]:
-            memberships = WorkflowRunJobRepository(conn).list_by_run(run_id)
-            return [m.job_id for m in memberships if m.job_id is not None]
-
-        orphan_ids = await anyio.to_thread.run_sync(_load_orphan_ids)
-        for jid in orphan_ids:
+        async with _hold_workflow_mounts_web(
+            submission_workflow, runner, sync_required=True
+        ) as locked_profile:
             try:
-                await anyio.to_thread.run_sync(
-                    lambda x=jid: adapter.cancel_job(int(x))  # type: ignore[misc]
+                await _submit_jobs_bfs(
+                    submission_workflow,
+                    scripts,
+                    run_opts,
+                    adapter,
+                    conn=conn,
+                    run_id=run_id,
+                    profile=locked_profile,
                 )
-            except Exception:
-                logger.warning(
-                    "Failed to cancel orphan SLURM job %s during workflow-run rollback",
-                    jid,
-                    exc_info=True,
+            except HTTPException as exc:
+                reason = (
+                    f"Submission failed: {exc.detail}"
+                    if isinstance(exc.detail, str)
+                    else "Submission failed"
                 )
 
-        await anyio.to_thread.run_sync(functools.partial(_fail, reason))
+                # R2: cancel any jobs that were already accepted by sbatch before
+                # the failure. Without this the workflow_run is marked failed
+                # but cluster resources keep running the orphan jobs (and any
+                # independent successors the DAG may have scheduled).
+                def _load_orphan_ids() -> list[int]:
+                    memberships = WorkflowRunJobRepository(conn).list_by_run(run_id)
+                    return [m.job_id for m in memberships if m.job_id is not None]
+
+                orphan_ids = await anyio.to_thread.run_sync(_load_orphan_ids)
+                for jid in orphan_ids:
+                    try:
+                        await anyio.to_thread.run_sync(
+                            lambda x=jid: adapter.cancel_job(int(x))  # type: ignore[misc]
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Failed to cancel orphan SLURM job %s during workflow-run rollback",
+                            jid,
+                            exc_info=True,
+                        )
+
+                await anyio.to_thread.run_sync(functools.partial(_fail, reason))
+                raise
+    except HTTPException as exc:
+        # Lock-acquisition failures land here (raised from
+        # ``_hold_workflow_mounts_web`` before the body runs). Mark
+        # the run as failed with the sync-failure reason. Body-raised
+        # exceptions were already handled inside the inner try/except,
+        # which re-raises after recording — we only need to mark and
+        # rethrow here when the outer raise originates from the lock
+        # acquisition itself.
+        if isinstance(exc.detail, str) and exc.detail.startswith("Mount sync failed"):
+            await anyio.to_thread.run_sync(functools.partial(_fail, exc.detail))
         raise
 
     # Phase 5: open the workflow_run watch so the poller can drive
