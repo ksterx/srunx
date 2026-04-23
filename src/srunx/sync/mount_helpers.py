@@ -63,7 +63,8 @@ def sync_mount_by_name(
     mount_name: str,
     *,
     delete: bool = False,
-) -> None:
+    dry_run: bool = False,
+) -> str:
     """Sync a named mount's local directory to remote via rsync.
 
     ``delete`` is **False by default** so callers that don't opt in
@@ -71,6 +72,15 @@ def sync_mount_by_name(
     ``srunx ssh sync`` command and any explicit ""mirror this exactly""
     callers should pass ``delete=True``. Auto-sync paths (PR #134
     Phase 1) leave the default.
+
+    ``dry_run=True`` runs rsync with ``-n -i`` (no transfer + itemize)
+    and returns rsync's stdout — the human-readable list of files
+    that *would* be touched. The remote is not modified. Used by the
+    CLI ``srunx sbatch --dry-run`` preview path (#137 part 2).
+
+    Returns:
+        rsync stdout — empty for a non-dry-run sync, the itemize lines
+        for a dry-run preview.
 
     Raises:
         ValueError: If *mount_name* does not exist in the profile.
@@ -86,9 +96,15 @@ def sync_mount_by_name(
         mount.local,
         mount.remote,
         delete=delete,
+        dry_run=dry_run,
+        # ``itemize`` tracks ``dry_run`` — for an actual push we don't
+        # want the per-file output spam in the success path, but for
+        # a preview the itemize lines ARE the value.
+        itemize=dry_run,
         exclude_patterns=mount.exclude_patterns or None,
     )
     if result.returncode != 0:
         raise RuntimeError(
             f"rsync sync failed for mount '{mount_name}': {result.stderr}"
         )
+    return result.stdout

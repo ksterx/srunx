@@ -488,3 +488,133 @@ def test_config_workdir_does_not_inject_chdir(
         "Config-default work_dir leaked into sbatch CLI args, would have "
         "overridden the script's own #SBATCH --chdir=."
     )
+
+
+# ── Dry-run sync preview (#137 part 2) ────────────────────────────
+
+
+def test_dry_run_shows_in_place_sync_preview(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``sbatch --dry-run`` against a mount-resident script previews rsync.
+
+    Lets the user spot a stray ``build/`` they forgot to gitignore
+    BEFORE the actual sync ships it. The preview lines come from
+    rsync's ``-n -i`` output (mocked here so we don't actually shell
+    out).
+    """
+    mount_local = tmp_path / "ml-project"
+    mount_local.mkdir()
+    script = mount_local / "train.sbatch"
+    script.write_text("#!/bin/bash\necho hi\n")
+
+    profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")
+    _patch_transport(monkeypatch, profile)
+
+    # Mock the mount-helper rsync to return three itemize lines as
+    # though rsync had real changes to report.
+    fake_output = (
+        ">f.st...... train.sbatch\ncd+++++++++ build/\n>f+++++++++ build/output.bin\n"
+    )
+    sync_calls: list[dict[str, object]] = []
+
+    def _fake_sync(
+        prof: ServerProfile,
+        name: str,
+        *,
+        delete: bool = False,
+        dry_run: bool = False,
+    ) -> str:
+        sync_calls.append({"name": name, "delete": delete, "dry_run": dry_run})
+        return fake_output if dry_run else ""
+
+    monkeypatch.setattr("srunx.sync.mount_helpers.sync_mount_by_name", _fake_sync)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["sbatch", str(script), "--profile", "ml-cluster", "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert "Dry run mode" in result.stdout
+    assert "Sync preview for mount" in result.stdout
+    # Each itemize line surfaces verbatim under the preview header.
+    for line in fake_output.splitlines():
+        assert line in result.stdout
+
+    # The preview path uses dry_run=True so nothing is actually pushed.
+    assert sync_calls == [{"name": "ml", "delete": False, "dry_run": True}]
+
+
+def test_dry_run_no_sync_message_when_sync_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--no-sync --dry-run`` skips the rsync subprocess but still tells the user.
+
+    Important so the user knows *why* there's no preview — without
+    the explicit message it'd look like the mount auto-detection
+    failed.
+    """
+    mount_local = tmp_path / "ml-project"
+    mount_local.mkdir()
+    script = mount_local / "train.sbatch"
+    script.write_text("#!/bin/bash\necho hi\n")
+
+    profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")
+    _patch_transport(monkeypatch, profile)
+
+    sync_called = False
+
+    def _should_not_run(*a: object, **k: object) -> str:
+        nonlocal sync_called
+        sync_called = True
+        return ""
+
+    monkeypatch.setattr("srunx.sync.mount_helpers.sync_mount_by_name", _should_not_run)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "sbatch",
+            str(script),
+            "--profile",
+            "ml-cluster",
+            "--dry-run",
+            "--no-sync",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert "skipped (--no-sync)" in result.stdout
+    assert not sync_called, "rsync must not run when --no-sync is set"
+
+
+def test_dry_run_preview_silent_for_local_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Local sbatch dry-run shows job info only — no SSH/sync chatter.
+
+    The preview is an SSH-only feature; running a local sbatch
+    against a script that *happens* to share a path with some mount
+    must NOT trigger rsync calls or print mount-related lines.
+    """
+    script = tmp_path / "train.sbatch"
+    script.write_text("#!/bin/bash\necho hi\n")
+
+    sync_called = False
+
+    def _record(*a: object, **k: object) -> None:
+        nonlocal sync_called
+        sync_called = True
+
+    monkeypatch.setattr("srunx.sync.mount_helpers.sync_mount_by_name", _record)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["sbatch", str(script), "--local", "--dry-run"])
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert "Sync preview" not in result.stdout
+    assert "skipped (--no-sync)" not in result.stdout
+    assert not sync_called

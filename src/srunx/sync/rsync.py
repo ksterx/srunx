@@ -114,6 +114,7 @@ class RsyncClient:
         *,
         delete: bool = True,
         dry_run: bool = False,
+        itemize: bool = False,
         exclude_patterns: Sequence[str] | None = None,
     ) -> RsyncResult:
         """Sync a local directory/file to the remote server.
@@ -124,6 +125,10 @@ class RsyncClient:
                 If None, uses ``get_default_remote_path()``.
             delete: Remove remote files not present locally (default True).
             dry_run: Perform a trial run with no changes made.
+            itemize: Add ``--itemize-changes`` so the result lists every
+                file rsync *would* (or did) touch, with the standard
+                ``YXcstpoguax`` flag prefix. Required for ``dry_run``
+                callers that want a human-readable preview.
             exclude_patterns: Additional exclude patterns for this call only.
 
         Returns:
@@ -147,7 +152,12 @@ class RsyncClient:
 
         excludes = self._merge_excludes(exclude_patterns)
         cmd = self._build_rsync_cmd(
-            src, dst, delete=delete, dry_run=dry_run, excludes=excludes
+            src,
+            dst,
+            delete=delete,
+            dry_run=dry_run,
+            itemize=itemize,
+            excludes=excludes,
         )
         return self._run_rsync(cmd)
 
@@ -158,6 +168,7 @@ class RsyncClient:
         *,
         delete: bool = False,
         dry_run: bool = False,
+        itemize: bool = False,
         exclude_patterns: Sequence[str] | None = None,
     ) -> RsyncResult:
         """Sync a remote directory/file to the local machine.
@@ -167,6 +178,8 @@ class RsyncClient:
             local_path: Local destination path.
             delete: Remove local files not present on the remote (default False).
             dry_run: Perform a trial run with no changes made.
+            itemize: Add ``--itemize-changes`` so the result enumerates
+                every file rsync *would* (or did) touch.
             exclude_patterns: Additional exclude patterns for this call only.
 
         Returns:
@@ -177,7 +190,12 @@ class RsyncClient:
 
         excludes = self._merge_excludes(exclude_patterns)
         cmd = self._build_rsync_cmd(
-            src, dst, delete=delete, dry_run=dry_run, excludes=excludes
+            src,
+            dst,
+            delete=delete,
+            dry_run=dry_run,
+            itemize=itemize,
+            excludes=excludes,
         )
         return self._run_rsync(cmd)
 
@@ -210,6 +228,7 @@ class RsyncClient:
         *,
         delete: bool,
         dry_run: bool,
+        itemize: bool = False,
         excludes: list[str],
     ) -> list[str]:
         """Build the full rsync command."""
@@ -227,6 +246,11 @@ class RsyncClient:
             cmd.append("--delete")
         if dry_run:
             cmd.append("-n")
+        if itemize:
+            # ``-i`` (``--itemize-changes``) makes rsync emit one line
+            # per file with a ``YXcstpoguax``-style flag prefix so the
+            # CLI dry-run preview can render exactly what would change.
+            cmd.append("-i")
 
         for pattern in excludes:
             cmd.extend(["--exclude", pattern])
