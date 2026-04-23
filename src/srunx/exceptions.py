@@ -47,12 +47,16 @@ class RemoteCommandError(TransportError):
     """
 
 
-class JobNotFound(Exception):
+class JobNotFoundError(Exception):
     """Job ID does not exist on the target SLURM cluster.
 
     Separate from :class:`TransportError` because 'missing job' is a
     user-level condition, not a transport failure.
     """
+
+
+# Backward-compat alias (pre-#169 name).
+JobNotFound = JobNotFoundError
 
 
 class SubmissionError(Exception):

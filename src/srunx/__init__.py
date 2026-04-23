@@ -9,7 +9,7 @@ __description__ = "Python library for SLURM workload manager integration"
 
 # Main public API
 from .callbacks import Callback, SlackCallback
-from .client import Slurm, cancel_job, retrieve_job, submit_job
+from .client import LocalClient, Slurm, cancel_job, retrieve_job, submit_job
 from .containers import (
     ApptainerRuntime,
     ContainerRuntime,
@@ -41,6 +41,7 @@ from .runner import WorkflowRunner
 
 __all__ = [
     # Client
+    "LocalClient",
     "Slurm",
     "submit_job",
     "retrieve_job",

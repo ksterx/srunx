@@ -1,14 +1,12 @@
 """Utility functions for SLURM job management."""
 
-import re
 import subprocess
 
 from srunx.logging import get_logger
 from srunx.models import BaseJob, JobStatus
+from srunx.slurm.parsing import GPU_TRES_RE  # re-export for backward compat
 
-# Shared regex for parsing GPU counts from SLURM TRES/Gres strings.
-# Matches: "gpu:8", "gres/gpu=8", "gpu:NVIDIA-A100:8", "gpu/4", etc.
-GPU_TRES_RE = re.compile(r"gpu[:/=](?:[^:]+:)?(\d+)", re.IGNORECASE)
+__all__ = ["GPU_TRES_RE", "get_job_status", "job_status_msg"]
 
 logger = get_logger(__name__)
 
