@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from srunx.db.models import Job, SubmissionSource, TransportType
-from srunx.db.repositories.base import BaseRepository, now_iso
+from srunx.observability.storage.models import Job, SubmissionSource, TransportType
+from srunx.observability.storage.repositories.base import BaseRepository, now_iso
 
 # Validate that the (transport_type, profile_name, scheduler_key) triple
 # matches the V5 CHECK constraint on the ``jobs`` table. Raising here
@@ -265,7 +265,7 @@ class JobRepository(BaseRepository):
         ).fetchone()
         duration: int | None = None
         if row is not None:
-            from srunx.db.repositories.base import _parse_dt
+            from srunx.observability.storage.repositories.base import _parse_dt
 
             submitted = _parse_dt(row["submitted_at"])
             done = _parse_dt(completed_at)

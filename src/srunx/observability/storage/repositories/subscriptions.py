@@ -9,8 +9,8 @@ its subscriptions automatically.
 
 from __future__ import annotations
 
-from srunx.db.models import Subscription
-from srunx.db.repositories.base import BaseRepository, now_iso
+from srunx.observability.storage.models import Subscription
+from srunx.observability.storage.repositories.base import BaseRepository, now_iso
 
 
 class SubscriptionRepository(BaseRepository):

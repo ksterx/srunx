@@ -12,8 +12,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from srunx.db.models import ResourceSnapshot
-from srunx.db.repositories.base import BaseRepository, now_iso
+from srunx.observability.storage.models import ResourceSnapshot
+from srunx.observability.storage.repositories.base import BaseRepository, now_iso
 
 
 class ResourceSnapshotRepository(BaseRepository):

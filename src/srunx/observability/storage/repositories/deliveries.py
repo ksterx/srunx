@@ -9,7 +9,7 @@ we implement the "pick one row" step as ``SELECT ... LIMIT 1`` followed
 by an ``UPDATE ... WHERE id = ? AND status = 'pending'`` that races
 cleanly against concurrent workers.
 
-All timestamp writes use :func:`srunx.db.repositories.base.now_iso` or
+All timestamp writes use :func:`srunx.observability.storage.repositories.base.now_iso` or
 ``strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`` so that string comparisons
 remain lexicographically correct across Python and SQL code paths.
 """
@@ -19,8 +19,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from srunx.db.models import Delivery
-from srunx.db.repositories.base import BaseRepository, now_iso
+from srunx.observability.storage.models import Delivery
+from srunx.observability.storage.repositories.base import BaseRepository, now_iso
 
 
 class DeliveryRepository(BaseRepository):
