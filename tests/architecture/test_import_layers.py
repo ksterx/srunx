@@ -3,7 +3,7 @@
 Scans every ``src/srunx/**/*.py`` file statically and asserts that cross-layer
 imports respect the target 6-layer architecture:
 
-    interfaces -> runtime / slurm / observability / integrations -> domain -> support
+    interfaces -> runtime / slurm / observability / integrations -> domain -> common
 
 Files have not moved yet (Phases 2-8 do that). Each top-level module is mapped
 to the layer it will belong to post-migration via ``MODULE_LAYERS``. Imports
@@ -27,11 +27,11 @@ SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "srunx"
 # Map each top-level package/module under ``srunx/`` to its TARGET layer.
 # Source files move in later phases; the layer name is stable.
 MODULE_LAYERS: dict[str, str] = {
-    # support
-    "_version": "support",
-    "config": "support",
-    "exceptions": "support",
-    "logging": "support",
+    # common (Phase 8 / #164 will move these under src/srunx/common/)
+    "_version": "common",
+    "config": "common",
+    "exceptions": "common",
+    "logging": "common",
     # domain (Phase 3 / #159 splits models.py into domain/)
     "domain": "domain",
     "models": "domain",
@@ -48,7 +48,8 @@ MODULE_LAYERS: dict[str, str] = {
     "slurm": "slurm",
     "transport": "slurm",
     "utils": "slurm",
-    # observability (Phase 8 / #164)
+    # observability (Phase 5 / #161 + Phase 8 / #164)
+    "observability": "observability",
     "callbacks": "observability",
     "db": "observability",
     "formatters": "observability",
@@ -67,14 +68,14 @@ MODULE_LAYERS: dict[str, str] = {
 
 # Allowed cross-layer edges per target architecture (#156).
 ALLOWED: dict[str, set[str]] = {
-    "support": {"domain"},
-    "domain": {"support"},
-    "integrations": {"support", "domain"},
-    "runtime": {"support", "domain", "integrations", "slurm"},
-    "slurm": {"support", "domain", "integrations", "runtime"},
-    "observability": {"support", "domain", "integrations", "slurm"},
+    "common": {"domain"},
+    "domain": {"common"},
+    "integrations": {"common", "domain"},
+    "runtime": {"common", "domain", "integrations", "slurm"},
+    "slurm": {"common", "domain", "integrations", "runtime"},
+    "observability": {"common", "domain", "integrations", "slurm"},
     "interfaces": {
-        "support",
+        "common",
         "domain",
         "integrations",
         "slurm",
@@ -94,15 +95,17 @@ KNOWN_VIOLATIONS: dict[tuple[str, str], str] = {
         "Phase 5 (#161) / Phase 8 (#164): callbacks absorbed into observability; "
         "CLI-side notification helper inverted so interfaces -> observability."
     ),
-    # slurm -> observability (local client writes DB rows and invokes callbacks).
-    (
-        "slurm",
-        "callbacks",
-    ): "Phase 5 (#161): extract JobLifecycleSink from slurm/local.py.",
-    (
-        "slurm",
-        "db",
-    ): "Phase 5 (#161): route slurm/local.py DB writes through observability.recorder sink.",
+    # slurm -> observability (legacy ``Slurm`` shim wires the default sink chain).
+    ("client", "callbacks"): (
+        "Shim-only: ``srunx.client.Slurm`` imports ``Callback`` for its legacy "
+        "``callbacks=`` type hint. Removed when the shim is deleted."
+    ),
+    ("client", "observability"): (
+        "Shim-only: ``srunx.client.Slurm`` composes ``CallbackSink`` + "
+        "``DBRecorderSink`` into the default sink chain so legacy "
+        "``Slurm(callbacks=[...])`` keeps working. Removed when the shim "
+        "is deleted."
+    ),
     # domain -> runtime (models.py is a backward-compat shim re-exporting renderers).
     ("models", "runtime"): (
         "Shim re-exports from :mod:`srunx.runtime.rendering`. Remove when "
