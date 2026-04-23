@@ -280,6 +280,73 @@ def _parse_gres_gpu(gres: str | None) -> int | None:
     return count
 
 
+def _print_in_place_sync_preview(
+    *,
+    console: Console,
+    script: Path | None,
+    profile_name: str | None,
+    local: bool,
+    sync_flag: bool | None,
+    config: Any,
+) -> None:
+    """Show the rsync ``-n -i`` preview for an SSH in-place dry-run.
+
+    Quietly no-ops in every "this isn't an in-place candidate" case
+    (local transport, no positional script, no resolvable profile, no
+    profile mounts, script not under any mount). Failures from the
+    rsync subprocess itself are caught and surfaced as a single
+    coloured line — the preview is best-effort and must never abort
+    the larger ``--dry-run`` flow.
+    """
+    if local or script is None:
+        return
+
+    from srunx.transport import peek_scheduler_key
+
+    try:
+        sched_key = peek_scheduler_key(profile=profile_name, local=local)
+    except typer.BadParameter:
+        # ``--profile foo --local`` conflict — already surfaced by the
+        # main resolution path; nothing more to add here.
+        return
+
+    if not sched_key.startswith("ssh:"):
+        return
+
+    resolved_profile_name = sched_key[len("ssh:") :]
+
+    from srunx.cli.submission_plan import resolve_mount_for_path
+    from srunx.ssh.core.config import ConfigManager
+
+    profile = ConfigManager().get_profile(resolved_profile_name)
+    if profile is None or not profile.mounts:
+        return
+
+    mount = resolve_mount_for_path(script, profile)
+    if mount is None:
+        return
+
+    sync_enabled = config.sync.auto if sync_flag is None else sync_flag
+    if not sync_enabled:
+        console.print(f"  Sync: skipped (--no-sync) for mount '{mount.name}'")
+        return
+
+    console.print(f"  Sync preview for mount [cyan]{mount.name}[/cyan]:")
+    try:
+        from srunx.sync.mount_helpers import sync_mount_by_name
+
+        output = sync_mount_by_name(profile, mount.name, dry_run=True)
+    except RuntimeError as exc:
+        console.print(f"    [red]rsync preview failed: {exc}[/red]")
+        return
+
+    if not output.strip():
+        console.print("    (no changes — remote already up to date)")
+        return
+    for line in output.splitlines():
+        console.print(f"    {line}")
+
+
 class DebugCallback(Callback):
     """Callback to display rendered SLURM scripts in debug mode."""
 
@@ -910,6 +977,19 @@ def sbatch(
             console.print(f"  GPUs: {job.resources.gpus_per_node}")
         elif isinstance(job, ShellJob):
             console.print(f"  Script: {job.script_path}")
+        # #137 part 2: when the dry run targets an SSH in-place
+        # candidate (positional script under a profile mount), also
+        # show rsync's preview of what *would* transfer. Lets the user
+        # spot a stray ``build/`` or ``.cache/`` they forgot to
+        # gitignore before they trigger an actual sync.
+        _print_in_place_sync_preview(
+            console=console,
+            script=script,
+            profile_name=profile,
+            local=local,
+            sync_flag=sync,
+            config=config,
+        )
         return
 
     # Submit job through the resolved transport.

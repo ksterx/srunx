@@ -363,6 +363,37 @@ class TestPush:
 
         assert "-n" in mock_run.call_args[0][0]
 
+    def test_push_itemize(self, tmp_path: Path):
+        """``itemize=True`` adds rsync's ``-i`` flag.
+
+        Required for the dry-run preview path (#137 part 2): without
+        ``-i`` rsync emits no per-file output, so the CLI can't show
+        the user what *would* change.
+        """
+        client = _make_rsync_client(hostname="h", username="u")
+
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push(tmp_path, "~/dst/", dry_run=True, itemize=True)
+
+        cmd = mock_run.call_args[0][0]
+        assert "-n" in cmd and "-i" in cmd
+
+    def test_push_no_itemize_by_default(self, tmp_path: Path):
+        """``-i`` is opt-in — default push doesn't add it.
+
+        A successful real sync should not spam stdout with per-file
+        change lines. ``itemize=True`` is the explicit opt-in for
+        callers that want the listing.
+        """
+        client = _make_rsync_client(hostname="h", username="u")
+
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push(tmp_path, "~/dst/")
+
+        assert "-i" not in mock_run.call_args[0][0]
+
     def test_push_failure(self, tmp_path: Path):
         client = _make_rsync_client(hostname="h", username="u")
 
