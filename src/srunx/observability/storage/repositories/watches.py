@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from srunx.db.models import Watch
-from srunx.db.repositories.base import BaseRepository, now_iso
+from srunx.observability.storage.models import Watch
+from srunx.observability.storage.repositories.base import BaseRepository, now_iso
 
 
 class WatchRepository(BaseRepository):

@@ -18,8 +18,8 @@ Callers pass ``scheduler_key='local'`` explicitly for local SLURM, or
 
 from __future__ import annotations
 
-from srunx.db.models import JobStateTransition, TransitionSource
-from srunx.db.repositories.base import BaseRepository, now_iso
+from srunx.observability.storage.models import JobStateTransition, TransitionSource
+from srunx.observability.storage.repositories.base import BaseRepository, now_iso
 
 
 class JobStateTransitionRepository(BaseRepository):

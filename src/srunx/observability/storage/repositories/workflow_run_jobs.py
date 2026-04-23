@@ -12,8 +12,8 @@ hand can use the new ``jobs_row_id`` kwarg directly.
 
 from __future__ import annotations
 
-from srunx.db.models import WorkflowRunJob
-from srunx.db.repositories.base import BaseRepository
+from srunx.observability.storage.models import WorkflowRunJob
+from srunx.observability.storage.repositories.base import BaseRepository
 
 
 class WorkflowRunJobRepository(BaseRepository):

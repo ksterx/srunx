@@ -9,8 +9,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from srunx.db.models import SweepRun, SweepSubmissionSource
-from srunx.db.repositories.base import BaseRepository, now_iso
+from srunx.observability.storage.models import SweepRun, SweepSubmissionSource
+from srunx.observability.storage.repositories.base import BaseRepository, now_iso
 
 
 class SweepRunRepository(BaseRepository):

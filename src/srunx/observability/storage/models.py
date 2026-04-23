@@ -1,4 +1,4 @@
-"""Pydantic models mirroring the ``srunx.db`` schema.
+"""Pydantic models mirroring the ``srunx.observability.storage`` schema.
 
 These types are produced by the repository layer when reading rows and
 consumed by callers (poller, routers, notification service). They are

@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from srunx.logging import get_logger
 
 if TYPE_CHECKING:
-    from srunx.db.models import SubmissionSource, TransportType
     from srunx.models import JobStatus, JobType
+    from srunx.observability.storage.models import SubmissionSource, TransportType
 
 logger = get_logger(__name__)
 
@@ -44,7 +44,7 @@ def record_submission_from_job(
     so existing callers (CLI ``srunx submit``, local ``Slurm.submit``)
     record exactly what they did before. SSH callers (``SlurmSSHAdapter``
     on the Web / MCP / future CLI paths) must pass the matching triple;
-    :func:`srunx.db.repositories.jobs._validate_transport_triple` rejects
+    :func:`srunx.observability.storage.repositories.jobs._validate_transport_triple` rejects
     mismatches before they reach the DB.
 
     Fails closed — any exception is logged at debug and silently
@@ -54,12 +54,12 @@ def record_submission_from_job(
         if job.job_id is None:
             return
 
-        from srunx.db.connection import initialized_connection
-        from srunx.db.repositories.job_state_transitions import (
+        from srunx.models import Job
+        from srunx.observability.storage.connection import initialized_connection
+        from srunx.observability.storage.repositories.job_state_transitions import (
             JobStateTransitionRepository,
         )
-        from srunx.db.repositories.jobs import JobRepository
-        from srunx.models import Job
+        from srunx.observability.storage.repositories.jobs import JobRepository
 
         # ``submission_source`` falls back to the original workflow/cli
         # heuristic when the caller does not set it explicitly. The
@@ -145,8 +145,10 @@ def create_cli_workflow_run(
     treats the link as best-effort and keeps submitting.
     """
     try:
-        from srunx.db.connection import initialized_connection
-        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+        from srunx.observability.storage.connection import initialized_connection
+        from srunx.observability.storage.repositories.workflow_runs import (
+            WorkflowRunRepository,
+        )
 
         with initialized_connection() as conn:
             return WorkflowRunRepository(conn).create(
@@ -178,11 +180,14 @@ def record_completion(
     (which only observes local SLURM) behaves identically to pre-V5.
     """
     try:
-        from srunx.db.connection import initialized_connection, transaction
-        from srunx.db.repositories.job_state_transitions import (
+        from srunx.observability.storage.connection import (
+            initialized_connection,
+            transaction,
+        )
+        from srunx.observability.storage.repositories.job_state_transitions import (
             JobStateTransitionRepository,
         )
-        from srunx.db.repositories.jobs import JobRepository
+        from srunx.observability.storage.repositories.jobs import JobRepository
 
         with initialized_connection() as conn:
             repo = JobRepository(conn)
@@ -226,8 +231,8 @@ def list_recent_jobs(
     a single transport — passed through to the SQL ``WHERE`` so
     ``srunx sacct --profile X`` only sees that cluster's jobs.
     """
-    from srunx.db.connection import initialized_connection
-    from srunx.db.repositories.jobs import JobRepository
+    from srunx.observability.storage.connection import initialized_connection
+    from srunx.observability.storage.repositories.jobs import JobRepository
 
     with initialized_connection() as conn:
         return JobRepository(conn).list_recent_as_dict(
@@ -249,8 +254,8 @@ def compute_job_stats(
     ``scheduler_key`` filters to a single transport for SSH parity
     on ``srunx sreport --profile X``.
     """
-    from srunx.db.connection import initialized_connection
-    from srunx.db.repositories.jobs import JobRepository
+    from srunx.observability.storage.connection import initialized_connection
+    from srunx.observability.storage.repositories.jobs import JobRepository
 
     with initialized_connection() as conn:
         return JobRepository(conn).compute_stats(
@@ -274,7 +279,7 @@ def compute_workflow_stats(
     transport so ``--profile X`` reports only that cluster's runs
     of the workflow.
     """
-    from srunx.db.connection import initialized_connection
+    from srunx.observability.storage.connection import initialized_connection
 
     scheduler_clause = ""
     params: tuple[Any, ...] = (workflow_name,)

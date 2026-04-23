@@ -175,7 +175,7 @@ def init_db(db_path: Path | None = None, *, delete_legacy: bool = True) -> Path:
 
     Returns the resolved DB path for downstream callers.
     """
-    from srunx.db.migrations import apply_migrations
+    from srunx.observability.storage.migrations import apply_migrations
 
     path = db_path or get_db_path()
     conn = open_connection(path)

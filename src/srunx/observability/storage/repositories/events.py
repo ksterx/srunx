@@ -15,8 +15,8 @@ import hashlib
 import json
 import sqlite3
 
-from srunx.db.models import Event
-from srunx.db.repositories.base import BaseRepository, now_iso
+from srunx.observability.storage.models import Event
+from srunx.observability.storage.repositories.base import BaseRepository, now_iso
 
 
 class EventRepository(BaseRepository):

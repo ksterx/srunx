@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from srunx.db.models import Endpoint
-from srunx.db.repositories.base import BaseRepository, now_iso
+from srunx.observability.storage.models import Endpoint
+from srunx.observability.storage.repositories.base import BaseRepository, now_iso
 
 
 class EndpointRepository(BaseRepository):
