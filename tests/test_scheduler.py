@@ -16,9 +16,9 @@ from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
+from srunx.monitor.scheduler import ScheduledReporter
 
 from srunx.monitor.report_types import ReportConfig
-from srunx.monitor.scheduler import ScheduledReporter
 
 
 def _make_reporter(timeframe: str = "24h") -> ScheduledReporter:

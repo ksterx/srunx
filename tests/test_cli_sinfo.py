@@ -4,10 +4,10 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from srunx.monitor.types import ResourceSnapshot
 from typer.testing import CliRunner
 
 from srunx.cli.main import app
-from srunx.monitor.types import ResourceSnapshot
 
 
 @pytest.fixture

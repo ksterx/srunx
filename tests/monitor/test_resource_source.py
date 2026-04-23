@@ -21,7 +21,6 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-
 from srunx.monitor.resource_source import (
     ResourceSource,
     SSHAdapterResourceSource,

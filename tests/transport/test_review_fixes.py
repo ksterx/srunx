@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from srunx.pollers.active_watch_poller import ActiveWatchPoller
 
 from srunx.callbacks import NotificationWatchCallback
 from srunx.client_protocol import JobStatusInfo
@@ -33,7 +34,6 @@ from srunx.db.repositories.job_state_transitions import (
 )
 from srunx.db.repositories.jobs import JobRepository
 from srunx.db.repositories.watches import WatchRepository
-from srunx.pollers.active_watch_poller import ActiveWatchPoller
 from srunx.transport import (
     TransportHandle,
     peek_scheduler_key,

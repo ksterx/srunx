@@ -4,7 +4,6 @@ import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from srunx.monitor.resource_monitor import ResourceMonitor
 from srunx.monitor.types import MonitorConfig, ResourceSnapshot
 

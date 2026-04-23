@@ -5,7 +5,6 @@ import time
 from unittest.mock import patch
 
 import pytest
-
 from srunx.monitor.base import BaseMonitor
 from srunx.monitor.types import MonitorConfig, WatchMode
 

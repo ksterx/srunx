@@ -3,10 +3,10 @@
 from unittest.mock import MagicMock
 
 import pytest
-
-from srunx.models import Job, JobStatus
 from srunx.monitor.job_monitor import JobMonitor
 from srunx.monitor.types import MonitorConfig
+
+from srunx.models import Job, JobStatus
 
 
 class TestJobMonitor:
