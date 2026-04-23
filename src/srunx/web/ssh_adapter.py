@@ -12,6 +12,7 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srunx.callbacks import Callback
@@ -123,6 +124,21 @@ def _run_slurm_cmd(adapter: SlurmSSHAdapter, cmd: str) -> str:
     if exit_code != 0:
         raise RuntimeError(f"Remote command failed ({exit_code}): {stderr.strip()}")
     return stdout
+
+
+@dataclass(frozen=True)
+class _MountsOnly:
+    """Duck-typed shim that exposes just ``.mounts`` to the planner.
+
+    ``submission_plan.resolve_mount_for_path`` is duck-typed on the
+    profile's ``.mounts`` attribute, but the adapter only carries the
+    mounts tuple — not a full :class:`ServerProfile`. Wrapping in this
+    one-field dataclass avoids reaching back into ``ConfigManager``
+    just to satisfy the planner's type signature, and keeps the in-place
+    decision local to ``run()``.
+    """
+
+    mounts: tuple[MountConfig, ...]
 
 
 class SlurmSSHAdapter:
@@ -1213,7 +1229,21 @@ class SlurmSSHAdapter:
            callback and return the updated job. Raises :class:`RuntimeError`
            on terminal failure so the workflow runner's retry / failure
            path triggers identically to the local ``Slurm`` executor.
+
+        IN_PLACE submission (skip the temp upload, run the user's
+        mount-resident script verbatim) is gated on
+        ``submission_context.allow_in_place`` so callers that do NOT
+        hold the per-(profile, mount) sync lock cannot race a
+        concurrent rsync. CLI workflow runs flip the flag inside
+        :func:`srunx.cli.workflow._hold_workflow_mounts`; Web /
+        MCP paths leave it ``False`` and keep the safe temp-upload
+        behaviour. Closes Codex blocker #3 on PR #141.
         """
+        allow_in_place = (
+            submission_context.allow_in_place
+            if submission_context is not None
+            else False
+        )
         # Inline imports keep the module import cost flat and mirror the
         # pattern used in ``srunx.client.Slurm`` (e.g. ``record_submission_from_job``).
         from srunx.models import (
@@ -1249,8 +1279,26 @@ class SlurmSSHAdapter:
         with self._io_lock:
             self._ensure_connected()
 
-            # --- 1. Render script locally ---
+            # --- 1. Render script locally + decide IN_PLACE vs TEMP_UPLOAD ---
+            #
+            # Phase 2 (#135): when the source ShellJob lives under a
+            # configured mount AND its rendered bytes equal the source
+            # bytes (no Jinja substitution happened), we can skip the
+            # temp-upload and run the user-managed file in place via
+            # ``submit_remote_sbatch_file``. This preserves the user's
+            # ``#SBATCH`` directives and avoids the ``-o`` injection
+            # that ``submit_sbatch_job`` does not, but the legacy
+            # tempfile path performs.
             import tempfile as _tempfile
+
+            from srunx.cli.submission_plan import (
+                render_matches_source,
+                resolve_mount_for_path,
+                translate_local_to_remote,
+            )
+
+            in_place_remote_path: str | None = None
+            in_place_submit_cwd: str | None = None
 
             with _tempfile.TemporaryDirectory() as tmpdir:
                 if isinstance(job, Job):
@@ -1262,14 +1310,55 @@ class SlurmSSHAdapter:
                     )
                 elif isinstance(job, ShellJob):
                     script_path = render_shell_job_script(job.script_path, job, tmpdir)
-                else:  # pragma: no cover — Pydantic union guard
-                    raise TypeError(f"Unsupported job type: {type(job).__name__}")
+                    # IN_PLACE eligibility check — only attempted when
+                    # the caller passed ``allow_in_place=True``,
+                    # confirming they're holding the per-(profile,
+                    # mount) sync lock for the lifetime of this call.
+                    # Without that lock a concurrent rsync could swap
+                    # the bytes between our render check and the
+                    # cluster's sbatch read. Codex blocker #3 on
+                    # PR #141.
+                    if allow_in_place and self._mounts:
+                        try:
+                            source_path = Path(job.script_path)
+                        except (OSError, ValueError):
+                            source_path = None  # type: ignore[assignment]
+                        if source_path is not None and source_path.exists():
+                            # Build a duck-typed "profile" carrying just
+                            # the mounts; ``resolve_mount_for_path`` only
+                            # reads ``.mounts``.
+                            mount = resolve_mount_for_path(
+                                source_path,
+                                _MountsOnly(self._mounts),  # type: ignore[arg-type]
+                            )
+                            if mount is not None and render_matches_source(
+                                Path(script_path), source_path
+                            ):
+                                in_place_remote_path = translate_local_to_remote(
+                                    source_path, mount
+                                )
+                                # Prefer the script's own directory on
+                                # the remote so relative ``#SBATCH
+                                # --output=`` paths resolve where the
+                                # user expects.
+                                in_place_submit_cwd = translate_local_to_remote(
+                                    source_path.parent, mount
+                                )
 
                 with open(script_path, encoding="utf-8") as f:
                     script_content = f.read()
 
             # --- 2. Submit via SSH ---
-            result = self._client.submit_sbatch_job(script_content, job_name=job.name)
+            if in_place_remote_path is not None:
+                result = self._client.submit_remote_sbatch_file(
+                    in_place_remote_path,
+                    submit_cwd=in_place_submit_cwd,
+                    job_name=job.name,
+                )
+            else:
+                result = self._client.submit_sbatch_job(
+                    script_content, job_name=job.name
+                )
             if result is None or not result.job_id:
                 raise RuntimeError(f"Failed to submit job '{job.name}' via SSH")
             job_id = int(result.job_id)

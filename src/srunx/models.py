@@ -755,9 +755,17 @@ def _render_base_script(
     with open(template_file, encoding="utf-8") as f:
         template_content = f.read()
 
+    # ``keep_trailing_newline=True`` so the rendered output preserves
+    # the source file's trailing ``\n`` instead of silently stripping
+    # it (Jinja's default). Workflow Phase 2's IN_PLACE eligibility
+    # check relies on ``rendered_bytes == source_bytes``; with the
+    # default behaviour, every script ending in ``\n`` (i.e. every
+    # POSIX-conforming shell script) compared as different and the
+    # in-place path was effectively dead. Codex blocker #2 on PR #141.
     template = jinja2.Template(
         template_content,
         undefined=jinja2.StrictUndefined,
+        keep_trailing_newline=True,
     )
 
     # Debug: log template variables

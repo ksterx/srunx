@@ -101,14 +101,22 @@ class TestTyperCLI:
         assert "run" in result.stdout
 
     def test_flow_run_help(self):
-        """Test flow run command help includes debug + validate options."""
+        """Test flow run command help includes debug + validate + sync options.
+
+        Use loose substring checks because Typer wraps long help lines
+        across the terminal width — the longer help text PR #135 added
+        for ``--sync`` pushed the ``--debug`` description below the
+        wrap point. Asserting the flag *names* exist (which is what
+        users grep for) is the contract we actually care about.
+        """
         result = self.runner.invoke(app, ["flow", "run", "--help"])
         assert result.exit_code == 0
         clean_output = strip_ansi_codes(result.stdout)
         assert "Execute workflow from YAML file" in clean_output
         assert "--debug" in clean_output
-        assert "Show rendered SLURM scripts for each job" in clean_output
         assert "--validate" in clean_output
+        assert "--sync" in clean_output
+        assert "--no-sync" in clean_output
 
     def test_flow_run_debug_flag_threads_through(self, tmp_path):
         """Regression for I6: ``srunx flow run --debug`` must forward debug=True.
@@ -139,7 +147,15 @@ class TestTyperCLI:
     @patch("srunx.cli.main.Slurm")
     @patch("srunx.cli.main.get_config")
     def test_sbatch_wrap_basic(self, mock_get_config, mock_slurm_class):
-        """``srunx sbatch --wrap "cmd"`` submits a Job with the wrap string."""
+        """``srunx sbatch --wrap "cmd"`` submits a Job that runs cmd via bash -c.
+
+        Real ``sbatch --wrap`` invokes ``/bin/sh -c "<cmd>"`` on the
+        compute node, so shell operators (``&&`` / ``|`` / ``>``)
+        evaluate there. srunx mirrors that by stuffing the wrap
+        string into ``["bash", "-c", "<cmd>"]`` so the rendered
+        sbatch script ends up running ``srun bash -c '<cmd>'``.
+        Closes #138.
+        """
         mock_config = Mock()
         mock_config.log_dir = "logs"
         mock_config.work_dir = None
@@ -149,7 +165,7 @@ class TestTyperCLI:
         mock_job = Mock()
         mock_job.job_id = 12345
         mock_job.name = "test_job"
-        mock_job.command = "python script.py"
+        mock_job.command = ["bash", "-c", "python script.py"]
         mock_slurm.submit.return_value = mock_job
         mock_slurm_class.return_value = mock_slurm
 
@@ -162,8 +178,87 @@ class TestTyperCLI:
         assert "Job submitted successfully: 12345" in result.stdout
         mock_slurm.submit.assert_called_once()
         submitted_job = mock_slurm.submit.call_args[0][0]
-        # --wrap maps to Job.command verbatim.
-        assert submitted_job.command == "python script.py"
+        # --wrap is wrapped via bash -c so shell operators stay on
+        # the compute node (real sbatch parity).
+        assert submitted_job.command == ["bash", "-c", "python script.py"]
+
+    @patch("srunx.cli.main.Slurm")
+    @patch("srunx.cli.main.get_config")
+    def test_sbatch_wrap_preserves_shell_operators(
+        self, mock_get_config, mock_slurm_class
+    ):
+        """``--wrap "cmd1 && cmd2"`` runs both commands on the compute node.
+
+        Regression for #138: the old implementation passed the wrap
+        string straight to Job.command, which the template rendered
+        as ``srun cmd1 && cmd2``. ``cmd2`` would silently run on the
+        submitting host, not the compute node.
+        """
+        mock_config = Mock()
+        mock_config.log_dir = "logs"
+        mock_config.work_dir = None
+        mock_get_config.return_value = mock_config
+
+        mock_slurm = Mock()
+        mock_job = Mock(job_id=1, name="j", command=[])
+        mock_slurm.submit.return_value = mock_job
+        mock_slurm_class.return_value = mock_slurm
+
+        result = self.runner.invoke(
+            app,
+            [
+                "sbatch",
+                "--wrap",
+                "module load cuda && python train.py",
+            ],
+        )
+
+        assert result.exit_code == 0, result.stdout
+        submitted_job = mock_slurm.submit.call_args[0][0]
+        # The whole shell pipeline must live inside bash -c.
+        assert submitted_job.command == [
+            "bash",
+            "-c",
+            "module load cuda && python train.py",
+        ]
+
+    def test_wrap_renders_to_srun_bash_c(self) -> None:
+        """End-to-end render check: shell operators stay quoted in bash -c.
+
+        Renders the default template against a Job built the way the
+        CLI builds it for ``--wrap`` and asserts the output line
+        contains ``srun bash -c '...'``. Goes through the actual
+        :func:`render_job_script` pipeline so any future template
+        change keeps wrap parity. Closes #138.
+        """
+        import tempfile
+
+        from srunx.models import (
+            Job,
+            JobEnvironment,
+            JobResource,
+            render_job_script,
+        )
+        from srunx.template import get_template_path
+
+        job = Job(
+            name="wrap-parity",
+            command=["bash", "-c", "module load cuda && python train.py"],
+            resources=JobResource(),
+            environment=JobEnvironment(),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = render_job_script(get_template_path("base"), job, tmpdir)
+            content = open(script_path).read()
+
+        # The whole pipeline must sit inside bash -c '...'. ``shlex.join``
+        # uses single quotes for safety.
+        assert "srun bash -c 'module load cuda && python train.py'" in content, (
+            "wrap parity broken: shell operators must stay inside bash -c "
+            "so they evaluate on the compute node, not the submitting host. "
+            "See #138."
+        )
 
     @patch("srunx.cli.main.Slurm")
     @patch("srunx.cli.main.get_config")

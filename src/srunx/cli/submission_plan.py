@@ -25,6 +25,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from srunx.ssh.core.config import MountConfig, ServerProfile
 
@@ -211,6 +212,68 @@ def _preferred_submit_cwd(
     remote_script = translate_local_to_remote(script_path, mount)
     parent, _, _ = remote_script.rpartition("/")
     return parent or remote_script
+
+
+def collect_touched_mounts(workflow: Any, profile: ServerProfile) -> list[MountConfig]:
+    """Return mounts that the workflow's ShellJob ``script_path`` values touch.
+
+    Workflow Phase 2 (#135): the runner needs to rsync each touched
+    mount **once** at the start of the run, then hold the lock
+    across every job submission. This helper does the resolution part
+    (``script_path`` → owning ``MountConfig``) so the runner can
+    feed the result into a single ``mount_sync_session`` per mount.
+
+    Jobs without a local ``script_path`` (``Job`` with command, or
+    ShellJobs whose path lives outside any mount) contribute nothing;
+    they fall back to the temp-upload path at submission time.
+
+    The return order is stable (insertion order of profile.mounts) so
+    the lock-acquisition order is deterministic, sidestepping any
+    mount-vs-mount deadlock when two ``srunx flow run`` invocations
+    target overlapping mount sets.
+    """
+    seen: dict[str, MountConfig] = {}
+    for job in getattr(workflow, "jobs", ()):
+        script_attr = getattr(job, "script_path", None)
+        if not script_attr:
+            continue
+        try:
+            mount = resolve_mount_for_path(Path(script_attr), profile)
+        except (OSError, ValueError):
+            continue
+        if mount is not None and mount.name not in seen:
+            seen[mount.name] = mount
+    return list(seen.values())
+
+
+def render_matches_source(rendered_path: Path, source_path: Path) -> bool:
+    """Return ``True`` when the rendered ShellJob bytes equal the source.
+
+    Used by the workflow's per-ShellJob plan step to decide whether
+    Jinja substitution actually changed anything. When the bytes are
+    identical the script can run *in place* on the cluster (the
+    user's source file is what executes); when they differ the
+    rendered output is a generated artifact and must take the
+    temp-upload path.
+
+    Trailing newlines are normalised before comparison so a Jinja
+    pass that round-trips a no-substitution script doesn't get
+    flagged as "different" because of a stripped final ``\\n``.
+    Codex blocker #2 on PR #141 caught this — we also fixed the
+    Jinja env in :func:`_render_base_script` to ``keep_trailing_newline``,
+    but rstripping defends against any future template/Jinja behaviour
+    drift.
+
+    Both paths must exist; missing files return ``False`` so the
+    caller treats the mismatch as "render produced something
+    different" and stays on the safe (temp-upload) path.
+    """
+    try:
+        rendered = rendered_path.read_bytes()
+        source = source_path.read_bytes()
+    except OSError:
+        return False
+    return rendered.rstrip(b"\n") == source.rstrip(b"\n")
 
 
 def _translate_cwd(cwd: Path | None, profile: ServerProfile | None) -> str | None:

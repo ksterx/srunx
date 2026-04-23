@@ -845,15 +845,18 @@ def sbatch(
         }
         job = ShellJob.model_validate(shell_data)
     else:
-        # ``--wrap`` is a single shell command line; SLURM's ``sbatch
-        # --wrap`` runs it via ``/bin/sh -c``. Mirror that here by
-        # passing the wrap string as the Job command (Job.command
-        # accepts ``str``); the local renderer will interpolate it
-        # verbatim into the rendered sbatch ``srun`` invocation.
+        # ``--wrap`` should match real ``sbatch --wrap``: SLURM wraps
+        # the supplied string into ``/bin/sh -c "<cmd>"`` so shell
+        # operators (``&&`` / ``|`` / ``>`` / ``;``) are evaluated on
+        # the compute node, not on the submitting host. Pass the wrap
+        # string as a three-token list ``["bash", "-c", "<cmd>"]``;
+        # ``render_job_script`` uses ``shlex.join`` so the rendered
+        # template emits ``srun bash -c '<cmd>'`` with the payload
+        # safely single-quoted. Closes #138.
         assert wrap is not None  # type narrowing: enforced by mutex above
         job_data: dict[str, Any] = {
             "name": name,
-            "command": wrap,
+            "command": ["bash", "-c", wrap],
             "resources": resources,
             "environment": environment,
             "log_dir": log_dir,
@@ -1452,6 +1455,17 @@ def flow_run(
             help="Maximum concurrent sweep cells (overrides YAML sweep.max_parallel)",
         ),
     ] = None,
+    sync: Annotated[
+        bool | None,
+        typer.Option(
+            "--sync/--no-sync",
+            help=(
+                "Rsync each touched mount once at the start of the run "
+                "(default ``[sync] auto``). ``--no-sync`` skips rsync but "
+                "still acquires the per-mount lock for race-free submission."
+            ),
+        ),
+    ] = None,
     profile: ProfileOpt = None,
     local: LocalOpt = False,
     quiet: QuietOpt = False,
@@ -1481,6 +1495,7 @@ def flow_run(
         profile=profile,
         local=local,
         quiet=quiet,
+        sync=sync,
     )
 
 

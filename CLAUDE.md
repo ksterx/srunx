@@ -116,6 +116,12 @@ When a non-default transport is selected, a 1-line banner is emitted on stderr
 #### Workflows
 - `uv run srunx flow run <yaml_file>` - Execute workflow from YAML
 - `uv run srunx flow run <yaml_file> --validate` - Validate without executing (replaces the old `flow validate` subcommand)
+- `uv run srunx flow run <yaml_file> --profile <name>` - Run over SSH; auto-syncs each touched mount **once** + holds the per-mount lock across every job in the workflow (Phase 2 of #135)
+- `uv run srunx flow run <yaml_file> --profile <name> --no-sync` - Skip rsync but still hold the per-mount lock (race-free submission against existing remote state)
+- ShellJobs whose `script_path` lives under a synced mount and whose Jinja-rendered bytes match the source bytes are **executed in place** on the remote — the user's own `#SBATCH --output=` directives win, no tmp copy.
+
+#### `--wrap` (real sbatch parity)
+- `uv run srunx sbatch --wrap "cmd1 && cmd2"` runs both commands on the compute node — internally wrapped as `srun bash -c '...'` so shell operators (`&&`, `|`, `>`, `;`) evaluate where the user expects (closes #138).
 
 #### Configuration
 - `uv run srunx config show` - Show current configuration
