@@ -23,6 +23,12 @@ from srunx.ssh.core.config import MountConfig, ServerProfile
 def isolated_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
+    # Disable the per-machine owner marker check (#137 part 4) for
+    # the existing in-place tests — they predate the marker and only
+    # care about the rsync / sbatch / lock interactions. Owner-marker
+    # behaviour is exercised separately in
+    # ``tests/sync/test_owner_marker.py``.
+    monkeypatch.setenv("SRUNX_SYNC_OWNER_CHECK", "0")
 
 
 def _stub_profile(tmp_path: Path, mount_local: Path, remote: str) -> ServerProfile:
@@ -472,7 +478,15 @@ def test_config_workdir_does_not_inject_chdir(
     monkeypatch.setattr(
         cli_main_module,
         "get_config",
-        lambda: SrunxConfig.model_validate({"work_dir": "/some/config/default"}),
+        lambda: SrunxConfig.model_validate(
+            {
+                "work_dir": "/some/config/default",
+                # Match the autouse env-var override — the injected
+                # config bypasses ``load_config`` so the env var
+                # doesn't reach this construction path.
+                "sync": {"owner_check": False},
+            }
+        ),
     )
 
     profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")

@@ -29,6 +29,10 @@ from srunx.ssh.core.config import MountConfig, ServerProfile
 def isolated_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
+    # Owner-marker (#137 part 4) check is exercised in
+    # ``tests/sync/test_owner_marker.py``; keep it off here so the
+    # workflow-level mocks don't have to cover ssh round-trips.
+    monkeypatch.setenv("SRUNX_SYNC_OWNER_CHECK", "0")
 
 
 def _stub_profile(tmp_path: Path, mount_local: Path, remote: str) -> ServerProfile:

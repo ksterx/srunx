@@ -57,6 +57,7 @@ def _submit_via_transport(
     callbacks: list[Callback],
     config: Any,
     extra_sbatch_args: list[str] | None = None,
+    force_sync: bool = False,
 ) -> Any:
     """Dispatch a submit to the right adapter method + optional mount sync.
 
@@ -146,6 +147,7 @@ def _submit_via_transport(
             mount=plan.mount,
             config=config.sync,
             sync_required=plan.sync_required,
+            force_sync=force_sync,
         )
         sync_ctx_entered = sync_ctx.__enter__()
     except SyncAbortedError as exc:
@@ -800,6 +802,19 @@ def sbatch(
             ),
         ),
     ] = None,
+    force_sync: Annotated[
+        bool,
+        typer.Option(
+            "--force-sync",
+            help=(
+                "Bypass the per-machine ownership check and sync this "
+                "mount even if another workstation last touched it. Use "
+                "after confirming the other machine isn't mid-edit. "
+                "Disable the check globally via ``[sync] owner_check = "
+                "false`` if your setup is solo-machine."
+            ),
+        ),
+    ] = False,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Show verbose output")
     ] = False,
@@ -1062,6 +1077,7 @@ def sbatch(
             callbacks=callbacks,
             config=config,
             extra_sbatch_args=extra_sbatch_args,
+            force_sync=force_sync,
         )
         client = Slurm(callbacks=callbacks) if rt.transport_type == "local" else None
 

@@ -29,6 +29,7 @@ from srunx.logging import get_logger
 from srunx.ssh.core.config import MountConfig, ServerProfile
 from srunx.sync.lock import acquire_sync_lock
 from srunx.sync.mount_helpers import sync_mount_by_name
+from srunx.sync.owner_marker import OwnerMismatch, check_owner, write_owner_marker
 
 logger = get_logger(__name__)
 
@@ -100,6 +101,7 @@ def mount_sync_session(
     mount: MountConfig,
     config: SyncDefaults,
     sync_required: bool,
+    force_sync: bool = False,
 ) -> Iterator[SyncOutcome]:
     """Acquire the per-mount lock, optionally rsync, hold lock until exit.
 
@@ -115,15 +117,24 @@ def mount_sync_session(
     we skip the rsync invocation itself and return a ``performed=False``
     outcome.
 
+    ``force_sync=True`` (CLI ``--force-sync``) bypasses the
+    per-machine ownership marker check (#137 part 4) so the user can
+    intentionally take over a mount that another workstation
+    previously synced.
+
     Failure modes:
 
     * Dirty worktree + ``require_clean=true`` → :class:`SyncAbortedError`
       (rsync does **not** run; lock is released before raising).
     * Dirty worktree + ``warn_dirty=true`` → log warning, sync proceeds.
+    * Owner marker shows a different host + ``owner_check=true`` +
+      ``force_sync=False`` → :class:`SyncAbortedError` (rsync does
+      **not** run).
     * Lock contention → :class:`~srunx.sync.lock.SyncLockTimeoutError`
       bubbles up.
     * rsync non-zero exit → :class:`RuntimeError` (from inner helper).
     """
+
     warnings: list[str] = []
     if sync_required:
         local_root = Path(mount.local).expanduser()
@@ -144,11 +155,50 @@ def mount_sync_session(
         profile_name, mount.name, timeout=config.lock_timeout_seconds
     ):
         if sync_required:
+            # Owner-marker check runs INSIDE the lock so two racing
+            # workstations can't both pass the check and then both
+            # write conflicting markers. The lock guarantees that at
+            # most one of them is ever in the read-marker → rsync →
+            # write-marker window at a time.
+            try:
+                check_owner(
+                    profile,
+                    mount,
+                    enabled=config.owner_check,
+                    force=force_sync,
+                )
+            except OwnerMismatch as exc:
+                # Re-cast as SyncAbortedError so CLI / Web callers can
+                # catch every "we refused to sync" reason via one
+                # exception type, while preserving the original
+                # message.
+                raise SyncAbortedError(str(exc)) from exc
+
             logger.info("Syncing mount '%s' before submission", mount.name)
             # delete=False (Codex blocker #4): auto-sync must not wipe
             # remote-only outputs (training checkpoints, run logs).
             # ``srunx ssh sync`` keeps the historical mirror behaviour.
             sync_mount_by_name(profile, mount.name, delete=False)
+
+            # Stamp the marker AFTER a successful sync so a failed
+            # rsync doesn't claim ownership for a tree we couldn't
+            # actually push. Gated by ``owner_check``: if the user
+            # opted out of the check, also opt out of writing the
+            # marker — otherwise solo-machine setups would still
+            # accumulate markers nobody reads.
+            #
+            # Best-effort on write failure: a write error produces a
+            # warning but doesn't abort the run that just
+            # successfully shipped its files (network blips at this
+            # exact moment shouldn't fail an otherwise-successful
+            # submission).
+            if config.owner_check:
+                try:
+                    write_owner_marker(profile, mount)
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    msg = f"Could not update owner marker for '{mount.name}': {exc}"
+                    logger.warning(msg)
+                    warnings.append(msg)
 
         yield SyncOutcome(
             mount_name=mount.name,
