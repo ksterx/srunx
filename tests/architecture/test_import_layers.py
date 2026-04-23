@@ -94,12 +94,15 @@ KNOWN_VIOLATIONS: dict[tuple[str, str], str] = {
         "Phase 5 (#161) / Phase 8 (#164): callbacks absorbed into observability; "
         "CLI-side notification helper inverted so interfaces -> observability."
     ),
-    # slurm -> observability (client.py writes DB rows and invokes callbacks).
-    ("client", "callbacks"): "Phase 5 (#161): extract JobLifecycleSink from client.py.",
+    # slurm -> observability (local client writes DB rows and invokes callbacks).
     (
-        "client",
+        "slurm",
+        "callbacks",
+    ): "Phase 5 (#161): extract JobLifecycleSink from slurm/local.py.",
+    (
+        "slurm",
         "db",
-    ): "Phase 5 (#161): route client.py DB writes through observability.recorder sink.",
+    ): "Phase 5 (#161): route slurm/local.py DB writes through observability.recorder sink.",
     # domain -> runtime (models.py is a backward-compat shim re-exporting renderers).
     ("models", "runtime"): (
         "Shim re-exports from :mod:`srunx.runtime.rendering`. Remove when "
