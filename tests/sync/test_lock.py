@@ -60,6 +60,42 @@ def test_lock_path_sanitises_special_chars() -> None:
     assert p.name.endswith(".lock")
 
 
+def test_lock_path_disambiguates_dash_collision() -> None:
+    """``foo-bar / baz`` and ``foo / bar-baz`` get distinct lock files.
+
+    Pre-#137 the filename was ``f"{sanitise(p)}-{sanitise(m)}.lock"``
+    which collapsed both pairs into ``foo-bar-baz.lock`` — distinct
+    mounts queued on the same lock for no semantic reason. The hash
+    suffix added in :func:`_disambiguator` restores per-pair
+    uniqueness.
+    """
+    a = lock_path_for("foo-bar", "baz")
+    b = lock_path_for("foo", "bar-baz")
+    assert a != b
+    # Both still live in the locks dir and end in .lock — readability
+    # of the diagnostic prefix is preserved.
+    assert a.parent == b.parent
+    assert a.name.endswith(".lock") and b.name.endswith(".lock")
+
+
+def test_lock_path_is_deterministic() -> None:
+    """Same inputs → same path. The hash suffix is content-derived."""
+    assert lock_path_for("alice", "ml") == lock_path_for("alice", "ml")
+
+
+def test_lock_path_separates_unrelated_pairs_after_sanitise() -> None:
+    """Names that sanitise to the same string still get distinct locks.
+
+    ``"a/b"`` and ``"a_b"`` both flatten to ``a_b`` under sanitisation;
+    without the hash they'd map to the same lock. The disambiguator
+    runs against the *raw* names so each unique input gets its own
+    lock file.
+    """
+    a = lock_path_for("a/b", "ml")
+    b = lock_path_for("a_b", "ml")
+    assert a != b
+
+
 def test_sanitise_empty_value_falls_back() -> None:
     assert _sanitise("") == "unnamed"
     assert _sanitise("___") == "unnamed"  # Strip-able chars only.
