@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -438,6 +439,87 @@ class RsyncClient:
                 f"ssh write to {remote_path!r} failed "
                 f"(exit {result.returncode}): {result.stderr.strip()}"
             )
+
+    # Custom exit codes wired into the remote shell snippet for
+    # remote_sha256. Chosen above the common shell-defined range
+    # (1=generic error, 2=misuse, 126/127=can't exec / not found,
+    # 255=ssh) so they can't be confused with a genuine failure mode
+    # we'd want to surface as RuntimeError.
+    _SHA256_REMOTE_MISSING_EXIT = 10
+    _SHA256_REMOTE_NO_TOOL_EXIT = 11
+
+    # sha256sum / shasum -a 256 prefix every output line with the 64-hex
+    # digest followed by whitespace. Anchored at start of line so we
+    # don't accidentally match a hex-looking substring inside a path.
+    _SHA256_HEX_RE = re.compile(r"^([0-9a-f]{64})\b", re.IGNORECASE)
+
+    def remote_sha256(self, remote_path: str) -> str | None:
+        """Return the SHA-256 hex digest of *remote_path*, or ``None``.
+
+        Used by :func:`srunx.sync.hash_verify.verify_paths_match`
+        (#137 part 5) to detect the silent-rsync-failure case where
+        rsync exits 0 but the specific file we're about to ``sbatch``
+        never reached the cluster (excluded by a stray rule, lost to
+        a path-translation bug, …). A None return defers to the
+        caller, which decides whether "missing" or "no tool" should
+        block submission.
+
+        Returns:
+            The 64-char lowercase hex digest on success.
+            ``None`` when the file does not exist on the remote.
+            ``None`` when neither ``sha256sum`` nor ``shasum -a 256``
+            is available on the remote PATH (logged at debug — the
+            rsync that just succeeded is the user's main signal).
+
+        Raises:
+            RuntimeError: For any other ssh / network failure
+            (connection refused, host key mismatch, host
+            unreachable, …). Callers that want "best effort" can
+            catch and downgrade; the marker-read code in
+            :func:`check_owner` is the prior art for that pattern.
+        """
+        quoted = shlex.quote(remote_path)
+        # Single round-trip: existence check, then prefer sha256sum
+        # (Linux), fall back to shasum -a 256 (macOS / BSD). Custom
+        # exit codes disambiguate "file missing" and "no tool" from
+        # genuine failures so the Python side doesn't have to grep
+        # stderr to make that distinction.
+        script = (
+            f"test -f {quoted} || exit {self._SHA256_REMOTE_MISSING_EXIT}\n"
+            f"if command -v sha256sum >/dev/null 2>&1; then\n"
+            f"  sha256sum -- {quoted}\n"
+            f"elif command -v shasum >/dev/null 2>&1; then\n"
+            f"  shasum -a 256 -- {quoted}\n"
+            f"else\n"
+            f"  exit {self._SHA256_REMOTE_NO_TOOL_EXIT}\n"
+            f"fi"
+        )
+        result = self._ssh_run(script)
+        if result.returncode == 0:
+            match = self._SHA256_HEX_RE.match(result.stdout.strip())
+            if match is None:
+                # Unparseable output is a genuine failure — sha256sum
+                # / shasum surfaced something we don't understand,
+                # better to fail loud than silently fall through to
+                # "no hash".
+                raise RuntimeError(
+                    f"could not parse sha256 output for {remote_path!r}: "
+                    f"{result.stdout.strip()!r}"
+                )
+            return match.group(1).lower()
+        if result.returncode == self._SHA256_REMOTE_MISSING_EXIT:
+            return None
+        if result.returncode == self._SHA256_REMOTE_NO_TOOL_EXIT:
+            logger.debug(
+                "Remote sha256 verification skipped for {}: "
+                "neither sha256sum nor shasum available on remote PATH",
+                remote_path,
+            )
+            return None
+        raise RuntimeError(
+            f"ssh sha256 of {remote_path!r} failed "
+            f"(exit {result.returncode}): {result.stderr.strip()}"
+        )
 
     def _merge_excludes(self, extra: Sequence[str] | None) -> list[str]:
         """Merge per-call exclude patterns with instance patterns."""

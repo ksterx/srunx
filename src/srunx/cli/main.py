@@ -149,6 +149,12 @@ def _submit_via_transport(
             sync_required=plan.sync_required,
             force_sync=force_sync,
             verbose=verbose,
+            # Per-script hash verification (#137 part 5): the local
+            # source of truth for the file we're about to ``sbatch``.
+            # Gated upstream by ``config.sync.verify_remote_hash``;
+            # passing the path unconditionally keeps the CLI ignorant
+            # of that flag.
+            verify_paths=[str(script_path)] if script_path is not None else None,
         )
         sync_ctx_entered = sync_ctx.__enter__()
     except SyncAbortedError as exc:

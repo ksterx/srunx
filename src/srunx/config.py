@@ -151,6 +151,20 @@ class SyncDefaults(BaseModel):
             "globally for solo-machine setups."
         ),
     )
+    verify_remote_hash: bool = Field(
+        default=False,
+        description=(
+            "After auto-sync, SHA-256 the script we're about to "
+            "``sbatch`` on both ends and abort on mismatch (#137 part 5). "
+            "Catches silent rsync failures — a stray exclude rule, a "
+            "path-translation bug, an incremental-algorithm hiccup — "
+            "where rsync exits 0 but the file we cared about never "
+            "actually reached the cluster. Off by default because it "
+            "adds an ssh round-trip per submit; enable for CI / "
+            "shared-cluster setups where silently submitting stale "
+            "bytes is unacceptable."
+        ),
+    )
 
 
 class SrunxConfig(BaseModel):
@@ -319,6 +333,8 @@ def load_config_from_env() -> dict[str, Any]:
         sync["require_clean"] = clean.lower() in ("1", "true", "yes", "on")
     if (owner := os.getenv("SRUNX_SYNC_OWNER_CHECK")) is not None:
         sync["owner_check"] = owner.lower() in ("1", "true", "yes", "on")
+    if (verify := os.getenv("SRUNX_SYNC_VERIFY_REMOTE_HASH")) is not None:
+        sync["verify_remote_hash"] = verify.lower() in ("1", "true", "yes", "on")
     if sync:
         config["sync"] = sync
 

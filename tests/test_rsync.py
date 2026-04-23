@@ -729,3 +729,107 @@ class TestSyncProject:
             )
             with pytest.raises(RuntimeError, match="rsync failed"):
                 client.sync_project()
+
+
+# ---------------------------------------------------------------------------
+# remote_sha256 (#137 part 5)
+# ---------------------------------------------------------------------------
+
+
+class TestRemoteSha256:
+    """``remote_sha256`` is the cluster-side half of post-rsync verification.
+
+    The wire-level shape is a single ssh round-trip running a small
+    shell snippet that:
+
+    1. ``test -f`` — distinct exit code for ""file missing"".
+    2. Tries ``sha256sum`` (Linux), falls back to ``shasum -a 256``
+       (macOS) — distinct exit code for ""no tool available"".
+    3. Otherwise prints the digest followed by the path.
+
+    Each branch maps to a distinct return / raise so the caller in
+    :mod:`srunx.sync.hash_verify` can apply the right policy without
+    grepping stderr.
+    """
+
+    def test_happy_path_parses_sha256sum_output(self) -> None:
+        """Standard ``sha256sum`` output: ``<64 hex>  <path>``."""
+        client = _make_rsync_client(hostname="h", username="u")
+        digest = "a" * 64
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=f"{digest}  /r/ml/train.sbatch\n",
+                stderr="",
+            )
+            result = client.remote_sha256("/r/ml/train.sbatch")
+        assert result == digest
+        # The remote command must have shell-quoted the path.
+        ssh_cmd = mock_run.call_args[0][0]
+        joined = " ".join(ssh_cmd)
+        assert "/r/ml/train.sbatch" in joined
+        assert "sha256sum" in joined
+        assert "shasum" in joined  # fallback also wired in
+
+    def test_uppercase_hex_is_normalised(self) -> None:
+        """``shasum`` on some BSDs prints upper-case — normalise to lower.
+
+        Comparison against :func:`hashlib.sha256().hexdigest()`
+        (always lowercase) needs both sides in the same case.
+        """
+        client = _make_rsync_client(hostname="h", username="u")
+        digest_upper = "A" * 64
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout=f"{digest_upper}  /r/ml/x\n", stderr=""
+            )
+            assert client.remote_sha256("/r/ml/x") == "a" * 64
+
+    def test_missing_file_returns_none(self) -> None:
+        """Custom exit 10 (``test -f`` failed) → ``None`` (file gone)."""
+        client = _make_rsync_client(hostname="h", username="u")
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=10, stdout="", stderr="")
+            assert client.remote_sha256("/r/ml/missing.sbatch") is None
+
+    def test_missing_tool_returns_none(self) -> None:
+        """Custom exit 11 (no sha256sum, no shasum) → ``None`` (skip).
+
+        The debug-log emission itself isn't asserted (loguru +
+        caplog don't compose without a sink) — the contract that
+        matters is that the caller gets None to feed the
+        ``hash_verify`` skip-silently policy.
+        """
+        client = _make_rsync_client(hostname="h", username="u")
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=11, stdout="", stderr="")
+            assert client.remote_sha256("/r/ml/script.sbatch") is None
+
+    def test_ssh_failure_raises_runtime_error(self) -> None:
+        """ssh exit 255 (genuine network failure) → ``RuntimeError``."""
+        client = _make_rsync_client(hostname="h", username="u")
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=255,
+                stdout="",
+                stderr="ssh: connect to host h: connection refused",
+            )
+            with pytest.raises(RuntimeError, match="connection refused"):
+                client.remote_sha256("/r/ml/train.sbatch")
+
+    def test_unparseable_output_raises(self) -> None:
+        """Exit 0 but no hex digest in stdout → fail loud, don't fall through.
+
+        sha256sum / shasum surfacing something we don't recognise is
+        more concerning than ""no hash"" — silently returning None
+        would let a buggy remote mask itself as ""tool missing"".
+        """
+        client = _make_rsync_client(hostname="h", username="u")
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="garbage not-a-digest\n",
+                stderr="",
+            )
+            with pytest.raises(RuntimeError, match="parse sha256"):
+                client.remote_sha256("/r/ml/train.sbatch")
