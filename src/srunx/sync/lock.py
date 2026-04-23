@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import fcntl
+import hashlib
 import os
 import re
 import time
@@ -69,10 +70,42 @@ def _sanitise(value: str) -> str:
     return cleaned or "unnamed"
 
 
+def _disambiguator(profile: str, mount: str) -> str:
+    """Short hash that disambiguates colliding ``(profile, mount)`` pairs.
+
+    The pre-#137 filename ``f"{sanitise(profile)}-{sanitise(mount)}.lock"``
+    collapsed pairs whose split fell at a ``-``: ``("foo-bar", "baz")`` and
+    ``("foo", "bar-baz")`` both produced ``foo-bar-baz.lock``. The
+    consequence was *over-serialisation* (two unrelated mounts queueing
+    on one lock) — safe but wrong. Two unrelated workflows on
+    overlapping name shapes would block each other for no reason.
+
+    Mixing in a short hash of the raw ``(profile, mount)`` pair (a
+    ``\\x00`` separator avoids the same collapse the readable name
+    suffers) restores per-pair uniqueness while keeping the filename
+    diagnosable. 8 hex chars ≈ 32 bits — collision probability is
+    negligible for the handful of mounts a single user will ever
+    register.
+    """
+    payload = f"{profile}\x00{mount}".encode()
+    return hashlib.sha256(payload).hexdigest()[:8]
+
+
 def lock_path_for(profile: str, mount: str) -> Path:
-    """Return the lock file path for a (profile, mount) pair."""
+    """Return the lock file path for a (profile, mount) pair.
+
+    Filename format: ``{sanitised_profile}-{sanitised_mount}-{hash8}.lock``.
+    The ``hash8`` suffix disambiguates pairs whose readable parts
+    collide after sanitisation (``foo-bar / baz`` vs ``foo / bar-baz``).
+    See :func:`_disambiguator`.
+    """
     return (
-        _user_config_dir() / "locks" / f"{_sanitise(profile)}-{_sanitise(mount)}.lock"
+        _user_config_dir()
+        / "locks"
+        / (
+            f"{_sanitise(profile)}-{_sanitise(mount)}"
+            f"-{_disambiguator(profile, mount)}.lock"
+        )
     )
 
 
