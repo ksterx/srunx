@@ -12,11 +12,124 @@ from __future__ import annotations
 import pytest
 
 from srunx.db.cli_helpers import (
+    compute_job_stats,
     compute_workflow_stats,
     create_cli_workflow_run,
+    list_recent_jobs,
     record_submission_from_job,
 )
 from srunx.models import Job, JobEnvironment, JobResource
+
+
+def _record_ssh_job(
+    job: Job,
+    *,
+    profile: str,
+    workflow_run_id: int | None = None,
+) -> None:
+    """Record a job under the SSH transport triple.
+
+    JobRepository validates ``(transport_type, profile_name,
+    scheduler_key)`` together so callers can't drift one without the
+    others — this helper bundles the trio for SSH-tagged tests.
+    """
+    record_submission_from_job(
+        job,
+        transport_type="ssh",
+        profile_name=profile,
+        scheduler_key=f"ssh:{profile}",
+        workflow_run_id=workflow_run_id,
+    )
+
+
+class TestSchedulerKeyFilter:
+    """SSH-parity for ``sacct`` / ``sreport``: scheduler_key push-down.
+
+    The CLI passes ``scheduler_key="ssh:<profile>"`` (or ``"local"``)
+    into the helpers; the SQL ``WHERE`` filter must scope rows to that
+    transport so cross-cluster jobs don't bleed into each other's
+    history / aggregates. ``scheduler_key=None`` keeps the legacy
+    behaviour (every transport).
+    """
+
+    def test_list_recent_jobs_filters_by_scheduler_key(self, _isolated_db):
+        record_submission_from_job(_make_job("local_job", 10, gpus=2))
+        _record_ssh_job(_make_job("dgx_job", 11, gpus=4), profile="dgx")
+        _record_ssh_job(_make_job("aws_job", 12, gpus=8), profile="aws")
+
+        local_jobs = list_recent_jobs(scheduler_key="local")
+        assert {j["job_name"] for j in local_jobs} == {"local_job"}
+
+        dgx_jobs = list_recent_jobs(scheduler_key="ssh:dgx")
+        assert {j["job_name"] for j in dgx_jobs} == {"dgx_job"}
+
+        # No filter → every transport surfaces (legacy Web UI behaviour).
+        all_jobs = list_recent_jobs()
+        assert {j["job_name"] for j in all_jobs} == {
+            "local_job",
+            "dgx_job",
+            "aws_job",
+        }
+
+    def test_list_recent_jobs_id_filter_respects_scheduler_key(self, _isolated_db):
+        """``-j <id>`` push-down still scopes to the requested transport.
+
+        Without the AND-clause, ``srunx sacct -j 100 --profile dgx``
+        would happily return a local job that happens to share the
+        SLURM ``job_id`` (different clusters reuse the int counter).
+        """
+        record_submission_from_job(_make_job("local_100", 100))
+        _record_ssh_job(_make_job("dgx_100", 100), profile="dgx")
+
+        # No scope — both rows surface (composite uniqueness on
+        # (scheduler_key, job_id) means both can coexist).
+        both = list_recent_jobs(job_ids=[100])
+        assert {j["job_name"] for j in both} == {"local_100", "dgx_100"}
+
+        only_ssh = list_recent_jobs(job_ids=[100], scheduler_key="ssh:dgx")
+        assert {j["job_name"] for j in only_ssh} == {"dgx_100"}
+
+    def test_compute_job_stats_filters_by_scheduler_key(self, _isolated_db):
+        record_submission_from_job(_make_job("local_a", 1))
+        record_submission_from_job(_make_job("local_b", 2))
+        _record_ssh_job(_make_job("ssh_a", 3), profile="dgx")
+
+        assert compute_job_stats(scheduler_key="local")["total_jobs"] == 2
+        assert compute_job_stats(scheduler_key="ssh:dgx")["total_jobs"] == 1
+        assert compute_job_stats()["total_jobs"] == 3  # legacy: all
+
+    def test_compute_workflow_stats_filters_by_scheduler_key(self, _isolated_db):
+        """Same workflow can run on multiple clusters — stats scope per key."""
+        run_id = create_cli_workflow_run(workflow_name="multi_cluster")
+        assert run_id is not None
+
+        # Workflow run rows aren't transport-tagged; the per-job
+        # ``scheduler_key`` is what scopes the JOIN.
+        record_submission_from_job(
+            _make_job("local_step", 50),
+            workflow_name="multi_cluster",
+            workflow_run_id=run_id,
+        )
+        _record_ssh_job(
+            _make_job("dgx_step", 51),
+            profile="dgx",
+            workflow_run_id=run_id,
+        )
+        _record_ssh_job(
+            _make_job("dgx_step_2", 52),
+            profile="dgx",
+            workflow_run_id=run_id,
+        )
+
+        local_stats = compute_workflow_stats("multi_cluster", scheduler_key="local")
+        assert local_stats["total_jobs"] == 1
+
+        dgx_stats = compute_workflow_stats("multi_cluster", scheduler_key="ssh:dgx")
+        assert dgx_stats["total_jobs"] == 2
+
+        # Legacy (no scope): both clusters' rows aggregate together.
+        all_stats = compute_workflow_stats("multi_cluster")
+        assert all_stats["total_jobs"] == 3
 
 
 @pytest.fixture

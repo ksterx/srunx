@@ -100,7 +100,9 @@ class TestResourcesCommand:
             assert "0" in result.stdout  # nodes_down
 
             # Verify ResourceMonitor was created with correct partition
-            mock_monitor_class.assert_called_once_with(min_gpus=0, partition="gpu")
+            mock_monitor_class.assert_called_once_with(
+                min_gpus=0, partition="gpu", source=None
+            )
 
     def test_resources_json_format_default(self, runner, mock_snapshot_all_partitions):
         """Test resources command with JSON format."""
@@ -151,7 +153,9 @@ class TestResourcesCommand:
             assert data["nodes_down"] == 0
 
             # Verify ResourceMonitor was created with correct partition
-            mock_monitor_class.assert_called_once_with(min_gpus=0, partition="gpu")
+            mock_monitor_class.assert_called_once_with(
+                min_gpus=0, partition="gpu", source=None
+            )
 
     def test_resources_zero_gpus_available(self, runner):
         """Test resources command when no GPUs available."""
@@ -271,7 +275,9 @@ class TestResourcesCommand:
             assert data["partition"] == "gpu"
 
             # Verify ResourceMonitor was created correctly
-            mock_monitor_class.assert_called_once_with(min_gpus=0, partition="gpu")
+            mock_monitor_class.assert_called_once_with(
+                min_gpus=0, partition="gpu", source=None
+            )
 
     def test_resources_high_utilization(self, runner):
         """Test resources command with high GPU utilization."""
@@ -300,3 +306,135 @@ class TestResourcesCommand:
             # 95% utilization
             assert data["gpus_in_use"] / data["gpus_total"] == 0.95
             assert data["gpus_available"] == 5
+
+
+class TestSinfoSshParity:
+    """#139: ``--profile`` routes ``sinfo`` through the SSH adapter.
+
+    SSH path uses :class:`SSHAdapterResourceSource` (the same backend
+    the resource snapshotter / Web ``/api/resources`` already use), so
+    these tests mock the SSH transport handle and assert the cluster
+    snapshot path runs against the adapter — never the local
+    ``subprocess.run('sinfo')`` fallback.
+    """
+
+    def test_profile_routes_through_ssh_adapter_cluster_snapshot(self, runner):
+        from srunx.transport.registry import TransportHandle
+
+        fake_adapter = MagicMock()
+        fake_adapter.get_cluster_snapshot.return_value = {
+            "partition": None,
+            "total_gpus": 64,
+            "gpus_in_use": 16,
+            "gpus_available": 48,
+            "jobs_running": 4,
+            "nodes_total": 8,
+            "nodes_idle": 4,
+            "nodes_down": 0,
+        }
+        fake_handle = TransportHandle(
+            scheduler_key="ssh:dgx",
+            profile_name="dgx",
+            transport_type="ssh",
+            job_ops=fake_adapter,
+            queue_client=fake_adapter,
+            executor_factory=MagicMock(),
+            submission_context=None,
+        )
+
+        with patch(
+            "srunx.transport.registry._build_ssh_handle",
+            return_value=(fake_handle, None),
+        ):
+            result = runner.invoke(
+                app, ["sinfo", "--profile", "dgx", "--format", "json"]
+            )
+
+        assert result.exit_code == 0, result.stdout + (result.stderr or "")
+        data = json.loads(result.stdout)
+        assert data["gpus_total"] == 64
+        assert data["gpus_available"] == 48
+        # The whole point of #139 — local sinfo must NOT have run.
+        fake_adapter.get_cluster_snapshot.assert_called_once()
+        fake_adapter.get_resources.assert_not_called()
+
+    def test_profile_with_partition_uses_per_partition_query(self, runner):
+        from srunx.transport.registry import TransportHandle
+
+        fake_adapter = MagicMock()
+        fake_adapter.get_resources.return_value = [
+            {
+                "partition": "gpu",
+                "total_gpus": 32,
+                "gpus_in_use": 8,
+                "gpus_available": 24,
+                "jobs_running": 2,
+                "nodes_total": 4,
+                "nodes_idle": 2,
+                "nodes_down": 0,
+            }
+        ]
+        fake_handle = TransportHandle(
+            scheduler_key="ssh:dgx",
+            profile_name="dgx",
+            transport_type="ssh",
+            job_ops=fake_adapter,
+            queue_client=fake_adapter,
+            executor_factory=MagicMock(),
+            submission_context=None,
+        )
+
+        with patch(
+            "srunx.transport.registry._build_ssh_handle",
+            return_value=(fake_handle, None),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sinfo",
+                    "--profile",
+                    "dgx",
+                    "--partition",
+                    "gpu",
+                    "--format",
+                    "json",
+                ],
+            )
+
+        assert result.exit_code == 0, result.stdout + (result.stderr or "")
+        data = json.loads(result.stdout)
+        assert data["partition"] == "gpu"
+        assert data["gpus_total"] == 32
+        # Per-partition path: get_resources('gpu') called, NOT
+        # get_cluster_snapshot.
+        fake_adapter.get_resources.assert_called_once_with("gpu")
+        fake_adapter.get_cluster_snapshot.assert_not_called()
+
+    def test_local_path_unchanged_when_no_profile(
+        self, runner, mock_snapshot_all_partitions
+    ):
+        """Regression guard: local default still uses ResourceMonitor subprocess.
+
+        Without ``--profile``/``$SRUNX_SSH_PROFILE`` the SSH branch
+        must NOT activate — the existing
+        :class:`TestResourcesCommand` tests already cover the table
+        path, this one explicitly asserts ``source=None`` so the
+        subprocess fallback stays the default.
+        """
+        with patch(
+            "srunx.monitor.resource_monitor.ResourceMonitor"
+        ) as mock_monitor_class:
+            mock_monitor = MagicMock()
+            mock_monitor.get_partition_resources.return_value = (
+                mock_snapshot_all_partitions
+            )
+            mock_monitor_class.return_value = mock_monitor
+
+            result = runner.invoke(app, ["sinfo", "--local", "--format", "json"])
+
+        assert result.exit_code == 0
+        # ``source=None`` means the local subprocess path runs — see
+        # the docstring on ``ResourceMonitor.get_partition_resources``.
+        mock_monitor_class.assert_called_once_with(
+            min_gpus=0, partition=None, source=None
+        )

@@ -25,11 +25,14 @@ counterpart.
 - `uv run srunx squeue --show-gpus` - Include GPU allocation column
 - `uv run srunx squeue --format json` - Emit JSON instead of a table
 - `uv run srunx scancel <job_id>` - Cancel a job
-- `uv run srunx sinfo` - Display current GPU/node resource availability (local-only in this release; see #139)
+- `uv run srunx sinfo` - Display current GPU/node resource availability
+- `uv run srunx sinfo --profile <name>` - Query a remote cluster via SSH adapter (#139)
 - `uv run srunx sinfo --partition gpu --format json` - Partition resources as JSON
 - `uv run srunx sacct` - DB-backed job execution history (uses srunx.db, not real sacct)
 - `uv run srunx sacct -j <job_id>` - Filter history to a specific job (replaces `srunx status` for finished jobs)
+- `uv run srunx sacct --profile <name>` - Scope history to a single cluster's jobs (`scheduler_key` filter)
 - `uv run srunx sreport` - Aggregated execution report from srunx.db
+- `uv run srunx sreport --profile <name>` - Aggregate only jobs that ran on the given cluster
 - `uv run srunx tail <job_id> --follow` - Stream job logs (use `--profile` for SSH)
 
 `sbatch` accepts the standard SLURM short flags (`-J` / `-N` / `-n` / `-c` /
