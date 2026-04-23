@@ -38,7 +38,9 @@ from srunx.models import (
 )
 from srunx.ssh.cli.commands import ssh_app
 from srunx.template import get_template_info, get_template_path, list_templates
-from srunx.transport import resolve_transport
+from srunx.transport import (
+    resolve_transport,
+)
 
 logger = get_logger(__name__)
 
@@ -1217,30 +1219,56 @@ def sinfo(
         str,
         typer.Option("--format", "-f", help="Output format: table or json"),
     ] = "table",
+    profile: ProfileOpt = None,
+    local: LocalOpt = False,
+    quiet: QuietOpt = False,
 ) -> None:
     """Display current GPU resource availability.
 
-    .. note::
-
-       Local-only in this release. Unlike ``sbatch`` / ``squeue`` /
-       ``scancel`` / ``tail``, ``sinfo`` does not yet accept
-       ``--profile`` — :class:`ResourceMonitor` always queries the
-       local cluster's ``sinfo`` / ``squeue``. SSH parity is tracked in
-       https://github.com/ksterx/srunx/issues/139.
+    With ``--profile <name>`` (or ``$SRUNX_SSH_PROFILE`` / current
+    profile) the query runs against the remote cluster via the SSH
+    adapter. Local mode keeps the legacy ``sinfo`` / ``squeue``
+    subprocess path so a head-node user sees no behaviour change.
 
     Examples:
         srunx sinfo
         srunx sinfo --partition gpu
         srunx sinfo --format json
         srunx sinfo --partition gpu --format json
+        srunx sinfo --profile dgx-server --partition gpu
     """
     import json
+    from typing import cast
 
     from srunx.monitor.resource_monitor import ResourceMonitor
+    from srunx.monitor.resource_source import ResourceSource, SSHAdapterResourceSource
+    from srunx.transport import resolve_transport
 
     try:
-        monitor = ResourceMonitor(min_gpus=0, partition=partition)
-        snapshot = monitor.get_partition_resources()
+        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+            # SSH path delegates to the existing
+            # ``SSHAdapterResourceSource`` so cluster-wide vs
+            # per-partition dedup, error propagation, and dict→snapshot
+            # coercion all match what the resource snapshotter / Web
+            # ``/api/resources`` already use. Local stays on the
+            # subprocess fallback (source=None) — head-node behaviour
+            # is byte-for-byte identical to pre-#139.
+            source: ResourceSource | None = None
+            if rt.transport_type == "ssh":
+                # ``rt.job_ops`` is the live ``SlurmSSHAdapter`` for
+                # this profile (see ``_build_ssh_handle``). Cast away
+                # the Protocol → concrete narrowing — the Protocol
+                # doesn't expose ``get_resources`` /
+                # ``get_cluster_snapshot`` because those are SSH-only,
+                # and bouncing through a fresh Protocol adds no value
+                # over the existing ``SSHAdapterResourceSource``.
+                from srunx.web.ssh_adapter import SlurmSSHAdapter
+
+                adapter = cast(SlurmSSHAdapter, rt.job_ops)
+                source = SSHAdapterResourceSource(lambda: adapter)
+
+            monitor = ResourceMonitor(min_gpus=0, partition=partition, source=source)
+            snapshot = monitor.get_partition_resources()
 
         if format == "json":
             data = {
@@ -1644,15 +1672,39 @@ def sacct(
     limit: Annotated[
         int, typer.Option("--limit", "-n", help="Number of jobs to show")
     ] = 50,
+    profile: ProfileOpt = None,
+    local: LocalOpt = False,
+    quiet: QuietOpt = False,
 ) -> None:
-    """Show job execution history."""
+    """Show job execution history.
+
+    With ``--profile <name>`` (or ``$SRUNX_SSH_PROFILE`` / current
+    profile), results are filtered to jobs that ran against that
+    cluster. Without a transport selector, history from every
+    transport is shown — matching legacy behaviour.
+    """
     try:
         from srunx.db.cli_helpers import list_recent_jobs
+        from srunx.transport import (
+            emit_transport_banner,
+            peek_scheduler_key,
+            resolve_transport_source,
+        )
+
+        # sacct is a pure DB query — no SSH connection needed even
+        # for SSH profiles. ``peek_scheduler_key`` gives us the WHERE
+        # filter without paying the round-trip cost of opening an
+        # SSH adapter just to read the local SQLite history.
+        source = resolve_transport_source(profile=profile, local=local)
+        scheduler_key = peek_scheduler_key(profile=profile, local=local)
+        emit_transport_banner(label=scheduler_key, source=source, quiet=quiet)
 
         # ``-j`` is pushed down into the SQL query so it finds jobs
         # older than ``--limit``. Codex follow-up #2 on PR #134.
         wanted_ids = [int(j) for j in job_filter] if job_filter else None
-        jobs = list_recent_jobs(limit=limit, job_ids=wanted_ids)
+        jobs = list_recent_jobs(
+            limit=limit, job_ids=wanted_ids, scheduler_key=scheduler_key
+        )
 
         if not jobs:
             console = Console()
@@ -1715,13 +1767,33 @@ def sreport(
     workflow: Annotated[
         str | None, typer.Option("--workflow", help="Workflow name")
     ] = None,
+    profile: ProfileOpt = None,
+    local: LocalOpt = False,
+    quiet: QuietOpt = False,
 ) -> None:
-    """Generate job execution report."""
+    """Generate job execution report.
+
+    With ``--profile <name>`` (or ``$SRUNX_SSH_PROFILE`` / current
+    profile), aggregates are scoped to jobs that ran on that
+    cluster. Without a transport selector, every transport is
+    aggregated together — matching legacy behaviour.
+    """
     try:
         from srunx.db.cli_helpers import compute_job_stats, compute_workflow_stats
+        from srunx.transport import (
+            emit_transport_banner,
+            peek_scheduler_key,
+            resolve_transport_source,
+        )
+
+        # sreport is a pure DB query — see ``sacct`` for the rationale
+        # behind the ``peek_scheduler_key`` shortcut.
+        source = resolve_transport_source(profile=profile, local=local)
+        scheduler_key = peek_scheduler_key(profile=profile, local=local)
+        emit_transport_banner(label=scheduler_key, source=source, quiet=quiet)
 
         if workflow:
-            stats = compute_workflow_stats(workflow)
+            stats = compute_workflow_stats(workflow, scheduler_key=scheduler_key)
 
             console = Console()
             console.print(f"\n[bold cyan]Workflow Report: {workflow}[/bold cyan]")
@@ -1733,7 +1805,11 @@ def sreport(
             console.print(f"Last Submitted: {stats['last_submitted']}\n")
 
         else:
-            stats = compute_job_stats(from_date=from_date, to_date=to_date)
+            stats = compute_job_stats(
+                from_date=from_date,
+                to_date=to_date,
+                scheduler_key=scheduler_key,
+            )
 
             console = Console()
             console.print("\n[bold cyan]Job Execution Report[/bold cyan]")

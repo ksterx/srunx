@@ -213,6 +213,7 @@ def list_recent_jobs(
     limit: int = 100,
     *,
     job_ids: list[int] | None = None,
+    scheduler_key: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return the N most recent jobs as legacy-shaped dicts.
 
@@ -220,43 +221,70 @@ def list_recent_jobs(
     When ``job_ids`` is supplied, the SQL filter pushes the IDs down
     and bypasses the ``LIMIT`` so the CLI's ``srunx sacct -j <id>``
     finds rows that fell outside the most recent ``limit`` page.
+
+    ``scheduler_key`` (``"local"`` / ``"ssh:<profile>"``) scopes to
+    a single transport — passed through to the SQL ``WHERE`` so
+    ``srunx sacct --profile X`` only sees that cluster's jobs.
     """
     from srunx.db.connection import initialized_connection
     from srunx.db.repositories.jobs import JobRepository
 
     with initialized_connection() as conn:
-        return JobRepository(conn).list_recent_as_dict(limit=limit, job_ids=job_ids)
+        return JobRepository(conn).list_recent_as_dict(
+            limit=limit, job_ids=job_ids, scheduler_key=scheduler_key
+        )
 
 
 def compute_job_stats(
     from_date: str | None = None,
     to_date: str | None = None,
+    *,
+    scheduler_key: str | None = None,
 ) -> dict[str, Any]:
     """Return aggregate job stats in the legacy ``get_job_stats`` shape.
 
     Thin wrapper around :meth:`JobRepository.compute_stats` that owns
     the connection; used by the CLI ``report`` command.
+
+    ``scheduler_key`` filters to a single transport for SSH parity
+    on ``srunx sreport --profile X``.
     """
     from srunx.db.connection import initialized_connection
     from srunx.db.repositories.jobs import JobRepository
 
     with initialized_connection() as conn:
-        return JobRepository(conn).compute_stats(from_date=from_date, to_date=to_date)
+        return JobRepository(conn).compute_stats(
+            from_date=from_date, to_date=to_date, scheduler_key=scheduler_key
+        )
 
 
-def compute_workflow_stats(workflow_name: str) -> dict[str, Any]:
+def compute_workflow_stats(
+    workflow_name: str,
+    *,
+    scheduler_key: str | None = None,
+) -> dict[str, Any]:
     """Return workflow-scoped stats in the legacy ``get_workflow_stats`` shape.
 
     Joins ``jobs`` with ``workflow_runs`` on ``workflow_name`` and
     aggregates. Fields: ``workflow_name``, ``total_jobs``,
     ``avg_duration_seconds``, ``first_submitted``, ``last_submitted``.
     Used by the CLI ``report --workflow`` command.
+
+    ``scheduler_key`` scopes the join to jobs that ran on a given
+    transport so ``--profile X`` reports only that cluster's runs
+    of the workflow.
     """
     from srunx.db.connection import initialized_connection
 
+    scheduler_clause = ""
+    params: tuple[Any, ...] = (workflow_name,)
+    if scheduler_key is not None:
+        scheduler_clause = " AND j.scheduler_key = ?"
+        params = (workflow_name, scheduler_key)
+
     with initialized_connection() as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT
                 COUNT(*)                          AS total_jobs,
                 AVG(j.duration_secs)              AS avg_duration_seconds,
@@ -264,9 +292,9 @@ def compute_workflow_stats(workflow_name: str) -> dict[str, Any]:
                 MAX(j.submitted_at)               AS last_submitted
             FROM jobs j
             JOIN workflow_runs wr ON wr.id = j.workflow_run_id
-            WHERE wr.workflow_name = ?
+            WHERE wr.workflow_name = ?{scheduler_clause}
             """,
-            (workflow_name,),
+            params,
         ).fetchone()
 
     return {

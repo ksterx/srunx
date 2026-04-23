@@ -420,6 +420,7 @@ class JobRepository(BaseRepository):
         limit: int = 100,
         *,
         job_ids: list[int] | None = None,
+        scheduler_key: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return the ``limit`` most recent jobs in the legacy dict shape.
 
@@ -433,7 +434,18 @@ class JobRepository(BaseRepository):
         follow-up #2 on PR #134 — without this push-down the CLI
         would silently report "no history found" for any job older
         than the page size.
+
+        ``scheduler_key`` (e.g. ``"local"`` / ``"ssh:dgx"``) scopes
+        the query to a single transport so ``srunx sacct --profile X``
+        only sees jobs that ran against that cluster. ``None`` keeps
+        the legacy "all transports" behaviour for the Web UI history.
         """
+        scheduler_clause = ""
+        scheduler_param: tuple[Any, ...] = ()
+        if scheduler_key is not None:
+            scheduler_clause = " AND j.scheduler_key = ?"
+            scheduler_param = (scheduler_key,)
+
         if job_ids:
             placeholders = ",".join("?" * len(job_ids))
             rows = self.conn.execute(
@@ -459,15 +471,16 @@ class JobRepository(BaseRepository):
                     j.metadata
                 FROM jobs j
                 LEFT JOIN workflow_runs wr ON wr.id = j.workflow_run_id
-                WHERE j.job_id IN ({placeholders})
+                WHERE j.job_id IN ({placeholders}){scheduler_clause}
                 ORDER BY j.submitted_at DESC
                 """,
-                tuple(job_ids),
+                tuple(job_ids) + scheduler_param,
             ).fetchall()
             return [dict(r) for r in rows]
 
+        where_clause = " WHERE j.scheduler_key = ?" if scheduler_key is not None else ""
         rows = self.conn.execute(
-            """
+            f"""
             SELECT
                 j.job_id,
                 j.name           AS job_name,
@@ -495,11 +508,11 @@ class JobRepository(BaseRepository):
                 j.log_file,
                 j.metadata
             FROM jobs j
-            LEFT JOIN workflow_runs wr ON wr.id = j.workflow_run_id
+            LEFT JOIN workflow_runs wr ON wr.id = j.workflow_run_id{where_clause}
             ORDER BY j.submitted_at DESC
             LIMIT ?
             """,
-            (limit,),
+            scheduler_param + (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -507,12 +520,18 @@ class JobRepository(BaseRepository):
         self,
         from_date: str | None = None,
         to_date: str | None = None,
+        *,
+        scheduler_key: str | None = None,
     ) -> dict[str, Any]:
         """Return aggregate stats in the legacy ``JobHistory.get_job_stats`` shape.
 
         ``from_date`` / ``to_date`` are inclusive ISO-8601 dates (e.g.
         ``"2026-04-01"``). ``to_date`` is interpreted as ``<= day-end``,
         matching the legacy behaviour.
+
+        ``scheduler_key`` (e.g. ``"local"`` / ``"ssh:dgx"``) scopes the
+        aggregate to a single transport so ``srunx sreport --profile X``
+        reflects only that cluster.
         """
         conditions: list[str] = []
         params: list[Any] = []
@@ -523,6 +542,9 @@ class JobRepository(BaseRepository):
             conditions.append("submitted_at < ?")
             # Match legacy behaviour: include the full ``to_date`` day.
             params.append(to_date + "T23:59:59" if "T" not in to_date else to_date)
+        if scheduler_key is not None:
+            conditions.append("scheduler_key = ?")
+            params.append(scheduler_key)
         where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
         total = int(
