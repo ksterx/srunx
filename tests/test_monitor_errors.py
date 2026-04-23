@@ -3,11 +3,10 @@
 import subprocess
 from unittest.mock import MagicMock, patch
 
+from srunx.models import Job, JobStatus
 from srunx.monitor.job_monitor import JobMonitor
 from srunx.monitor.resource_monitor import ResourceMonitor
 from srunx.monitor.types import ResourceSnapshot
-
-from srunx.models import Job, JobStatus
 
 
 class TestJobMonitorErrorRecovery:
