@@ -103,6 +103,7 @@ def mount_sync_session(
     sync_required: bool,
     force_sync: bool = False,
     verbose: bool = False,
+    verify_paths: list[str] | None = None,
 ) -> Iterator[SyncOutcome]:
     """Acquire the per-mount lock, optionally rsync, hold lock until exit.
 
@@ -125,6 +126,16 @@ def mount_sync_session(
     ``verbose=True`` forwards into the underlying rsync call so
     per-file progress streams to stderr (#137 part 3).
 
+    ``verify_paths`` (#137 part 5) is the list of LOCAL paths whose
+    remote SHA-256 should be compared against the local SHA-256
+    after a successful rsync, gated by ``config.verify_remote_hash``.
+    Mismatch → :class:`SyncAbortedError` (a ``HashMismatch`` subtype)
+    with both digests in the message. Skipped silently when the flag
+    is off, the list is empty/None, or the remote lacks
+    ``sha256sum`` / ``shasum``. The check slots in BEFORE the marker
+    write so a corrupt-remote state never claims ownership of bytes
+    we couldn't actually trust.
+
     Failure modes:
 
     * Dirty worktree + ``require_clean=true`` → :class:`SyncAbortedError`
@@ -133,6 +144,8 @@ def mount_sync_session(
     * Owner marker shows a different host + ``owner_check=true`` +
       ``force_sync=False`` → :class:`SyncAbortedError` (rsync does
       **not** run).
+    * Hash mismatch + ``verify_remote_hash=true`` →
+      :class:`SyncAbortedError` (rsync DID run; marker NOT written).
     * Lock contention → :class:`~srunx.sync.lock.SyncLockTimeoutError`
       bubbles up.
     * rsync non-zero exit → :class:`RuntimeError` (from inner helper).
@@ -182,6 +195,23 @@ def mount_sync_session(
             # remote-only outputs (training checkpoints, run logs).
             # ``srunx ssh sync`` keeps the historical mirror behaviour.
             sync_mount_by_name(profile, mount.name, delete=False, verbose=verbose)
+
+            # Per-script hash verification (#137 part 5) runs BEFORE
+            # the marker write so a hash mismatch refuses to take
+            # ownership of corrupt remote state — the next user to
+            # rsync sees "no marker" rather than "this machine just
+            # claimed it" and the silent rsync bug surfaces instead
+            # of compounding. Opt-in: skipped when the config flag is
+            # off OR no specific paths were supplied (e.g. ``srunx
+            # ssh sync`` has nothing specific to verify).
+            if config.verify_remote_hash and verify_paths:
+                # Local import to keep the (small) hash_verify module
+                # off the import path of unrelated callers and to
+                # avoid a circular import — hash_verify imports the
+                # ``SyncAbortedError`` we define above.
+                from srunx.sync.hash_verify import verify_paths_match
+
+                verify_paths_match(profile, mount, [Path(p) for p in verify_paths])
 
             # Stamp the marker AFTER a successful sync so a failed
             # rsync doesn't claim ownership for a tree we couldn't
