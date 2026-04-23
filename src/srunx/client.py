@@ -9,7 +9,7 @@ import time
 from collections.abc import Sequence
 from importlib.resources import files
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from srunx.callbacks import Callback
 from srunx.logging import get_logger
@@ -301,6 +301,30 @@ class Slurm:
         except UnicodeDecodeError:
             text = data.decode("utf-8", errors="replace")
         return text, offset + len(data)
+
+    def submit_remote_sbatch(
+        self,
+        remote_path: str,
+        *,
+        submit_cwd: str | None = None,
+        job_name: str | None = None,
+        dependency: str | None = None,
+        extra_sbatch_args: list[str] | None = None,
+        callbacks_job: Any = None,
+    ) -> Any:
+        """Conformance stub for :class:`JobOperationsProtocol`.
+
+        Local SLURM has no concept of "mount-resident path" — the
+        whole point of in-place execution is that the script lives on
+        a synced remote mount. The CLI's ``_submit_via_transport``
+        only routes to this method on the SSH transport (the planner
+        always returns ``TEMP_UPLOAD`` for local), so calling this
+        here is a programmer error worth raising loudly.
+        """
+        raise NotImplementedError(
+            "submit_remote_sbatch is SSH-only; local SLURM has no "
+            "mount concept. Use submit() with a Job/ShellJob instead."
+        )
 
     def cancel(self, job_id: int) -> None:
         """Cancel a SLURM job.

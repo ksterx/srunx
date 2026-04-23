@@ -77,6 +77,44 @@ class JobOperationsProtocol(Protocol):
         """
         ...
 
+    def submit_remote_sbatch(
+        self,
+        remote_path: str,
+        *,
+        submit_cwd: str | None = None,
+        job_name: str | None = None,
+        dependency: str | None = None,
+        extra_sbatch_args: list[str] | None = None,
+        callbacks_job: RunnableJobType | None = None,
+    ) -> RunnableJobType:
+        """Submit a script that already exists on the remote cluster.
+
+        Distinct from :meth:`submit` because the bytes the cluster
+        executes are *user-managed* (typically a synced mount file) —
+        no template render, no SFTP-upload to ``$SRUNX_TEMP_DIR``,
+        no ``-o $SLURM_LOG_DIR/%x_%j.log`` injection. The user's own
+        ``#SBATCH`` directives win.
+
+        ``submit_cwd`` is the remote directory ``sbatch`` runs from;
+        SSH sessions otherwise default to ``$HOME`` and relative
+        paths inside the script (``#SBATCH --output=./logs/%j.out``)
+        would resolve there instead of the mount.
+
+        ``extra_sbatch_args`` are appended to the sbatch command line
+        verbatim, so callers can forward CLI-side flags like
+        ``-N 4`` / ``--mem=32GB`` without modifying the on-disk
+        script. SLURM treats command-line flags as overrides of
+        ``#SBATCH`` directives, matching real ``sbatch``'s precedence.
+
+        ``callbacks_job`` is the in-memory :class:`Job` /
+        :class:`ShellJob` the caller wants the implementation to fire
+        ``Callback.on_job_submitted`` against. Implementations MUST
+        record the submission in the state DB and fire callbacks
+        before returning, the same as :meth:`submit`. Callers must
+        not double-record.
+        """
+        ...
+
     def cancel(self, job_id: int) -> None:
         """Cancel *job_id*. Raises :class:`JobNotFound` if unknown."""
         ...

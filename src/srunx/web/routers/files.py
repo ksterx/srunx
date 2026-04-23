@@ -322,7 +322,9 @@ async def sync_mount(body: SyncRequest) -> dict[str, str]:
     try:
         from ..sync_utils import sync_mount_by_name
 
-        await anyio.to_thread.run_sync(lambda: sync_mount_by_name(profile, body.mount))
+        await anyio.to_thread.run_sync(
+            lambda: sync_mount_by_name(profile, body.mount, delete=True)
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:

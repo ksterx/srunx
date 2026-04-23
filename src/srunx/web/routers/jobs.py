@@ -255,7 +255,7 @@ async def submit_job(
         try:
             logger.info("Syncing mount '%s' before job submission", mount_name)
             await anyio.to_thread.run_sync(
-                lambda: sync_mount_by_name(profile, mount_name)
+                lambda: sync_mount_by_name(profile, mount_name, delete=True)
             )
         except ValueError as exc:
             raise HTTPException(

@@ -737,6 +737,98 @@ class SlurmSSHAdapter:
             "resources": {},
         }
 
+    def submit_remote_sbatch(
+        self,
+        remote_path: str,
+        *,
+        submit_cwd: str | None = None,
+        job_name: str | None = None,
+        dependency: str | None = None,
+        extra_sbatch_args: list[str] | None = None,
+        callbacks_job: Any = None,
+    ) -> Any:
+        """Submit a script already present on the remote cluster.
+
+        Used by the CLI's in-place execution path (mount-resident
+        ShellJob after rsync). Distinct from :meth:`submit_job` —
+        which ships a fresh ``script_content`` to ``/tmp/srunx/`` —
+        because here the script is user-managed under a synced mount
+        and must be executed verbatim without tmp-copy or
+        ``-o`` auto-override.
+
+        Records the submission to the state DB and fires the
+        ``on_job_submitted`` callbacks just like :meth:`submit`, so
+        Notification watches and ``srunx sacct`` see the job. Codex
+        blocker #2 on PR #134 — the previous implementation skipped
+        both, leaving in-place submissions invisible to the rest of
+        the system.
+
+        ``callbacks_job`` is the in-memory :class:`ShellJob` /
+        :class:`Job` to record + callback against. When ``None`` we
+        fall back to a synthesised :class:`ShellJob` so the legacy
+        ``dict``-returning call sites keep working, but new callers
+        should pass the real instance so the DB row carries the
+        full job metadata.
+        """
+        from srunx.models import JobStatus, ShellJob
+
+        with self._io_lock:
+            self._ensure_connected()
+            result = self._client.submit_remote_sbatch_file(
+                remote_path,
+                submit_cwd=submit_cwd,
+                job_name=job_name,
+                dependency=dependency,
+                extra_sbatch_args=extra_sbatch_args,
+            )
+        if result is None or not result.job_id:
+            raise RuntimeError("remote sbatch submission failed")
+        job_id = int(result.job_id)
+
+        # Bind the result to a Job-shaped object so DB recording +
+        # callbacks have a real object to pass around. When the caller
+        # supplied one we mutate it in place (the CLI uses the returned
+        # job_id + status downstream); otherwise we synthesise a thin
+        # ShellJob.
+        if callbacks_job is None:
+            callbacks_job = ShellJob(
+                name=result.name or job_name or "job",
+                script_path=remote_path,
+            )
+        callbacks_job.job_id = job_id
+        callbacks_job.status = JobStatus.PENDING
+        if isinstance(callbacks_job, ShellJob):
+            callbacks_job.script_path = remote_path
+
+        # Record to DB so `srunx sacct` / poller pick it up. Mirrors
+        # :meth:`submit` step 3.
+        if self._profile_name is not None:
+            self._record_job_submission(
+                callbacks_job,
+                workflow_name=None,
+                workflow_run_id=None,
+                transport_type="ssh",
+                profile_name=self._profile_name,
+                scheduler_key=f"ssh:{self._profile_name}",
+                submission_source=self.submission_source,
+            )
+        else:
+            self._record_job_submission(
+                callbacks_job, workflow_name=None, workflow_run_id=None
+            )
+
+        # Fire on_job_submitted callbacks. Mirrors :meth:`submit` step 4.
+        for callback in self.callbacks:
+            try:
+                callback.on_job_submitted(callbacks_job)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    f"on_job_submitted callback failed for job "
+                    f"{callbacks_job.name}: {exc}"
+                )
+
+        return callbacks_job
+
     def get_job_output(
         self,
         job_id: int,

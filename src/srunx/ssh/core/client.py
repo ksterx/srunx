@@ -667,6 +667,74 @@ class SSHSlurmClient:
             self.logger.error(f"Job submission failed: {e}")
             return None
 
+    def submit_remote_sbatch_file(
+        self,
+        remote_path: str,
+        *,
+        submit_cwd: str | None = None,
+        job_name: str | None = None,
+        dependency: str | None = None,
+        extra_sbatch_args: list[str] | None = None,
+    ) -> SlurmJob | None:
+        """Submit a script that already exists on the remote cluster.
+
+        See :meth:`srunx.ssh.core.slurm.SlurmCommands.submit_remote_sbatch_file`
+        for the full rationale — this facade just forwards the call
+        after validating the remote path, preserving the user's own
+        ``#SBATCH --output=`` / ``--job-name=`` directives and
+        honouring ``submit_cwd`` so relative paths inside the script
+        resolve against the mount root rather than SSH's default
+        ``$HOME``.
+        """
+        try:
+            valid, validation_msg = self.validate_remote_script(remote_path)
+            if not valid:
+                self.logger.error(f"Remote script validation failed: {validation_msg}")
+                return None
+
+            cmd_parts: list[str] = [self._get_slurm_command("sbatch")]
+            if job_name:
+                safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", job_name)
+                cmd_parts.append(f"--job-name={shlex.quote(safe_name)}")
+            if dependency:
+                if not re.fullmatch(r"[a-z]+:\d+(,[a-z]+:\d+)*", dependency):
+                    raise ValueError(f"Invalid dependency format: {dependency!r}")
+                cmd_parts.append(f"--dependency={dependency}")
+            for arg in extra_sbatch_args or ():
+                cmd_parts.append(shlex.quote(arg))
+            cmd_parts.append(shlex.quote(remote_path))
+
+            cmd = " ".join(cmd_parts)
+            if submit_cwd:
+                cmd = f"cd {shlex.quote(submit_cwd)} && {cmd}"
+
+            stdout, stderr, exit_code = self._execute_slurm_command(cmd)
+            if exit_code == 0:
+                match = re.search(r"Submitted batch job (\d+)", stdout)
+                if match:
+                    job_id = match.group(1)
+                    resolved_name = (
+                        re.sub(r"[^a-zA-Z0-9_.-]", "_", job_name)
+                        if job_name
+                        else f"job_{job_id}"
+                    )
+                    job = SlurmJob(job_id=job_id, name=resolved_name)
+                    job.script_path = remote_path
+                    # The remote file is user-managed (under a mount);
+                    # don't let ``cleanup_job_files`` delete it.
+                    job.is_local_script = False
+                    job._cleanup = False
+                    return job
+
+            self.logger.error(
+                f"Failed to submit remote sbatch. stdout: {stdout}, "
+                f"stderr: {stderr}, exit_code: {exit_code}"
+            )
+            return None
+        except Exception as e:
+            self.logger.error(f"Remote sbatch submission failed: {e}")
+            return None
+
     def cleanup_job_files(self, job: SlurmJob) -> None:
         if job.is_local_script and job.script_path and job._cleanup:
             self.cleanup_file(job.script_path)

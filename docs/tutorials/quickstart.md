@@ -84,7 +84,7 @@ srunx flow run workflow.yaml
 Validate a workflow:
 
 ``` bash
-srunx flow validate workflow.yaml
+srunx flow run --validate workflow.yaml
 ```
 
 ## Environment Setup

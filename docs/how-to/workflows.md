@@ -282,7 +282,7 @@ srunx flow run pipeline.yaml
 Validate workflow before execution:
 
 ``` bash
-srunx flow validate pipeline.yaml
+srunx flow run --validate pipeline.yaml
 ```
 
 Dry run (show what would be executed):

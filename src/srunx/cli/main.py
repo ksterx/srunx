@@ -43,6 +43,209 @@ from srunx.transport import resolve_transport
 logger = get_logger(__name__)
 
 
+def _submit_via_transport(
+    *,
+    rt: Any,
+    job: Any,
+    script_path: Path | None,
+    profile_name: str | None,
+    sync_flag: bool | None,
+    template: str | None,
+    verbose: bool,
+    callbacks: list[Callback],
+    config: Any,
+    extra_sbatch_args: list[str] | None = None,
+) -> Any:
+    """Dispatch a submit to the right adapter method + optional mount sync.
+
+    Local transport keeps the rich ``Slurm.submit`` signature
+    (callbacks + template_path + verbose). The SSH transport goes
+    through :func:`srunx.cli.submission_plan.plan_sbatch_submission`
+    to decide between:
+
+    * IN_PLACE: rsync the owning mount (unless ``--no-sync``),
+      translate to the remote path, and invoke
+      ``rt.job_ops.submit_remote_sbatch`` — the script stays where
+      the user edits it, preserving their own ``#SBATCH`` directives.
+      The per-mount sync lock is held across both rsync and sbatch
+      so a concurrent CLI invocation can't rsync stale bytes between
+      our sync and our submission (Codex blocker #3).
+    * TEMP_UPLOAD: fall through to ``rt.job_ops.submit`` which
+      uploads a rendered script into ``$SRUNX_TEMP_DIR`` (legacy).
+
+    ``is_rendered_artifact`` is True when the caller forced a template
+    render (``--template <name>``): even if the positional script
+    happens to sit under a mount, the submitted bytes came from the
+    template engine, not the on-disk source, so running "in place"
+    would execute the wrong thing.
+
+    ``extra_sbatch_args`` are CLI-side resource flags (``-N`` /
+    ``--gres=gpu:N`` / etc.) that need to reach the cluster's
+    ``sbatch`` command line in IN_PLACE mode. SLURM treats them as
+    overrides of the script's ``#SBATCH`` directives, matching real
+    sbatch's precedence. Closes Codex blocker #1: previously these
+    flags silently no-op'd in ShellJob (positional-script) mode.
+    """
+    from srunx.cli.submission_plan import (
+        SubmissionMode,
+        plan_sbatch_submission,
+    )
+    from srunx.exceptions import TransportError
+    from srunx.models import ShellJob as _ShellJob
+    from srunx.sync.lock import SyncLockTimeoutError
+    from srunx.sync.service import SyncAbortedError, mount_sync_session
+
+    if rt.transport_type == "local":
+        client = Slurm(callbacks=callbacks)
+        return client.submit(job, template_path=template, verbose=verbose)
+
+    # --- SSH transport ---
+    sub_ctx = rt.submission_context
+    effective_sync = config.sync.auto if sync_flag is None else sync_flag
+    is_rendered_artifact = template is not None
+
+    from srunx.ssh.core.config import ConfigManager
+
+    profile = ConfigManager().get_profile(profile_name) if profile_name else None
+    plan = plan_sbatch_submission(
+        script_path=script_path,
+        profile=profile,
+        cwd=Path.cwd(),
+        sync_enabled=effective_sync,
+        is_rendered_artifact=is_rendered_artifact,
+    )
+
+    for w in plan.warnings:
+        logger.warning(w)
+
+    if plan.mode == SubmissionMode.TEMP_UPLOAD:
+        return rt.job_ops.submit(job, submission_context=sub_ctx)
+
+    # IN_PLACE branch: hold the per-(profile,mount) lock across the
+    # entire sync + sbatch handoff so a concurrent invocation can't
+    # rsync different bytes in between.
+    assert plan.mount is not None
+    assert plan.remote_script_path is not None
+    assert profile_name is not None and profile is not None
+
+    if not hasattr(rt.job_ops, "submit_remote_sbatch"):
+        raise TransportError(
+            "Current transport does not support in-place submission; "
+            "re-run with --no-sync to force the legacy tmp-upload path."
+        )
+
+    # We split the try/except across the sync phase and the submit
+    # phase so a sbatch failure can never wear an "rsync failed"
+    # error message. Codex follow-up on PR #134.
+    try:
+        sync_ctx = mount_sync_session(
+            profile_name=profile_name,
+            profile=profile,
+            mount=plan.mount,
+            config=config.sync,
+            sync_required=plan.sync_required,
+        )
+        sync_ctx_entered = sync_ctx.__enter__()
+    except SyncAbortedError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    except SyncLockTimeoutError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    except RuntimeError as exc:
+        raise typer.BadParameter(f"rsync failed: {exc}") from exc
+
+    try:
+        if sync_ctx_entered.performed:
+            Console().print(f"⇅  Synced mount [cyan]{plan.mount.name}[/cyan]")
+        try:
+            submitted = rt.job_ops.submit_remote_sbatch(
+                plan.remote_script_path,
+                submit_cwd=plan.submit_cwd,
+                job_name=job.name,
+                extra_sbatch_args=extra_sbatch_args or None,
+                callbacks_job=job,
+            )
+        except RuntimeError as exc:
+            # In-place sbatch failure: surface the underlying message
+            # verbatim. Distinct from the "rsync failed" wrapper above
+            # so users can tell which phase failed.
+            raise typer.BadParameter(f"sbatch failed: {exc}") from exc
+    finally:
+        sync_ctx.__exit__(None, None, None)
+
+    # Re-mutate the original ShellJob so the wait/notification watch
+    # path (which reads job_id off the original instance the caller
+    # constructed) sees the post-submit state.
+    if isinstance(job, _ShellJob):
+        job.script_path = plan.remote_script_path
+    return submitted
+
+
+_SBATCH_FLAG_BY_PARAM: dict[str, str] = {
+    "nodes": "--nodes",
+    "gpus_per_node": "--gpus-per-node",
+    "ntasks_per_node": "--ntasks-per-node",
+    "cpus_per_task": "--cpus-per-task",
+    "memory": "--mem",
+    "time": "--time",
+    "nodelist": "--nodelist",
+    "partition": "--partition",
+    "work_dir": "--chdir",
+}
+
+
+def _build_extra_sbatch_args(
+    ctx: typer.Context,
+    *,
+    values: dict[str, object],
+    log_dir_user: str | None,
+) -> list[str]:
+    """Forward CLI-typed flags to ``sbatch`` for ShellJob mode.
+
+    "CLI-typed" means the user wrote the flag on the command line —
+    determined via Click's :meth:`Context.get_parameter_source`. We
+    deliberately do NOT compare against defaults because that
+    confuses three different cases:
+
+    * ``srunx sbatch script.sh`` — no flag typed, planner default 1.
+    * ``srunx sbatch script.sh --nodes 1`` — explicit 1, must
+      override any ``#SBATCH --nodes=8`` in the script.
+    * ``srunx sbatch script.sh`` with config providing ``work_dir``
+      — config injected, user did NOT type ``-D``, so the script's
+      ``#SBATCH --chdir=`` (if any) wins.
+
+    The default-comparison heuristic the previous version used got
+    all three confused — Codex follow-up on PR #134.
+
+    ``log_dir_user`` is passed in separately because the sbatch flag
+    expansion (``--output=`` + ``--error=``) builds two args from one
+    typed value, and the conversion lives at the call site (caller
+    knows the configured default to suppress).
+    """
+    from click.core import ParameterSource
+
+    args: list[str] = []
+    for param_name, sbatch_flag in _SBATCH_FLAG_BY_PARAM.items():
+        try:
+            source = ctx.get_parameter_source(param_name)
+        except (LookupError, AttributeError):
+            # No such parameter; defensive against signature drift.
+            source = None
+        if source != ParameterSource.COMMANDLINE:
+            continue
+        value = values.get(param_name)
+        if value is None or value == "":
+            continue
+        args.append(f"{sbatch_flag}={value}")
+
+    if log_dir_user:
+        # ``--log-dir`` was explicitly typed; expand into the
+        # ``--output`` + ``--error`` pair sbatch expects.
+        args.append(f"--output={log_dir_user}/%x_%j.log")
+        args.append(f"--error={log_dir_user}/%x_%j.log")
+
+    return args
+
+
 def _parse_gres_gpu(gres: str | None) -> int | None:
     """Parse a sbatch-style ``--gres=gpu:N`` value into an integer GPU count.
 
@@ -367,6 +570,7 @@ def _parse_container_args(container_arg: str | None) -> ContainerResource | None
 
 @app.command("sbatch")
 def sbatch(
+    ctx: typer.Context,
     script: Annotated[
         Path | None,
         typer.Argument(
@@ -514,6 +718,18 @@ def sbatch(
     ] = None,
     template: Annotated[
         str | None, typer.Option("--template", help="Custom SLURM script template")
+    ] = None,
+    sync: Annotated[
+        bool | None,
+        typer.Option(
+            "--sync/--no-sync",
+            help=(
+                "Rsync the script's enclosing mount before sbatch. Default "
+                "comes from ``config.sync.auto`` (true unless explicitly "
+                "disabled). ``--no-sync`` submits against the remote's "
+                "current state — useful when you manage sync yourself."
+            ),
+        ),
     ] = None,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Show verbose output")
@@ -697,6 +913,51 @@ def sbatch(
     # callbacks + template_path + verbose) which the Protocol does not
     # yet expose; SSH path uses the Protocol method, and the adapter
     # owns its own DB recording + callbacks lifecycle.
+    # CLI resource flags need to reach ``sbatch`` in IN_PLACE
+    # mode — they get baked into the rendered Job.resources for the
+    # tmp-upload path, but ShellJob (positional script) on the
+    # in-place path has no such render step. Forward only flags the
+    # user actually typed on the command line (via Click's
+    # ParameterSource); never forward defaults nor config-injected
+    # values, so the on-disk ``#SBATCH`` directives stay authoritative
+    # for anything the user did not explicitly override.
+    from click.core import ParameterSource
+
+    log_dir_user = (
+        log_dir
+        if ctx.get_parameter_source("log_dir") == ParameterSource.COMMANDLINE
+        else None
+    )
+    extra_sbatch_args = _build_extra_sbatch_args(
+        ctx,
+        values={
+            "nodes": nodes,
+            "gpus_per_node": gpus_per_node,
+            "ntasks_per_node": ntasks_per_node,
+            "cpus_per_task": cpus_per_task,
+            "memory": memory,
+            "time": time,
+            "nodelist": nodelist,
+            "partition": partition,
+            "work_dir": work_dir,
+        },
+        log_dir_user=log_dir_user,
+    )
+
+    # ``--gres=gpu:N`` was parsed earlier into ``gpus_per_node``; if
+    # the user typed ``--gres`` (not ``--gpus-per-node``) we still
+    # need to forward the resulting value as ``--gpus-per-node=N``,
+    # because ParameterSource for ``gpus_per_node`` shows DEFAULT in
+    # that path. Avoid duplication by stripping any earlier entry.
+    if (
+        ctx.get_parameter_source("gres") == ParameterSource.COMMANDLINE
+        and gres is not None
+    ):
+        extra_sbatch_args = [
+            a for a in extra_sbatch_args if not a.startswith("--gpus-per-node")
+        ]
+        extra_sbatch_args.append(f"--gpus-per-node={gpus_per_node}")
+
     with resolve_transport(
         profile=profile,
         local=local,
@@ -705,18 +966,19 @@ def sbatch(
         submission_source="cli",
     ) as rt:
         client: Slurm | None
-        if rt.transport_type == "local":
-            client = Slurm(callbacks=callbacks)
-            submitted_job = client.submit(job, template_path=template, verbose=verbose)
-        else:
-            # SSH path: callbacks + submission_source were threaded into
-            # ``resolve_transport`` so the adapter + pool fire callbacks
-            # and tag the jobs row correctly. The submission render
-            # context handles ``--work-dir`` / path translation.
-            submitted_job = rt.job_ops.submit(
-                job, submission_context=rt.submission_context
-            )
-            client = None
+        submitted_job = _submit_via_transport(
+            rt=rt,
+            job=job,
+            script_path=script,
+            profile_name=rt.profile_name,
+            sync_flag=sync,
+            template=template,
+            verbose=verbose,
+            callbacks=callbacks,
+            config=config,
+            extra_sbatch_args=extra_sbatch_args,
+        )
+        client = Slurm(callbacks=callbacks) if rt.transport_type == "local" else None
 
         # Attach a durable notification watch if the user asked for one.
         if effective_endpoint and submitted_job.job_id is not None:
@@ -773,6 +1035,17 @@ def sbatch(
 
 @app.command("squeue")
 def squeue(
+    job_filter: Annotated[
+        list[int] | None,
+        typer.Option(
+            "-j",
+            "--jobs",
+            help=(
+                "Filter to one or more specific job IDs. Replaces the old "
+                "``srunx status <id>`` command — equivalent to ``squeue -j ID``."
+            ),
+        ),
+    ] = None,
     show_gpus: Annotated[
         bool,
         typer.Option("--show-gpus", "-g", help="Show GPU allocation for each job"),
@@ -789,6 +1062,7 @@ def squeue(
 
     Examples:
         srunx squeue
+        srunx squeue -j 12345
         srunx squeue --show-gpus
         srunx squeue --format json
         srunx squeue --show-gpus --format json
@@ -804,6 +1078,13 @@ def squeue(
                 jobs = client.queue()
             else:
                 jobs = rt.job_ops.queue()
+
+        # Filter to user-specified job IDs after the queue() call so
+        # the dispatch path stays simple; SLURM's own ``squeue -j`` does
+        # the same in-memory filtering at the client side.
+        if job_filter:
+            wanted = {int(j) for j in job_filter}
+            jobs = [j for j in jobs if j.job_id in wanted]
 
         # JSON format output (emit before the "empty queue" banner so
         # --format json stdout stays pure JSON — AC-7.1 / AC-7.2).
@@ -938,6 +1219,14 @@ def sinfo(
     ] = "table",
 ) -> None:
     """Display current GPU resource availability.
+
+    .. note::
+
+       Local-only in this release. Unlike ``sbatch`` / ``squeue`` /
+       ``scancel`` / ``tail``, ``sinfo`` does not yet accept
+       ``--profile`` — :class:`ResourceMonitor` always queries the
+       local cluster's ``sinfo`` / ``squeue``. SSH parity is tracked in
+       https://github.com/ksterx/srunx/issues/139.
 
     Examples:
         srunx sinfo
@@ -1340,6 +1629,18 @@ def template_show(
 
 @app.command("sacct")
 def sacct(
+    job_filter: Annotated[
+        list[int] | None,
+        typer.Option(
+            "-j",
+            "--jobs",
+            help=(
+                "Filter to one or more specific job IDs. Replaces the old "
+                "``srunx status <id>`` command for finished jobs — equivalent "
+                "to ``sacct -j ID``."
+            ),
+        ),
+    ] = None,
     limit: Annotated[
         int, typer.Option("--limit", "-n", help="Number of jobs to show")
     ] = 50,
@@ -1348,7 +1649,10 @@ def sacct(
     try:
         from srunx.db.cli_helpers import list_recent_jobs
 
-        jobs = list_recent_jobs(limit=limit)
+        # ``-j`` is pushed down into the SQL query so it finds jobs
+        # older than ``--limit``. Codex follow-up #2 on PR #134.
+        wanted_ids = [int(j) for j in job_filter] if job_filter else None
+        jobs = list_recent_jobs(limit=limit, job_ids=wanted_ids)
 
         if not jobs:
             console = Console()
