@@ -31,11 +31,11 @@ class TestSlurmProtocolCompliance:
 
     def test_status_wraps_unknown_id_into_job_not_found(self) -> None:
         """``retrieve`` raises ValueError on missing jobs; status converts it."""
-        from srunx.exceptions import JobNotFound
+        from srunx.exceptions import JobNotFoundError
 
         s = Slurm()
         with patch.object(s, "retrieve", side_effect=ValueError("no such job")):
-            with pytest.raises(JobNotFound):
+            with pytest.raises(JobNotFoundError):
                 s.status(99999)
 
 
@@ -122,13 +122,13 @@ class TestSlurmSSHAdapterProtocolCompliance:
         assert result._status == JobStatus.RUNNING
 
     def test_ssh_adapter_status_raises_job_not_found(self) -> None:
-        """Missing job → JobNotFound, matching the Protocol contract."""
-        from srunx.exceptions import JobNotFound
+        """Missing job → JobNotFoundError, matching the Protocol contract."""
+        from srunx.exceptions import JobNotFoundError
         from srunx.slurm.ssh import SlurmSSHAdapter
 
         with patch.object(SlurmSSHAdapter, "queue_by_ids", return_value={}):
             adapter = SlurmSSHAdapter.__new__(SlurmSSHAdapter)
-            with pytest.raises(JobNotFound):
+            with pytest.raises(JobNotFoundError):
                 adapter.status(99999)
 
     def test_ssh_adapter_queue_returns_list_base_job(self) -> None:

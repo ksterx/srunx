@@ -21,7 +21,7 @@ from srunx.config import (
     get_config,
     get_config_paths,
 )
-from srunx.exceptions import JobNotFound, TransportError
+from srunx.exceptions import JobNotFoundError, TransportError
 from srunx.logging import (
     configure_cli_logging,
     get_logger,
@@ -1298,7 +1298,7 @@ def scancel(
         console = Console()
         console.print(f"✅ Job {job_id} cancelled successfully")
 
-    except JobNotFound:
+    except JobNotFoundError:
         typer.secho(
             f"Job {job_id} not found",
             err=True,
@@ -1485,7 +1485,7 @@ def tail(
                         fg=typer.colors.YELLOW,
                     )
 
-    except JobNotFound:
+    except JobNotFoundError:
         typer.secho(
             f"Job {job_id} not found",
             err=True,

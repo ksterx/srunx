@@ -55,8 +55,25 @@ class JobNotFoundError(Exception):
     """
 
 
-# Backward-compat alias (pre-#169 name).
-JobNotFound = JobNotFoundError
+def __getattr__(name: str) -> type:
+    """Surface a DeprecationWarning when the legacy ``JobNotFound`` alias is accessed.
+
+    Pre-#169, the class was ``JobNotFound``; the rename kept a plain
+    module-level binding as an alias, but that silently accepted the old
+    name forever. Route it through ``__getattr__`` so importing
+    ``JobNotFound`` now warns while still resolving to
+    :class:`JobNotFoundError`.
+    """
+    if name == "JobNotFound":
+        import warnings
+
+        warnings.warn(
+            "srunx.exceptions.JobNotFound is deprecated; use JobNotFoundError instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return JobNotFoundError
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class SubmissionError(Exception):
