@@ -22,8 +22,6 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from srunx.db.connection import transaction
-from srunx.db.models import WorkflowRun as DBWorkflowRun
-from srunx.db.models import WorkflowRunJob
 from srunx.db.repositories.base import now_iso
 from srunx.db.repositories.job_state_transitions import (
     JobStateTransitionRepository,
@@ -59,6 +57,19 @@ from ..schemas.workflows import (
     WorkflowRunRequest,
 )
 from ..services import _submission_common
+from ..services.workflow_run_cancellation import WorkflowRunCancellationService
+from ..services.workflow_run_query import (
+    WorkflowRunQueryService,
+)
+from ..services.workflow_run_query import (
+    build_run_response as _build_run_response,  # noqa: F401 — test patch surface
+)
+from ..services.workflow_run_query import (
+    parse_run_id as _parse_run_id,  # noqa: F401 — preserved for import parity
+)
+from ..services.workflow_run_query import (
+    serialize_run as _serialize_run,  # noqa: F401 — preserved for import parity
+)
 from ..services.workflow_storage import WorkflowStorageService
 from ..services.workflow_validation import WorkflowValidationService
 
@@ -134,86 +145,12 @@ async def list_workflows(mount: str) -> list[dict[str, Any]]:
     return await _storage().list_workflows(mount)
 
 
-def _parse_run_id(run_id: str) -> int:
-    """Parse a run_id string → int, raising 404 for non-integer ids.
-
-    The API accepts ``run_id`` as a string for historical compatibility
-    (the old UUID-keyed registry); internally we always store an int.
-    """
-    try:
-        return int(run_id)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(
-            status_code=404, detail=f"Run '{run_id}' not found"
-        ) from exc
-
-
-def _serialize_run(
-    run: DBWorkflowRun,
-    memberships: list[WorkflowRunJob],
-    jobs_by_id: dict[int, str],
-) -> dict[str, Any]:
-    """Build the API response for a workflow run.
-
-    ``jobs_by_id`` maps SLURM job_id → observed status. Memberships with
-    no job_id (not yet submitted) are omitted from both ``job_ids`` and
-    ``job_statuses``.
-    """
-    job_ids: dict[str, str] = {}
-    job_statuses: dict[str, str] = {}
-    for wrj in memberships:
-        if wrj.job_id is None:
-            continue
-        job_ids[wrj.job_name] = str(wrj.job_id)
-        status = jobs_by_id.get(wrj.job_id)
-        if status is not None:
-            job_statuses[wrj.job_name] = status
-
-    return {
-        "id": str(run.id),
-        "workflow_name": run.workflow_name,
-        "started_at": run.started_at.isoformat() if run.started_at else None,
-        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-        "status": run.status,
-        "job_ids": job_ids,
-        "job_statuses": job_statuses,
-        "error": run.error,
-        "sweep_run_id": run.sweep_run_id,
-    }
-
-
-def _build_run_response(conn: sqlite3.Connection, run: DBWorkflowRun) -> dict[str, Any]:
-    """Load memberships + child job statuses and serialize."""
-    if run.id is None:
-        return _serialize_run(run, [], {})
-    memberships = WorkflowRunJobRepository(conn).list_by_run(run.id)
-    job_repo = JobRepository(conn)
-    jobs_by_id: dict[int, str] = {}
-    for m in memberships:
-        # V5+: ``jobs_row_id`` is the authoritative FK to ``jobs.id``.
-        # Looking up via ``get_by_row_id`` avoids the pre-V5
-        # ``scheduler_key='local'`` default, which would drop SSH
-        # workflow children and miss their statuses in the API response.
-        if m.jobs_row_id is None or m.job_id is None:
-            continue
-        job = job_repo.get_by_row_id(m.jobs_row_id)
-        if job is not None:
-            jobs_by_id[m.job_id] = job.status
-    return _serialize_run(run, memberships, jobs_by_id)
-
-
 @router.get("/runs")
 async def list_runs(
     name: str | None = None,
     conn: sqlite3.Connection = Depends(get_db_conn),
 ) -> list[dict[str, Any]]:
-    def _load() -> list[dict[str, Any]]:
-        runs = WorkflowRunRepository(conn).list_all()
-        if name is not None:
-            runs = [r for r in runs if r.workflow_name == name]
-        return [_build_run_response(conn, r) for r in runs]
-
-    return await anyio.to_thread.run_sync(_load)
+    return await WorkflowRunQueryService().list_runs(conn, name)
 
 
 @router.get("/runs/{run_id}")
@@ -222,15 +159,7 @@ async def get_run(
     conn: sqlite3.Connection = Depends(get_db_conn),
 ) -> dict[str, Any]:
     """Get the status and details of a single workflow run."""
-    rid = _parse_run_id(run_id)
-
-    def _load() -> dict[str, Any]:
-        run = WorkflowRunRepository(conn).get(rid)
-        if run is None:
-            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-        return _build_run_response(conn, run)
-
-    return await anyio.to_thread.run_sync(_load)
+    return await WorkflowRunQueryService().get_run(conn, run_id)
 
 
 @router.post("/runs/{run_id}/cancel")
@@ -240,74 +169,11 @@ async def cancel_run(
     conn: sqlite3.Connection = Depends(get_db_conn),
 ) -> dict[str, Any]:
     """Cancel all jobs in a running workflow."""
-    rid = _parse_run_id(run_id)
-    run_repo = WorkflowRunRepository(conn)
-    wrj_repo = WorkflowRunJobRepository(conn)
-    watch_repo = WatchRepository(conn)
-
-    run = await anyio.to_thread.run_sync(lambda: run_repo.get(rid))
-    if run is None:
-        raise HTTPException(404, f"Run '{run_id}' not found")
-    if run.status in _WORKFLOW_TERMINAL_STATUSES:
-        raise HTTPException(422, f"Run is already {run.status}")
-
-    memberships = await anyio.to_thread.run_sync(lambda: wrj_repo.list_by_run(rid))
-    errors: list[str] = []
-    for m in memberships:
-        if m.job_id is None:
-            continue
-        try:
-            await anyio.to_thread.run_sync(
-                lambda jid=m.job_id: adapter.cancel_job(int(jid))  # type: ignore[misc]
-            )
-        except Exception as e:
-            errors.append(f"{m.job_name}: {e}")
-
-    # Route through WorkflowRunStateService so a
-    # ``workflow_run.status_changed`` event is emitted and subscribers
-    # receive a delivery. ``run.status`` was captured above and is
-    # guaranteed non-terminal by the 422 guard.
-    current_status = run.status
-
-    def _finalize() -> None:
-        with transaction(conn, "IMMEDIATE"):
-            transitioned = WorkflowRunStateService.update(
-                conn=conn,
-                workflow_run_id=rid,
-                from_status=current_status,
-                to_status="cancelled",
-                completed_at=now_iso(),
-            )
-            if not transitioned:
-                # Race with the poller: re-read the latest status and
-                # retry once. Skip if the row has reached a terminal
-                # state in the meantime.
-                latest = run_repo.get(rid)
-                if (
-                    latest is not None
-                    and latest.status not in _WORKFLOW_TERMINAL_STATUSES
-                ):
-                    WorkflowRunStateService.update(
-                        conn=conn,
-                        workflow_run_id=rid,
-                        from_status=latest.status,
-                        to_status="cancelled",
-                        completed_at=now_iso(),
-                    )
-            for w in watch_repo.list_by_target(
-                kind="workflow_run",
-                target_ref=f"workflow_run:{rid}",
-                only_open=True,
-            ):
-                if w.id is not None:
-                    watch_repo.close(w.id)
-
-    await anyio.to_thread.run_sync(_finalize)
-
-    result: dict[str, Any] = {"status": "cancelled", "run_id": str(rid)}
-    if errors:
-        result["warnings"] = errors
-    return result
+    return await WorkflowRunCancellationService(_WORKFLOW_TERMINAL_STATUSES).cancel(
+        run_id=run_id,
+        conn=conn,
+        adapter=adapter,
+    )
 
 
 @router.post("/validate")
