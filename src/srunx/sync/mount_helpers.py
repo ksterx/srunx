@@ -64,6 +64,7 @@ def sync_mount_by_name(
     *,
     delete: bool = False,
     dry_run: bool = False,
+    verbose: bool = False,
 ) -> str:
     """Sync a named mount's local directory to remote via rsync.
 
@@ -77,6 +78,11 @@ def sync_mount_by_name(
     and returns rsync's stdout — the human-readable list of files
     that *would* be touched. The remote is not modified. Used by the
     CLI ``srunx sbatch --dry-run`` preview path (#137 part 2).
+
+    ``verbose=True`` switches the underlying rsync invocation to
+    streaming mode so per-file progress reaches the user's terminal
+    live (#137 part 3). Mutually compatible with ``dry_run`` — the
+    preview output streams the same way.
 
     Returns:
         rsync stdout — empty for a non-dry-run sync, the itemize lines
@@ -101,6 +107,7 @@ def sync_mount_by_name(
         # want the per-file output spam in the success path, but for
         # a preview the itemize lines ARE the value.
         itemize=dry_run,
+        verbose=verbose,
         exclude_patterns=mount.exclude_patterns or None,
     )
     if result.returncode != 0:

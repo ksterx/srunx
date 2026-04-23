@@ -148,6 +148,7 @@ def _submit_via_transport(
             config=config.sync,
             sync_required=plan.sync_required,
             force_sync=force_sync,
+            verbose=verbose,
         )
         sync_ctx_entered = sync_ctx.__enter__()
     except SyncAbortedError as exc:

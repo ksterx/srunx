@@ -70,7 +70,9 @@ class TestEnsureMountSynced:
 
         # Auto-sync calls rsync with delete=False (Codex blocker #4):
         # mount-resident outputs/checkpoints must survive a sync.
-        fake_rsync.assert_called_once_with(profile, "ml", delete=False)
+        # ``verbose=False`` is the default surfaced by the CLI when the
+        # user did not pass ``--verbose`` (#137 part 3).
+        fake_rsync.assert_called_once_with(profile, "ml", delete=False, verbose=False)
         assert outcome.performed is True
         assert outcome.warnings == ()
 
@@ -151,7 +153,13 @@ class TestEnsureMountSynced:
         mount_local.mkdir()
         profile = _profile(tmp_path, mount_local)
 
-        def _boom(_profile: ServerProfile, _name: str, *, delete: bool = False) -> str:
+        def _boom(
+            _profile: ServerProfile,
+            _name: str,
+            *,
+            delete: bool = False,
+            verbose: bool = False,
+        ) -> str:
             raise RuntimeError("rsync exited 23: permission denied")
 
         with (

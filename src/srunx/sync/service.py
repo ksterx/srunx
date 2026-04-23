@@ -102,6 +102,7 @@ def mount_sync_session(
     config: SyncDefaults,
     sync_required: bool,
     force_sync: bool = False,
+    verbose: bool = False,
 ) -> Iterator[SyncOutcome]:
     """Acquire the per-mount lock, optionally rsync, hold lock until exit.
 
@@ -121,6 +122,8 @@ def mount_sync_session(
     per-machine ownership marker check (#137 part 4) so the user can
     intentionally take over a mount that another workstation
     previously synced.
+    ``verbose=True`` forwards into the underlying rsync call so
+    per-file progress streams to stderr (#137 part 3).
 
     Failure modes:
 
@@ -178,7 +181,7 @@ def mount_sync_session(
             # delete=False (Codex blocker #4): auto-sync must not wipe
             # remote-only outputs (training checkpoints, run logs).
             # ``srunx ssh sync`` keeps the historical mirror behaviour.
-            sync_mount_by_name(profile, mount.name, delete=False)
+            sync_mount_by_name(profile, mount.name, delete=False, verbose=verbose)
 
             # Stamp the marker AFTER a successful sync so a failed
             # rsync doesn't claim ownership for a tree we couldn't
@@ -213,6 +216,7 @@ def ensure_mount_synced(
     profile: ServerProfile,
     mount: MountConfig,
     config: SyncDefaults,
+    verbose: bool = False,
 ) -> SyncOutcome:
     """Backwards-compatible entry point that performs a one-shot sync.
 
@@ -228,5 +232,6 @@ def ensure_mount_synced(
         mount=mount,
         config=config,
         sync_required=True,
+        verbose=verbose,
     ) as outcome:
         return outcome

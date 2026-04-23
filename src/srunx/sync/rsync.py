@@ -6,10 +6,12 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar
+from typing import IO, ClassVar
 
 from srunx.logging import get_logger
 
@@ -115,6 +117,7 @@ class RsyncClient:
         delete: bool = True,
         dry_run: bool = False,
         itemize: bool = False,
+        verbose: bool = False,
         exclude_patterns: Sequence[str] | None = None,
     ) -> RsyncResult:
         """Sync a local directory/file to the remote server.
@@ -129,6 +132,10 @@ class RsyncClient:
                 file rsync *would* (or did) touch, with the standard
                 ``YXcstpoguax`` flag prefix. Required for ``dry_run``
                 callers that want a human-readable preview.
+            verbose: Stream rsync's per-file progress to stderr live
+                instead of capturing it silently. Adds
+                ``--info=progress2`` so users with large mounts see
+                progress instead of a frozen terminal.
             exclude_patterns: Additional exclude patterns for this call only.
 
         Returns:
@@ -157,8 +164,11 @@ class RsyncClient:
             delete=delete,
             dry_run=dry_run,
             itemize=itemize,
+            verbose=verbose,
             excludes=excludes,
         )
+        if verbose:
+            return self._run_rsync_streaming(cmd)
         return self._run_rsync(cmd)
 
     def pull(
@@ -229,6 +239,7 @@ class RsyncClient:
         delete: bool,
         dry_run: bool,
         itemize: bool = False,
+        verbose: bool = False,
         excludes: list[str],
     ) -> list[str]:
         """Build the full rsync command."""
@@ -251,6 +262,12 @@ class RsyncClient:
             # per file with a ``YXcstpoguax``-style flag prefix so the
             # CLI dry-run preview can render exactly what would change.
             cmd.append("-i")
+        if verbose:
+            # ``--info=progress2`` is the single-line aggregate progress
+            # form that updates in place (via ``\r``). It's the only
+            # progress mode that doesn't drown the terminal in per-file
+            # output for thousand-file syncs.
+            cmd.append("--info=progress2")
 
         for pattern in excludes:
             cmd.extend(["--exclude", pattern])
@@ -273,6 +290,67 @@ class RsyncClient:
             returncode=proc.returncode,
             stdout=proc.stdout,
             stderr=proc.stderr,
+        )
+
+    def _run_rsync_streaming(self, cmd: list[str]) -> RsyncResult:
+        """Execute rsync, streaming stdout to stderr live as it arrives.
+
+        Drains both pipes from dedicated threads. A single-thread
+        ``readline()`` loop on Popen.stdout would deadlock once
+        rsync's stderr pipe buffer fills (typically 64 KiB), and
+        ``select`` doesn't work for text-mode pipes on every platform
+        — two blocking threads are the simplest correct shape.
+
+        The streamed lines are also accumulated into the returned
+        :class:`RsyncResult` so callers that read ``result.stdout`` /
+        ``result.stderr`` (e.g. error-message construction) keep
+        working unchanged.
+        """
+        logger.debug("Running rsync (streaming): {}", shlex.join(cmd))
+
+        proc = subprocess.Popen(  # noqa: S603
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+
+        stdout_buf: list[str] = []
+        stderr_buf: list[str] = []
+
+        def _pump(src: IO[str], sink: IO[str], buf: list[str]) -> None:
+            for line in src:
+                buf.append(line)
+                sink.write(line)
+                sink.flush()
+
+        assert proc.stdout is not None and proc.stderr is not None
+        t_out = threading.Thread(
+            target=_pump, args=(proc.stdout, sys.stderr, stdout_buf)
+        )
+        t_err = threading.Thread(
+            target=_pump, args=(proc.stderr, sys.stderr, stderr_buf)
+        )
+        t_out.start()
+        t_err.start()
+
+        returncode = proc.wait()
+        t_out.join()
+        t_err.join()
+
+        stdout_text = "".join(stdout_buf)
+        stderr_text = "".join(stderr_buf)
+
+        if returncode != 0:
+            logger.warning(
+                "rsync exited with code {}: {}", returncode, stderr_text.strip()
+            )
+
+        return RsyncResult(
+            returncode=returncode,
+            stdout=stdout_text,
+            stderr=stderr_text,
         )
 
     def _ensure_remote_dir(self, remote_path: str) -> None:

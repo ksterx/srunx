@@ -122,8 +122,8 @@ def test_sbatch_in_place_under_mount_calls_remote_submit(
 
     rsync_calls: list[tuple] = []
 
-    def _record_rsync(prof, name, *, delete=False):  # type: ignore[no-untyped-def]
-        rsync_calls.append((prof, name, delete))
+    def _record_rsync(prof, name, *, delete=False, verbose=False):  # type: ignore[no-untyped-def]
+        rsync_calls.append((prof, name, delete, verbose))
 
     monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", _record_rsync)
 
@@ -133,10 +133,12 @@ def test_sbatch_in_place_under_mount_calls_remote_submit(
     assert result.exit_code == 0, result.stdout + result.stderr
 
     # rsync ran for the right mount, and used delete=False (auto-sync
-    # must not wipe remote-only outputs — Codex blocker #4).
+    # must not wipe remote-only outputs — Codex blocker #4). Default
+    # ``verbose=False`` since the user did not pass ``--verbose``.
     assert len(rsync_calls) == 1
     assert rsync_calls[0][1] == "ml"
     assert rsync_calls[0][2] is False
+    assert rsync_calls[0][3] is False
 
     # Protocol method (no _adapter reach-in) was invoked with the
     # translated remote path and a remote cwd under the mount.
@@ -245,7 +247,7 @@ def test_sync_failure_aborts_submission(
     profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")
     job_ops = _patch_transport(monkeypatch, profile)
 
-    def _boom(profile_arg, mount_name, *, delete=False):  # type: ignore[no-untyped-def]
+    def _boom(profile_arg, mount_name, *, delete=False, verbose=False):  # type: ignore[no-untyped-def]
         raise RuntimeError("rsync exited 23: permission denied")
 
     monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", _boom)
@@ -603,6 +605,66 @@ def test_dry_run_no_sync_message_when_sync_disabled(
     assert result.exit_code == 0, result.stdout + result.stderr
     assert "skipped (--no-sync)" in result.stdout
     assert not sync_called, "rsync must not run when --no-sync is set"
+
+
+def test_verbose_forwards_to_sync_mount_by_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``srunx sbatch --verbose`` reaches sync_mount_by_name with verbose=True.
+
+    The actual streaming behaviour is exercised in ``tests/test_rsync.py``
+    — here we only assert the wiring from the CLI flag through
+    ``mount_sync_session`` lands on the rsync helper.
+    """
+    mount_local = tmp_path / "ml-project"
+    mount_local.mkdir()
+    script = mount_local / "train.sbatch"
+    script.write_text("#!/bin/bash\necho hi\n")
+
+    profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")
+    _patch_transport(monkeypatch, profile)
+
+    rsync_calls: list[dict[str, object]] = []
+
+    def _record(prof, name, *, delete=False, verbose=False):  # type: ignore[no-untyped-def]
+        rsync_calls.append({"name": name, "delete": delete, "verbose": verbose})
+
+    monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", _record)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["sbatch", str(script), "--profile", "ml-cluster", "--verbose"],
+    )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert rsync_calls == [{"name": "ml", "delete": False, "verbose": True}]
+
+
+def test_no_verbose_keeps_quiet_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without ``--verbose`` the CLI passes ``verbose=False`` (legacy path)."""
+    mount_local = tmp_path / "ml-project"
+    mount_local.mkdir()
+    script = mount_local / "train.sbatch"
+    script.write_text("#!/bin/bash\necho hi\n")
+
+    profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")
+    _patch_transport(monkeypatch, profile)
+
+    rsync_calls: list[dict[str, object]] = []
+
+    def _record(prof, name, *, delete=False, verbose=False):  # type: ignore[no-untyped-def]
+        rsync_calls.append({"name": name, "delete": delete, "verbose": verbose})
+
+    monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", _record)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["sbatch", str(script), "--profile", "ml-cluster"])
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert rsync_calls == [{"name": "ml", "delete": False, "verbose": False}]
 
 
 def test_dry_run_preview_silent_for_local_transport(
