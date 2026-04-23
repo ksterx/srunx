@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from srunx.notifications.presets import should_deliver
 
 TERMINAL_JOB_STATUSES = [

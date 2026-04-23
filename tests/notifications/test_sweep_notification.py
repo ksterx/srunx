@@ -12,10 +12,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from srunx.notifications.adapters.slack_webhook import SlackWebhookAdapter
-from srunx.notifications.presets import should_deliver
 
 from srunx.db.models import Event
+from srunx.notifications.adapters.slack_webhook import SlackWebhookAdapter
+from srunx.notifications.presets import should_deliver
 
 # ---------------------------------------------------------------------------
 # should_deliver truth table

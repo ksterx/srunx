@@ -11,10 +11,10 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from srunx.notifications.adapters.base import DeliveryError
-from srunx.notifications.adapters.slack_webhook import SlackWebhookAdapter
 
 from srunx.db.models import Event
+from srunx.notifications.adapters.base import DeliveryError
+from srunx.notifications.adapters.slack_webhook import SlackWebhookAdapter
 
 
 def _make_event(
