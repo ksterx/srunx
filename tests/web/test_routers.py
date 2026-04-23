@@ -2095,13 +2095,16 @@ class TestWorkflowsRouterInPlace:
     @staticmethod
     @contextlib.contextmanager
     def _patch_profile(monkeypatch, profile):
-        """Patch every ``_get_current_profile`` lookup the router does.
+        """Patch every profile-resolution lookup the router does.
 
-        Returns a single context manager (not a tuple of them) — Python's
-        ``with`` statement does NOT support ``*`` unpacking of a tuple of
-        context managers, so the previous shape (``with (*tuple, ...)``)
-        was a runtime ``TypeError``. ``ExitStack`` aggregates the patches
-        cleanly.
+        ``_hold_workflow_mounts_web`` resolves the profile through TWO
+        paths: first via ``ConfigManager`` (the real on-disk SSH
+        profile registry), then via ``get_current_profile`` as
+        fallback. If the developer's machine has any real SSH
+        profile configured, the ConfigManager path returns it and
+        the test's mock is never reached. Patch BOTH layers so the
+        test sees only its synthetic profile regardless of host
+        config.
         """
         from contextlib import ExitStack
         from unittest.mock import patch
@@ -2117,6 +2120,20 @@ class TestWorkflowsRouterInPlace:
                 patch(
                     "srunx.web.sync_utils.get_current_profile",
                     return_value=profile,
+                )
+            )
+            # Force ConfigManager to find nothing so the fall-through
+            # to the patched ``get_current_profile`` actually fires.
+            stack.enter_context(
+                patch(
+                    "srunx.ssh.core.config.ConfigManager.get_current_profile_name",
+                    return_value=None,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "srunx.ssh.core.config.ConfigManager.get_profile",
+                    return_value=None,
                 )
             )
             yield
@@ -2163,20 +2180,6 @@ class TestWorkflowsRouterInPlace:
         d.mkdir(parents=True, exist_ok=True)
         (d / f"{name}.yaml").write_text(body)
 
-    @pytest.mark.skip(
-        reason=(
-            "#150 root cause runs deeper than just threading the unrendered "
-            "workflow. `render_workflow_for_submission` translates "
-            "`ShellJob.script_path` from local to remote (mount.remote/...) "
-            "BEFORE rendering, so `render_shell_job_script` then tries to "
-            "read the remote path locally — fails or returns wrong bytes. "
-            "Fix requires either: (a) renaming/duplicating the script_path field "
-            "so render reads from local while submit uses remote, or "
-            "(b) deferring path translation to per-mode handling. Both are "
-            "larger refactors than this PR. The dispatch shape under test is "
-            "correct; the renderer pipeline mismatch is what blocks the assertion."
-        )
-    )
     def test_shelljob_in_place_uses_submit_remote_sbatch(
         self,
         client: TestClient,
@@ -2284,20 +2287,6 @@ class TestWorkflowsRouterInPlace:
         mock_adapter.submit_job.assert_called_once()
         mock_adapter.submit_remote_sbatch.assert_not_called()
 
-    @pytest.mark.skip(
-        reason=(
-            "#150 root cause runs deeper than just threading the unrendered "
-            "workflow. `render_workflow_for_submission` translates "
-            "`ShellJob.script_path` from local to remote (mount.remote/...) "
-            "BEFORE rendering, so `render_shell_job_script` then tries to "
-            "read the remote path locally — fails or returns wrong bytes. "
-            "Fix requires either: (a) renaming/duplicating the script_path field "
-            "so render reads from local while submit uses remote, or "
-            "(b) deferring path translation to per-mode handling. Both are "
-            "larger refactors than this PR. The dispatch shape under test is "
-            "correct; the renderer pipeline mismatch is what blocks the assertion."
-        )
-    )
     def test_mixed_workflow_dispatches_per_job(
         self,
         client: TestClient,
@@ -2377,20 +2366,6 @@ class TestWorkflowsRouterInPlace:
             == "in_place_job"
         )
 
-    @pytest.mark.skip(
-        reason=(
-            "#150 root cause runs deeper than just threading the unrendered "
-            "workflow. `render_workflow_for_submission` translates "
-            "`ShellJob.script_path` from local to remote (mount.remote/...) "
-            "BEFORE rendering, so `render_shell_job_script` then tries to "
-            "read the remote path locally — fails or returns wrong bytes. "
-            "Fix requires either: (a) renaming/duplicating the script_path field "
-            "so render reads from local while submit uses remote, or "
-            "(b) deferring path translation to per-mode handling. Both are "
-            "larger refactors than this PR. The dispatch shape under test is "
-            "correct; the renderer pipeline mismatch is what blocks the assertion."
-        )
-    )
     def test_single_mount_synced_only_once_for_multiple_shelljobs(
         self,
         client: TestClient,
@@ -2527,20 +2502,6 @@ class TestWorkflowsRouterInPlace:
         mock_adapter.submit_job.assert_called_once()
         mock_adapter.submit_remote_sbatch.assert_not_called()
 
-    @pytest.mark.skip(
-        reason=(
-            "#150 root cause runs deeper than just threading the unrendered "
-            "workflow. `render_workflow_for_submission` translates "
-            "`ShellJob.script_path` from local to remote (mount.remote/...) "
-            "BEFORE rendering, so `render_shell_job_script` then tries to "
-            "read the remote path locally — fails or returns wrong bytes. "
-            "Fix requires either: (a) renaming/duplicating the script_path field "
-            "so render reads from local while submit uses remote, or "
-            "(b) deferring path translation to per-mode handling. Both are "
-            "larger refactors than this PR. The dispatch shape under test is "
-            "correct; the renderer pipeline mismatch is what blocks the assertion."
-        )
-    )
     def test_sync_failure_surfaces_as_502(
         self,
         client: TestClient,
