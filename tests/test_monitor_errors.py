@@ -20,7 +20,7 @@ class TestJobMonitorErrorRecovery:
         # First job succeeds, second fails
         job1 = Job(name="job1", job_id=123, command=["test"])
         job1._status = JobStatus.RUNNING
-        monitor.client.retrieve = MagicMock(
+        monitor.client.status = MagicMock(
             side_effect=[job1, Exception("SLURM connection error")]
         )
 
@@ -37,7 +37,7 @@ class TestJobMonitorErrorRecovery:
         """Test that all jobs get placeholders when all retrievals fail."""
         monitor = JobMonitor(job_ids=[123, 456, 789])
         monitor.client = MagicMock()
-        monitor.client.retrieve = MagicMock(side_effect=Exception("SLURM down"))
+        monitor.client.status = MagicMock(side_effect=Exception("SLURM down"))
 
         jobs = monitor._get_monitored_jobs()
 
@@ -49,7 +49,7 @@ class TestJobMonitorErrorRecovery:
         """Test that check_condition doesn't crash on SLURM errors."""
         monitor = JobMonitor(job_ids=[123])
         monitor.client = MagicMock()
-        monitor.client.retrieve = MagicMock(side_effect=Exception("Network error"))
+        monitor.client.status = MagicMock(side_effect=Exception("Network error"))
 
         # Should not raise, should return False (UNKNOWN not in target statuses)
         result = monitor.check_condition()
@@ -62,7 +62,7 @@ class TestJobMonitorErrorRecovery:
 
         job1 = Job(name="job1", job_id=123, command=["test"])
         job1._status = JobStatus.COMPLETED
-        monitor.client.retrieve = MagicMock(side_effect=[job1, Exception("Timeout")])
+        monitor.client.status = MagicMock(side_effect=[job1, Exception("Timeout")])
 
         state = monitor.get_current_state()
 
@@ -213,7 +213,7 @@ class TestCallbackErrorHandling:
 
         job = Job(name="job1", job_id=123, command=["test"])
         job._status = JobStatus.RUNNING
-        monitor.client.retrieve = MagicMock(return_value=job)
+        monitor.client.status = MagicMock(return_value=job)
 
         # Callback raises exception
         callback = MagicMock()
