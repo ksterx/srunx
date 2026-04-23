@@ -1,9 +1,8 @@
 """Callback system for job state notifications.
 
-The ``SlackCallback`` concrete implementation lives in
-:mod:`srunx.observability.notifications.legacy_slack` (#164); it is
-re-exported here so legacy ``from srunx.callbacks import SlackCallback``
-call-sites keep working.
+Defines the ``Callback`` base class + the ``NotificationWatchCallback``
+bridge. The ``SlackCallback`` concrete implementation lives in
+:mod:`srunx.observability.notifications.legacy_slack`.
 """
 
 from typing import TYPE_CHECKING
@@ -13,9 +12,6 @@ from srunx.domain import JobType, Workflow
 
 if TYPE_CHECKING:
     from srunx.observability.monitoring.types import Report, ResourceSnapshot
-    from srunx.observability.notifications.legacy_slack import (
-        SlackCallback as SlackCallback,  # re-exported via ``__getattr__``
-    )
 
 _logger = get_logger(__name__)
 
@@ -102,18 +98,6 @@ class Callback:
             report: Generated report containing job and resource statistics.
         """
         pass
-
-
-# SlackCallback moved to srunx.observability.notifications.legacy_slack (#164).
-# Lazy-resolve via PEP 562 ``__getattr__`` so the cyclic import between this
-# module (which defines ``Callback``) and the subclass module resolves cleanly
-# without an E402-triggering late ``import``.
-def __getattr__(name: str) -> object:
-    if name == "SlackCallback":
-        from srunx.observability.notifications.legacy_slack import SlackCallback
-
-        return SlackCallback
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class NotificationWatchCallback(Callback):

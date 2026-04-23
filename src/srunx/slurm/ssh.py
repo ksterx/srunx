@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from srunx.callbacks import Callback
 from srunx.common.logging import get_logger
+from srunx.slurm.parsing import GPU_TRES_RE  # noqa: E402
 from srunx.slurm.protocols import (
     JobSnapshot,
     parse_slurm_datetime,
@@ -26,7 +27,6 @@ from srunx.slurm.states import SLURM_TERMINAL_JOB_STATES
 from srunx.ssh.core.client import SSHSlurmClient
 from srunx.ssh.core.config import ConfigManager, MountConfig
 from srunx.ssh.core.ssh_config import SSHConfigParser  # noqa: F811
-from srunx.utils import GPU_TRES_RE  # noqa: E402
 
 if TYPE_CHECKING:
     from srunx.domain import BaseJob, JobStatus, RunnableJobType

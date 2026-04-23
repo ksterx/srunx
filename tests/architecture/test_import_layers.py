@@ -25,41 +25,20 @@ from pathlib import Path
 SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "srunx"
 
 # Map each top-level package/module under ``srunx/`` to its TARGET layer.
-# Source files move in later phases; the layer name is stable.
 MODULE_LAYERS: dict[str, str] = {
-    # common — canonical package landed in Phase 8e (#164); the
-    # top-level shims (config / exceptions / logging / _version) stay
-    # mapped for back-compat and route into srunx.common.* via sys.modules
-    # aliasing.
-    "_version": "common",
+    # common
     "common": "common",
-    "config": "common",
-    "exceptions": "common",
-    "logging": "common",
-    # domain (Phase 3 / #159 splits models.py into domain/)
+    # domain
     "domain": "domain",
-    "models": "domain",
-    # runtime (Phase 2 / #158 + Phase 7 / #163 + Phase 8f / #164)
+    # runtime
     "runtime": "runtime",
-    "rendering": "runtime",  # shim — canonical home: srunx.runtime.rendering
-    "runner": "runtime",  # shim — canonical home: srunx.runtime.workflow.runner
-    "template": "runtime",  # shim — canonical home: srunx.runtime.templates
-    "sweep": "runtime",  # shim — canonical home: srunx.runtime.sweep
-    "security": "runtime",  # shim — canonical home: srunx.runtime.security
-    # slurm (Phase 4 / #160 + Phase 6 / #162)
-    "client": "slurm",
-    "client_protocol": "slurm",
+    # slurm
     "slurm": "slurm",
     "transport": "slurm",
     "utils": "slurm",
-    # observability (Phase 5 / #161 + Phase 8 / #164)
+    # observability
     "observability": "observability",
     "callbacks": "observability",
-    "db": "observability",
-    "formatters": "observability",
-    "monitor": "observability",
-    "notifications": "observability",
-    "pollers": "observability",
     # integrations
     "containers": "integrations",
     "ssh": "integrations",
@@ -96,62 +75,40 @@ ALLOWED: dict[str, set[str]] = {
 KNOWN_VIOLATIONS: dict[tuple[str, str], str] = {
     # observability -> interfaces (callbacks reaches back into CLI-side helper).
     ("callbacks", "cli"): (
-        "Phase 5 (#161) / Phase 8 (#164): callbacks absorbed into observability; "
-        "CLI-side notification helper inverted so interfaces -> observability."
+        "``NotificationWatchCallback`` calls into CLI-side ``attach_notification_watch``. "
+        "Resolved by moving that helper into observability."
     ),
-    # slurm -> observability (legacy ``Slurm`` shim wires the default sink chain).
-    ("client", "callbacks"): (
-        "Shim-only: ``srunx.slurm.local.Slurm`` imports ``Callback`` for its legacy "
-        "``callbacks=`` type hint. Removed when the shim is deleted."
+    # observability -> runtime (active-watch poller imports sweep state service).
+    ("observability", "runtime"): (
+        "Poller imports ``runtime.sweep.state_service`` directly; resolved when "
+        "state_service's pure state ops move under observability."
     ),
-    ("client", "observability"): (
-        "Shim-only: ``srunx.slurm.local.Slurm`` composes ``CallbackSink`` + "
-        "``DBRecorderSink`` into the default sink chain so legacy "
-        "``Slurm(callbacks=[...])`` keeps working. Removed when the shim "
-        "is deleted."
-    ),
-    # domain -> runtime (models.py is a backward-compat shim re-exporting renderers).
-    ("models", "runtime"): (
-        "Shim re-exports from :mod:`srunx.runtime.rendering`. Remove when "
-        "external callers migrate and models.py is deleted (post #156)."
-    ),
-    # observability -> runtime (poller reaches into sweep state service).
-    ("observability", "sweep"): (
-        "Phase 8c (#164): poller still imports sweep state_service directly. "
-        "Phase 8f (#164): sweep state_service split — pure state ops move under "
-        "observability, removing this edge."
-    ),
-    # runtime -> observability (runner mixes DAG execution with DB + callbacks).
+    # runtime -> observability (runner / workflow / sweep still invoke Callback directly).
     ("runtime", "callbacks"): (
-        "``runtime.workflow.runner`` still invokes ``Callback`` methods directly. "
-        "Resolved by extending Phase 5's sink pattern into the workflow runner "
-        "(follow-up)."
+        "``runtime.workflow.runner`` + ``runtime.sweep.orchestrator`` still call "
+        "``Callback`` methods directly. Resolved by extending the sink pattern."
     ),
-    ("runtime", "db"): (
-        "``runtime.workflow.runner`` / ``runtime.workflow.transitions`` write "
-        "``workflow_runs`` rows directly. Resolved by extending Phase 5's sink "
-        "pattern into the workflow runner (follow-up)."
+    # runtime -> observability (runner / workflow / sweep write DB + invoke notifications).
+    ("runtime", "observability"): (
+        "``runtime.workflow.{runner,transitions}`` write ``workflow_runs`` rows and "
+        "``runtime.sweep.{aggregator,orchestrator,reconciler,state_service}`` invoke "
+        "``NotificationService`` + storage repositories directly. Resolved by "
+        "extending the sink pattern into the workflow runner + sweep orchestrator."
     ),
-    ("runtime", "notifications"): (
-        "``runtime.sweep`` (aggregator / orchestrator / state_service) invokes "
-        "``NotificationService`` directly. Sink extraction into the sweep "
-        "orchestrator is the Phase 5-follow-up that resolves this."
+    # slurm -> observability (Slurm wrapper wires default sink chain; SSH adapter writes DB).
+    ("slurm", "observability"): (
+        "``slurm.local.Slurm`` wrapper composes ``CallbackSink`` + ``DBRecorderSink`` "
+        "into the default sink chain; ``slurm.ssh`` writes ``observability.storage`` "
+        "rows directly. Sink pattern extension to SSH is the follow-up."
     ),
-    # slurm -> observability (transport registry still imports callbacks).
-    ("transport", "callbacks"): "Phase 5 (#161): transport registry uses sink.",
-    # slurm -> observability (SSH adapter still writes DB + invokes callbacks
-    # directly; sink extraction comes in a Phase 5 follow-up for SSH).
     ("slurm", "callbacks"): (
         "SSH adapter / executor still import legacy ``Callback``. "
-        "Phase 5 sink pattern extended to SSH in a follow-up."
+        "Sink pattern extended to SSH in a follow-up."
     ),
-    ("slurm", "db"): (
-        "SSH adapter writes ``srunx.observability.storage`` rows directly. "
-        "Phase 5 sink pattern extended to SSH in a follow-up."
-    ),
-    # NOTE: ``slurm -> cli`` (SSH adapter consuming ``cli.submission_plan``)
-    # was resolved by Phase 8f — ``submission_plan.py`` now lives under
-    # ``runtime/`` so the import is ``slurm -> runtime`` (allowed).
+    (
+        "transport",
+        "callbacks",
+    ): "Transport registry still consumes Callback; sink follow-up.",
 }
 
 

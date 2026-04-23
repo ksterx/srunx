@@ -9,7 +9,7 @@ from srunx.callbacks import Callback
 from srunx.observability.monitoring.base import BaseMonitor
 from srunx.observability.monitoring.resource_source import ResourceSource
 from srunx.observability.monitoring.types import MonitorConfig, ResourceSnapshot
-from srunx.utils import GPU_TRES_RE
+from srunx.slurm.parsing import GPU_TRES_RE
 
 
 class ResourceMonitor(BaseMonitor):

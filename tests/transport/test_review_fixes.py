@@ -253,7 +253,9 @@ class TestWorkflowResponseResolvesSSHChildren:
         from srunx.observability.storage.repositories.workflow_runs import (
             WorkflowRunRepository,
         )
-        from srunx.web.routers.workflows import _build_run_response
+        from srunx.web.services.workflow_run_query import (
+            build_run_response as _build_run_response,
+        )
 
         conn, _ = tmp_srunx_db
 

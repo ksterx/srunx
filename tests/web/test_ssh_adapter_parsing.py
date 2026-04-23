@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import pytest
 
+from srunx.slurm.parsing import GPU_TRES_RE
 from srunx.slurm.ssh import (
     _UNAVAILABLE_STATES,
     SlurmSSHAdapter,
     _validate_identifier,
 )
-from srunx.utils import GPU_TRES_RE
 
 # ── Input Validation ──────────────────────────────
 

@@ -34,6 +34,7 @@ from srunx.runtime.sweep import SweepSpec
 from srunx.runtime.sweep.orchestrator import SweepOrchestrator
 from srunx.runtime.sweep.state_service import WorkflowRunStateService
 from srunx.slurm.protocols import WorkflowJobExecutor
+from srunx.web.schemas.workflows import SweepSpecRequest, WorkflowRunRequest
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -247,7 +248,7 @@ class TestOrchestratorExecutorFactoryWiring:
 
             return _Stub()
 
-        from srunx import runner as runner_mod
+        import srunx.runtime.workflow.runner as runner_mod
 
         monkeypatch.setattr(
             runner_mod.WorkflowRunner, "from_yaml", staticmethod(fake_from_yaml)
@@ -306,7 +307,7 @@ class TestSweepWithFakePool:
 
             return _Stub()
 
-        from srunx import runner as runner_mod
+        import srunx.runtime.workflow.runner as runner_mod
 
         monkeypatch.setattr(
             runner_mod.WorkflowRunner, "from_yaml", staticmethod(_fake_from_yaml)
@@ -363,7 +364,7 @@ class TestSweepWithFakePool:
 
             return _Stub()
 
-        from srunx import runner as runner_mod
+        import srunx.runtime.workflow.runner as runner_mod
 
         monkeypatch.setattr(
             runner_mod.WorkflowRunner, "from_yaml", staticmethod(_fake_from_yaml)
@@ -485,8 +486,8 @@ class TestWebDispatchPoolLifecycle:
         fake_request.app.state.task_group = None
         fake_request.app.state.background_tasks = None
 
-        body = wf_mod.WorkflowRunRequest(
-            sweep=wf_mod.SweepSpecRequest(matrix={"lr": [0.01, 0.1]}, max_parallel=2)
+        body = WorkflowRunRequest(
+            sweep=SweepSpecRequest(matrix={"lr": [0.01, 0.1]}, max_parallel=2)
         )
 
         async def _call() -> dict[str, Any]:
@@ -633,8 +634,8 @@ class TestWebDispatchPoolLifecycle:
         fake_request.app.state.task_group = None
         fake_request.app.state.background_tasks = None
 
-        body = wf_mod.WorkflowRunRequest(
-            sweep=wf_mod.SweepSpecRequest(matrix={"lr": [0.01, 0.1]}, max_parallel=20)
+        body = WorkflowRunRequest(
+            sweep=SweepSpecRequest(matrix={"lr": [0.01, 0.1]}, max_parallel=20)
         )
 
         async def _call() -> dict[str, Any]:
@@ -684,7 +685,7 @@ class TestBackwardCompat:
 
             return _Stub()
 
-        from srunx import runner as runner_mod
+        import srunx.runtime.workflow.runner as runner_mod
 
         monkeypatch.setattr(
             runner_mod.WorkflowRunner, "from_yaml", staticmethod(_fake_from_yaml)
@@ -789,7 +790,7 @@ class TestSubmissionContextPassthrough:
 
             return _Stub()
 
-        from srunx import runner as runner_mod
+        import srunx.runtime.workflow.runner as runner_mod
 
         monkeypatch.setattr(
             runner_mod.WorkflowRunner, "from_yaml", staticmethod(fake_from_yaml)
@@ -828,7 +829,7 @@ class TestSubmissionContextPassthrough:
 
             return _Stub()
 
-        from srunx import runner as runner_mod
+        import srunx.runtime.workflow.runner as runner_mod
 
         monkeypatch.setattr(
             runner_mod.WorkflowRunner, "from_yaml", staticmethod(fake_from_yaml)

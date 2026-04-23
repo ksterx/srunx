@@ -75,7 +75,7 @@ def client(  # type: ignore[misc]
     app.dependency_overrides[get_adapter] = lambda: mock_adapter
 
     with patch(
-        "srunx.web.routers.workflows._get_current_profile",
+        "srunx.web.services._submission_common.get_current_profile",
         return_value=fake_profile,
     ):
         yield TestClient(app, raise_server_exceptions=False)

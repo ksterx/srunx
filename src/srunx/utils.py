@@ -4,9 +4,8 @@ import subprocess
 
 from srunx.common.logging import get_logger
 from srunx.domain import BaseJob, JobStatus
-from srunx.slurm.parsing import GPU_TRES_RE  # re-export for backward compat
 
-__all__ = ["GPU_TRES_RE", "get_job_status", "job_status_msg"]
+__all__ = ["get_job_status", "job_status_msg"]
 
 logger = get_logger(__name__)
 
