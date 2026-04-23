@@ -541,6 +541,121 @@ class TestMkpath:
 
 
 # ---------------------------------------------------------------------------
+# Verbose streaming (#137 part 3)
+# ---------------------------------------------------------------------------
+
+
+class TestVerboseStreaming:
+    """``verbose=True`` switches push() onto the streaming Popen path."""
+
+    def test_verbose_adds_progress_flag(self):
+        """``--info=progress2`` is rsync's single-line progress mode.
+
+        Single-line is the only progress form that doesn't drown the
+        terminal in per-file output for thousand-file syncs.
+        """
+        client = _make_rsync_client(hostname="h", username="u")
+        cmd = client._build_rsync_cmd(
+            "s", "d", delete=False, dry_run=False, verbose=True, excludes=[]
+        )
+        assert "--info=progress2" in cmd
+
+    def test_default_does_not_add_progress_flag(self):
+        client = _make_rsync_client(hostname="h", username="u")
+        cmd = client._build_rsync_cmd(
+            "s", "d", delete=False, dry_run=False, excludes=[]
+        )
+        assert "--info=progress2" not in cmd
+
+    def test_default_uses_subprocess_run(self, tmp_path: Path):
+        """``verbose=False`` keeps the historical capture-and-quiet path.
+
+        Bit-for-bit no behaviour change for the default — guarded so we
+        notice if a future refactor accidentally rewires the default
+        path through Popen.
+        """
+        client = _make_rsync_client(hostname="h", username="u")
+
+        with (
+            patch("srunx.sync.rsync.subprocess.run") as mock_run,
+            patch("srunx.sync.rsync.subprocess.Popen") as mock_popen,
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push(tmp_path, "~/dst/")
+
+        mock_run.assert_called_once()
+        mock_popen.assert_not_called()
+
+    def test_verbose_uses_popen_and_streams_to_stderr(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        """Streaming path drains both pipes and surfaces lines on stderr."""
+        client = _make_rsync_client(hostname="h", username="u")
+
+        # Fake Popen: stdout yields three progress lines, stderr stays empty.
+        fake_proc = MagicMock()
+        fake_proc.stdout = iter(
+            [
+                "  1,234,567  10%   1.23MB/s    0:00:42\n",
+                "  2,345,678  20%   1.45MB/s    0:00:30\n",
+                "  3,456,789 100%   1.50MB/s    0:00:00 (xfr#1, to-chk=0/1)\n",
+            ]
+        )
+        fake_proc.stderr = iter([])
+        fake_proc.wait.return_value = 0
+
+        with (
+            patch("srunx.sync.rsync.subprocess.run") as mock_run,
+            patch(
+                "srunx.sync.rsync.subprocess.Popen", return_value=fake_proc
+            ) as mock_popen,
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = client.push(tmp_path, "~/dst/", verbose=True)
+
+        # Popen was used (not run) for the actual rsync invocation.
+        # ``subprocess.run`` may still be called for the ``_ensure_remote_dir``
+        # fallback when --mkpath isn't supported, so we only assert the
+        # Popen invocation here.
+        mock_popen.assert_called_once()
+        cmd = mock_popen.call_args[0][0]
+        assert "--info=progress2" in cmd
+
+        # Streamed lines reached stderr verbatim.
+        captured = capsys.readouterr()
+        assert "10%" in captured.err
+        assert "100%" in captured.err
+
+        # The accumulated stdout is also returned in the result so
+        # callers that rely on result.stdout (error messages, etc.)
+        # keep working.
+        assert "10%" in result.stdout
+        assert "100%" in result.stdout
+        assert result.success
+
+    def test_verbose_returncode_propagates(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        """Non-zero exit on the streaming path produces an unsuccessful result."""
+        client = _make_rsync_client(hostname="h", username="u")
+
+        fake_proc = MagicMock()
+        fake_proc.stdout = iter([])
+        fake_proc.stderr = iter(["rsync: connection unexpectedly closed\n"])
+        fake_proc.wait.return_value = 12
+
+        with (
+            patch("srunx.sync.rsync.subprocess.run") as mock_run,
+            patch("srunx.sync.rsync.subprocess.Popen", return_value=fake_proc),
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = client.push(tmp_path, "~/dst/", verbose=True)
+
+        assert result.returncode == 12
+        assert "connection unexpectedly closed" in result.stderr
+
+
+# ---------------------------------------------------------------------------
 # SSHSlurmClient.sync_project
 # ---------------------------------------------------------------------------
 
