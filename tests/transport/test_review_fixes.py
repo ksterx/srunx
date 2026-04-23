@@ -394,7 +394,7 @@ class TestStatusSnapshotDoesNotRefresh:
         adapter.queue_by_ids = _stub_queue  # type: ignore[method-assign]
 
         # Any lazy refresh would invoke subprocess.run inside BaseJob.refresh.
-        with _patch("srunx.models.subprocess.run") as sub_run:
+        with _patch("srunx.domain.jobs.subprocess.run") as sub_run:
             job = adapter.status(12345)
             # Touch .status AFTER the static _REFRESH_INTERVAL has long
             # elapsed — a non-parked _last_refresh would fire sacct here.
