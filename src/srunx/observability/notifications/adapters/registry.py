@@ -7,12 +7,12 @@ claimed delivery through this registry to the matching adapter.
 
 from __future__ import annotations
 
-from srunx.notifications.adapters.base import DeliveryAdapter
-from srunx.notifications.adapters.slack_webhook import SlackWebhookDeliveryAdapter
+from srunx.observability.notifications.adapters.base import DeliveryAdapter
+from srunx.observability.notifications.adapters.slack_webhook import SlackWebhookAdapter
 
 # Stateless adapters — safe to share a single instance process-wide.
 ADAPTERS: dict[str, DeliveryAdapter] = {
-    "slack_webhook": SlackWebhookDeliveryAdapter(),
+    "slack_webhook": SlackWebhookAdapter(),
 }
 
 

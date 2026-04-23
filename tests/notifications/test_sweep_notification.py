@@ -3,7 +3,7 @@
 Covers:
   * :func:`srunx.notifications.presets.should_deliver` truth table for
     the new ``sweep_run.status_changed`` event kind.
-  * :meth:`SlackWebhookDeliveryAdapter._format_sweep_run_event` block
+  * :meth:`SlackWebhookAdapter._format_sweep_run_event` block
     rendering + sanitization.
 """
 
@@ -12,10 +12,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from srunx.notifications.adapters.slack_webhook import SlackWebhookAdapter
+from srunx.notifications.presets import should_deliver
 
 from srunx.db.models import Event
-from srunx.notifications.adapters.slack_webhook import SlackWebhookDeliveryAdapter
-from srunx.notifications.presets import should_deliver
 
 # ---------------------------------------------------------------------------
 # should_deliver truth table
@@ -120,7 +120,7 @@ class TestFormatSweepRunEvent:
             }
         )
 
-        text, blocks = SlackWebhookDeliveryAdapter._build_message(event)
+        text, blocks = SlackWebhookAdapter._build_message(event)
 
         assert text == "Sweep completed"
         assert len(blocks) == 1
@@ -151,7 +151,7 @@ class TestFormatSweepRunEvent:
             }
         )
 
-        _text, blocks = SlackWebhookDeliveryAdapter._build_message(event)
+        _text, blocks = SlackWebhookAdapter._build_message(event)
 
         body = blocks[0]["text"]["text"]
         assert "1/3 completed (2 failed, 0 cancelled)" in body
@@ -179,7 +179,7 @@ class TestFormatSweepRunEvent:
             }
         )
 
-        _text, blocks = SlackWebhookDeliveryAdapter._build_message(event)
+        _text, blocks = SlackWebhookAdapter._build_message(event)
 
         body = blocks[0]["text"]["text"]
         # Angle brackets HTML-escaped.
@@ -204,7 +204,7 @@ class TestFormatSweepRunEvent:
             }
         )
 
-        text, blocks = SlackWebhookDeliveryAdapter._build_message(event)
+        text, blocks = SlackWebhookAdapter._build_message(event)
         assert text == "Sweep running"
         body = blocks[0]["text"]["text"]
         assert "0/0 completed (0 failed, 0 cancelled)" in body
@@ -221,5 +221,5 @@ class TestFormatSweepRunEvent:
             observed_at=datetime(2026, 4, 18, 12, 0, 0, tzinfo=UTC),
         )
 
-        _text, blocks = SlackWebhookDeliveryAdapter._build_message(event)
+        _text, blocks = SlackWebhookAdapter._build_message(event)
         assert "`123`" in blocks[0]["text"]["text"]

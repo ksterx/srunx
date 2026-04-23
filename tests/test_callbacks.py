@@ -48,7 +48,7 @@ class TestSlackCallback:
         # Check that the client was initialized with the webhook URL
         assert hasattr(callback, "client")
 
-    @patch("srunx.callbacks.WebhookClient")
+    @patch("srunx.observability.notifications.legacy_slack.WebhookClient")
     def test_slack_callback_init_with_mock(self, mock_webhook_client):
         """Test SlackCallback initialization with mock."""
         webhook_url = "https://hooks.slack.com/services/T00/B00/XXX"
@@ -60,7 +60,7 @@ class TestSlackCallback:
         mock_webhook_client.assert_called_once_with(webhook_url)
         assert callback.client is mock_client
 
-    @patch("srunx.callbacks.WebhookClient")
+    @patch("srunx.observability.notifications.legacy_slack.WebhookClient")
     def test_on_job_completed(self, mock_webhook_client):
         """Test on_job_completed method."""
         mock_client = Mock()
@@ -85,7 +85,7 @@ class TestSlackCallback:
         # Note: underscores are escaped in sanitization
         assert "Job test\\_job" in call_args[1]["blocks"][0]["text"]["text"]
 
-    @patch("srunx.callbacks.WebhookClient")
+    @patch("srunx.observability.notifications.legacy_slack.WebhookClient")
     def test_on_job_failed(self, mock_webhook_client):
         """Test on_job_failed method."""
         mock_client = Mock()
@@ -110,7 +110,7 @@ class TestSlackCallback:
         # Note: underscores are escaped in sanitization
         assert "Job failed\\_job" in call_args[1]["blocks"][0]["text"]["text"]
 
-    @patch("srunx.callbacks.WebhookClient")
+    @patch("srunx.observability.notifications.legacy_slack.WebhookClient")
     def test_on_job_completed_with_full_job(self, mock_webhook_client):
         """Test on_job_completed with a full Job object."""
         mock_client = Mock()
@@ -134,7 +134,7 @@ class TestSlackCallback:
         # Note: underscores are escaped in sanitization
         assert "Job ml\\_training" in call_args[1]["blocks"][0]["text"]["text"]
 
-    @patch("srunx.callbacks.WebhookClient")
+    @patch("srunx.observability.notifications.legacy_slack.WebhookClient")
     def test_on_job_failed_with_full_job(self, mock_webhook_client):
         """Test on_job_failed with a full Job object."""
         mock_client = Mock()
@@ -158,7 +158,7 @@ class TestSlackCallback:
         # No underscores in "preprocessing", so no escaping needed
         assert "Job preprocessing" in call_args[1]["blocks"][0]["text"]["text"]
 
-    @patch("srunx.callbacks.WebhookClient")
+    @patch("srunx.observability.notifications.legacy_slack.WebhookClient")
     def test_slack_callback_other_methods_implemented(self, mock_webhook_client):
         """Test that on_job_running and on_job_cancelled send notifications."""
         mock_client = Mock()
@@ -186,7 +186,7 @@ class TestSlackCallback:
         call_args = mock_client.send.call_args
         assert call_args[1]["text"] == "Job cancelled"
 
-    @patch("srunx.callbacks.WebhookClient")
+    @patch("srunx.observability.notifications.legacy_slack.WebhookClient")
     def test_slack_callback_handles_send_error(self, mock_webhook_client):
         """Test SlackCallback handles send errors gracefully."""
         mock_client = Mock()
@@ -206,7 +206,7 @@ class TestSlackCallback:
         with pytest.raises(Exception):
             callback.on_job_failed(job)
 
-    @patch("srunx.callbacks.WebhookClient")
+    @patch("srunx.observability.notifications.legacy_slack.WebhookClient")
     def test_slack_callback_message_format(self, mock_webhook_client):
         """Test SlackCallback message format details."""
         mock_client = Mock()
@@ -247,7 +247,7 @@ class TestSlackCallback:
         # Note: underscores are escaped in sanitization
         assert "Job format\\_test\\_job" in block["text"]["text"]
 
-    @patch("srunx.callbacks.WebhookClient")
+    @patch("srunx.observability.notifications.legacy_slack.WebhookClient")
     def test_slack_callback_with_long_job_name(self, mock_webhook_client):
         """Test SlackCallback with very long job name."""
         mock_client = Mock()
@@ -313,7 +313,7 @@ class TestSlackCallbackSecurity:
         with pytest.raises(ValueError, match="Invalid Slack webhook URL"):
             SlackCallback("not-a-url")
 
-    @patch("srunx.callbacks.WebhookClient")
+    @patch("srunx.observability.notifications.legacy_slack.WebhookClient")
     def test_valid_webhook_url_accepted(self, mock_webhook_client):
         """Test that valid webhook URLs are accepted."""
         valid_urls = [

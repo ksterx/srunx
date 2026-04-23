@@ -15,6 +15,7 @@ from typing import Any
 
 import anyio
 import pytest
+from srunx.notifications.service import NotificationService
 
 from srunx.db.connection import open_connection
 from srunx.db.migrations import apply_migrations
@@ -23,7 +24,6 @@ from srunx.db.repositories.endpoints import EndpointRepository
 from srunx.db.repositories.events import EventRepository
 from srunx.db.repositories.subscriptions import SubscriptionRepository
 from srunx.db.repositories.watches import WatchRepository
-from srunx.notifications.service import NotificationService
 from srunx.pollers.delivery_poller import DeliveryPoller
 
 _received: list[dict[str, Any]] = []
@@ -64,7 +64,7 @@ def local_http() -> Any:
 def test_delivery_poller_posts_to_local_http(
     tmp_path: Path, local_http: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Full pipeline through the real SlackWebhookDeliveryAdapter → local HTTP."""
+    """Full pipeline through the real SlackWebhookAdapter → local HTTP."""
     # --- Patch slack_sdk.WebhookClient so the adapter targets our local server.
     from slack_sdk.webhook import WebhookClient
 
