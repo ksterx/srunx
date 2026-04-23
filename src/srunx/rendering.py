@@ -79,6 +79,21 @@ class SubmissionRenderContext:
     to ``True`` when constructing the context. Closes Codex
     blocker #3 on PR #141."""
 
+    locked_mount_names: tuple[str, ...] = ()
+    """Names of mounts the caller is currently holding the sync lock for.
+
+    Defence-in-depth for the sweep IN_PLACE path (#143). The CLI
+    workflow runner already aggregates mounts across every sweep
+    cell via :func:`collect_touched_mounts_across_cells` so the
+    lock-set should contain every mount any cell can touch. This
+    field is the safety-net: if a buggy / racy cell renders to a
+    mount we somehow missed, the SSH adapter rejects the IN_PLACE
+    path with a "mount X not locked" error instead of silently
+    racing rsync. Empty tuple = no enforcement (preserves all
+    pre-#143 callers verbatim, including non-sweep workflows where
+    the lock-set is computed from a single base render and the
+    safety net would just add noise)."""
+
 
 @dataclass(frozen=True)
 class RenderedJob:

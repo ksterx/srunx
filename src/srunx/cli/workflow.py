@@ -6,11 +6,14 @@ import signal
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 import yaml  # type: ignore
 from rich.console import Console
+
+if TYPE_CHECKING:
+    from srunx.ssh.core.config import MountConfig
 
 from srunx.callbacks import Callback, NotificationWatchCallback, SlackCallback
 from srunx.cli.transport_options import LocalOpt, ProfileOpt, QuietOpt
@@ -49,7 +52,11 @@ def _resolve_sync_flag(sync: bool | None) -> bool:
     return get_config().sync.auto
 
 
-def _in_place_context(rt: "ResolvedTransport") -> "Any":
+def _in_place_context(
+    rt: "ResolvedTransport",
+    *,
+    locked_mount_names: tuple[str, ...] = (),
+) -> "Any":
     """Return ``rt.submission_context`` with ``allow_in_place=True``.
 
     The CLI workflow runner holds the per-(profile, mount) sync lock
@@ -62,6 +69,13 @@ def _in_place_context(rt: "ResolvedTransport") -> "Any":
     it here avoids touching every executor / Protocol signature.
     Closes Codex blocker #3 on PR #141.
 
+    ``locked_mount_names`` (#143) is a defence-in-depth list of the
+    mounts the caller is currently holding the lock for. The SSH
+    adapter rejects IN_PLACE for any mount outside this set,
+    surfacing aggregation bugs as a clear error rather than a
+    silent rsync race. Empty tuple disables enforcement (preserves
+    pre-#143 single-workflow callers verbatim).
+
     Returns ``None`` when there's no context to clone (e.g. local
     transport); callers fall back to ``rt.submission_context``.
     """
@@ -69,7 +83,66 @@ def _in_place_context(rt: "ResolvedTransport") -> "Any":
 
     if rt.submission_context is None:
         return None
-    return dataclasses.replace(rt.submission_context, allow_in_place=True)
+    return dataclasses.replace(
+        rt.submission_context,
+        allow_in_place=True,
+        locked_mount_names=locked_mount_names,
+    )
+
+
+def _expand_sweep_cell_args(
+    workflow_data: dict[str, Any],
+    args_override: dict[str, Any],
+    sweep_spec: SweepSpec,
+) -> list[dict[str, Any]]:
+    """Expand the matrix into per-cell effective arg dicts.
+
+    Mirrors :meth:`SweepOrchestrator._expand_cells` so the CLI's lock
+    aggregation step (#143) sees the same per-cell args the
+    orchestrator will later hand to :meth:`WorkflowRunner.from_yaml`.
+    Returning an empty list means "no cells to expand"; callers
+    should treat that as "fall back to the single-workflow lock-set
+    rather than the per-cell union".
+    """
+    from srunx.sweep.expand import expand_matrix
+
+    base_args: dict[str, Any] = {
+        **(workflow_data.get("args") or {}),
+        **args_override,
+    }
+    return expand_matrix(sweep_spec.matrix, base_args)
+
+
+def _resolve_sweep_locked_mounts(
+    rt: "ResolvedTransport",
+    cell_args_overrides: list[dict[str, Any]],
+    yaml_file: Path,
+) -> "list[MountConfig]":
+    """Return the union of MountConfigs every sweep cell can touch.
+
+    Drives both the lock-acquisition step (``_hold_workflow_mounts``)
+    and the SSH adapter's defence-in-depth check
+    (``locked_mount_names`` on :class:`SubmissionRenderContext`) off
+    the same rendered set, so the two never disagree about which
+    mounts are actually locked. Returns an empty list when no
+    profile is bound or the profile doesn't exist — the SSH adapter
+    treats that as "no enforcement" which matches the legacy
+    pre-#143 behaviour.
+    """
+    from srunx.cli.submission_plan import collect_touched_mounts_across_cells
+    from srunx.ssh.core.config import ConfigManager
+
+    if rt.profile_name is None:
+        return []
+    profile = ConfigManager().get_profile(rt.profile_name)
+    if profile is None:
+        return []
+    return collect_touched_mounts_across_cells(
+        yaml_file,
+        None,
+        cell_args_overrides,
+        profile,
+    )
 
 
 @contextlib.contextmanager
@@ -78,6 +151,7 @@ def _hold_workflow_mounts(
     rt: "ResolvedTransport",
     workflow_for_mounts: "Workflow | None",
     sync_required: bool,
+    explicit_mounts: "list[MountConfig] | None" = None,
 ) -> Iterator[None]:
     """Acquire per-mount sync locks for every mount the workflow touches.
 
@@ -101,6 +175,15 @@ def _hold_workflow_mounts(
     ``sync_required=False`` (``--no-sync``) still acquires the locks
     but skips the rsync invocation; this preserves the lock-held
     invariant while letting the user opt out of the transfer.
+
+    Sweep callers (#143) can pass ``explicit_mounts`` to override the
+    single-workflow scan with a pre-computed union (typically the
+    per-cell mount aggregation from :func:`collect_touched_mounts_across_cells`).
+    This avoids re-rendering every cell here when the caller already
+    rendered them to compute ``locked_mount_names`` for the SSH
+    adapter — both the lock and the safety net see the same mount
+    list. When omitted the helper falls back to the single-workflow
+    scan and existing non-sweep behaviour is preserved bit-for-bit.
     """
     if (
         rt.transport_type != "ssh"
@@ -120,7 +203,10 @@ def _hold_workflow_mounts(
         yield
         return
 
-    mounts = collect_touched_mounts(workflow_for_mounts, profile)
+    if explicit_mounts is not None:
+        mounts = list(explicit_mounts)
+    else:
+        mounts = collect_touched_mounts(workflow_for_mounts, profile)
     if not mounts:
         yield
         return
@@ -629,25 +715,65 @@ def _execute_workflow(
                 # lock across every cell in the sweep so a concurrent
                 # invocation can't rsync mid-sweep, AND so the rsync
                 # itself runs once per mount instead of once per cell.
+                #
+                # Issue #143: when the sweep matrix can influence
+                # ``ShellJob.script_path`` (e.g. ``path: "{{ scratch
+                # }}/{{ seed }}/run.sh"``), the base render alone
+                # misses mounts only a non-base cell can resolve to.
+                # Expand the matrix here, render each cell, and union
+                # the touched mounts so the lock-set covers every
+                # cell. Then it is safe to flip ``allow_in_place=True``
+                # for the sweep path.
+                cell_args_overrides = _expand_sweep_cell_args(
+                    workflow_data, args_override, sweep_spec
+                )
+                # Render every cell once, take the union of touched
+                # mounts, and feed the SAME list to both the lock-
+                # acquisition step and the SSH adapter's defence-in-
+                # depth check. Sharing the resolved list avoids a
+                # second N-cell render pass and guarantees the two
+                # views can never disagree.
+                sweep_locked_mounts = (
+                    _resolve_sweep_locked_mounts(rt, cell_args_overrides, yaml_file)
+                    if rt.transport_type == "ssh"
+                    else []
+                )
+                sweep_locked_names = tuple(m.name for m in sweep_locked_mounts)
                 with _hold_workflow_mounts(
                     rt=rt,
                     workflow_for_mounts=_check_runner.workflow
                     if rt.transport_type == "ssh"
                     else None,
                     sync_required=_resolve_sync_flag(sync),
+                    explicit_mounts=sweep_locked_mounts
+                    if rt.transport_type == "ssh"
+                    else None,
                 ):
-                    # IN_PLACE for sweep cells is intentionally NOT
-                    # enabled here. Each sweep cell re-renders the
-                    # workflow with cell-specific Jinja args, which
-                    # can move ``ShellJob.script_path`` to a mount we
-                    # never collected (and never locked). Until
-                    # cell-aware mount aggregation lands (tracked in
-                    # follow-up to #135), keep ``allow_in_place=False``
-                    # for sweeps so cells stay on the temp-upload path.
-                    # The mount sync itself still happens once per
-                    # touched mount for the lock-set computed off the
-                    # base render, which is the larger Phase 2 win.
-                    # Codex blocker on PR #141 v2.
+                    # Lock-set is now sound for every cell — flip
+                    # ``allow_in_place`` for the sweep so each cell
+                    # whose rendered ShellJob bytes match its source
+                    # can take the IN_PLACE shortcut on the remote.
+                    # The locked-mount tuple rides the context as a
+                    # defence-in-depth rejection signal: a buggy cell
+                    # that escapes the aggregation hits a clear
+                    # "mount X not locked" error in the SSH adapter
+                    # instead of silently racing rsync.
+                    #
+                    # When ``sweep_locked_mounts`` is empty AND we're
+                    # on SSH, we deliberately keep ``allow_in_place``
+                    # at its default ``False``: an empty union means
+                    # either no cell touches a mount (nothing to flip
+                    # for) or the profile lookup failed (in which case
+                    # we never held the lock — flipping the flag here
+                    # would let the adapter race rsync against an
+                    # unsynchronised remote). Both outcomes match the
+                    # safer pre-#143 sweep behaviour.
+                    if rt.transport_type == "ssh" and sweep_locked_mounts:
+                        sweep_submission_context = _in_place_context(
+                            rt, locked_mount_names=sweep_locked_names
+                        )
+                    else:
+                        sweep_submission_context = rt.submission_context
                     _run_sweep(
                         yaml_file=yaml_file,
                         workflow_data=workflow_data,
@@ -657,9 +783,7 @@ def _execute_workflow(
                         endpoint_id=endpoint_id,
                         preset=effective_preset,
                         rt=rt,
-                        # ``submission_context`` left as the default
-                        # (rt.submission_context with
-                        # ``allow_in_place=False``); see comment above.
+                        submission_context=sweep_submission_context,
                     )
                 return
 

@@ -246,6 +246,65 @@ def collect_touched_mounts(workflow: Any, profile: ServerProfile) -> list[MountC
     return list(seen.values())
 
 
+def collect_touched_mounts_across_cells(
+    yaml_path: str | Path,
+    base_args_override: dict[str, Any] | None,
+    cell_args_overrides: list[dict[str, Any]],
+    profile: ServerProfile,
+) -> list[MountConfig]:
+    """Union of mounts touched by every sweep cell's per-cell render.
+
+    Sweep cells re-render the workflow YAML with cell-specific Jinja
+    overrides. When ``ShellJob.script_path`` interpolates a sweep axis
+    (e.g. ``path: "{{ scratch_dir }}/{{ seed }}/run.sh"``), different
+    cells can resolve to different mounts. The base render alone misses
+    those — we'd lock only the mounts the *unparameterised* paths touch
+    and a non-base cell could race a concurrent rsync against a mount
+    we never aggregated. Issue #143.
+
+    This helper expands the cell args into N per-cell renders, resolves
+    each cell's :class:`Workflow` via :meth:`WorkflowRunner.from_yaml`,
+    and unions the per-cell :func:`collect_touched_mounts` results. The
+    union covers every mount any cell could possibly target, so the
+    workflow lock-set is sound for the IN_PLACE submission path.
+
+    Cells whose render explodes (StrictUndefined / template error) are
+    skipped here — the same render runs again under
+    :func:`_validate_all_sweep_cells` (when ``--validate``) and at
+    cell-submission time, so the user still sees the failure. Skipping
+    here means a single broken cell does not derail the lock-set
+    computation for its peers.
+
+    Returns the unioned mounts sorted by ``profile.mounts`` order so
+    the caller can hand them to ``contextlib.ExitStack`` in a globally
+    deterministic order — same property the single-workflow path uses
+    to avoid lock inversion.
+    """
+    from srunx.runner import WorkflowRunner
+
+    base_overrides = dict(base_args_override or {})
+
+    seen: dict[str, MountConfig] = {}
+    for cell_args in cell_args_overrides:
+        merged = {**base_overrides, **cell_args}
+        try:
+            cell_runner = WorkflowRunner.from_yaml(yaml_path, args_override=merged)
+        except Exception:  # noqa: BLE001
+            # Per-cell render failures are surfaced by the validator and
+            # by the orchestrator at cell submission time; we deliberately
+            # do not let one broken cell prevent locking the mounts the
+            # other cells need.
+            continue
+        for mount in collect_touched_mounts(cell_runner.workflow, profile):
+            if mount.name not in seen:
+                seen[mount.name] = mount
+
+    mount_order = {m.name: i for i, m in enumerate(profile.mounts)}
+    return sorted(
+        seen.values(), key=lambda m: mount_order.get(m.name, len(mount_order))
+    )
+
+
 def render_matches_source(rendered_path: Path, source_path: Path) -> bool:
     """Return ``True`` when the rendered ShellJob bytes equal the source.
 

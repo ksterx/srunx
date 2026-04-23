@@ -1334,6 +1334,31 @@ class SlurmSSHAdapter:
                             if mount is not None and render_matches_source(
                                 Path(script_path), source_path
                             ):
+                                # Defence-in-depth (#143): when the
+                                # caller declared a locked mount-set,
+                                # refuse IN_PLACE for any mount outside
+                                # it. Sweep mount aggregation should
+                                # already cover every cell; if it
+                                # didn't, a silent race against rsync
+                                # is the worst outcome — fail loud.
+                                # Empty ``locked_mount_names`` keeps
+                                # every pre-#143 caller working
+                                # unchanged.
+                                locked = (
+                                    submission_context.locked_mount_names
+                                    if submission_context is not None
+                                    else ()
+                                )
+                                if locked and mount.name not in locked:
+                                    raise RuntimeError(
+                                        f"IN_PLACE rejected: ShellJob "
+                                        f"'{job.name}' resolves to mount "
+                                        f"'{mount.name}' which is not in the "
+                                        f"locked mount set {sorted(locked)!r}. "
+                                        "This indicates a sweep cell escaped "
+                                        "the per-cell mount aggregation; "
+                                        "please file an srunx bug."
+                                    )
                                 in_place_remote_path = translate_local_to_remote(
                                     source_path, mount
                                 )
