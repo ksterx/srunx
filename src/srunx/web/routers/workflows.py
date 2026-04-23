@@ -37,8 +37,6 @@ from srunx.exceptions import SweepExecutionError, WorkflowValidationError
 from srunx.logging import get_logger
 from srunx.models import (
     Job,
-    JobEnvironment,
-    JobResource,
     ShellJob,
     Workflow,
 )
@@ -48,7 +46,6 @@ from srunx.rendering import (
     render_workflow_for_submission,
 )
 from srunx.runner import WorkflowRunner
-from srunx.security import find_python_prefix
 from srunx.slurm.ssh import SlurmSSHAdapter
 from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
 from srunx.sweep import SweepSpec
@@ -62,6 +59,8 @@ from ..schemas.workflows import (
     WorkflowJobInput,
     WorkflowRunRequest,
 )
+from ..services import _submission_common
+from ..services.workflow_storage import WorkflowStorageService
 
 # Re-exports for backward compatibility — external callers and tests that
 # ``from srunx.web.routers.workflows import WorkflowJobInput`` (etc.) keep
@@ -86,273 +85,53 @@ _SAFE_NAME = re.compile(r"^[\w\-]+$")
 _RESERVED_NAMES = frozenset({"new"})
 
 
-# ── Shared helpers ───────────────────────────────────
+# ── Shared helpers — thin delegates preserved for test patch surface ───
+# Tests patch ``srunx.web.routers.workflows._get_current_profile`` and
+# import ``_build_run_response`` directly. Keeping these as module-level
+# symbols here is load-bearing; the real implementations live in
+# ``services/_submission_common.py``.
 
 
-def _validate_and_build_workflow(data: dict[str, Any]) -> Workflow:
-    """Construct and validate a Workflow from a plain dict.
-
-    Builds Job instances with JobResource / JobEnvironment, then runs
-    cycle-detection via ``Workflow.validate()``.  Raises on any
-    Pydantic or workflow-level validation failure.
-    """
-    name: str = data["name"]
-    jobs_data: list[dict[str, Any]] = data.get("jobs", [])
-
-    jobs: list[Job | ShellJob] = []
-    for jd in jobs_data:
-        resource = JobResource.model_validate(jd.get("resources") or {})
-        environment = JobEnvironment.model_validate(jd.get("environment") or {})
-        job_kwargs: dict[str, Any] = {
-            "name": jd["name"],
-            "command": jd["command"],
-            "depends_on": jd.get("depends_on", []),
-            "exports": jd.get("exports", {}),
-            "resources": resource,
-            "environment": environment,
-        }
-        # Always pass work_dir and log_dir explicitly to prevent Job's
-        # default_factory from calling os.getcwd() (wrong for the web server)
-        # or defaulting to "logs" (meaningless on a remote SLURM host).
-        # Empty strings are falsy and skipped by _workflow_to_yaml and
-        # the SLURM template (#SBATCH --chdir is only emitted when truthy).
-        job_kwargs["work_dir"] = jd.get("work_dir") or ""
-        job_kwargs["log_dir"] = jd.get("log_dir") or ""
-        if jd.get("retry") is not None:
-            job_kwargs["retry"] = jd["retry"]
-        if jd.get("retry_delay") is not None:
-            job_kwargs["retry_delay"] = jd["retry_delay"]
-        job = Job(**job_kwargs)
-        jobs.append(job)
-
-    workflow = Workflow(name=name, jobs=jobs)
-    workflow.validate()
-    return workflow
-
-
-def _workflow_to_yaml(
-    name: str,
-    jobs_data: list[dict[str, Any]],
-    default_project: str | None = None,
-    args: dict[str, Any] | None = None,
-) -> str:
-    """Serialize a workflow to YAML compatible with ``WorkflowRunner.from_yaml``.
-
-    Only includes non-default / non-None resource and environment fields so
-    the resulting file stays clean.
-    """
-    serialized_jobs: list[dict[str, Any]] = []
-    for jd in jobs_data:
-        entry: dict[str, Any] = {
-            "name": jd["name"],
-            "command": jd["command"],
-        }
-
-        depends = jd.get("depends_on", [])
-        if depends:
-            entry["depends_on"] = depends
-
-        exports = jd.get("exports", {})
-        if exports:
-            entry["exports"] = exports
-
-        # Resources — only include non-None values
-        raw_res = jd.get("resources") or {}
-        resources = {k: v for k, v in raw_res.items() if v is not None}
-        if resources:
-            entry["resources"] = resources
-
-        # Environment — only include non-None values
-        raw_env = jd.get("environment") or {}
-        environment = {k: v for k, v in raw_env.items() if v is not None}
-        if environment:
-            entry["environment"] = environment
-
-        # Job-level optional fields
-        if jd.get("template"):
-            entry["template"] = jd["template"]
-        if jd.get("work_dir"):
-            entry["work_dir"] = jd["work_dir"]
-        if jd.get("log_dir"):
-            entry["log_dir"] = jd["log_dir"]
-        if jd.get("retry") is not None:
-            entry["retry"] = jd["retry"]
-        if jd.get("retry_delay") is not None:
-            entry["retry_delay"] = jd["retry_delay"]
-        if jd.get("srun_args"):
-            entry["srun_args"] = jd["srun_args"]
-        if jd.get("launch_prefix"):
-            entry["launch_prefix"] = jd["launch_prefix"]
-
-        serialized_jobs.append(entry)
-
-    doc: dict[str, Any] = {"name": name}
-    if default_project:
-        doc["default_project"] = default_project
-    if args:
-        doc["args"] = args
-    doc["jobs"] = serialized_jobs
-    return yaml.dump(doc, default_flow_style=False, sort_keys=False)
-
-
-def _get_current_profile():
-    """Get the current SSH profile from web config or ConfigManager."""
-    from ..sync_utils import get_current_profile
-
-    return get_current_profile()
-
-
-def _find_mount(profile, mount_name: str):
-    """Find a mount by name. Raises HTTPException 404 if not found."""
-    from ..sync_utils import find_mount
-
-    try:
-        return find_mount(profile, mount_name)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+def _get_current_profile():  # noqa: ANN202
+    """Return the active SSH profile (router-level patch target)."""
+    return _submission_common.get_current_profile()
 
 
 def _workflow_dir(mount_name: str) -> Path:
-    """Resolve workflow directory for a given mount.
-
-    Returns ``<mount.local>/.srunx/workflows/``.
-    """
-    profile = _get_current_profile()
-    if profile is None:
-        raise HTTPException(status_code=503, detail="No SSH profile configured")
-    mount = _find_mount(profile, mount_name)
-    return Path(mount.local) / ".srunx" / "workflows"
+    return _submission_common.workflow_dir(mount_name, _get_current_profile)
 
 
 def _ensure_workflow_dir(mount_name: str) -> Path:
-    """Like ``_workflow_dir`` but creates the directory (and ``.srunx/.gitignore``) if needed."""
-    d = _workflow_dir(mount_name)
-    d.mkdir(parents=True, exist_ok=True)
-    gitignore = d.parent / ".gitignore"
-    if not gitignore.exists():
-        gitignore.write_text("*\n!workflows/\n!workflows/**\n!.gitignore\n")
-    return d
+    return _submission_common.ensure_workflow_dir(mount_name, _get_current_profile)
 
 
 def _find_yaml(name: str, mount_name: str) -> Path:
-    d = _workflow_dir(mount_name)
-    for ext in (".yaml", ".yml"):
-        p = d / f"{name}{ext}"
-        if p.exists():
-            return p
-    raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found")
+    return _submission_common.find_yaml(name, mount_name, _get_current_profile)
 
 
 def _reject_python_prefix_web(payload: Any, *, source: str) -> None:
-    """Reject ``python:``-prefixed strings in Web API payloads.
-
-    Centralizes the guard applied to both YAML args (pre-parsed by the
-    caller) and JSON ``args_override`` / ``sweep.matrix`` payloads.
-    Raises ``HTTPException(422)`` on the first violation.
-    """
-    violation = find_python_prefix(payload, source=source)
-    if violation is not None:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"{violation.source} at '{violation.path}' contains 'python:' "
-                "prefix which is not allowed via web for security reasons"
-            ),
-        )
+    _submission_common.reject_python_prefix_web(payload, source=source)
 
 
 def _reject_python_prefix_in_yaml_args(yaml_content: str) -> None:
-    """Parse YAML text and apply the ``python:`` guard to its ``args`` section.
-
-    Uses ``yaml.safe_load`` so legitimate uses of ``python:`` in commands
-    or comments are not blocked. Malformed YAML is left to downstream
-    validation to report.
-    """
-    try:
-        data = yaml.safe_load(yaml_content)
-    except Exception:
-        return
-
-    if not isinstance(data, dict):
-        return
-
-    args = data.get("args")
-    if not isinstance(args, dict):
-        return
-
-    _reject_python_prefix_web(args, source="args")
+    _submission_common.reject_python_prefix_in_yaml_args(yaml_content)
 
 
-def _serialize_workflow(
-    runner: WorkflowRunner,
-    raw_yaml_jobs: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    wf = runner.workflow
-    # Build lookup for extra YAML fields not stored in Job model
-    raw_by_name: dict[str, dict[str, Any]] = {}
-    if raw_yaml_jobs:
-        for rj in raw_yaml_jobs:
-            raw_by_name[rj.get("name", "")] = rj
+def _storage() -> WorkflowStorageService:
+    """Build a per-call storage service bound to the router-level
+    ``_get_current_profile`` so test patches stay effective."""
+    return WorkflowStorageService(profile_resolver=_get_current_profile)
 
-    jobs: list[dict[str, Any]] = []
-    for job in wf.jobs:
-        d: dict[str, Any] = {
-            "name": job.name,
-            "job_id": job.job_id,
-            "status": job._status.value,
-            "depends_on": job.depends_on,
-            "exports": job.exports,
-        }
-        raw_job = raw_by_name.get(job.name, {})
-        if raw_job.get("template"):
-            d["template"] = raw_job["template"]
-        if hasattr(job, "command"):
-            cmd = job.command  # type: ignore[union-attr]
-            d["command"] = [cmd] if isinstance(cmd, str) else cmd
-            d["resources"] = {
-                "nodes": job.resources.nodes,  # type: ignore[union-attr]
-                "gpus_per_node": job.resources.gpus_per_node,  # type: ignore[union-attr]
-                "partition": job.resources.partition,  # type: ignore[union-attr]
-                "time_limit": job.resources.time_limit,  # type: ignore[union-attr]
-            }
-        elif hasattr(job, "script_path"):
-            d["script_path"] = job.script_path  # type: ignore[union-attr]
-            d["command"] = []
-            d["resources"] = {}
-        else:
-            d["command"] = []
-            d["resources"] = {}
-        jobs.append(d)
-    result: dict[str, Any] = {"name": wf.name, "jobs": jobs}
-    if runner.args:
-        result["args"] = runner.args
-    if runner.default_project:
-        result["default_project"] = runner.default_project
-    return result
+
+# Serialization shims (preserved for backward-compatible imports/tests) ──
+_serialize_workflow = WorkflowStorageService.serialize_workflow
+_workflow_to_yaml = WorkflowStorageService.workflow_to_yaml
+_validate_and_build_workflow = WorkflowStorageService.validate_and_build_workflow
 
 
 @router.get("")
 async def list_workflows(mount: str) -> list[dict[str, Any]]:
-    d = _workflow_dir(mount)
-    if not d.exists():
-        return []
-
-    results: list[dict[str, Any]] = []
-    for p in sorted(d.glob("*.y*ml")):
-        try:
-
-            def _load(_p=p):
-                import yaml as _yaml
-
-                runner = WorkflowRunner.from_yaml(_p)
-                raw = _yaml.safe_load(_p.read_text(encoding="utf-8"))
-                return runner, raw.get("jobs", [])
-
-            runner, raw_jobs = await anyio.to_thread.run_sync(_load)
-            results.append(_serialize_workflow(runner, raw_yaml_jobs=raw_jobs))
-        except Exception:
-            continue
-    return results
+    return await _storage().list_workflows(mount)
 
 
 def _parse_run_id(run_id: str) -> int:
@@ -559,39 +338,12 @@ async def validate_workflow(body: dict[str, str]) -> dict[str, Any]:
 
 @router.post("/upload")
 async def upload_workflow(body: dict[str, str]) -> dict[str, Any]:
-    yaml_content = body.get("yaml", "")
-    filename = body.get("filename", "")
-    mount_name = body.get("mount", "")
-
-    if not yaml_content or not filename or not mount_name:
-        raise HTTPException(
-            status_code=422, detail="'yaml', 'filename', and 'mount' are required"
-        )
-
-    _reject_python_prefix_in_yaml_args(yaml_content)
-
-    if len(yaml_content) > 1_000_000:
-        raise HTTPException(status_code=413, detail="YAML content exceeds 1MB limit")
-
-    safe_filename = Path(filename).name
-    name = Path(safe_filename).stem
-    if not _SAFE_NAME.match(name):
-        raise HTTPException(
-            status_code=422,
-            detail="Filename must be alphanumeric with hyphens/underscores only",
-        )
-
-    d = _ensure_workflow_dir(mount_name)
-    dest = d / safe_filename
-    dest.write_text(yaml_content)
-
-    try:
-        runner = await anyio.to_thread.run_sync(lambda: WorkflowRunner.from_yaml(dest))
-        await anyio.to_thread.run_sync(runner.workflow.validate)
-        return _serialize_workflow(runner)
-    except Exception as e:
-        dest.unlink(missing_ok=True)
-        raise HTTPException(status_code=422, detail=str(e)) from e
+    return await _storage().upload(
+        yaml_content=body.get("yaml", ""),
+        filename=body.get("filename", ""),
+        mount_name=body.get("mount", ""),
+        safe_name_re=_SAFE_NAME,
+    )
 
 
 @router.post("/create")
@@ -601,67 +353,7 @@ async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
     Validates all jobs via Pydantic model construction, checks for
     dependency cycles, serializes to YAML, and persists to disk.
     """
-    name = body.name
-    mount_name = body.default_project
-    if not mount_name:
-        raise HTTPException(
-            status_code=422,
-            detail="A mount (default_project) is required to save a workflow",
-        )
-
-    # Reserved name guard
-    if name in _RESERVED_NAMES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Workflow name '{name}' is reserved",
-        )
-
-    # Check for existing workflow with the same name
-    d = _ensure_workflow_dir(mount_name)
-    if not body.overwrite:
-        for ext in (".yaml", ".yml"):
-            if (d / f"{name}{ext}").exists():
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Workflow '{name}' already exists",
-                )
-
-    # Reject python: args from web for security (shared guard).
-    _reject_python_prefix_web(body.args, source="args")
-
-    # Build the raw dict list from the request for validation + serialization
-    jobs_raw: list[dict[str, Any]] = [
-        j.model_dump(exclude_none=True) for j in body.jobs
-    ]
-
-    data: dict[str, Any] = {"name": name, "jobs": jobs_raw}
-
-    # Validate by constructing domain models (synchronous — CPU-only, no I/O)
-    try:
-        _validate_and_build_workflow(data)
-    except WorkflowValidationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        from pydantic import ValidationError as _VE
-
-        if isinstance(exc, _VE):
-            errors = [
-                {"loc": list(e["loc"]), "msg": e["msg"], "type": e["type"]}
-                for e in exc.errors()
-            ]
-            raise HTTPException(status_code=422, detail=errors) from exc
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    # Serialize and write to disk
-    yaml_content = _workflow_to_yaml(
-        name, jobs_raw, default_project=body.default_project, args=body.args or None
-    )
-    dest = d / f"{name}.yaml"
-    await anyio.to_thread.run_sync(lambda: dest.write_text(yaml_content))
-
-    # Re-load via WorkflowRunner to return the canonical serialized form
-    runner = await anyio.to_thread.run_sync(lambda: WorkflowRunner.from_yaml(dest))
-    return _serialize_workflow(runner)
+    return await _storage().create(body, reserved_names=_RESERVED_NAMES)
 
 
 _WORKFLOW_RUN_PRESETS = ("terminal", "running_and_terminal", "all")
@@ -1778,27 +1470,11 @@ async def delete_workflow(name: str, mount: str) -> dict[str, str]:
     """Delete a workflow YAML file."""
     if not _SAFE_NAME.match(name):
         raise HTTPException(status_code=422, detail="Invalid workflow name")
-    yaml_path = _find_yaml(name, mount)  # raises 404 if not found
-    await anyio.to_thread.run_sync(lambda: yaml_path.unlink())
-    return {"status": "deleted", "name": name}
+    return await _storage().delete(name, mount)
 
 
 @router.get("/{name}")
 async def get_workflow(name: str, mount: str) -> dict[str, Any]:
     if not _SAFE_NAME.match(name):
         raise HTTPException(status_code=422, detail="Invalid workflow name")
-
-    yaml_path = _find_yaml(name, mount)
-    try:
-
-        def _load():
-            import yaml as _yaml
-
-            runner = WorkflowRunner.from_yaml(yaml_path)
-            raw = _yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-            return runner, raw.get("jobs", [])
-
-        runner, raw_jobs = await anyio.to_thread.run_sync(_load)
-        return _serialize_workflow(runner, raw_yaml_jobs=raw_jobs)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
+    return await _storage().get(name, mount)
