@@ -335,6 +335,29 @@ def render_matches_source(rendered_path: Path, source_path: Path) -> bool:
     return rendered.rstrip(b"\n") == source.rstrip(b"\n")
 
 
+def render_text_matches_source(rendered_text: str, source_path: Path) -> bool:
+    """Return ``True`` when the in-memory rendered text equals the source file bytes.
+
+    Sister of :func:`render_matches_source` for the Web workflow Phase 2
+    (#135): the Web renderer hands the rendered scripts back as
+    ``str`` values in memory (``scripts[name]``) rather than writing
+    them out to disk, so the file-vs-file comparison doesn't fit.
+    We encode the rendered text as UTF-8 (matching how the CLI
+    renderer writes the file back) and compare with the same
+    trailing-newline normalisation so the in-memory and on-disk
+    decisions agree.
+
+    Returns ``False`` when *source_path* can't be read — the caller
+    then treats the mismatch as "render produced something different"
+    and stays on the safe (temp-upload) path.
+    """
+    try:
+        source = source_path.read_bytes()
+    except OSError:
+        return False
+    return rendered_text.encode("utf-8").rstrip(b"\n") == source.rstrip(b"\n")
+
+
 def _translate_cwd(cwd: Path | None, profile: ServerProfile | None) -> str | None:
     """Translate *cwd* to its remote equivalent if it lives under any mount.
 
