@@ -157,7 +157,10 @@ def test_flow_run_syncs_each_mount_once_for_multi_shelljob_workflow(
 
     rsync_calls: list[tuple] = []
 
-    def _record_rsync(prof, name, *, delete=False):
+    def _record_rsync(prof, name, *, delete=False, verbose=False):
+        # ``verbose`` kwarg added in PR #149 (rsync streaming progress).
+        # Mock must accept it so ``sync_mount_by_name(..., verbose=...)``
+        # call from ``mount_sync_session`` doesn't raise TypeError.
         rsync_calls.append((prof, name, delete))
 
     monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", _record_rsync)
