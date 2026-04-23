@@ -39,11 +39,20 @@ def _profile(tmp_path: Path, mount_local: Path) -> ServerProfile:
 
 
 class TestEnsureMountSynced:
+    """Pre-#137-part-4 behaviours: dirty-tree handling, lock + rsync wiring.
+
+    These tests deliberately set ``owner_check=False`` because the
+    owner-marker subsystem has its own test class
+    (:class:`TestOwnerMarkerIntegration`) below — keeping the two
+    concerns separate makes the dirty-tree / rsync assertions easier
+    to read.
+    """
+
     def test_happy_path_invokes_rsync(self, tmp_path: Path) -> None:
         mount_local = tmp_path / "ml"
         mount_local.mkdir()
         profile = _profile(tmp_path, mount_local)
-        config = SyncDefaults()  # auto=True, defaults
+        config = SyncDefaults(owner_check=False)
 
         with (
             patch("srunx.sync.service.sync_mount_by_name") as fake_rsync,
@@ -69,7 +78,7 @@ class TestEnsureMountSynced:
         mount_local = tmp_path / "ml"
         mount_local.mkdir()
         profile = _profile(tmp_path, mount_local)
-        config = SyncDefaults(warn_dirty=True, require_clean=False)
+        config = SyncDefaults(warn_dirty=True, require_clean=False, owner_check=False)
 
         with (
             patch("srunx.sync.service.sync_mount_by_name"),
@@ -94,7 +103,7 @@ class TestEnsureMountSynced:
         mount_local = tmp_path / "ml"
         mount_local.mkdir()
         profile = _profile(tmp_path, mount_local)
-        config = SyncDefaults(warn_dirty=False, require_clean=True)
+        config = SyncDefaults(warn_dirty=False, require_clean=True, owner_check=False)
 
         with (
             patch("srunx.sync.service.sync_mount_by_name") as fake_rsync,
@@ -119,7 +128,7 @@ class TestEnsureMountSynced:
         mount_local = tmp_path / "ml"
         mount_local.mkdir()
         profile = _profile(tmp_path, mount_local)
-        config = SyncDefaults(warn_dirty=True)
+        config = SyncDefaults(warn_dirty=True, owner_check=False)
 
         with (
             patch("srunx.sync.service.sync_mount_by_name"),
@@ -142,7 +151,7 @@ class TestEnsureMountSynced:
         mount_local.mkdir()
         profile = _profile(tmp_path, mount_local)
 
-        def _boom(_profile, _name, *, delete=False):  # type: ignore[no-untyped-def]
+        def _boom(_profile: ServerProfile, _name: str, *, delete: bool = False) -> str:
             raise RuntimeError("rsync exited 23: permission denied")
 
         with (
@@ -157,5 +166,5 @@ class TestEnsureMountSynced:
                     profile_name="alice",
                     profile=profile,
                     mount=profile.mounts[0],
-                    config=SyncDefaults(),
+                    config=SyncDefaults(owner_check=False),
                 )

@@ -141,6 +141,16 @@ class SyncDefaults(BaseModel):
             "Recommended for CI / shared-workstation scenarios."
         ),
     )
+    owner_check: bool = Field(
+        default=True,
+        description=(
+            "Refuse to sync when the remote ``.srunx-owner.json`` marker "
+            "shows a different machine last touched the mount. Catches "
+            "the cross-workstation overwrite footgun (#137 part 4). "
+            "Override per-invocation with ``--force-sync`` or disable "
+            "globally for solo-machine setups."
+        ),
+    )
 
 
 class SrunxConfig(BaseModel):
@@ -307,6 +317,8 @@ def load_config_from_env() -> dict[str, Any]:
         sync["warn_dirty"] = warn.lower() in ("1", "true", "yes", "on")
     if (clean := os.getenv("SRUNX_SYNC_REQUIRE_CLEAN")) is not None:
         sync["require_clean"] = clean.lower() in ("1", "true", "yes", "on")
+    if (owner := os.getenv("SRUNX_SYNC_OWNER_CHECK")) is not None:
+        sync["owner_check"] = owner.lower() in ("1", "true", "yes", "on")
     if sync:
         config["sync"] = sync
 
