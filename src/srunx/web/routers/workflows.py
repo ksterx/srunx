@@ -13,7 +13,6 @@ import contextlib
 import functools
 import re
 import sqlite3
-import tempfile
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -61,6 +60,7 @@ from ..schemas.workflows import (
 )
 from ..services import _submission_common
 from ..services.workflow_storage import WorkflowStorageService
+from ..services.workflow_validation import WorkflowValidationService
 
 # Re-exports for backward compatibility — external callers and tests that
 # ``from srunx.web.routers.workflows import WorkflowJobInput`` (etc.) keep
@@ -312,28 +312,7 @@ async def cancel_run(
 
 @router.post("/validate")
 async def validate_workflow(body: dict[str, str]) -> dict[str, Any]:
-    yaml_content = body.get("yaml", "")
-    if not yaml_content:
-        return {"valid": False, "errors": ["Empty YAML content"]}
-
-    _reject_python_prefix_in_yaml_args(yaml_content)
-
-    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
-        f.write(yaml_content)
-        tmp_path = f.name
-
-    try:
-        runner = await anyio.to_thread.run_sync(
-            lambda: WorkflowRunner.from_yaml(tmp_path)
-        )
-        await anyio.to_thread.run_sync(runner.workflow.validate)
-        return {"valid": True}
-    except WorkflowValidationError as e:
-        return {"valid": False, "errors": [str(e)]}
-    except Exception as e:
-        return {"valid": False, "errors": [str(e)]}
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
+    return await WorkflowValidationService().validate_yaml(body.get("yaml", ""))
 
 
 @router.post("/upload")
