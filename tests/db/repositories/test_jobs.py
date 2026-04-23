@@ -1,4 +1,4 @@
-"""Tests for :class:`srunx.db.repositories.jobs.JobRepository`."""
+"""Tests for :class:`srunx.observability.storage.repositories.jobs.JobRepository`."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from srunx.db.connection import open_connection
-from srunx.db.migrations import apply_migrations
-from srunx.db.repositories.jobs import JobRepository
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.migrations import apply_migrations
+from srunx.observability.storage.repositories.jobs import JobRepository
 
 
 @pytest.fixture

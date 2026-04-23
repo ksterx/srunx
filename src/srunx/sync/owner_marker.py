@@ -40,7 +40,7 @@ import socket
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
 from srunx.ssh.core.config import MountConfig, ServerProfile
 from srunx.sync.mount_helpers import build_rsync_client
 

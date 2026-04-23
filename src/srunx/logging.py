@@ -3,7 +3,7 @@
 Aliases the canonical module via ``sys.modules`` so the shim and the
 canonical path point to the same module object. The star import below
 exists only so that static type-checkers see names like
-``srunx.logging.get_logger`` resolve statically.
+``srunx.common.logging.get_logger`` resolve statically.
 """
 
 from __future__ import annotations

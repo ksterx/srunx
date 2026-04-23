@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from srunx.containers.base import LaunchSpec
 
 if TYPE_CHECKING:
-    from srunx.models import ContainerResource
+    from srunx.domain import ContainerResource
 
 
 class PyxisRuntime:

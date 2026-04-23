@@ -18,7 +18,7 @@ class ResourceMonitor(BaseMonitor):
     Polls partition resources at configured intervals and notifies callbacks
     when resources become available or exhausted.
 
-    When a :class:`~srunx.monitor.resource_source.ResourceSource` is
+    When a :class:`~srunx.observability.monitoring.resource_source.ResourceSource` is
     injected, partition queries delegate to it instead of shelling out
     to local ``sinfo`` / ``squeue``. That lets ``srunx ui`` talk to a
     remote cluster through the existing SSH adapter — the previous

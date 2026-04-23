@@ -244,8 +244,8 @@ srunx flow run pipeline.yaml --dry-run
 srunx supports job completion callbacks, including Slack notifications:
 
 ``` python
-from srunx.callbacks import SlackCallback
-from srunx.client import Slurm
+from srunx.observability.notifications.legacy_slack import SlackCallback
+from srunx.slurm.local import Slurm
 
 callback = SlackCallback(webhook_url="https://hooks.slack.com/...")
 client = Slurm()
@@ -270,8 +270,8 @@ srunx uses Jinja2 templates for SLURM script generation. You can customize templ
 Use srunx from Python code:
 
 ``` python
-from srunx.client import Slurm
-from srunx.models import Job, JobResource, JobEnvironment, ContainerResource
+from srunx.slurm.local import Slurm
+from srunx.domain import Job, JobResource, JobEnvironment, ContainerResource
 
 # Create client
 client = Slurm()

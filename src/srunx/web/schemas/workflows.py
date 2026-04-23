@@ -50,7 +50,7 @@ class WorkflowCreateRequest(BaseModel):
 class SweepSpecRequest(BaseModel):
     """Sweep payload accepted by ``POST /api/workflows/{name}/run``.
 
-    Mirrors :class:`srunx.sweep.SweepSpec` but with a server-side default
+    Mirrors :class:`srunx.runtime.sweep.SweepSpec` but with a server-side default
     for ``max_parallel`` (R7.9) so the client can omit it for small
     sweeps.
     """

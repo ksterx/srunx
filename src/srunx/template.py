@@ -1,6 +1,6 @@
 """Backward-compat shim. Canonical home is :mod:`srunx.runtime.templates`.
 
-This module is preserved so external code importing from ``srunx.template``
+This module is preserved so external code importing from ``srunx.runtime.templates``
 keeps working during the structural migration (#156). Internal code should
 prefer ``srunx.runtime.templates`` going forward.
 """

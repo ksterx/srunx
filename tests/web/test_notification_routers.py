@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from srunx.db.connection import init_db, open_connection
-from srunx.db.repositories.endpoints import EndpointRepository
-from srunx.db.repositories.watches import WatchRepository
+from srunx.observability.storage.connection import init_db, open_connection
+from srunx.observability.storage.repositories.endpoints import EndpointRepository
+from srunx.observability.storage.repositories.watches import WatchRepository
 
 
 @pytest.fixture

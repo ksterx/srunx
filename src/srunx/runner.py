@@ -18,7 +18,7 @@ from srunx.runtime.workflow.loader import (  # noqa: F401
     _strip_python_prefix,
 )
 from srunx.runtime.workflow.runner import (
-    Slurm,  # noqa: F401 — tests monkeypatch ``srunx.runner.Slurm``
+    Slurm,  # noqa: F401 — tests monkeypatch ``srunx.runtime.workflow.runner.Slurm``
     WorkflowRunner,
     run_workflow_from_file,
 )

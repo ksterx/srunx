@@ -37,7 +37,7 @@ def client(mock_adapter: MagicMock):  # type: ignore[misc]
 class TestGetConfig:
     @patch("srunx.web.routers.config.get_config")
     def test_get_current_config(self, mock_get_config, client: TestClient) -> None:
-        from srunx.config import SrunxConfig
+        from srunx.common.config import SrunxConfig
 
         mock_get_config.return_value = SrunxConfig()
         resp = client.get("/api/config")
@@ -75,7 +75,7 @@ class TestResetConfig:
     @patch("srunx.web.routers.config.save_user_config")
     @patch("srunx.web.routers.config.get_config")
     def test_reset_config(self, mock_get_config, mock_save, client: TestClient) -> None:
-        from srunx.config import SrunxConfig
+        from srunx.common.config import SrunxConfig
 
         mock_get_config.return_value = SrunxConfig()
         resp = client.post("/api/config/reset")

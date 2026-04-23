@@ -35,13 +35,13 @@ from typing import Any
 import pytest
 import yaml  # type: ignore
 
-from srunx.db.connection import open_connection, transaction
-from srunx.db.repositories.deliveries import DeliveryRepository
-from srunx.db.repositories.endpoints import EndpointRepository
-from srunx.db.repositories.sweep_runs import SweepRunRepository
-from srunx.sweep import CellSpec, SweepSpec
-from srunx.sweep.orchestrator import SweepOrchestrator
-from srunx.sweep.state_service import WorkflowRunStateService
+from srunx.observability.storage.connection import open_connection, transaction
+from srunx.observability.storage.repositories.deliveries import DeliveryRepository
+from srunx.observability.storage.repositories.endpoints import EndpointRepository
+from srunx.observability.storage.repositories.sweep_runs import SweepRunRepository
+from srunx.runtime.sweep import CellSpec, SweepSpec
+from srunx.runtime.sweep.orchestrator import SweepOrchestrator
+from srunx.runtime.sweep.state_service import WorkflowRunStateService
 
 # ---------------------------------------------------------------------------
 # Fixture — reuse the tests/sweep/ pattern but define locally so tests/
@@ -53,7 +53,7 @@ from srunx.sweep.state_service import WorkflowRunStateService
 def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Per-test srunx SQLite DB under an isolated XDG_CONFIG_HOME."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    from srunx.db.connection import init_db
+    from srunx.observability.storage.connection import init_db
 
     return init_db(delete_legacy=False)
 
@@ -69,7 +69,7 @@ def _write_yaml(path: Path, data: dict[str, Any]) -> Path:
 
 
 def _now() -> str:
-    from srunx.db.repositories.base import now_iso
+    from srunx.observability.storage.repositories.base import now_iso
 
     return now_iso()
 

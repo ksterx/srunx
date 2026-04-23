@@ -1,4 +1,4 @@
-"""Unit tests for :class:`srunx.pollers.resource_snapshotter.ResourceSnapshotter`.
+"""Unit tests for :class:`srunx.observability.monitoring.pollers.resource_snapshotter.ResourceSnapshotter`.
 
 Drives the poller with a stub monitor so no SLURM commands are invoked.
 Verifies both happy-path persistence and that failures propagate out of
@@ -16,9 +16,13 @@ from typing import Any
 import anyio
 import pytest
 
-from srunx.db.models import ResourceSnapshot as DbResourceSnapshot
-from srunx.monitor.types import ResourceSnapshot as MonitorResourceSnapshot
-from srunx.pollers.resource_snapshotter import ResourceSnapshotter
+from srunx.observability.monitoring.pollers.resource_snapshotter import (
+    ResourceSnapshotter,
+)
+from srunx.observability.monitoring.types import (
+    ResourceSnapshot as MonitorResourceSnapshot,
+)
+from srunx.observability.storage.models import ResourceSnapshot as DbResourceSnapshot
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -201,7 +205,7 @@ class TestFailurePropagation:
 
 class TestProtocolShape:
     def test_implements_poller_protocol(self) -> None:
-        from srunx.pollers.supervisor import Poller
+        from srunx.observability.monitoring.pollers.supervisor import Poller
 
         poller = ResourceSnapshotter(_StubMonitor(snapshot=None))
         assert isinstance(poller, Poller)

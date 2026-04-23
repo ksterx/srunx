@@ -213,7 +213,7 @@ class JobRepository(BaseRepository):
     ) -> bool:
         """Update a live job's status and lifecycle timestamps.
 
-        Called by :class:`~srunx.pollers.active_watch_poller.ActiveWatchPoller`
+        Called by :class:`~srunx.observability.monitoring.pollers.active_watch_poller.ActiveWatchPoller`
         on every detected transition. Returns True if a row was updated.
 
         ``scheduler_key`` is required (SF5) so callers cannot accidentally
@@ -344,7 +344,7 @@ class JobRepository(BaseRepository):
         ``submitted_at`` (default) matches "jobs queued in this window".
         ``completed_at`` matches ``sacct --starttime`` + terminal-state
         semantics more closely — used by
-        :class:`srunx.monitor.scheduler.ScheduledReporter` so a 24h
+        :class:`srunx.observability.monitoring.scheduler.ScheduledReporter` so a 24h
         report counts what *finished* in the window, not what was merely
         submitted.
 

@@ -7,7 +7,7 @@ cell render). This module unifies them: Web submission (both non-sweep
 and sweep) and MCP sweep call :func:`render_workflow_for_submission`;
 MCP non-sweep still renders via the local ``Slurm`` path. The helper
 (a) resolves mount information into the ``Job`` rows before render,
-(b) delegates to the existing :func:`srunx.models.render_job_script` for
+(b) delegates to the existing :func:`srunx.domain.render_job_script` for
 the template substitution, and (c) returns a :class:`RenderedWorkflow`
 with per-job ``script_text`` + metadata.
 
@@ -29,14 +29,14 @@ import jinja2
 from rich.console import Console
 from rich.syntax import Syntax
 
+from srunx.common.logging import get_logger
 from srunx.domain import Job, JobEnvironment, RunnableJobType, ShellJob, Workflow
-from srunx.logging import get_logger
 from srunx.runtime.templates import get_template_path
 
-# NOTE: ``srunx.runner`` is imported lazily inside
+# NOTE: ``srunx.runtime.workflow.runner`` is imported lazily inside
 # :func:`render_workflow_for_submission` to avoid a circular import.
 # ``runner`` imports ``srunx.callbacks`` which (via ``srunx.__init__``)
-# resolves ``srunx.models`` — now a shim that re-exports from this
+# resolves ``srunx.domain`` — now a shim that re-exports from this
 # module. Proper fix lands in Phase 5 (#161) when callbacks move out
 # of the import hot path.
 
@@ -159,7 +159,7 @@ def render_workflow_for_submission(
        The canonical render path honours ``Job.template`` (Phase 2 render
        metadata) when no caller-supplied template override is wanted;
        otherwise falls back to the packaged ``base`` template resolved
-       via :func:`srunx.template.get_template_path`.
+       via :func:`srunx.runtime.templates.get_template_path`.
     4. Return a :class:`RenderedWorkflow` with the mount-resolved Jobs
        and their rendered script texts.
 
@@ -187,7 +187,7 @@ def render_workflow_for_submission(
         jinja2.TemplateError: If template rendering fails.
     """
     # --- 1. Load the workflow (args + deps are resolved here). ---
-    from srunx.runner import WorkflowRunner
+    from srunx.runtime.workflow.runner import WorkflowRunner
 
     runner = WorkflowRunner.from_yaml(
         yaml_path,
@@ -458,7 +458,7 @@ def _find_mount_by_name(
 
 
 # ---------------------------------------------------------------------------
-# SLURM script rendering helpers (moved from :mod:`srunx.models` in Phase 3).
+# SLURM script rendering helpers (moved from :mod:`srunx.domain` in Phase 3).
 # ---------------------------------------------------------------------------
 
 

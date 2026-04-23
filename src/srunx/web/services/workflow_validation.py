@@ -14,8 +14,8 @@ from typing import Any
 
 import anyio
 
-from srunx.exceptions import WorkflowValidationError
-from srunx.runner import WorkflowRunner
+from srunx.common.exceptions import WorkflowValidationError
+from srunx.runtime.workflow.runner import WorkflowRunner
 
 from ._submission_common import reject_python_prefix_in_yaml_args
 

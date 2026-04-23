@@ -1,4 +1,4 @@
-"""Unit tests for :class:`srunx.sweep.orchestrator.SweepOrchestrator`.
+"""Unit tests for :class:`srunx.runtime.sweep.orchestrator.SweepOrchestrator`.
 
 Uses the ``isolated_db`` fixture (see ``tests/sweep/conftest.py``) which
 redirects ``XDG_CONFIG_HOME`` to a tmp dir so every orchestrator call
@@ -22,12 +22,12 @@ from typing import Any
 import pytest
 import yaml  # type: ignore
 
-from srunx.db.connection import open_connection, transaction
-from srunx.db.repositories.sweep_runs import SweepRunRepository
-from srunx.exceptions import SweepExecutionError
-from srunx.sweep import CellSpec, SweepSpec
-from srunx.sweep.orchestrator import SweepOrchestrator
-from srunx.sweep.state_service import WorkflowRunStateService
+from srunx.common.exceptions import SweepExecutionError
+from srunx.observability.storage.connection import open_connection, transaction
+from srunx.observability.storage.repositories.sweep_runs import SweepRunRepository
+from srunx.runtime.sweep import CellSpec, SweepSpec
+from srunx.runtime.sweep.orchestrator import SweepOrchestrator
+from srunx.runtime.sweep.state_service import WorkflowRunStateService
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -75,7 +75,7 @@ def _simulate_cell(
 
 
 def _now() -> str:
-    from srunx.db.repositories.base import now_iso
+    from srunx.observability.storage.repositories.base import now_iso
 
     return now_iso()
 
@@ -397,7 +397,7 @@ class TestAtomicCellClaim:
         # BEFORE the orchestrator attempts its atomic claim. This mirrors
         # the fail-fast race where ``_drain`` wins between
         # ``_cancelled`` being observed False and the claim firing.
-        from srunx.sweep.orchestrator import drain_sweep_pending_cells
+        from srunx.runtime.sweep.orchestrator import drain_sweep_pending_cells
 
         # Drain everything that's still pending. Since no cell has moved
         # off ``pending`` yet, both cells will be marked ``cancelled``.
@@ -593,7 +593,9 @@ class TestMaterializeError:
         # Patch WorkflowRunRepository.create — SweepRunRepository.create
         # runs first inside the happy-path TX, then cell INSERTs trip
         # on this patched method and roll back.
-        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+        from srunx.observability.storage.repositories.workflow_runs import (
+            WorkflowRunRepository,
+        )
 
         monkeypatch.setattr(WorkflowRunRepository, "create", exploding_create)
 

@@ -9,7 +9,12 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from srunx.callbacks import Callback, SlackCallback
+import srunx.slurm.local as _slurm_local  # noqa: E402,I001 — kept so ``patch("srunx.slurm.local.Slurm")`` intercepts all call sites
+
+# Module-level import kept so tests can ``patch("srunx.slurm.local.Slurm")``
+# and intercept the single canonical class (jobs.py + sbatch_helpers.py
+# both dereference it via this module reference at call time).
+from srunx.callbacks import Callback
 from srunx.cli._helpers.sbatch_helpers import (
     _build_extra_sbatch_args,
     _parse_container_args,
@@ -19,14 +24,16 @@ from srunx.cli._helpers.sbatch_helpers import (
     _submit_via_transport,
 )
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
-from srunx.exceptions import JobNotFoundError, TransportError
-from srunx.logging import get_logger
-from srunx.models import (
+from srunx.common.config import get_config
+from srunx.common.exceptions import JobNotFoundError, TransportError
+from srunx.common.logging import get_logger
+from srunx.domain import (
     Job,
     JobEnvironment,
     JobResource,
     ShellJob,
 )
+from srunx.observability.notifications.legacy_slack import SlackCallback
 from srunx.transport import resolve_transport
 
 logger = get_logger(__name__)
@@ -223,11 +230,6 @@ def sbatch(
     ``--container`` / ``--template`` etc.) layer on top of the standard
     SLURM flags and are surfaced in this command's --help.
     """
-    # Resolve ``Slurm`` / ``get_config`` via ``srunx.cli.main`` so tests that
-    # patch ``srunx.cli.main.Slurm`` / ``srunx.cli.main.get_config`` continue
-    # to intercept calls from this module.
-    _main_module = sys.modules["srunx.cli.main"]
-
     # Positional script vs --wrap are mutually exclusive (matches
     # ``sbatch <script>`` vs ``sbatch --wrap=...`` semantics).
     if script is not None and wrap is not None:
@@ -248,7 +250,7 @@ def sbatch(
     if gres_gpus is not None:
         gpus_per_node = gres_gpus
 
-    config = _main_module.get_config()
+    config = get_config()
 
     # Use defaults from config if not specified
     if log_dir is None:
@@ -477,7 +479,7 @@ def sbatch(
             force_sync=force_sync,
         )
         client = (
-            _main_module.Slurm(callbacks=callbacks)
+            _slurm_local.Slurm(callbacks=callbacks)
             if rt.transport_type == "local"
             else None
         )
@@ -510,7 +512,7 @@ def sbatch(
 
         if wait:
             if client is None:
-                # JobOperationsProtocol does not define a blocking
+                # JobOperations does not define a blocking
                 # monitor method, so --wait on SSH transports is a
                 # no-op until the Protocol grows one (tracked by the
                 # SSH monitor wiring follow-up).
@@ -570,14 +572,10 @@ def squeue(
     """
     import json
 
-    _main_module = sys.modules["srunx.cli.main"]
-
     try:
         with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
-            # Local keeps the ``Slurm.queue()`` direct call to preserve
-            # existing test fixtures that patch ``srunx.cli.main.Slurm``.
             if rt.transport_type == "local":
-                client = _main_module.Slurm()
+                client = _slurm_local.Slurm()
                 jobs = client.queue()
             else:
                 jobs = rt.job_ops.queue()
@@ -678,15 +676,10 @@ def scancel(
     quiet: QuietOpt = False,
 ) -> None:
     """Cancel a running job."""
-    _main_module = sys.modules["srunx.cli.main"]
-
     try:
         with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
-            # Local keeps the direct ``Slurm`` call so existing tests that
-            # patch ``srunx.cli.main.Slurm`` keep working; SSH goes
-            # through the Protocol.
             if rt.transport_type == "local":
-                client = _main_module.Slurm()
+                client = _slurm_local.Slurm()
                 client.cancel(job_id)
             else:
                 rt.job_ops.cancel(job_id)
@@ -741,8 +734,11 @@ def sinfo(
     import json
     from typing import cast
 
-    from srunx.monitor.resource_monitor import ResourceMonitor
-    from srunx.monitor.resource_source import ResourceSource, SSHAdapterResourceSource
+    from srunx.observability.monitoring.resource_monitor import ResourceMonitor
+    from srunx.observability.monitoring.resource_source import (
+        ResourceSource,
+        SSHAdapterResourceSource,
+    )
     from srunx.transport import resolve_transport
 
     try:
@@ -830,15 +826,13 @@ def tail(
     quiet: QuietOpt = False,
 ) -> None:
     """Display job logs with optional real-time streaming."""
-    _main_module = sys.modules["srunx.cli.main"]
-
     try:
         with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
             if rt.transport_type == "local":
                 # Local keeps the interactive ``Slurm.tail_log`` path for
                 # follow + last_n + file-discovery behaviour the Protocol
                 # does not yet expose.
-                client = _main_module.Slurm()
+                client = _slurm_local.Slurm()
                 client.tail_log(
                     job_id=job_id,
                     job_name=job_name,

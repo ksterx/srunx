@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`srunx.pollers.supervisor`."""
+"""Unit tests for :mod:`srunx.observability.monitoring.pollers.supervisor`."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import anyio
 import pytest
 
-from srunx.pollers.supervisor import Poller, PollerSupervisor
+from srunx.observability.monitoring.pollers.supervisor import Poller, PollerSupervisor
 
 
 @dataclass
@@ -127,7 +127,9 @@ class TestExceptionBackoff:
         can verify the 1 -> 2 -> 4 ... progression on consecutive failures
         and the reset behaviour after a success.
         """
-        from srunx.pollers import supervisor as supervisor_module
+        from srunx.observability.monitoring.pollers import (
+            supervisor as supervisor_module,
+        )
 
         requested_sleeps: list[float] = []
         original_impl = supervisor_module.PollerSupervisor._sleep_or_shutdown
@@ -185,7 +187,9 @@ class TestExceptionBackoff:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Backoff must reset to 1s once a cycle succeeds."""
-        from srunx.pollers import supervisor as supervisor_module
+        from srunx.observability.monitoring.pollers import (
+            supervisor as supervisor_module,
+        )
 
         requested_sleeps: list[float] = []
 

@@ -5,12 +5,14 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from srunx.db.repositories.deliveries import DeliveryRepository
-from srunx.db.repositories.endpoints import EndpointRepository
-from srunx.db.repositories.events import EventRepository
-from srunx.db.repositories.subscriptions import SubscriptionRepository
-from srunx.db.repositories.watches import WatchRepository
-from srunx.notifications.service import NotificationService
+from srunx.observability.notifications.service import NotificationService
+from srunx.observability.storage.repositories.deliveries import DeliveryRepository
+from srunx.observability.storage.repositories.endpoints import EndpointRepository
+from srunx.observability.storage.repositories.events import EventRepository
+from srunx.observability.storage.repositories.subscriptions import (
+    SubscriptionRepository,
+)
+from srunx.observability.storage.repositories.watches import WatchRepository
 
 
 def _build_service(

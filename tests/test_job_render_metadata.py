@@ -16,7 +16,8 @@ Batch 1a additions:
 
 from pathlib import Path
 
-from srunx.models import Job, render_job_script
+from srunx.domain import Job
+from srunx.runtime.rendering import render_job_script
 
 BASE_TEMPLATE_PATH = (
     Path(__file__).resolve().parent.parent

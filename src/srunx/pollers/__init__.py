@@ -2,7 +2,7 @@
 
 External code should migrate to ``srunx.observability.monitoring.pollers``.
 Submodules are aliased via ``sys.modules`` so legacy
-``from srunx.pollers.X import Y`` imports keep working during the Phase 8
+``from srunx.observability.monitoring.pollers.X import Y`` imports keep working during the Phase 8
 transition (#164).
 """
 

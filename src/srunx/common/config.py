@@ -188,7 +188,7 @@ def _user_config_dir() -> Path:
     2. ``~/.config/srunx`` on POSIX fallback.
     3. ``~/AppData/Roaming/srunx`` on Windows.
 
-    Matches :func:`srunx.db.connection.get_config_dir` so that the
+    Matches :func:`srunx.observability.storage.connection.get_config_dir` so that the
     state DB and the JSON config land under the same root — flipping
     ``XDG_CONFIG_HOME`` isolates both in one go (tests rely on this).
     """

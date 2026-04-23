@@ -1,12 +1,8 @@
 """Main CLI interface for srunx.
 
-This module is the thin Typer root: it owns the ``app`` object, registers
-every command group, and preserves a small set of backward-compatible
-re-exports (see below).
-
+Thin Typer root: owns the ``app`` object and registers every command group.
 Command implementations live under ``srunx.cli.commands.*`` and shared
-helpers under ``srunx.cli._helpers.*``. The split was done mechanically —
-no behaviour change (#166).
+helpers under ``srunx.cli._helpers.*``.
 """
 
 from pathlib import Path
@@ -14,18 +10,6 @@ from typing import Annotated
 
 import typer
 
-# Backward-compat re-exports.
-#
-# Tests patch these attributes on ``srunx.cli.main`` (``patch("srunx.cli.main.Slurm")``
-# / ``patch("srunx.cli.main.get_config")`` / ``patch("srunx.cli.main.get_config_paths")``)
-# and ``cli/workflow.py`` imports ``DebugCallback`` from here. The command
-# modules dereference these via ``srunx.cli.main`` at call time so the
-# patches continue to intercept.
-from srunx.cli._helpers.debug_callback import DebugCallback  # noqa: F401
-from srunx.cli._helpers.sbatch_helpers import (  # noqa: F401
-    _parse_container_args,
-    _parse_env_vars,
-)
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.cli.commands.config import config_app
 from srunx.cli.commands.jobs import sbatch, scancel, sinfo, squeue, tail
@@ -33,9 +17,7 @@ from srunx.cli.commands.reports import sacct, sreport
 from srunx.cli.commands.templates import template_app
 from srunx.cli.commands.ui import ui
 from srunx.cli.watch import watch_app
-from srunx.client import Slurm  # noqa: F401
-from srunx.config import get_config, get_config_paths  # noqa: F401
-from srunx.logging import configure_cli_logging
+from srunx.common.logging import configure_cli_logging
 from srunx.ssh.cli.commands import ssh_app
 
 # Create the main Typer app

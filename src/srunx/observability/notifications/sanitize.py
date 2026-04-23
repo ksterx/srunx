@@ -1,6 +1,6 @@
 """Shared Slack text sanitization utility.
 
-Extracted verbatim from :meth:`srunx.callbacks.SlackCallback._sanitize_text`
+Extracted verbatim from :meth:`srunx.observability.notifications.legacy_slack.SlackCallback._sanitize_text`
 so both the CLI-side ``SlackCallback`` and the new
 ``SlackWebhookAdapter`` can share a single implementation.
 """

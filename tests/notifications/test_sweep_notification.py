@@ -1,7 +1,7 @@
 """Tests for sweep-level notification integration.
 
 Covers:
-  * :func:`srunx.notifications.presets.should_deliver` truth table for
+  * :func:`srunx.observability.notifications.presets.should_deliver` truth table for
     the new ``sweep_run.status_changed`` event kind.
   * :meth:`SlackWebhookAdapter._format_sweep_run_event` block
     rendering + sanitization.
@@ -13,9 +13,9 @@ from datetime import UTC, datetime
 
 import pytest
 
-from srunx.db.models import Event
-from srunx.notifications.adapters.slack_webhook import SlackWebhookAdapter
-from srunx.notifications.presets import should_deliver
+from srunx.observability.notifications.adapters.slack_webhook import SlackWebhookAdapter
+from srunx.observability.notifications.presets import should_deliver
+from srunx.observability.storage.models import Event
 
 # ---------------------------------------------------------------------------
 # should_deliver truth table

@@ -68,7 +68,7 @@ def __getattr__(name: str) -> type:
         import warnings
 
         warnings.warn(
-            "srunx.exceptions.JobNotFound is deprecated; use JobNotFoundError instead.",
+            "srunx.common.exceptions.JobNotFound is deprecated; use JobNotFoundError instead.",
             DeprecationWarning,
             stacklevel=2,
         )

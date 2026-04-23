@@ -2,7 +2,7 @@
 
 Bridges the CLI submit path with the endpoint/watch/subscription domain.
 Call sites (:mod:`srunx.cli.main` / :mod:`srunx.cli.workflow`) invoke
-:func:`attach_notification_watch` after :meth:`srunx.client.Slurm.submit`
+:func:`attach_notification_watch` after :meth:`srunx.slurm.local.Slurm.submit`
 returns so the job lands in the notification pipeline:
 
 1. Resolves the endpoint by ``(kind, name)`` — the DB's uniqueness
@@ -19,7 +19,7 @@ never break the submit.
 
 from __future__ import annotations
 
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -51,7 +51,7 @@ def attach_notification_watch(
     Args:
         job_id: SLURM job id. Must already be recorded in the new state
             DB (``jobs`` table) —
-            :func:`srunx.db.cli_helpers.record_submission_from_job`
+            :func:`srunx.observability.storage.cli_helpers.record_submission_from_job`
             handles that for CLI submits.
         endpoint_name: Name of the endpoint to notify. Must exist, not
             be disabled, and be of ``endpoint_kind``.
@@ -82,13 +82,17 @@ def attach_notification_watch(
         return None
 
     try:
-        from srunx.db.connection import init_db, open_connection
-        from srunx.db.repositories.endpoints import EndpointRepository
-        from srunx.db.repositories.job_state_transitions import (
+        from srunx.observability.storage.connection import init_db, open_connection
+        from srunx.observability.storage.repositories.endpoints import (
+            EndpointRepository,
+        )
+        from srunx.observability.storage.repositories.job_state_transitions import (
             JobStateTransitionRepository,
         )
-        from srunx.db.repositories.subscriptions import SubscriptionRepository
-        from srunx.db.repositories.watches import WatchRepository
+        from srunx.observability.storage.repositories.subscriptions import (
+            SubscriptionRepository,
+        )
+        from srunx.observability.storage.repositories.watches import WatchRepository
 
         init_db(delete_legacy=False)
         conn = open_connection()

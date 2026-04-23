@@ -1,7 +1,7 @@
 """Backward-compat shim. Canonical home: :mod:`srunx.slurm.protocols`.
 
 Old names kept as aliases so consumers importing from
-``srunx.client_protocol`` keep working during the migration (#156).
+``srunx.slurm.protocols`` keep working during the migration (#156).
 """
 
 from srunx.slurm.protocols import (
@@ -16,22 +16,22 @@ from srunx.slurm.protocols import (
 )
 
 # Backward-compat aliases (old names)
-SlurmClientProtocol = Client
-JobOperationsProtocol = JobOperations
-WorkflowJobExecutorProtocol = WorkflowJobExecutor
-JobStatusInfo = JobSnapshot
+Client = Client
+JobOperations = JobOperations
+WorkflowJobExecutor = WorkflowJobExecutor
+JobSnapshot = JobSnapshot
 
 __all__ = [
     "Client",
     "JobOperations",
-    "JobOperationsProtocol",
+    "JobOperations",
     "JobSnapshot",
-    "JobStatusInfo",
+    "JobSnapshot",
     "LogChunk",
-    "SlurmClientProtocol",
+    "Client",
     "WorkflowJobExecutor",
     "WorkflowJobExecutorFactory",
-    "WorkflowJobExecutorProtocol",
+    "WorkflowJobExecutor",
     "parse_slurm_datetime",
     "parse_slurm_duration",
 ]

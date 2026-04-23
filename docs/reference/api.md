@@ -11,22 +11,22 @@
 
 ## Sweep orchestration
 
-::: srunx.sweep.expand
+::: srunx.runtime.sweep.expand
     options:
       show_source: false
 
-::: srunx.sweep.orchestrator
+::: srunx.runtime.sweep.orchestrator
     options:
       show_source: false
       members_order: source
 
 ## Security helpers
 
-::: srunx.security.python_args
+::: srunx.runtime.security.python_args
     options:
       show_source: false
 
-::: srunx.security.mount_paths
+::: srunx.runtime.security.mount_paths
     options:
       show_source: false
 

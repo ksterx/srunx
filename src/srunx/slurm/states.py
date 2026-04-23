@@ -1,6 +1,6 @@
 """SLURM protocol-level state constants.
 
-Separate from :class:`srunx.models.JobStatus` (the domain-level enum)
+Separate from :class:`srunx.domain.JobStatus` (the domain-level enum)
 because SLURM's raw state vocabulary is wider than what srunx models:
 SLURM emits ``NODE_FAIL`` / ``PREEMPTED`` / ``OUT_OF_MEMORY`` for
 terminal failures that srunx currently collapses into ``FAILED`` at

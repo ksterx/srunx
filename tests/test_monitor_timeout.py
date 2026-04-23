@@ -5,10 +5,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from srunx.models import Job, JobStatus
-from srunx.monitor.job_monitor import JobMonitor
-from srunx.monitor.resource_monitor import ResourceMonitor
-from srunx.monitor.types import MonitorConfig, ResourceSnapshot, WatchMode
+from srunx.domain import Job, JobStatus
+from srunx.observability.monitoring.job_monitor import JobMonitor
+from srunx.observability.monitoring.resource_monitor import ResourceMonitor
+from srunx.observability.monitoring.types import (
+    MonitorConfig,
+    ResourceSnapshot,
+    WatchMode,
+)
 
 
 class TestJobMonitorTimeout:

@@ -1,4 +1,4 @@
-"""Tests for srunx.config module."""
+"""Tests for srunx.common.config module."""
 
 import json
 import os
@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from srunx.config import (
+from srunx.common.config import (
     EnvironmentDefaults,
     ResourceDefaults,
     SrunxConfig,
@@ -215,7 +215,7 @@ class TestConfigPaths:
         """``$XDG_CONFIG_HOME`` overrides the default user config dir.
 
         Matches the XDG base-directory spec and the state DB's resolver
-        in ``srunx.db.connection.get_config_dir``. Without this, flipping
+        in ``srunx.observability.storage.connection.get_config_dir``. Without this, flipping
         ``XDG_CONFIG_HOME`` for tests/containers/multi-tenant setups would
         isolate the DB but silently land the JSON config in ``~/.config``.
         """
@@ -247,7 +247,7 @@ class TestConfigSaving:
         with tempfile.TemporaryDirectory() as tmp_dir:
             user_config_path = Path(tmp_dir) / "config.json"
 
-            with patch("srunx.config.get_config_paths") as mock_paths:
+            with patch("srunx.common.config.get_config_paths") as mock_paths:
                 mock_paths.return_value = [
                     Path("/etc/srunx/config.json"),  # system
                     user_config_path,  # user
@@ -296,7 +296,7 @@ class TestFullConfigLoading:
                 json.dump(test_config, f)
 
             # Mock the config paths to use our test file
-            with patch("srunx.config.get_config_paths") as mock_paths:
+            with patch("srunx.common.config.get_config_paths") as mock_paths:
                 mock_paths.return_value = [config_path]
 
                 # Mock environment variables
@@ -365,7 +365,7 @@ class TestContainerEnvConfig:
 
     def test_srunx_default_container_runtime_with_image_loads_config(self):
         """Test SRUNX_DEFAULT_CONTAINER_RUNTIME with SRUNX_DEFAULT_CONTAINER is picked up by load_config()."""
-        with patch("srunx.config.get_config_paths") as mock_paths:
+        with patch("srunx.common.config.get_config_paths") as mock_paths:
             mock_paths.return_value = []
             with patch.dict(
                 os.environ,
@@ -382,7 +382,7 @@ class TestContainerEnvConfig:
 
     def test_srunx_default_container_loads_config(self):
         """Test SRUNX_DEFAULT_CONTAINER is picked up by load_config()."""
-        with patch("srunx.config.get_config_paths") as mock_paths:
+        with patch("srunx.common.config.get_config_paths") as mock_paths:
             mock_paths.return_value = []
             with patch.dict(
                 os.environ,

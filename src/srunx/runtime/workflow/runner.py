@@ -1,7 +1,7 @@
 """Workflow runner: DAG scheduling + executor dispatch.
 
 Canonical home of :class:`WorkflowRunner` since Phase 7 (#163). The
-top-level :mod:`srunx.runner` module is a thin backward-compat shim
+top-level :mod:`srunx.runtime.workflow.runner` module is a thin backward-compat shim
 re-exporting the public symbols defined here.
 """
 
@@ -18,14 +18,9 @@ import jinja2
 import yaml  # type: ignore
 
 from srunx.callbacks import Callback
-from srunx.client import Slurm
-from srunx.client_protocol import (
-    WorkflowJobExecutorFactory,
-    WorkflowJobExecutorProtocol,
-)
-from srunx.exceptions import WorkflowValidationError
-from srunx.logging import get_logger
-from srunx.models import (
+from srunx.common.exceptions import WorkflowValidationError
+from srunx.common.logging import get_logger
+from srunx.domain import (
     DependencyType,
     Job,
     JobEnvironment,
@@ -42,9 +37,14 @@ from srunx.runtime.workflow.loader import (
     _find_required_variables,
 )
 from srunx.runtime.workflow.transitions import _transition_workflow_run
+from srunx.slurm.local import Slurm
+from srunx.slurm.protocols import (
+    WorkflowJobExecutor,
+    WorkflowJobExecutorFactory,
+)
 
 if TYPE_CHECKING:
-    from srunx.rendering import SubmissionRenderContext
+    from srunx.runtime.rendering import SubmissionRenderContext
 
 logger = get_logger(__name__)
 
@@ -74,7 +74,7 @@ class WorkflowRunner:
             args: Template variables from the YAML args section.
             default_project: Default project (mount name) for file syncing.
             executor_factory: Optional context-manager factory producing a
-                :class:`WorkflowJobExecutorProtocol` per lease. When ``None``
+                :class:`WorkflowJobExecutor` per lease. When ``None``
                 (default) the runner falls back to a shared local
                 :class:`Slurm` singleton wrapped in ``nullcontext`` — i.e.
                 existing CLI behaviour is preserved bit-for-bit. Inject a
@@ -113,7 +113,7 @@ class WorkflowRunner:
 
     def _get_executor_cm(
         self,
-    ) -> AbstractContextManager[WorkflowJobExecutorProtocol]:
+    ) -> AbstractContextManager[WorkflowJobExecutor]:
         """Return a context manager yielding a workflow job executor.
 
         When an ``executor_factory`` is injected, defers to it (bounded
@@ -402,7 +402,7 @@ class WorkflowRunner:
         # on ``workflow_run_id``) returns zero rows for every CLI run.
         # Best-effort: a DB outage must not block the workflow itself.
         if workflow_run_id is None:
-            from srunx.db.cli_helpers import create_cli_workflow_run
+            from srunx.observability.storage.cli_helpers import create_cli_workflow_run
 
             workflow_run_id = create_cli_workflow_run(
                 workflow_name=self.workflow.name,

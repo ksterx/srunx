@@ -1,10 +1,10 @@
-"""Truth-table coverage for :func:`srunx.notifications.presets.should_deliver`."""
+"""Truth-table coverage for :func:`srunx.observability.notifications.presets.should_deliver`."""
 
 from __future__ import annotations
 
 import pytest
 
-from srunx.notifications.presets import should_deliver
+from srunx.observability.notifications.presets import should_deliver
 
 TERMINAL_JOB_STATUSES = [
     "COMPLETED",

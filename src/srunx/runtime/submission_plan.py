@@ -280,7 +280,7 @@ def collect_touched_mounts_across_cells(
     deterministic order — same property the single-workflow path uses
     to avoid lock inversion.
     """
-    from srunx.runner import WorkflowRunner
+    from srunx.runtime.workflow.runner import WorkflowRunner
 
     base_overrides = dict(base_args_override or {})
 

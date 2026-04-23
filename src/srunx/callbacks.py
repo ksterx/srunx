@@ -8,12 +8,11 @@ call-sites keep working.
 
 from typing import TYPE_CHECKING
 
-from srunx.logging import get_logger
-from srunx.models import JobType, Workflow
+from srunx.common.logging import get_logger
+from srunx.domain import JobType, Workflow
 
 if TYPE_CHECKING:
-    from srunx.monitor.report_types import Report
-    from srunx.monitor.types import ResourceSnapshot
+    from srunx.observability.monitoring.types import Report, ResourceSnapshot
     from srunx.observability.notifications.legacy_slack import (
         SlackCallback as SlackCallback,  # re-exported via ``__getattr__``
     )
@@ -121,7 +120,7 @@ class NotificationWatchCallback(Callback):
     """Attach a durable notification watch every time a job is submitted.
 
     This is the endpoint-watch bridge for CLI code paths that still
-    drive submission through :class:`~srunx.client.Slurm` + the
+    drive submission through :class:`~srunx.slurm.local.Slurm` + the
     :class:`Callback` fan-out. On each ``on_job_submitted``, it calls
     :func:`srunx.cli._helpers.notification_setup.attach_notification_watch` so
     the poller pipeline takes over delivery — no in-process Slack send.
@@ -133,7 +132,7 @@ class NotificationWatchCallback(Callback):
     ``scheduler_key`` (default ``"local"``) controls which transport
     axis the watch is created under. Callers driving SSH-backed
     transports must pass ``f"ssh:{profile_name}"`` so the poller can
-    resolve the watch via the matching :class:`SlurmClientProtocol`
+    resolve the watch via the matching :class:`Client`
     implementation.
     """
 

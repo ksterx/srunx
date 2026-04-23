@@ -282,7 +282,7 @@ class TestCollectTouchedMounts:
 
     def test_dedup_across_multiple_shelljobs_same_mount(self, tmp_path: Path) -> None:
         """Two ShellJobs under the same mount yield one mount, not two."""
-        from srunx.models import ShellJob
+        from srunx.domain import ShellJob
         from srunx.runtime.submission_plan import collect_touched_mounts
 
         local = tmp_path / "ml"
@@ -303,7 +303,7 @@ class TestCollectTouchedMounts:
 
     def test_skips_jobs_outside_any_mount(self, tmp_path: Path) -> None:
         """ShellJobs outside the mount roots are dropped (will go via tmp)."""
-        from srunx.models import ShellJob
+        from srunx.domain import ShellJob
         from srunx.runtime.submission_plan import collect_touched_mounts
 
         local = tmp_path / "ml"
@@ -325,7 +325,7 @@ class TestCollectTouchedMounts:
 
     def test_skips_command_jobs(self, tmp_path: Path) -> None:
         """``Job`` (command-style, no script_path) contributes nothing."""
-        from srunx.models import Job
+        from srunx.domain import Job
         from srunx.runtime.submission_plan import collect_touched_mounts
 
         local = tmp_path / "ml"

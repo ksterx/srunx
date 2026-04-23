@@ -101,11 +101,11 @@ KNOWN_VIOLATIONS: dict[tuple[str, str], str] = {
     ),
     # slurm -> observability (legacy ``Slurm`` shim wires the default sink chain).
     ("client", "callbacks"): (
-        "Shim-only: ``srunx.client.Slurm`` imports ``Callback`` for its legacy "
+        "Shim-only: ``srunx.slurm.local.Slurm`` imports ``Callback`` for its legacy "
         "``callbacks=`` type hint. Removed when the shim is deleted."
     ),
     ("client", "observability"): (
-        "Shim-only: ``srunx.client.Slurm`` composes ``CallbackSink`` + "
+        "Shim-only: ``srunx.slurm.local.Slurm`` composes ``CallbackSink`` + "
         "``DBRecorderSink`` into the default sink chain so legacy "
         "``Slurm(callbacks=[...])`` keeps working. Removed when the shim "
         "is deleted."
@@ -146,7 +146,7 @@ KNOWN_VIOLATIONS: dict[tuple[str, str], str] = {
         "Phase 5 sink pattern extended to SSH in a follow-up."
     ),
     ("slurm", "db"): (
-        "SSH adapter writes ``srunx.db`` rows directly. "
+        "SSH adapter writes ``srunx.observability.storage`` rows directly. "
         "Phase 5 sink pattern extended to SSH in a follow-up."
     ),
     # NOTE: ``slurm -> cli`` (SSH adapter consuming ``cli.submission_plan``)

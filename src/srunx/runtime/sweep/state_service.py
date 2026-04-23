@@ -12,13 +12,15 @@ from __future__ import annotations
 
 import sqlite3
 
-from srunx.db.repositories.deliveries import DeliveryRepository
-from srunx.db.repositories.endpoints import EndpointRepository
-from srunx.db.repositories.events import EventRepository
-from srunx.db.repositories.subscriptions import SubscriptionRepository
-from srunx.db.repositories.sweep_runs import SweepRunRepository
-from srunx.db.repositories.watches import WatchRepository
-from srunx.notifications.service import NotificationService
+from srunx.observability.notifications.service import NotificationService
+from srunx.observability.storage.repositories.deliveries import DeliveryRepository
+from srunx.observability.storage.repositories.endpoints import EndpointRepository
+from srunx.observability.storage.repositories.events import EventRepository
+from srunx.observability.storage.repositories.subscriptions import (
+    SubscriptionRepository,
+)
+from srunx.observability.storage.repositories.sweep_runs import SweepRunRepository
+from srunx.observability.storage.repositories.watches import WatchRepository
 
 # Terminal workflow_run statuses. Once a run reaches one of these, the
 # state service refuses to transition it back to a non-terminal status
@@ -60,7 +62,7 @@ class WorkflowRunStateService:
            ``(kind, source_ref, payload_hash)`` UNIQUE index).
         4. Fan the event out to deliveries.
         5. If the run is sweep-backed, invoke
-           :func:`srunx.sweep.aggregator.evaluate_and_fire_sweep_status_event`.
+           :func:`srunx.runtime.sweep.aggregator.evaluate_and_fire_sweep_status_event`.
         """
         # Circular import guard: aggregator imports this module's siblings.
         from srunx.runtime.sweep.aggregator import evaluate_and_fire_sweep_status_event

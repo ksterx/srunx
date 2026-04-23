@@ -9,17 +9,19 @@ import anyio
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field, model_validator
 
-from srunx.db.repositories.deliveries import DeliveryRepository
-from srunx.db.repositories.endpoints import EndpointRepository
-from srunx.db.repositories.events import EventRepository
-from srunx.db.repositories.job_state_transitions import (
+from srunx.common.logging import get_logger
+from srunx.observability.notifications.service import NotificationService
+from srunx.observability.storage.repositories.deliveries import DeliveryRepository
+from srunx.observability.storage.repositories.endpoints import EndpointRepository
+from srunx.observability.storage.repositories.events import EventRepository
+from srunx.observability.storage.repositories.job_state_transitions import (
     JobStateTransitionRepository,
 )
-from srunx.db.repositories.jobs import JobRepository
-from srunx.db.repositories.subscriptions import SubscriptionRepository
-from srunx.db.repositories.watches import WatchRepository
-from srunx.logging import get_logger
-from srunx.notifications.service import NotificationService
+from srunx.observability.storage.repositories.jobs import JobRepository
+from srunx.observability.storage.repositories.subscriptions import (
+    SubscriptionRepository,
+)
+from srunx.observability.storage.repositories.watches import WatchRepository
 from srunx.slurm.ssh import SlurmSSHAdapter
 
 from ..deps import get_adapter, get_db_conn
@@ -48,8 +50,8 @@ async def preview_script(req: ScriptPreviewRequest) -> ScriptPreviewResponse:
     """Render a SLURM script from job config without submitting."""
     import tempfile
 
-    from srunx.models import Job, JobEnvironment, JobResource
-    from srunx.template import get_template_path
+    from srunx.domain import Job, JobEnvironment, JobResource
+    from srunx.runtime.templates import get_template_path
 
     template_name = req.template_name or "base"
     try:
@@ -68,7 +70,7 @@ async def preview_script(req: ScriptPreviewRequest) -> ScriptPreviewResponse:
         log_dir=req.log_dir or ".",
     )
 
-    from srunx.models import render_job_script
+    from srunx.runtime.rendering import render_job_script
 
     with tempfile.TemporaryDirectory() as tmpdir:
         script_path = await anyio.to_thread.run_sync(
@@ -315,7 +317,7 @@ def _submit_in_place(
     the whole purpose of holding the lock across submission (Codex
     blocker #3 on PR #134, same shape).
     """
-    from srunx.config import get_config
+    from srunx.common.config import get_config
     from srunx.sync.lock import SyncLockTimeoutError
     from srunx.sync.service import SyncAbortedError, mount_sync_session
 

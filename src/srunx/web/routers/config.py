@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ValidationError
 
-from srunx.config import (
+from srunx.common.config import (
     SrunxConfig,
     create_example_config,
     get_config,

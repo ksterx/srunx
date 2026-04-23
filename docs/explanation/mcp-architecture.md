@@ -100,13 +100,13 @@ Each MCP tool function follows the same pattern:
 The server file (`src/srunx/mcp/server.py`) contains no SLURM logic.
 All SLURM interaction happens through existing modules:
 
-- **Job management** (`submit_job`, `list_jobs`, etc.) uses `srunx.client.Slurm`
+- **Job management** (`submit_job`, `list_jobs`, etc.) uses `srunx.slurm.local.Slurm`
   for local execution and `srunx.ssh.core.client.SSHSlurmClient` for remote.
-- **Workflows** (`create_workflow`, `run_workflow`, etc.) uses `srunx.runner.WorkflowRunner`
-  and `srunx.models.Workflow`.
-- **Resources** (`get_resources`) uses `srunx.monitor.resource_monitor.ResourceMonitor`.
+- **Workflows** (`create_workflow`, `run_workflow`, etc.) uses `srunx.runtime.workflow.runner.WorkflowRunner`
+  and `srunx.domain.Workflow`.
+- **Resources** (`get_resources`) uses `srunx.observability.monitoring.resource_monitor.ResourceMonitor`.
 - **File sync** (`sync_files`) uses `srunx.sync.RsyncClient` via the SSH profile.
-- **Configuration** (`get_config`, `list_ssh_profiles`) uses `srunx.config`
+- **Configuration** (`get_config`, `list_ssh_profiles`) uses `srunx.common.config`
   and `srunx.ssh.core.config.ConfigManager`.
 
 ## Local vs SSH Execution
@@ -115,7 +115,7 @@ Most tools accept a `use_ssh` boolean parameter. The execution path diverges
 early in each tool:
 
 **Local path** (`use_ssh=false`):  
-Imports `srunx.client.Slurm` and calls SLURM commands via `subprocess`.
+Imports `srunx.slurm.local.Slurm` and calls SLURM commands via `subprocess`.
 Requires the MCP server to run on a machine with SLURM access (login node
 or compute node).
 
@@ -218,7 +218,7 @@ points or explicit paths.
 **Shared security guards.**  
 The argument inspection that rejects dangerous Python invocations
 (`find_python_prefix`) and dangerous shell-script patterns
-(`find_shell_script_violation`) lives in `srunx.security` and is
+(`find_shell_script_violation`) lives in `srunx.runtime.security` and is
 imported by both the Web UI router and the MCP tool surface. Keeping
 these checks in one module avoids drift between the two entry points:
 a pattern blocked in the Web UI is necessarily blocked in MCP, and

@@ -225,7 +225,7 @@ class TestTransportRegistry:
 
     def test_ssh_build_failure_returns_none_and_logs(self):
         """A TransportError while building an SSH handle yields None, not a crash."""
-        from srunx.exceptions import TransportError
+        from srunx.common.exceptions import TransportError
 
         # Profile loader says the profile exists...
         profile_loader = MagicMock(return_value=MagicMock(mounts=[]))

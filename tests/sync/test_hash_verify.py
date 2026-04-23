@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from srunx.config import SyncDefaults
+from srunx.common.config import SyncDefaults
 from srunx.ssh.core.config import MountConfig, ServerProfile
 from srunx.sync.hash_verify import (
     HashMismatch,

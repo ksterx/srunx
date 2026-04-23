@@ -20,13 +20,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from srunx.models import Job, JobStatus, render_job_script
+from srunx.domain import Job, JobStatus
+from srunx.runtime.rendering import render_job_script
+from srunx.runtime.templates import get_template_path
 from srunx.slurm.ssh import SlurmSSHAdapter, SlurmSSHAdapterSpec
 from srunx.slurm.ssh_executor import (
     SlurmSSHExecutorPool,
     SSHWorkflowJobExecutor,
 )
-from srunx.template import get_template_path
 
 # --- Helpers ---------------------------------------------------------
 

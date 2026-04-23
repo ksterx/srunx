@@ -2,7 +2,10 @@
 
 from datetime import datetime, timedelta
 
-from srunx.formatters import SlackNotificationFormatter, SlackTableFormatter
+from srunx.observability.notifications.formatting import (
+    SlackNotificationFormatter,
+    SlackTableFormatter,
+)
 
 # ---------------------------------------------------------------------------
 # SlackTableFormatter

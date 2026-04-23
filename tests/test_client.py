@@ -1,4 +1,4 @@
-"""Tests for srunx.client module."""
+"""Tests for srunx.slurm.local module."""
 
 import subprocess
 from unittest.mock import Mock, patch
@@ -6,8 +6,8 @@ from unittest.mock import Mock, patch
 import pytest
 
 from srunx.callbacks import Callback
-from srunx.client import Slurm, cancel_job, retrieve_job, submit_job
-from srunx.models import BaseJob, JobEnvironment, JobStatus, ShellJob
+from srunx.domain import BaseJob, JobEnvironment, JobStatus, ShellJob
+from srunx.slurm.local import Slurm, cancel_job, retrieve_job, submit_job
 
 
 class MockCallback(Callback):
@@ -284,7 +284,7 @@ class TestSlurm:
         assert "--user" in args[0]
         assert "testuser" in args[0]
 
-    @patch("srunx.client.Slurm.retrieve")
+    @patch("srunx.slurm.local.Slurm.retrieve")
     @patch("time.sleep")
     def test_monitor_job_completion(self, mock_sleep, mock_retrieve, sample_job):
         """Test monitoring job to completion."""
@@ -322,7 +322,7 @@ class TestSlurm:
                 assert len(callback.completed_jobs) == 1
                 assert callback.completed_jobs[0] is sample_job
 
-    @patch("srunx.client.Slurm.retrieve")
+    @patch("srunx.slurm.local.Slurm.retrieve")
     @patch("time.sleep")
     def test_monitor_job_failure(self, mock_sleep, mock_retrieve, sample_job):
         """Test monitoring job that fails."""
@@ -347,7 +347,7 @@ class TestSlurm:
 
                 assert len(callback.failed_jobs) == 1
 
-    @patch("srunx.client.Slurm.retrieve")
+    @patch("srunx.slurm.local.Slurm.retrieve")
     @patch("time.sleep")
     def test_monitor_job_cancelled(self, mock_sleep, mock_retrieve, sample_job):
         """Test monitoring job that gets cancelled."""
@@ -372,8 +372,8 @@ class TestSlurm:
 
                 assert len(callback.cancelled_jobs) == 1
 
-    @patch("srunx.client.Slurm.monitor")
-    @patch("srunx.client.Slurm.submit")
+    @patch("srunx.slurm.local.Slurm.monitor")
+    @patch("srunx.slurm.local.Slurm.submit")
     def test_run_job(self, mock_submit, mock_monitor, sample_job):
         """Test run method (submit + monitor)."""
         submitted_job = sample_job
@@ -392,7 +392,7 @@ class TestSlurm:
 class TestConvenienceFunctions:
     """Test convenience functions."""
 
-    @patch("srunx.client.Slurm.submit")
+    @patch("srunx.slurm.local.Slurm.submit")
     def test_submit_job_function(self, mock_submit, sample_job):
         """Test submit_job convenience function."""
         mock_submit.return_value = sample_job
@@ -402,7 +402,7 @@ class TestConvenienceFunctions:
         assert result is sample_job
         mock_submit.assert_called_once()
 
-    @patch("srunx.client.Slurm.retrieve")
+    @patch("srunx.slurm.local.Slurm.retrieve")
     def test_retrieve_job_function(self, mock_retrieve):
         """Test retrieve_job convenience function."""
         mock_job = BaseJob(name="test", job_id=12345)
@@ -413,7 +413,7 @@ class TestConvenienceFunctions:
         assert result is mock_job
         mock_retrieve.assert_called_once_with(12345)
 
-    @patch("srunx.client.Slurm.cancel")
+    @patch("srunx.slurm.local.Slurm.cancel")
     def test_cancel_job_function(self, mock_cancel):
         """Test cancel_job convenience function."""
         cancel_job(12345)

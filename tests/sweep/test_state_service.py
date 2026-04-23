@@ -1,4 +1,4 @@
-"""Tests for ``srunx.sweep.state_service.WorkflowRunStateService``."""
+"""Tests for ``srunx.runtime.sweep.state_service.WorkflowRunStateService``."""
 
 from __future__ import annotations
 
@@ -8,15 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from srunx.db.connection import open_connection
-from srunx.db.migrations import apply_migrations
-from srunx.db.repositories.base import now_iso
-from srunx.sweep.state_service import WorkflowRunStateService
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.migrations import apply_migrations
+from srunx.observability.storage.repositories.base import now_iso
+from srunx.runtime.sweep.state_service import WorkflowRunStateService
 
 
 @pytest.fixture
 def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     c = open_connection(db)
     apply_migrations(c)
     try:

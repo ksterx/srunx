@@ -1,4 +1,4 @@
-"""Tests for :mod:`srunx.monitor.resource_source`.
+"""Tests for :mod:`srunx.observability.monitoring.resource_source`.
 
 Covers the SSH-adapter-backed resource source. Regression surface:
 
@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from srunx.monitor.resource_source import (
+from srunx.observability.monitoring.resource_source import (
     ResourceSource,
     SSHAdapterResourceSource,
 )

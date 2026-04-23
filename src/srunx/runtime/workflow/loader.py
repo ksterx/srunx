@@ -1,6 +1,6 @@
 """YAML workflow loader helpers: Jinja var discovery + dependency resolution.
 
-Pulled unchanged out of :mod:`srunx.runner` as part of Phase 7 (#163). All
+Pulled unchanged out of :mod:`srunx.runtime.workflow.runner` as part of Phase 7 (#163). All
 functions here are pure — they do not touch SLURM, the DB, or the filesystem
 beyond YAML parsing at the call site.
 """
@@ -11,7 +11,7 @@ from typing import Any
 
 import jinja2
 
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
 from srunx.runtime.workflow.safe_eval import _safe_eval, _safe_exec
 
 logger = get_logger(__name__)

@@ -2,7 +2,7 @@
 
 Design reference: ``.claude/specs/notification-and-state-persistence/design.md``
 § Repositories. Records every observed job status change (SSOT for
-:class:`~srunx.pollers.active_watch_poller.ActiveWatchPoller` and CLI
+:class:`~srunx.observability.monitoring.pollers.active_watch_poller.ActiveWatchPoller` and CLI
 monitor alike).
 
 V5 note: the on-disk column is ``jobs_row_id`` (FK to ``jobs.id``),

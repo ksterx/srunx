@@ -208,7 +208,7 @@ class TestWorkflowExecutionControl:
         mock_runner.workflow.validate.return_value = None
 
         # Create mock jobs - need to properly mock isinstance checks
-        from srunx.models import Job, JobEnvironment
+        from srunx.domain import Job, JobEnvironment
 
         mock_job = Job(name="job2", command=["echo", "2"], environment=JobEnvironment())
         mock_runner._get_jobs_to_execute.return_value = [mock_job]
@@ -235,7 +235,7 @@ class TestWorkflowExecutionControl:
         mock_runner.workflow.validate.return_value = None
 
         # Create mock jobs - need to properly mock isinstance checks
-        from srunx.models import Job, JobEnvironment
+        from srunx.domain import Job, JobEnvironment
 
         mock_job1 = Job(
             name="job2", command=["echo", "2"], environment=JobEnvironment()

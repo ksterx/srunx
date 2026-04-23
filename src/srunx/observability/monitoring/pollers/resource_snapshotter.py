@@ -3,7 +3,7 @@
 Calls :meth:`ResourceMonitor.get_current_snapshot` (a blocking SLURM shell-out)
 on a worker thread and persists the result into the ``resource_snapshots``
 table. Exceptions propagate out of :meth:`run_cycle` so the
-:class:`~srunx.pollers.supervisor.PollerSupervisor` can apply its exponential
+:class:`~srunx.observability.monitoring.pollers.supervisor.PollerSupervisor` can apply its exponential
 backoff — per design.md § "Error Scenarios" #2, transient SLURM outages must
 not take down the lifespan.
 """
@@ -17,10 +17,12 @@ from typing import Any, Protocol
 
 import anyio
 
-from srunx.db.connection import open_connection
-from srunx.db.models import ResourceSnapshot as DbResourceSnapshot
-from srunx.db.repositories.resource_snapshots import ResourceSnapshotRepository
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.models import ResourceSnapshot as DbResourceSnapshot
+from srunx.observability.storage.repositories.resource_snapshots import (
+    ResourceSnapshotRepository,
+)
 
 logger = get_logger(__name__)
 
@@ -29,7 +31,7 @@ class _MonitorLike(Protocol):
     """Structural contract for the injected resource monitor.
 
     The real implementation is
-    :class:`srunx.monitor.resource_monitor.ResourceMonitor`. Tests inject
+    :class:`srunx.observability.monitoring.resource_monitor.ResourceMonitor`. Tests inject
     stubs with the same shape.
     """
 
@@ -39,7 +41,7 @@ class _MonitorLike(Protocol):
 class ResourceSnapshotter:
     """Capture cluster GPU state at a fixed cadence.
 
-    Implements the :class:`~srunx.pollers.supervisor.Poller` protocol.
+    Implements the :class:`~srunx.observability.monitoring.pollers.supervisor.Poller` protocol.
     """
 
     name: str = "resource_snapshotter"
@@ -57,7 +59,7 @@ class ResourceSnapshotter:
 
         Args:
             resource_monitor: Object exposing ``get_current_snapshot()``.
-                Typically :class:`~srunx.monitor.resource_monitor.ResourceMonitor`.
+                Typically :class:`~srunx.observability.monitoring.resource_monitor.ResourceMonitor`.
                 Construct the monitor with the target ``partition`` — this
                 class does not re-scope the query.
             db_path: Override for the sqlite DB path. ``None`` resolves the
@@ -109,7 +111,7 @@ class ResourceSnapshotter:
 
         Handles two legitimate shapes:
 
-        * A :class:`srunx.monitor.types.ResourceSnapshot` with
+        * A :class:`srunx.observability.monitoring.types.ResourceSnapshot` with
           ``total_gpus`` / ``timestamp`` naming.
         * An already-correctly-shaped :class:`DbResourceSnapshot`.
 

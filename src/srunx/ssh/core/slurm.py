@@ -12,7 +12,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING
 
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
 
 if TYPE_CHECKING:
     from .connection import SSHConnection

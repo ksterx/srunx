@@ -16,8 +16,8 @@ from typing import Any
 
 import pytest
 
-from srunx.db.connection import open_connection
-from srunx.db.migrations import apply_migrations
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.migrations import apply_migrations
 
 
 def _fk_pragma(conn: Any) -> int:
@@ -26,7 +26,7 @@ def _fk_pragma(conn: Any) -> int:
 
 
 def test_apply_migrations_runs_v4_on_fresh_db(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         applied = apply_migrations(conn)
@@ -39,7 +39,7 @@ def test_apply_migrations_runs_v4_on_fresh_db(tmp_path: Path) -> None:
 
 
 def test_apply_migrations_is_idempotent_with_v4(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         first = apply_migrations(conn)
@@ -59,7 +59,7 @@ def test_apply_migrations_restores_foreign_keys_pragma_after_v4(
     tmp_path: Path,
 ) -> None:
     """After V4 toggles FK OFF/ON the pragma must be restored."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -87,9 +87,9 @@ def test_v4_migration_rolls_back_on_partial_failure(
     no ``v4_widen_triggered_by_mcp`` row is recorded in
     ``schema_version``.
     """
-    from srunx.db import migrations as mig
+    from srunx.observability.storage import migrations as mig
 
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         # Apply V1..V3 first so V4 is the pending migration that the

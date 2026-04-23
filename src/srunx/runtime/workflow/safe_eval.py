@@ -6,7 +6,7 @@ workflow load time. It parses user source into an AST and interprets it
 directly — ``eval`` / ``exec`` are never invoked, which prevents sandbox
 escape via ``__class__`` / ``__subclasses__``.
 
-Carved out of :mod:`srunx.runner` unchanged as part of Phase 7 (#163).
+Carved out of :mod:`srunx.runtime.workflow.runner` unchanged as part of Phase 7 (#163).
 """
 
 import ast

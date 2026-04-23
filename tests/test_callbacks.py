@@ -4,8 +4,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from srunx.callbacks import Callback, NotificationWatchCallback, SlackCallback
-from srunx.models import BaseJob, Job, JobEnvironment, JobStatus  # noqa: F401
+from srunx.callbacks import Callback, NotificationWatchCallback
+from srunx.domain import BaseJob, Job, JobEnvironment, JobStatus  # noqa: F401
+from srunx.observability.notifications.legacy_slack import SlackCallback
 
 
 class TestCallback:

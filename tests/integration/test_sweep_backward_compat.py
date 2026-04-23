@@ -27,9 +27,9 @@ from typing import Any
 import pytest
 import yaml  # type: ignore
 
-from srunx.db.connection import open_connection, transaction
-from srunx.runner import WorkflowRunner
-from srunx.sweep.state_service import WorkflowRunStateService
+from srunx.observability.storage.connection import open_connection, transaction
+from srunx.runtime.sweep.state_service import WorkflowRunStateService
+from srunx.runtime.workflow.runner import WorkflowRunner
 
 # ---------------------------------------------------------------------------
 # Fixture — per-test isolated srunx DB (same shape as tests/sweep/conftest.py).
@@ -39,7 +39,7 @@ from srunx.sweep.state_service import WorkflowRunStateService
 @pytest.fixture
 def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    from srunx.db.connection import init_db
+    from srunx.observability.storage.connection import init_db
 
     return init_db(delete_legacy=False)
 

@@ -4,9 +4,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from srunx.models import Job, JobStatus
-from srunx.monitor.job_monitor import JobMonitor
-from srunx.monitor.types import MonitorConfig
+from srunx.domain import Job, JobStatus
+from srunx.observability.monitoring.job_monitor import JobMonitor
+from srunx.observability.monitoring.types import MonitorConfig
 
 
 class TestJobMonitor:
@@ -238,7 +238,7 @@ class TestJobMonitor:
         """Test watch_continuous notifies on job state changes."""
         import threading
 
-        from srunx.monitor.types import WatchMode
+        from srunx.observability.monitoring.types import WatchMode
 
         config = MonitorConfig(
             poll_interval=1,
@@ -283,7 +283,7 @@ class TestJobMonitor:
         """Test watch_continuous prevents duplicate notifications."""
         import threading
 
-        from srunx.monitor.types import WatchMode
+        from srunx.observability.monitoring.types import WatchMode
 
         config = MonitorConfig(
             poll_interval=1,
@@ -325,7 +325,7 @@ class TestJobMonitor:
         import threading
         import time
 
-        from srunx.monitor.types import WatchMode
+        from srunx.observability.monitoring.types import WatchMode
 
         config = MonitorConfig(
             poll_interval=1,
@@ -384,7 +384,7 @@ class TestJobMonitor:
         """Test handling many state changes without issues."""
         import threading
 
-        from srunx.monitor.types import WatchMode
+        from srunx.observability.monitoring.types import WatchMode
 
         config = MonitorConfig(
             poll_interval=1,

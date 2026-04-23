@@ -22,7 +22,7 @@ import stat
 from collections.abc import Iterator
 from pathlib import Path
 
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -45,8 +45,8 @@ def get_config_dir() -> Path:
 
 
 def get_db_path() -> Path:
-    """Return the DB path: ``<config_dir>/srunx.db``."""
-    return get_config_dir() / "srunx.db"
+    """Return the DB path: ``<config_dir>/srunx.observability.storage``."""
+    return get_config_dir() / "srunx.observability.storage"
 
 
 def _ensure_parent_dir(path: Path) -> None:

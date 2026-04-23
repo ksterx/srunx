@@ -37,7 +37,7 @@ class Slurm(LocalClient):
     ):
         if sink is None:
             # Order matches legacy behaviour: DB row is written first so
-            # callbacks can safely query ``srunx.db`` for their own job
+            # callbacks can safely query ``srunx.observability.storage`` for their own job
             # (e.g. a future Slack message that links back to the history
             # table). Changing this order is a breaking contract change.
             sinks: list[JobLifecycleSink] = [DBRecorderSink()]

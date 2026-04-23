@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 
-from srunx.security.python_args import (
+from srunx.runtime.security.python_args import (
     PythonPrefixViolation,
     find_python_prefix,
 )

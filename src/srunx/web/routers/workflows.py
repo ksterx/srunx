@@ -2,7 +2,7 @@
 
 Workflow runs are persisted in the ``workflow_runs`` + ``workflow_run_jobs``
 tables. Status transitions are driven by
-:class:`~srunx.pollers.active_watch_poller.ActiveWatchPoller`, which
+:class:`~srunx.observability.monitoring.pollers.active_watch_poller.ActiveWatchPoller`, which
 aggregates child job statuses into the workflow run via an internal
 ``kind='workflow_run'`` watch created when the run starts.
 """
@@ -16,14 +16,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from srunx.logging import get_logger
-from srunx.runner import WorkflowRunner
+from srunx.common.logging import get_logger
+from srunx.runtime.sweep import SweepSpec
+from srunx.runtime.sweep.orchestrator import SweepOrchestrator
+from srunx.runtime.workflow.runner import WorkflowRunner
 from srunx.slurm.ssh import SlurmSSHAdapter
 from srunx.slurm.ssh_executor import (
     SlurmSSHExecutorPool as SlurmSSHExecutorPool,  # re-export for test patches
 )
-from srunx.sweep import SweepSpec
-from srunx.sweep.orchestrator import SweepOrchestrator
 
 from ..deps import get_adapter, get_db_conn
 from ..schemas.workflows import (
@@ -248,7 +248,7 @@ async def run_workflow(
     """Run a workflow: sync mounts, submit jobs with SLURM dependencies.
 
     On success, creates a kind='workflow_run' watch that
-    :class:`~srunx.pollers.active_watch_poller.ActiveWatchPoller`
+    :class:`~srunx.observability.monitoring.pollers.active_watch_poller.ActiveWatchPoller`
     consumes to drive aggregate status transitions after the request
     returns.
     """

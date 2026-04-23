@@ -6,14 +6,14 @@ from typing import Annotated, cast
 import typer
 from rich.console import Console
 
-from srunx.callbacks import Callback, SlackCallback
+from srunx.callbacks import Callback
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
-from srunx.client import Slurm
-from srunx.monitor.job_monitor import JobMonitor
-from srunx.monitor.report_types import ReportConfig
-from srunx.monitor.resource_monitor import ResourceMonitor
-from srunx.monitor.scheduler import ScheduledReporter
-from srunx.monitor.types import MonitorConfig, WatchMode
+from srunx.observability.monitoring.job_monitor import JobMonitor
+from srunx.observability.monitoring.resource_monitor import ResourceMonitor
+from srunx.observability.monitoring.scheduler import ScheduledReporter
+from srunx.observability.monitoring.types import MonitorConfig, ReportConfig, WatchMode
+from srunx.observability.notifications.legacy_slack import SlackCallback
+from srunx.slurm.local import Slurm
 from srunx.transport import (
     emit_transport_banner,
     peek_scheduler_key,
@@ -146,7 +146,7 @@ def watch_jobs(
         callbacks: list[Callback] = []
         if endpoint:
             from srunx.cli._helpers.notification_setup import attach_notification_watch
-            from srunx.config import get_config
+            from srunx.common.config import get_config
 
             effective_preset = preset or get_config().notifications.default_preset
             # Attach per-job watches upfront: watch_jobs does not resubmit
@@ -420,7 +420,7 @@ def watch_cluster(
         with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
             # ScheduledReporter only exercises ``client.queue(...)``
             # (see _get_job_stats / _get_user_stats), which is part of
-            # JobOperationsProtocol. ``rt.job_ops`` is the CLI-facing
+            # JobOperations. ``rt.job_ops`` is the CLI-facing
             # handle and is either a local ``Slurm`` or an
             # ``SlurmSSHAdapter``; the ``cast`` narrows the static type
             # to match ScheduledReporter's concrete-``Slurm`` signature

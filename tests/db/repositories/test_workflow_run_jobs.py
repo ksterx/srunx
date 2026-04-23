@@ -1,4 +1,4 @@
-"""Tests for :class:`srunx.db.repositories.workflow_run_jobs.WorkflowRunJobRepository`."""
+"""Tests for :class:`srunx.observability.storage.repositories.workflow_run_jobs.WorkflowRunJobRepository`."""
 
 from __future__ import annotations
 
@@ -8,15 +8,17 @@ from pathlib import Path
 
 import pytest
 
-from srunx.db.connection import open_connection
-from srunx.db.migrations import apply_migrations
-from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
-from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.migrations import apply_migrations
+from srunx.observability.storage.repositories.workflow_run_jobs import (
+    WorkflowRunJobRepository,
+)
+from srunx.observability.storage.repositories.workflow_runs import WorkflowRunRepository
 
 
 @pytest.fixture
 def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     connection = open_connection(db)
     apply_migrations(connection)
     try:

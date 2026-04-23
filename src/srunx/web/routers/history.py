@@ -1,7 +1,7 @@
 """Job history endpoints: /api/history/*
 
-Reads from the unified ``~/.config/srunx/srunx.db`` via
-:class:`~srunx.db.repositories.jobs.JobRepository`. Prior to this
+Reads from the unified ``~/.config/srunx/srunx.observability.storage`` via
+:class:`~srunx.observability.storage.repositories.jobs.JobRepository`. Prior to this
 cutover (P2-4 #A) the router consumed the legacy
 ``~/.srunx/history.db``; the dual-write introduced in C2 ensured both
 DBs stayed in sync, which lets the read path flip without any data
@@ -16,7 +16,7 @@ from typing import Any
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from srunx.db.repositories.jobs import JobRepository
+from srunx.observability.storage.repositories.jobs import JobRepository
 
 from ..deps import get_db_conn
 from ..serializers import serialize_history_entry, serialize_job_stats

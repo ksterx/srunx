@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from srunx.db.connection import open_connection
-from srunx.db.migrations import (
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.migrations import (
     MIGRATIONS,
     _apply_fk_off_migration,
     _apply_tx_migration,
@@ -57,7 +57,7 @@ def _index_names(conn: sqlite3.Connection, table: str) -> set[str]:
 
 def test_v4_applies_on_top_of_v3_db(tmp_path: Path) -> None:
     """V4 must apply cleanly on a DB that was originally migrated to V3."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         _apply_through_version(conn, 3)
@@ -79,7 +79,7 @@ def test_v4_applies_on_top_of_v3_db(tmp_path: Path) -> None:
 
 def test_v4_idempotent(tmp_path: Path) -> None:
     """A second ``apply_migrations`` call is a no-op."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -102,7 +102,7 @@ def test_v4_idempotent(tmp_path: Path) -> None:
 
 def test_workflow_runs_triggered_by_mcp_allowed(tmp_path: Path) -> None:
     """After V4, ``triggered_by='mcp'`` is a valid CHECK value."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -125,7 +125,7 @@ def test_workflow_runs_triggered_by_mcp_allowed(tmp_path: Path) -> None:
 
 def test_workflow_runs_triggered_by_invalid_rejected(tmp_path: Path) -> None:
     """Values outside the V4 allowlist still fail the CHECK constraint."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -142,7 +142,7 @@ def test_workflow_runs_triggered_by_invalid_rejected(tmp_path: Path) -> None:
 
 def test_workflow_runs_triggered_by_schedule_still_allowed(tmp_path: Path) -> None:
     """The reserved ``'schedule'`` value survives V4 for forward compat."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -163,7 +163,7 @@ def test_workflow_runs_triggered_by_schedule_still_allowed(tmp_path: Path) -> No
 
 def test_existing_workflow_runs_row_survives_v4(tmp_path: Path) -> None:
     """A workflow_runs row written before V4 must round-trip unchanged."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         _apply_through_version(conn, 3)
@@ -209,7 +209,7 @@ def test_existing_workflow_runs_row_survives_v4(tmp_path: Path) -> None:
 
 def test_workflow_runs_indexes_preserved_after_v4(tmp_path: Path) -> None:
     """The three indexes defined in V1+V3 must survive the V4 rebuild."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -226,7 +226,7 @@ def test_workflow_runs_indexes_preserved_after_v4(tmp_path: Path) -> None:
 
 def test_workflow_runs_sweep_run_id_fk_preserved(tmp_path: Path) -> None:
     """workflow_runs.sweep_run_id → sweep_runs(id) ON DELETE SET NULL must persist."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -246,7 +246,7 @@ def test_workflow_runs_sweep_run_id_fk_preserved(tmp_path: Path) -> None:
 
 def test_workflow_runs_fks_globally_consistent_after_v4(tmp_path: Path) -> None:
     """``PRAGMA foreign_key_check`` must report no violations after V4."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -269,7 +269,7 @@ def test_jobs_workflow_run_id_fk_still_resolves(tmp_path: Path) -> None:
     ``PRAGMA foreign_keys=OFF`` during the rebuild, inbound references
     from ``jobs`` would be invalidated.
     """
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -299,7 +299,7 @@ def test_jobs_workflow_run_id_fk_still_resolves(tmp_path: Path) -> None:
 
 def test_workflow_run_jobs_cascade_delete_still_works(tmp_path: Path) -> None:
     """workflow_run_jobs.workflow_run_id ON DELETE CASCADE must still fire."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)

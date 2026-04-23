@@ -1,6 +1,6 @@
 """Backward-compat shim. Scheduled-reporting models were consolidated into
 :mod:`srunx.observability.monitoring.types` (#164 Phase 8c); this module
-re-exports them so legacy ``from srunx.monitor.report_types import ...``
+re-exports them so legacy ``from srunx.observability.monitoring.types import ...``
 imports keep working.
 """
 

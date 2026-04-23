@@ -15,21 +15,22 @@ from rich.console import Console
 if TYPE_CHECKING:
     from srunx.ssh.core.config import MountConfig
 
-from srunx.callbacks import Callback, NotificationWatchCallback, SlackCallback
+from srunx.callbacks import Callback, NotificationWatchCallback
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
-from srunx.config import get_config
-from srunx.exceptions import WorkflowValidationError
-from srunx.logging import configure_workflow_logging, get_logger
-from srunx.models import Job, ShellJob, Workflow
-from srunx.runner import WorkflowRunner
-from srunx.security import find_shell_script_violation
-from srunx.sweep import SweepSpec
-from srunx.sweep.expand import (
+from srunx.common.config import get_config
+from srunx.common.exceptions import WorkflowValidationError
+from srunx.common.logging import configure_workflow_logging, get_logger
+from srunx.domain import Job, ShellJob, Workflow
+from srunx.observability.notifications.legacy_slack import SlackCallback
+from srunx.runtime.security import find_shell_script_violation
+from srunx.runtime.sweep import SweepSpec
+from srunx.runtime.sweep.expand import (
     merge_sweep_specs,
     parse_arg_flags,
     parse_sweep_flags,
 )
-from srunx.sweep.orchestrator import SweepOrchestrator
+from srunx.runtime.sweep.orchestrator import SweepOrchestrator
+from srunx.runtime.workflow.runner import WorkflowRunner
 from srunx.transport import (
     ResolvedTransport,
     peek_scheduler_key,
@@ -63,7 +64,7 @@ def _in_place_context(
     for the entire run via :func:`_hold_workflow_mounts`, so it is
     safe for the SSH adapter to take the IN_PLACE submission path
     inside this run. The flag lives on
-    :class:`~srunx.rendering.SubmissionRenderContext` because it
+    :class:`~srunx.runtime.rendering.SubmissionRenderContext` because it
     rides the existing context that the sweep orchestrator and the
     non-sweep runner already pass through to the adapter — adding
     it here avoids touching every executor / Protocol signature.
@@ -104,7 +105,7 @@ def _expand_sweep_cell_args(
     should treat that as "fall back to the single-workflow lock-set
     rather than the per-cell union".
     """
-    from srunx.sweep.expand import expand_matrix
+    from srunx.runtime.sweep.expand import expand_matrix
 
     base_args: dict[str, Any] = {
         **(workflow_data.get("args") or {}),
@@ -292,9 +293,7 @@ def _build_workflow_callbacks(
         callbacks.append(SlackCallback(webhook_url=webhook_url))
 
     if debug:
-        # Imported lazily to avoid pulling main.py's typer surface at
-        # module import time.
-        from srunx.cli.main import DebugCallback
+        from srunx.cli._helpers.debug_callback import DebugCallback
 
         callbacks.append(DebugCallback())
 
@@ -392,8 +391,10 @@ def _resolve_endpoint_id(endpoint: str | None) -> int | None:
     if not endpoint:
         return None
     try:
-        from srunx.db.connection import open_connection
-        from srunx.db.repositories.endpoints import EndpointRepository
+        from srunx.observability.storage.connection import open_connection
+        from srunx.observability.storage.repositories.endpoints import (
+            EndpointRepository,
+        )
     except ImportError:  # pragma: no cover — DB module unavailable
         return None
     conn = open_connection()
@@ -412,7 +413,7 @@ def _preview_sweep_dry_run(
     args_override: dict[str, Any],
 ) -> None:
     """Expand the matrix and print cell count / per-cell args without executing."""
-    from srunx.sweep.expand import expand_matrix
+    from srunx.runtime.sweep.expand import expand_matrix
 
     base_args: dict[str, Any] = {
         **(workflow_data.get("args") or {}),
@@ -439,14 +440,14 @@ def _validate_all_sweep_cells(
 ) -> None:
     """Load + validate the workflow once per expanded matrix cell.
 
-    Reuses :func:`srunx.sweep.expand.expand_matrix` to produce the same
+    Reuses :func:`srunx.runtime.sweep.expand.expand_matrix` to produce the same
     per-cell arg overlay the orchestrator will feed into
     :meth:`WorkflowRunner.from_yaml` at execution time. The first cell
     that fails Jinja rendering or workflow validation is reported with
     its index and effective args, matching the error shape used by the
     non-sweep validator.
     """
-    from srunx.sweep.expand import expand_matrix
+    from srunx.runtime.sweep.expand import expand_matrix
 
     base_args: dict[str, Any] = {
         **(workflow_data.get("args") or {}),

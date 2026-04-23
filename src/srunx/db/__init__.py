@@ -1,10 +1,10 @@
 """Backward-compat shim. Canonical home: :mod:`srunx.observability.storage`.
 
 External code should migrate to ``srunx.observability.storage`` (and its
-submodules). This module exists so that existing ``from srunx.db.X import Y``
+submodules). This module exists so that existing ``from srunx.observability.storage.X import Y``
 call-sites keep working during the Phase 8 transition (#164).
 
-Submodules are aliased via ``sys.modules`` so that ``srunx.db.cli_helpers``
+Submodules are aliased via ``sys.modules`` so that ``srunx.observability.storage.cli_helpers``
 and ``srunx.observability.storage.cli_helpers`` refer to the **same** module
 object — preserving monkey-patching and ``is`` identity checks.
 """
@@ -21,7 +21,7 @@ from srunx.observability.storage import (  # noqa: F401
 )
 
 # Import every submodule eagerly so we can alias them in sys.modules before
-# any ``from srunx.db.X import ...`` lookup runs.
+# any ``from srunx.observability.storage.X import ...`` lookup runs.
 from srunx.observability.storage import (  # noqa: F401
     cli_helpers as _cli_helpers,
 )
@@ -74,9 +74,9 @@ from srunx.observability.storage.repositories import (
     workflow_runs as _repo_workflow_runs,
 )
 
-# Register aliases: `srunx.db.X` → same module object as
-# `srunx.observability.storage.X`. Must happen at import time of ``srunx.db``
-# so that subsequent ``from srunx.db.X import ...`` succeeds.
+# Register aliases: `srunx.observability.storage.X` → same module object as
+# `srunx.observability.storage.X`. Must happen at import time of ``srunx.observability.storage``
+# so that subsequent ``from srunx.observability.storage.X import ...`` succeeds.
 _sys.modules[f"{__name__}.cli_helpers"] = _cli_helpers
 _sys.modules[f"{__name__}.connection"] = _connection
 _sys.modules[f"{__name__}.migrations"] = _migrations
@@ -97,9 +97,9 @@ _sys.modules[f"{__name__}.repositories.watches"] = _repo_watches
 _sys.modules[f"{__name__}.repositories.workflow_run_jobs"] = _repo_workflow_run_jobs
 _sys.modules[f"{__name__}.repositories.workflow_runs"] = _repo_workflow_runs
 
-# Bind submodules as attributes of ``srunx.db`` so ``srunx.db.cli_helpers``
+# Bind submodules as attributes of ``srunx.observability.storage`` so ``srunx.observability.storage.cli_helpers``
 # attribute access works (the ``sys.modules`` entries handle the
-# ``from srunx.db.X import Y`` form).
+# ``from srunx.observability.storage.X import Y`` form).
 cli_helpers = _cli_helpers
 connection = _connection
 migrations = _migrations

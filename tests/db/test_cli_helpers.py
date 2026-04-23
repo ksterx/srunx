@@ -1,4 +1,4 @@
-"""Tests for ``srunx.db.cli_helpers`` — the CLI-side state-DB bridge.
+"""Tests for ``srunx.observability.storage.cli_helpers`` — the CLI-side state-DB bridge.
 
 Focused on the workflow-identity round-trip introduced to fix the
 ``srunx report --workflow`` regression: CLI-launched workflows must
@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import pytest
 
-from srunx.db.cli_helpers import (
+from srunx.domain import Job, JobEnvironment, JobResource
+from srunx.observability.storage.cli_helpers import (
     compute_job_stats,
     compute_workflow_stats,
     create_cli_workflow_run,
     list_recent_jobs,
     record_submission_from_job,
 )
-from srunx.models import Job, JobEnvironment, JobResource
 
 
 def _record_ssh_job(
@@ -137,11 +137,11 @@ def _isolated_db(tmp_path, monkeypatch):
     """Redirect the state DB to a per-test tmp dir."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     # Clear any cached config so the fresh XDG_CONFIG_HOME applies.
-    import srunx.config
+    import srunx.common.config
 
-    srunx.config._config = None
+    srunx.common.config._config = None
     yield
-    srunx.config._config = None
+    srunx.common.config._config = None
 
 
 def _make_job(name: str, job_id: int, gpus: int = 0) -> Job:
@@ -162,7 +162,7 @@ class TestCreateCliWorkflowRun:
 
     def test_returns_none_on_db_failure(self, _isolated_db, monkeypatch):
         """Best-effort contract — any DB error returns None, not raises."""
-        import srunx.db.cli_helpers as cli_helpers
+        import srunx.observability.storage.cli_helpers as cli_helpers
 
         def boom(*a, **kw):
             raise RuntimeError("disk full")
@@ -170,7 +170,7 @@ class TestCreateCliWorkflowRun:
         monkeypatch.setattr(cli_helpers, "init_db", boom, raising=False)
         # The import-time binding is inside the function body, so we
         # patch the concrete symbol the function imports.
-        import srunx.db.connection as connection_mod
+        import srunx.observability.storage.connection as connection_mod
 
         monkeypatch.setattr(connection_mod, "init_db", boom)
         assert create_cli_workflow_run(workflow_name="pipeline") is None

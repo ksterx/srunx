@@ -8,22 +8,21 @@ __author__ = "ksterx"
 __description__ = "Python library for SLURM workload manager integration"
 
 # Main public API
-from .callbacks import Callback, SlackCallback
-from .client import LocalClient, Slurm, cancel_job, retrieve_job, submit_job
-from .containers import (
+from srunx.callbacks import Callback
+from srunx.common.logging import (
+    configure_cli_logging,
+    configure_logging,
+    configure_workflow_logging,
+    get_logger,
+)
+from srunx.containers import (
     ApptainerRuntime,
     ContainerRuntime,
     LaunchSpec,
     PyxisRuntime,
     get_runtime,
 )
-from .logging import (
-    configure_cli_logging,
-    configure_logging,
-    configure_workflow_logging,
-    get_logger,
-)
-from .models import (
+from srunx.domain import (
     BaseJob,
     ContainerResource,
     Job,
@@ -32,12 +31,24 @@ from .models import (
     JobStatus,
     ShellJob,
     Workflow,
-    render_job_script,
 )
-from .monitor.job_monitor import JobMonitor
-from .monitor.resource_monitor import ResourceMonitor
-from .monitor.types import MonitorConfig, ResourceSnapshot, WatchMode
-from .runner import WorkflowRunner
+from srunx.observability.monitoring.job_monitor import JobMonitor
+from srunx.observability.monitoring.resource_monitor import ResourceMonitor
+from srunx.observability.monitoring.types import (
+    MonitorConfig,
+    ResourceSnapshot,
+    WatchMode,
+)
+from srunx.observability.notifications.legacy_slack import SlackCallback
+from srunx.runtime.rendering import render_job_script
+from srunx.runtime.workflow.runner import WorkflowRunner
+from srunx.slurm.local import (
+    LocalClient,
+    Slurm,
+    cancel_job,
+    retrieve_job,
+    submit_job,
+)
 
 __all__ = [
     # Client

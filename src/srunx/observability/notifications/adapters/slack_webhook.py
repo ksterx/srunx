@@ -3,7 +3,7 @@
 Uses :class:`slack_sdk.WebhookClient` (already a project dependency) to
 POST mrkdwn-formatted blocks to an Incoming Webhook URL. Every user-
 supplied identifier is sanitized through
-:func:`srunx.notifications.sanitize.sanitize_slack_text`.
+:func:`srunx.observability.notifications.sanitize.sanitize_slack_text`.
 """
 
 from __future__ import annotations
@@ -12,9 +12,9 @@ from typing import Any
 
 from slack_sdk import WebhookClient
 
-from srunx.db.models import Event
 from srunx.observability.notifications.adapters.base import DeliveryError
 from srunx.observability.notifications.sanitize import sanitize_slack_text
+from srunx.observability.storage.models import Event
 
 
 class SlackWebhookAdapter:

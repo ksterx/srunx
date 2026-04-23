@@ -17,8 +17,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from srunx.monitor.report_types import ReportConfig
-from srunx.monitor.scheduler import ScheduledReporter
+from srunx.observability.monitoring.scheduler import ScheduledReporter
+from srunx.observability.monitoring.types import ReportConfig
 
 
 def _make_reporter(timeframe: str = "24h") -> ScheduledReporter:
@@ -36,7 +36,7 @@ class TestHistoricalCountsDbFirst:
     def test_db_path_returns_counts_when_rows_exist(self, tmp_srunx_db, monkeypatch):
         from datetime import UTC, datetime, timedelta
 
-        from srunx.db.repositories.jobs import JobRepository
+        from srunx.observability.storage.repositories.jobs import JobRepository
 
         conn, _db_path = tmp_srunx_db
         repo = JobRepository(conn)
@@ -74,7 +74,7 @@ class TestHistoricalCountsDbFirst:
     def test_db_path_excludes_rows_outside_timeframe(self, tmp_srunx_db, monkeypatch):
         from datetime import UTC, datetime, timedelta
 
-        from srunx.db.repositories.jobs import JobRepository
+        from srunx.observability.storage.repositories.jobs import JobRepository
 
         conn, _db_path = tmp_srunx_db
         repo = JobRepository(conn)
@@ -109,7 +109,7 @@ class TestHistoricalCountsDbFirst:
         """
         from datetime import UTC, datetime, timedelta
 
-        from srunx.db.repositories.jobs import JobRepository
+        from srunx.observability.storage.repositories.jobs import JobRepository
 
         conn, _db_path = tmp_srunx_db
         repo = JobRepository(conn)

@@ -9,8 +9,8 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from srunx.logging import get_logger
-from srunx.template import get_template_info, get_template_path, list_templates
+from srunx.common.logging import get_logger
+from srunx.runtime.templates import get_template_info, get_template_path, list_templates
 
 logger = get_logger(__name__)
 

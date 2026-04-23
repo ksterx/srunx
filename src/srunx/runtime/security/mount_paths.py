@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from srunx.models import Workflow
+    from srunx.domain import Workflow
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ def find_shell_script_violation(
     Returns ``None`` when every ShellJob's ``script_path`` is contained
     in at least one root.
     """
-    from srunx.models import ShellJob  # local import to avoid cycles
+    from srunx.domain import ShellJob  # local import to avoid cycles
 
     roots = list(mount_roots)
     for job in workflow.jobs:

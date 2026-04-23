@@ -227,8 +227,8 @@ def _patch_sweep_transport(
     keeps the executor visible across cells so we can assert how
     many times each method was called.
     """
-    from srunx.models import JobStatus
-    from srunx.rendering import SubmissionRenderContext
+    from srunx.domain import JobStatus
+    from srunx.runtime.rendering import SubmissionRenderContext
     from srunx.transport.registry import TransportHandle
 
     executor = MagicMock(name="WorkflowExecutor")
@@ -432,8 +432,8 @@ class TestLockedMountNamesSafetyNet:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Adapter rejects IN_PLACE when ``mount.name`` not in locked set."""
-        from srunx.models import JobStatus, ShellJob
-        from srunx.rendering import SubmissionRenderContext
+        from srunx.domain import JobStatus, ShellJob
+        from srunx.runtime.rendering import SubmissionRenderContext
         from srunx.slurm.ssh import SlurmSSHAdapter
 
         # Build a real ShellJob that lives under the adapter's mount.
@@ -494,8 +494,8 @@ class TestLockedMountNamesSafetyNet:
         possible lock-set). Empty ``locked_mount_names`` must therefore
         leave the IN_PLACE path open for them.
         """
-        from srunx.models import JobStatus, ShellJob
-        from srunx.rendering import SubmissionRenderContext
+        from srunx.domain import JobStatus, ShellJob
+        from srunx.runtime.rendering import SubmissionRenderContext
         from srunx.slurm.ssh import SlurmSSHAdapter
 
         mount_local = tmp_path / "ml"

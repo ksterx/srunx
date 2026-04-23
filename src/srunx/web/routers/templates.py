@@ -8,12 +8,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from srunx.slurm.ssh import SlurmSSHAdapter  # noqa: F811
-from srunx.template import (
+from srunx.runtime.templates import (
     get_template_info,
     get_template_path,
     list_templates,
 )
+from srunx.slurm.ssh import SlurmSSHAdapter  # noqa: F811
 
 from ..deps import get_adapter
 
@@ -88,7 +88,8 @@ async def apply_template(
 
     import anyio
 
-    from srunx.models import Job, JobEnvironment, JobResource, render_job_script
+    from srunx.domain import Job, JobEnvironment, JobResource
+    from srunx.runtime.rendering import render_job_script
 
     try:
         template_path = get_template_path(name)
@@ -164,7 +165,7 @@ class TemplateUpdateRequest(BaseModel):
 @router.post("", status_code=201)
 async def create_template(req: TemplateCreateRequest) -> TemplateListItem:
     """Create a new user-defined template."""
-    from srunx.template import create_user_template
+    from srunx.runtime.templates import create_user_template
 
     try:
         info = create_user_template(
@@ -186,7 +187,7 @@ async def create_template(req: TemplateCreateRequest) -> TemplateListItem:
 @router.put("/{name}")
 async def update_template(name: str, req: TemplateUpdateRequest) -> TemplateDetail:
     """Update a user-defined template."""
-    from srunx.template import update_user_template
+    from srunx.runtime.templates import update_user_template
 
     try:
         info = update_user_template(
@@ -211,7 +212,7 @@ async def update_template(name: str, req: TemplateUpdateRequest) -> TemplateDeta
 @router.delete("/{name}", status_code=204)
 async def delete_template(name: str) -> None:
     """Delete a user-defined template."""
-    from srunx.template import delete_user_template
+    from srunx.runtime.templates import delete_user_template
 
     try:
         delete_user_template(name)

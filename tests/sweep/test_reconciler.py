@@ -1,4 +1,4 @@
-"""Unit tests for :class:`srunx.sweep.reconciler.SweepReconciler`.
+"""Unit tests for :class:`srunx.runtime.sweep.reconciler.SweepReconciler`.
 
 Uses the ``isolated_db`` fixture to redirect ``XDG_CONFIG_HOME`` to a
 tmp dir so the reconciler's fresh connections see an empty DB.
@@ -13,12 +13,12 @@ from unittest.mock import MagicMock
 import pytest
 import yaml  # type: ignore
 
-from srunx.db.connection import open_connection, transaction
-from srunx.db.repositories.base import now_iso
-from srunx.db.repositories.workflow_runs import WorkflowRunRepository
-from srunx.sweep import CellSpec
-from srunx.sweep.orchestrator import SweepOrchestrator
-from srunx.sweep.reconciler import SweepReconciler
+from srunx.observability.storage.connection import open_connection, transaction
+from srunx.observability.storage.repositories.base import now_iso
+from srunx.observability.storage.repositories.workflow_runs import WorkflowRunRepository
+from srunx.runtime.sweep import CellSpec
+from srunx.runtime.sweep.orchestrator import SweepOrchestrator
+from srunx.runtime.sweep.reconciler import SweepReconciler
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -333,7 +333,7 @@ class TestReconciler:
         cell_ids = _seed_cells(sweep_id, ["completed", "pending", "pending"])
 
         # Fake the cell execution path by simulating the DB transitions.
-        from srunx.sweep.state_service import WorkflowRunStateService
+        from srunx.runtime.sweep.state_service import WorkflowRunStateService
 
         def _simulate(cell: CellSpec) -> None:
             conn = open_connection()
@@ -415,7 +415,7 @@ class TestReconcilerExecutorFactoryProvider:
         """Web-originated sweep → provider's factory reaches the orchestrator
         and is forwarded verbatim to the per-cell ``WorkflowRunner``.
         """
-        from srunx.sweep.reconciler import ExecutorFactoryBundle
+        from srunx.runtime.sweep.reconciler import ExecutorFactoryBundle
 
         yaml_path = _write_yaml(tmp_path)
         sweep_id = _seed_sweep(
@@ -540,7 +540,7 @@ class TestReconcilerExecutorFactoryProvider:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``bundle.cleanup`` MUST run after resume returns (success or crash)."""
-        from srunx.sweep.reconciler import ExecutorFactoryBundle
+        from srunx.runtime.sweep.reconciler import ExecutorFactoryBundle
 
         yaml_path = _write_yaml(tmp_path)
         sweep_id = _seed_sweep(
@@ -557,7 +557,7 @@ class TestReconcilerExecutorFactoryProvider:
 
         # Drive cells to completion via the same trick used in
         # test_resume_drives_pending_cells_to_completion.
-        from srunx.sweep.state_service import WorkflowRunStateService
+        from srunx.runtime.sweep.state_service import WorkflowRunStateService
 
         def _simulate(cell: CellSpec) -> None:
             conn = open_connection()

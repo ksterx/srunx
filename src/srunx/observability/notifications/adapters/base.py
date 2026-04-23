@@ -1,6 +1,6 @@
 """Abstract contract for delivery adapters.
 
-A delivery adapter takes an :class:`~srunx.db.models.Event` plus the
+A delivery adapter takes an :class:`~srunx.observability.storage.models.Event` plus the
 owning endpoint's ``config`` JSON and performs the external side-effect
 (e.g. POST to Slack). Adapters are stateless; the concrete ``send``
 implementation raises :class:`DeliveryError` on any non-success
@@ -11,14 +11,14 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from srunx.db.models import Event
+from srunx.observability.storage.models import Event
 
 
 class DeliveryError(Exception):
     """Raised by a delivery adapter when the outbound call fails.
 
     The delivery poller catches this, records the error message on the
-    :class:`~srunx.db.models.Delivery` row, and applies its retry /
+    :class:`~srunx.observability.storage.models.Delivery` row, and applies its retry /
     abandon policy.
     """
 

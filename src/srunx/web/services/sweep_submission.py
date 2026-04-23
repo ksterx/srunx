@@ -22,9 +22,9 @@ import anyio
 import yaml
 from fastapi import HTTPException, Request
 
-from srunx.exceptions import SweepExecutionError, WorkflowValidationError
-from srunx.logging import get_logger
-from srunx.runner import WorkflowRunner
+from srunx.common.exceptions import SweepExecutionError, WorkflowValidationError
+from srunx.common.logging import get_logger
+from srunx.runtime.workflow.runner import WorkflowRunner
 from srunx.slurm.ssh import SlurmSSHAdapter
 from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
 
@@ -76,10 +76,10 @@ async def run_sweep_background(
 class SweepSubmissionService:
     """Materialize + dispatch a sweep request.
 
-    :param sweep_spec_cls: The :class:`~srunx.sweep.SweepSpec` class as
+    :param sweep_spec_cls: The :class:`~srunx.runtime.sweep.SweepSpec` class as
         named in the router module. Passed in so tests patching
         ``srunx.web.routers.workflows.SweepSpec`` affect materialization.
-    :param orchestrator_cls: The :class:`~srunx.sweep.orchestrator.SweepOrchestrator`
+    :param orchestrator_cls: The :class:`~srunx.runtime.sweep.orchestrator.SweepOrchestrator`
         class. Same patchability rationale.
     :param profile_resolver: Zero-arg callable returning the active
         :class:`ServerProfile` (or ``None``).
@@ -238,8 +238,10 @@ class SweepSubmissionService:
 
         # Read the freshly-materialized row so counters + status
         # reflect the DB state, not the orchestrator's pre-run view.
-        from srunx.db.connection import open_connection as _open
-        from srunx.db.repositories.sweep_runs import SweepRunRepository
+        from srunx.observability.storage.connection import open_connection as _open
+        from srunx.observability.storage.repositories.sweep_runs import (
+            SweepRunRepository,
+        )
 
         def _load_sweep() -> Any:
             db_conn = _open()

@@ -1,12 +1,12 @@
-"""Unit tests for ``srunx.sweep.expand``."""
+"""Unit tests for ``srunx.runtime.sweep.expand``."""
 
 from __future__ import annotations
 
 import pytest
 
-from srunx.exceptions import WorkflowValidationError
-from srunx.sweep import SweepSpec
-from srunx.sweep.expand import (
+from srunx.common.exceptions import WorkflowValidationError
+from srunx.runtime.sweep import SweepSpec
+from srunx.runtime.sweep.expand import (
     expand_matrix,
     merge_sweep_specs,
     parse_arg_flags,

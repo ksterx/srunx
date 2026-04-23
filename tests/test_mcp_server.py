@@ -318,7 +318,7 @@ class TestGetSshClient:
 class TestSubmitJob:
     """Test submit_job tool."""
 
-    @patch("srunx.client.Slurm")
+    @patch("srunx.slurm.local.Slurm")
     def test_submit_local_success(self, mock_slurm_cls):
         mock_slurm = MagicMock()
         mock_job = MagicMock()
@@ -384,7 +384,7 @@ class TestSubmitJob:
 
     def test_submit_catches_exception(self):
         with patch(
-            "srunx.client.Slurm", side_effect=RuntimeError("slurm not available")
+            "srunx.slurm.local.Slurm", side_effect=RuntimeError("slurm not available")
         ):
             result = submit_job(command="echo hi")
             assert result["success"] is False
@@ -417,7 +417,7 @@ class TestSubmitJob:
 class TestListJobs:
     """Test list_jobs tool."""
 
-    @patch("srunx.client.Slurm")
+    @patch("srunx.slurm.local.Slurm")
     def test_list_local(self, mock_slurm_cls):
         mock_slurm = MagicMock()
         job1 = MagicMock()
@@ -474,7 +474,7 @@ class TestListJobs:
         assert "squeue failed" in result["error"]
 
     def test_list_catches_exception(self):
-        with patch("srunx.client.Slurm", side_effect=RuntimeError("no slurm")):
+        with patch("srunx.slurm.local.Slurm", side_effect=RuntimeError("no slurm")):
             result = list_jobs()
             assert result["success"] is False
 
@@ -487,7 +487,7 @@ class TestGetJobStatus:
         assert result["success"] is False
         assert "Invalid job ID" in result["error"]
 
-    @patch("srunx.client.Slurm")
+    @patch("srunx.slurm.local.Slurm")
     def test_local_calls_retrieve(self, mock_slurm_cls):
         """Local get_job_status calls Slurm.retrieve with int job_id."""
         mock_slurm_cls.retrieve.side_effect = ValueError("test")
@@ -533,7 +533,7 @@ class TestCancelJob:
         assert result["success"] is False
         assert "Invalid job ID" in result["error"]
 
-    @patch("srunx.client.Slurm")
+    @patch("srunx.slurm.local.Slurm")
     def test_local_cancel(self, mock_slurm_cls):
         mock_slurm = MagicMock()
         mock_slurm_cls.return_value = mock_slurm
@@ -576,7 +576,7 @@ class TestGetJobLogs:
         assert result["success"] is False
         assert "Invalid job ID" in result["error"]
 
-    @patch("srunx.client.Slurm")
+    @patch("srunx.slurm.local.Slurm")
     def test_local_logs(self, mock_slurm_cls):
         mock_slurm = MagicMock()
         mock_slurm.get_job_output_detailed.return_value = {
@@ -630,7 +630,7 @@ class TestGetResources:
         assert result["success"] is False
         assert "Invalid partition name" in result["error"]
 
-    @patch("srunx.monitor.resource_monitor.ResourceMonitor")
+    @patch("srunx.observability.monitoring.resource_monitor.ResourceMonitor")
     def test_local_resources(self, mock_monitor_cls):
         mock_monitor = MagicMock()
         snapshot = MagicMock()
@@ -837,7 +837,7 @@ class TestCreateWorkflow:
 class TestGetConfig:
     """Test get_config tool."""
 
-    @patch("srunx.config.get_config")
+    @patch("srunx.common.config.get_config")
     def test_returns_config(self, mock_get_cfg):
         mock_config = MagicMock()
         mock_config.resources.model_dump.return_value = {
@@ -859,7 +859,7 @@ class TestGetConfig:
 
     def test_catches_exception(self):
         with patch(
-            "srunx.config.get_config",
+            "srunx.common.config.get_config",
             side_effect=RuntimeError("config broken"),
         ):
             result = get_config()

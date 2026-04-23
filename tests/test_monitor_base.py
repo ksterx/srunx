@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from srunx.monitor.base import BaseMonitor
-from srunx.monitor.types import MonitorConfig, WatchMode
+from srunx.observability.monitoring.base import BaseMonitor
+from srunx.observability.monitoring.types import MonitorConfig, WatchMode
 
 
 class MockMonitor(BaseMonitor):

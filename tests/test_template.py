@@ -1,11 +1,11 @@
-"""Tests for srunx.template module."""
+"""Tests for srunx.runtime.templates module."""
 
 import json
 from pathlib import Path
 
 import pytest
 
-from srunx.template import (
+from srunx.runtime.templates import (
     create_user_template,
     delete_user_template,
     get_template_info,

@@ -1,4 +1,4 @@
-"""Tests for :class:`~srunx.monitor.job_monitor.JobMonitor` SSOT writes.
+"""Tests for :class:`~srunx.observability.monitoring.job_monitor.JobMonitor` SSOT writes.
 
 Covers task D/47-48 of the notification-and-state-persistence plan: the
 CLI monitor, when given a ``JobStateTransitionRepository``, must also
@@ -19,11 +19,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from srunx.db.repositories.job_state_transitions import (
+from srunx.domain import Job, JobStatus
+from srunx.observability.monitoring.job_monitor import JobMonitor
+from srunx.observability.storage.repositories.job_state_transitions import (
     JobStateTransitionRepository,
 )
-from srunx.models import Job, JobStatus
-from srunx.monitor.job_monitor import JobMonitor
 
 # ---------------------------------------------------------------------------
 # Fixtures

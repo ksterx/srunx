@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from srunx.callbacks import Callback
-from srunx.models import Job, JobStatus
+from srunx.domain import Job, JobStatus
 from srunx.slurm.ssh import (
     SlurmSSHAdapter,
     SlurmSSHAdapterSpec,
@@ -250,10 +250,11 @@ class TestSSHAdapterRun:
         # Patch the best-effort DB import site (inlined inside
         # SlurmSSHAdapter._record_job_submission).
         monkeypatch.setattr(
-            "srunx.db.cli_helpers.record_submission_from_job", fake_record
+            "srunx.observability.storage.cli_helpers.record_submission_from_job",
+            fake_record,
         )
         monkeypatch.setattr(
-            "srunx.db.cli_helpers.record_completion",
+            "srunx.observability.storage.cli_helpers.record_completion",
             lambda *a, **k: None,
         )
 
@@ -484,8 +485,8 @@ class TestSSHAdapterRunInPlace:
         lock, the adapter must NOT take the IN_PLACE shortcut even
         when the script is mount-resident.
         """
-        from srunx.models import ShellJob
-        from srunx.rendering import SubmissionRenderContext
+        from srunx.domain import ShellJob
+        from srunx.runtime.rendering import SubmissionRenderContext
 
         adapter, script = self._setup_in_place_adapter(tmp_path, monkeypatch)
         job = ShellJob(name="train", script_path=str(script))
@@ -506,8 +507,8 @@ class TestSSHAdapterRunInPlace:
         source bytes`` check, the mount membership check, and the
         ``submit_remote_sbatch_file`` dispatch.
         """
-        from srunx.models import ShellJob
-        from srunx.rendering import SubmissionRenderContext
+        from srunx.domain import ShellJob
+        from srunx.runtime.rendering import SubmissionRenderContext
 
         adapter, script = self._setup_in_place_adapter(tmp_path, monkeypatch)
         job = ShellJob(name="train", script_path=str(script))
@@ -536,8 +537,8 @@ class TestSSHAdapterRunInPlace:
         new artifact with no home in the mount and must take the
         temp-upload path even though the source path is mount-resident.
         """
-        from srunx.models import ShellJob
-        from srunx.rendering import SubmissionRenderContext
+        from srunx.domain import ShellJob
+        from srunx.runtime.rendering import SubmissionRenderContext
 
         adapter, script = self._setup_in_place_adapter(tmp_path, monkeypatch)
         # Rewrite the source so it contains an actual Jinja variable.
@@ -561,8 +562,8 @@ class TestSSHAdapterRunInPlace:
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Even with ``allow_in_place=True``, scripts outside any mount go via temp."""
-        from srunx.models import ShellJob
-        from srunx.rendering import SubmissionRenderContext
+        from srunx.domain import ShellJob
+        from srunx.runtime.rendering import SubmissionRenderContext
 
         adapter, _script = self._setup_in_place_adapter(tmp_path, monkeypatch)
 
@@ -637,7 +638,7 @@ class TestSSHAdapterRunSubmissionContext:
         """Absolute ``work_dir`` under a mount is rewritten before render."""
         from dataclasses import dataclass
 
-        from srunx.rendering import SubmissionRenderContext
+        from srunx.runtime.rendering import SubmissionRenderContext
 
         @dataclass(frozen=True)
         class _FakeMount:
@@ -693,7 +694,7 @@ class TestSSHAdapterRunSubmissionContext:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Empty ``work_dir`` + ``default_work_dir`` → chdir to default."""
-        from srunx.rendering import SubmissionRenderContext
+        from srunx.runtime.rendering import SubmissionRenderContext
 
         ctx = SubmissionRenderContext(default_work_dir="/mnt/injected")
 
@@ -743,7 +744,7 @@ class TestSSHAdapterRunSubmissionContext:
         instance so the runner doesn't declare the cell "incomplete"
         even after SLURM reports COMPLETED.
         """
-        from srunx.rendering import SubmissionRenderContext
+        from srunx.runtime.rendering import SubmissionRenderContext
 
         ctx = SubmissionRenderContext(default_work_dir="/mnt/forced_copy")
 

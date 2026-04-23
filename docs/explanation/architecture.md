@@ -10,7 +10,7 @@ srunx is organized as a modular Python library with clear separation of concerns
 src/srunx/
 ├── models.py          # Data models and validation (Pydantic)
 ├── client.py          # Local SLURM client (subprocess-based)
-├── client_protocol.py # SlurmClientProtocol + JobStatusInfo (shared interface)
+├── client_protocol.py # Client + JobSnapshot (shared interface)
 ├── runner.py          # Workflow execution engine
 ├── callbacks.py       # Notification system (Slack, etc.)
 ├── config.py          # Configuration management
@@ -36,7 +36,7 @@ src/srunx/
 
 srunx has two independent paths for interacting with SLURM:
 
-**Local execution** (`srunx.client.Slurm`)  
+**Local execution** (`srunx.slurm.local.Slurm`)  
 Calls `sbatch` directly via `subprocess`. Used when the CLI runs on the
 same machine (or a login node) where SLURM is available.
 
@@ -246,7 +246,7 @@ SSH profiles, and it should not have to.
 
 ## DB schema migrations
 
-The SQLite schema at `$XDG_CONFIG_HOME/srunx/srunx.db` evolves through
+The SQLite schema at `$XDG_CONFIG_HOME/srunx/srunx.observability.storage` evolves through
 numbered migrations. Each migration is applied idempotently and leaves a
 row in a `schema_migrations` table; the runtime refuses to start against
 a DB whose latest migration is unknown to the current binary.

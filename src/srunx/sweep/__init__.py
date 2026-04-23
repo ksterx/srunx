@@ -1,7 +1,7 @@
 """Backward-compat shim. Canonical home: :mod:`srunx.runtime.sweep`.
 
 External code should migrate to ``srunx.runtime.sweep``. Submodules are
-aliased via ``sys.modules`` so legacy ``from srunx.sweep.X import Y``
+aliased via ``sys.modules`` so legacy ``from srunx.runtime.sweep.X import Y``
 call-sites and monkey-patches keep working during the Phase 8f
 transition.
 """

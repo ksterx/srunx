@@ -25,7 +25,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
 from srunx.sync import RsyncClient
 
 if TYPE_CHECKING:

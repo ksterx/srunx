@@ -1,7 +1,7 @@
 """Delivery adapter registry.
 
 Module-level singleton keyed on ``endpoints.kind``. The
-:class:`~srunx.pollers.delivery_poller.DeliveryPoller` dispatches each
+:class:`~srunx.observability.monitoring.pollers.delivery_poller.DeliveryPoller` dispatches each
 claimed delivery through this registry to the matching adapter.
 """
 

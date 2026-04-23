@@ -16,11 +16,13 @@ from typing import Any
 import anyio
 from fastapi import HTTPException
 
-from srunx.db.models import WorkflowRun as DBWorkflowRun
-from srunx.db.models import WorkflowRunJob
-from srunx.db.repositories.jobs import JobRepository
-from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
-from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+from srunx.observability.storage.models import WorkflowRun as DBWorkflowRun
+from srunx.observability.storage.models import WorkflowRunJob
+from srunx.observability.storage.repositories.jobs import JobRepository
+from srunx.observability.storage.repositories.workflow_run_jobs import (
+    WorkflowRunJobRepository,
+)
+from srunx.observability.storage.repositories.workflow_runs import WorkflowRunRepository
 
 
 def parse_run_id(run_id: str) -> int:

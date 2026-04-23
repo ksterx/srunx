@@ -9,7 +9,7 @@ import anyio
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
 
 from ..config import get_web_config
 

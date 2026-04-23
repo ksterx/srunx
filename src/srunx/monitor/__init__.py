@@ -1,11 +1,11 @@
 """Backward-compat shim. Canonical home: :mod:`srunx.observability.monitoring`.
 
 External code should migrate to ``srunx.observability.monitoring``.
-Submodules are aliased via ``sys.modules`` so legacy ``srunx.monitor.X``
+Submodules are aliased via ``sys.modules`` so legacy ``srunx.observability.monitoring.X``
 imports and monkey-patches continue to work during the Phase 8 transition
 (#164).
 
-Note: ``srunx.monitor.report_types`` has been consolidated into
+Note: ``srunx.observability.monitoring.types`` has been consolidated into
 ``srunx.observability.monitoring.types`` but remains as a thin shim
 (see ``report_types.py``) so legacy imports keep resolving.
 """

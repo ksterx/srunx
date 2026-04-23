@@ -4,7 +4,7 @@ Runs on Web API submission (YAML + JSON) and MCP tool calls. The
 ``python:`` prefix in ``args`` is a server-side evaluation escape hatch
 reserved for CLI-local use; exposing it over transport boundaries is a
 security concern (remote code execution via workflow mutation). See
-:func:`srunx.runner._has_python_prefix` for the CLI-side parser that
+:func:`srunx.runtime.workflow.loader._has_python_prefix` for the CLI-side parser that
 actually evaluates these values — the check here mirrors its matching
 rules (prefix match, leading-whitespace-tolerant, case-insensitive).
 """

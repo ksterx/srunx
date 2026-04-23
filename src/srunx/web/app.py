@@ -14,11 +14,14 @@ from fastapi.staticfiles import StaticFiles
 
 from srunx.common.logging import get_logger
 from srunx.observability.storage.models import SweepRun
-from srunx.rendering import SubmissionRenderContext
+from srunx.runtime.rendering import SubmissionRenderContext
+from srunx.runtime.sweep.reconciler import (
+    ExecutorFactoryBundle,
+    ExecutorFactoryProvider,
+)
 from srunx.slurm.ssh import SlurmSSHAdapter
 from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
 from srunx.ssh.core.config import MountConfig
-from srunx.sweep.reconciler import ExecutorFactoryBundle, ExecutorFactoryProvider
 
 from .config import get_web_config
 from .deps import set_adapter
@@ -345,7 +348,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         provider: ExecutorFactoryProvider | None,
     ) -> None:
         try:
-            from srunx.sweep.reconciler import SweepReconciler
+            from srunx.runtime.sweep.reconciler import SweepReconciler
 
             await SweepReconciler.scan_and_resume_async(
                 executor_factory_provider=provider,

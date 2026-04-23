@@ -1,6 +1,6 @@
 """Backward-compat shim. Canonical home is :mod:`srunx.runtime.rendering`.
 
-This module is preserved so external code importing from ``srunx.rendering``
+This module is preserved so external code importing from ``srunx.runtime.rendering``
 keeps working during the structural migration (#156). Internal code should
 prefer ``srunx.runtime.rendering`` going forward.
 """

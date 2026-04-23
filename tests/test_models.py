@@ -1,4 +1,4 @@
-"""Tests for srunx.models module."""
+"""Tests for srunx.domain module."""
 
 import os
 from pathlib import Path
@@ -7,8 +7,8 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from srunx.exceptions import WorkflowValidationError
-from srunx.models import (
+from srunx.common.exceptions import WorkflowValidationError
+from srunx.domain import (
     BaseJob,
     ContainerResource,
     Job,
@@ -17,8 +17,8 @@ from srunx.models import (
     JobStatus,
     ShellJob,
     Workflow,
-    render_job_script,
 )
+from srunx.runtime.rendering import render_job_script
 
 
 class TestJobStatus:
@@ -413,9 +413,9 @@ class TestJob:
     @patch.dict(os.environ, {}, clear=True)
     def test_job_defaults(self):
         """Test Job default values."""
-        import srunx.config
+        import srunx.common.config
 
-        srunx.config._config = None
+        srunx.common.config._config = None
 
         job = Job(
             command=["python", "script.py"],
@@ -953,7 +953,7 @@ class TestWorkflowAdd:
 
     def test_add_job_with_invalid_dependency_raises(self):
         """Adding a job with unknown dependency should raise."""
-        from srunx.exceptions import WorkflowValidationError
+        from srunx.common.exceptions import WorkflowValidationError
 
         wf = Workflow(name="test")
         job = Job(name="job1", command=["echo", "1"], depends_on=["nonexistent"])

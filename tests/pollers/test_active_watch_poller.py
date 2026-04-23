@@ -1,9 +1,9 @@
-"""Integration-style tests for :class:`srunx.pollers.active_watch_poller.ActiveWatchPoller`.
+"""Integration-style tests for :class:`srunx.observability.monitoring.pollers.active_watch_poller.ActiveWatchPoller`.
 
 These tests drive the poller end-to-end against a real (file-backed)
 srunx DB. The SLURM side is faked by a tiny stub that satisfies
-:class:`srunx.client_protocol.SlurmClientProtocol` and returns a
-pre-canned ``dict[int, JobStatusInfo]`` per test.
+:class:`srunx.slurm.protocols.Client` and returns a
+pre-canned ``dict[int, JobSnapshot]`` per test.
 """
 
 from __future__ import annotations
@@ -14,19 +14,23 @@ from pathlib import Path
 
 import anyio
 
-from srunx.client_protocol import JobStatusInfo
-from srunx.db.repositories.deliveries import DeliveryRepository
-from srunx.db.repositories.endpoints import EndpointRepository
-from srunx.db.repositories.events import EventRepository
-from srunx.db.repositories.job_state_transitions import (
+from srunx.observability.monitoring.pollers.active_watch_poller import ActiveWatchPoller
+from srunx.observability.storage.repositories.deliveries import DeliveryRepository
+from srunx.observability.storage.repositories.endpoints import EndpointRepository
+from srunx.observability.storage.repositories.events import EventRepository
+from srunx.observability.storage.repositories.job_state_transitions import (
     JobStateTransitionRepository,
 )
-from srunx.db.repositories.jobs import JobRepository
-from srunx.db.repositories.subscriptions import SubscriptionRepository
-from srunx.db.repositories.watches import WatchRepository
-from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
-from srunx.db.repositories.workflow_runs import WorkflowRunRepository
-from srunx.pollers.active_watch_poller import ActiveWatchPoller
+from srunx.observability.storage.repositories.jobs import JobRepository
+from srunx.observability.storage.repositories.subscriptions import (
+    SubscriptionRepository,
+)
+from srunx.observability.storage.repositories.watches import WatchRepository
+from srunx.observability.storage.repositories.workflow_run_jobs import (
+    WorkflowRunJobRepository,
+)
+from srunx.observability.storage.repositories.workflow_runs import WorkflowRunRepository
+from srunx.slurm.protocols import JobSnapshot
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -34,13 +38,13 @@ from srunx.pollers.active_watch_poller import ActiveWatchPoller
 
 
 class StubSlurmClient:
-    """Minimal ``SlurmClientProtocol`` stub returning pre-canned status."""
+    """Minimal ``Client`` stub returning pre-canned status."""
 
-    def __init__(self, responses: dict[int, JobStatusInfo]) -> None:
+    def __init__(self, responses: dict[int, JobSnapshot]) -> None:
         self.responses = responses
         self.calls: list[list[int]] = []
 
-    def queue_by_ids(self, job_ids: list[int]) -> dict[int, JobStatusInfo]:
+    def queue_by_ids(self, job_ids: list[int]) -> dict[int, JobSnapshot]:
         self.calls.append(list(job_ids))
         return {jid: self.responses[jid] for jid in job_ids if jid in self.responses}
 
@@ -105,7 +109,7 @@ class TestJobTransitions:
 
         stub = StubSlurmClient(
             {
-                job_id: JobStatusInfo(
+                job_id: JobSnapshot(
                     status="RUNNING",
                     started_at=datetime(2026, 4, 18, 10, 0, 0, tzinfo=UTC),
                     nodelist="node01",
@@ -163,7 +167,7 @@ class TestJobTransitions:
         _seed_open_job_watch(conn, job_id)
         _seed_pending_transition(conn, job_id, "PENDING")
 
-        stub = StubSlurmClient({job_id: JobStatusInfo(status="RUNNING")})
+        stub = StubSlurmClient({job_id: JobSnapshot(status="RUNNING")})
         _run_once(ActiveWatchPoller(stub, db_path=db_path))
 
         # Transition + event present…
@@ -193,7 +197,7 @@ class TestJobTransitions:
 
         stub = StubSlurmClient(
             {
-                job_id: JobStatusInfo(
+                job_id: JobSnapshot(
                     status="COMPLETED",
                     started_at=datetime(2026, 4, 18, 10, 0, 0, tzinfo=UTC),
                     completed_at=datetime(2026, 4, 18, 11, 0, 0, tzinfo=UTC),
@@ -223,7 +227,7 @@ class TestJobTransitions:
         _seed_open_job_watch(conn, job_id)
         _seed_pending_transition(conn, job_id, "RUNNING")
 
-        stub = StubSlurmClient({job_id: JobStatusInfo(status="RUNNING")})
+        stub = StubSlurmClient({job_id: JobSnapshot(status="RUNNING")})
         _run_once(ActiveWatchPoller(stub, db_path=db_path))
 
         transitions = JobStateTransitionRepository(conn).history_for_job(
@@ -275,7 +279,7 @@ class TestJobTransitions:
         _seed_open_job_watch(conn, job_id)
         # No seed transition — poller sees this job for the first time.
 
-        stub = StubSlurmClient({job_id: JobStatusInfo(status="RUNNING")})
+        stub = StubSlurmClient({job_id: JobSnapshot(status="RUNNING")})
         _run_once(ActiveWatchPoller(stub, db_path=db_path))
 
         transitions = JobStateTransitionRepository(conn).history_for_job(

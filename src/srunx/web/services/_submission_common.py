@@ -20,11 +20,11 @@ import anyio
 import yaml
 from fastapi import HTTPException
 
-from srunx.logging import get_logger
-from srunx.models import Workflow
-from srunx.rendering import SubmissionRenderContext
-from srunx.runner import WorkflowRunner
-from srunx.security import find_python_prefix
+from srunx.common.logging import get_logger
+from srunx.domain import Workflow
+from srunx.runtime.rendering import SubmissionRenderContext
+from srunx.runtime.security import find_python_prefix
+from srunx.runtime.workflow.runner import WorkflowRunner
 
 logger = get_logger(__name__)
 
@@ -191,7 +191,7 @@ def enforce_shell_script_roots(
     before render so bogus paths surface as 403 with no partial render
     side effects.
     """
-    from srunx.security import find_shell_script_violation
+    from srunx.runtime.security import find_shell_script_violation
 
     allowed_roots = [workflow_dir(mount, profile_resolver).resolve()]
     if profile:
@@ -245,7 +245,7 @@ async def hold_workflow_mounts_web(
     lock — preserves the race-free submission invariant for callers
     that opted out of the transfer.
     """
-    from srunx.config import get_config
+    from srunx.common.config import get_config
     from srunx.runtime.submission_plan import collect_touched_mounts
     from srunx.ssh.core.config import ConfigManager
     from srunx.sync.lock import SyncLockTimeoutError

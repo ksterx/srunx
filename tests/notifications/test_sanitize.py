@@ -1,4 +1,4 @@
-"""Tests for :func:`srunx.notifications.sanitize.sanitize_slack_text`.
+"""Tests for :func:`srunx.observability.notifications.sanitize.sanitize_slack_text`.
 
 Covers every entry of the replacement table, control-character handling
 and the 1000-character truncation. These tests live separately from the
@@ -9,7 +9,7 @@ break the shared utility's test surface.
 
 from __future__ import annotations
 
-from srunx.notifications.sanitize import sanitize_slack_text
+from srunx.observability.notifications.sanitize import sanitize_slack_text
 
 
 class TestSanitizeSlackText:

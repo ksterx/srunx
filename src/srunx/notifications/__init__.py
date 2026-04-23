@@ -1,10 +1,10 @@
 """Backward-compat shim. Canonical home: :mod:`srunx.observability.notifications`.
 
 External code should migrate to ``srunx.observability.notifications``.
-This module exists so that existing ``from srunx.notifications.X import Y``
+This module exists so that existing ``from srunx.observability.notifications.X import Y``
 call-sites keep working during the Phase 8 transition (#164).
 
-Submodules are aliased via ``sys.modules`` so that ``srunx.notifications.X``
+Submodules are aliased via ``sys.modules`` so that ``srunx.observability.notifications.X``
 and ``srunx.observability.notifications.X`` refer to the **same** module
 object — preserving monkey-patching and ``is`` identity checks.
 """

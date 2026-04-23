@@ -13,13 +13,15 @@ from typing import Any
 import anyio
 from fastapi import HTTPException
 
-from srunx.db.connection import transaction
-from srunx.db.repositories.base import now_iso
-from srunx.db.repositories.watches import WatchRepository
-from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
-from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+from srunx.observability.storage.connection import transaction
+from srunx.observability.storage.repositories.base import now_iso
+from srunx.observability.storage.repositories.watches import WatchRepository
+from srunx.observability.storage.repositories.workflow_run_jobs import (
+    WorkflowRunJobRepository,
+)
+from srunx.observability.storage.repositories.workflow_runs import WorkflowRunRepository
+from srunx.runtime.sweep.state_service import WorkflowRunStateService
 from srunx.slurm.ssh import SlurmSSHAdapter
-from srunx.sweep.state_service import WorkflowRunStateService
 
 from .workflow_run_query import parse_run_id
 

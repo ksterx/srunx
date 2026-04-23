@@ -16,18 +16,22 @@ from typing import Any, Literal
 import anyio
 
 from srunx.callbacks import Callback
-from srunx.client_protocol import WorkflowJobExecutorFactory
-from srunx.db.connection import initialized_connection, transaction
-from srunx.db.models import SweepRun, SweepSubmissionSource, WorkflowRunTriggeredBy
-from srunx.db.repositories.base import now_iso
-from srunx.db.repositories.sweep_runs import SweepRunRepository
-from srunx.db.repositories.workflow_runs import WorkflowRunRepository
-from srunx.exceptions import SweepExecutionError
-from srunx.logging import get_logger
-from srunx.notifications.service import NotificationService
-from srunx.rendering import SubmissionRenderContext
+from srunx.common.exceptions import SweepExecutionError
+from srunx.common.logging import get_logger
+from srunx.observability.notifications.service import NotificationService
+from srunx.observability.storage.connection import initialized_connection, transaction
+from srunx.observability.storage.models import (
+    SweepRun,
+    SweepSubmissionSource,
+    WorkflowRunTriggeredBy,
+)
+from srunx.observability.storage.repositories.base import now_iso
+from srunx.observability.storage.repositories.sweep_runs import SweepRunRepository
+from srunx.observability.storage.repositories.workflow_runs import WorkflowRunRepository
+from srunx.runtime.rendering import SubmissionRenderContext
 from srunx.runtime.sweep import CellSpec, SweepSpec
 from srunx.runtime.sweep.state_service import WorkflowRunStateService
+from srunx.slurm.protocols import WorkflowJobExecutorFactory
 
 # In-process registry of live orchestrators keyed by ``sweep_run_id``.
 # The cancel endpoint (``POST /api/sweep_runs/{id}/cancel``) looks up
@@ -316,7 +320,7 @@ class SweepOrchestrator:
     ) -> SweepRun:
         """Resume a sweep whose cells were already materialized.
 
-        Used by :class:`srunx.sweep.reconciler.SweepReconciler` to
+        Used by :class:`srunx.runtime.sweep.reconciler.SweepReconciler` to
         spawn orchestrator tasks after a crash. Skips expand +
         materialize; the caller provides the already-materialized
         pending cells.
@@ -447,7 +451,7 @@ class SweepOrchestrator:
         flow through :class:`WorkflowRunStateService` and fire sweep
         aggregation events automatically.
         """
-        from srunx.runner import WorkflowRunner
+        from srunx.runtime.workflow.runner import WorkflowRunner
 
         if self.workflow_yaml_path is None:
             raise SweepExecutionError(
@@ -576,11 +580,13 @@ def drain_sweep_pending_cells(sweep_run_id: int) -> int:
 
 def _build_notification_service(conn: sqlite3.Connection) -> NotificationService:
     """Construct a :class:`NotificationService` bound to ``conn``."""
-    from srunx.db.repositories.deliveries import DeliveryRepository
-    from srunx.db.repositories.endpoints import EndpointRepository
-    from srunx.db.repositories.events import EventRepository
-    from srunx.db.repositories.subscriptions import SubscriptionRepository
-    from srunx.db.repositories.watches import WatchRepository
+    from srunx.observability.storage.repositories.deliveries import DeliveryRepository
+    from srunx.observability.storage.repositories.endpoints import EndpointRepository
+    from srunx.observability.storage.repositories.events import EventRepository
+    from srunx.observability.storage.repositories.subscriptions import (
+        SubscriptionRepository,
+    )
+    from srunx.observability.storage.repositories.watches import WatchRepository
 
     return NotificationService(
         watch_repo=WatchRepository(conn),

@@ -5,16 +5,16 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 
 from srunx.callbacks import Callback
-from srunx.client import Slurm
-from srunx.models import BaseJob, JobStatus
+from srunx.domain import BaseJob, JobStatus
 from srunx.observability.monitoring.base import BaseMonitor
 from srunx.observability.monitoring.types import MonitorConfig
+from srunx.slurm.local import Slurm
 
 if TYPE_CHECKING:
-    from srunx.client_protocol import JobOperationsProtocol
-    from srunx.db.repositories.job_state_transitions import (
+    from srunx.observability.storage.repositories.job_state_transitions import (
         JobStateTransitionRepository,
     )
+    from srunx.slurm.protocols import JobOperations
 
 
 class JobMonitor(BaseMonitor):
@@ -46,7 +46,7 @@ class JobMonitor(BaseMonitor):
         target_statuses: list[JobStatus] | None = None,
         config: MonitorConfig | None = None,
         callbacks: list[Callback] | None = None,
-        client: "JobOperationsProtocol | None" = None,
+        client: "JobOperations | None" = None,
         transition_repo: "JobStateTransitionRepository | None" = None,
         scheduler_key: str = "local",
     ) -> None:
@@ -82,7 +82,7 @@ class JobMonitor(BaseMonitor):
         """Get monitored jobs, using per-cycle cache.
 
         First call per cycle fetches from SLURM via
-        :meth:`JobOperationsProtocol.status`; subsequent calls within
+        :meth:`JobOperations.status`; subsequent calls within
         the same cycle return the cached result. Uses the Protocol
         method rather than :meth:`Slurm.retrieve` so SSH-backed
         monitors (``srunx monitor jobs --profile ...``) work too —
@@ -91,7 +91,7 @@ class JobMonitor(BaseMonitor):
         if self._cached_jobs is not None:
             return self._cached_jobs
 
-        from srunx.models import Job
+        from srunx.domain import Job
 
         jobs: list[BaseJob] = []
         for job_id in self.job_ids:
@@ -182,7 +182,7 @@ class JobMonitor(BaseMonitor):
             }
             and job.job_id is not None
         ):
-            from srunx.db.cli_helpers import record_completion
+            from srunx.observability.storage.cli_helpers import record_completion
 
             try:
                 record_completion(

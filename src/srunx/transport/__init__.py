@@ -2,7 +2,7 @@
 
 ``resolve_transport()`` picks between local SLURM and SSH (per ``--profile`` /
 ``$SRUNX_SSH_PROFILE``) and hands the CLI a uniform ``ResolvedTransport``
-carrying ``JobOperationsProtocol`` + ``WorkflowJobExecutorFactory`` + optional
+carrying ``JobOperations`` + ``WorkflowJobExecutorFactory`` + optional
 ``SubmissionRenderContext``.
 
 See ``specs/cli-transport-unification/{spec,plan}.md`` REQ-1 / REQ-7 / REQ-8

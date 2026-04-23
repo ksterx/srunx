@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from srunx.models import BaseJob, RunnableJobType
-    from srunx.rendering import SubmissionRenderContext
+    from srunx.domain import BaseJob, RunnableJobType
+    from srunx.runtime.rendering import SubmissionRenderContext
 
 
 class JobSnapshot(BaseModel):
@@ -69,7 +69,7 @@ class JobOperations(Protocol):
 
         ``submission_context`` carries mount / default-path metadata that
         SSH-backed implementations apply via
-        :func:`srunx.rendering.normalize_job_for_submission` before
+        :func:`srunx.runtime.rendering.normalize_job_for_submission` before
         rendering the SLURM script, so CLI-supplied absolute ``work_dir``
         / ``log_dir`` paths get rewritten to the remote-mount equivalents.
         Local implementations accept the kwarg for Protocol conformance

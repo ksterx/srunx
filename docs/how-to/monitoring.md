@@ -249,9 +249,9 @@ Available sections:
 
 ``` python
 from srunx import Slurm
-from srunx.monitor import JobMonitor
-from srunx.monitor.types import MonitorConfig
-from srunx.callbacks import SlackCallback
+from srunx.observability.monitoring import JobMonitor
+from srunx.observability.monitoring.types import MonitorConfig
+from srunx.observability.notifications.legacy_slack import SlackCallback
 
 client = Slurm()
 
@@ -282,9 +282,9 @@ monitor.watch_continuous()  # Ctrl+C to stop
 ### Resource Monitoring
 
 ``` python
-from srunx.monitor import ResourceMonitor
-from srunx.monitor.types import MonitorConfig, WatchMode
-from srunx.callbacks import SlackCallback
+from srunx.observability.monitoring import ResourceMonitor
+from srunx.observability.monitoring.types import MonitorConfig, WatchMode
+from srunx.observability.notifications.legacy_slack import SlackCallback
 
 # Wait for resources
 monitor = ResourceMonitor(
@@ -313,9 +313,9 @@ monitor.watch_continuous()
 
 ``` python
 from srunx import Slurm
-from srunx.callbacks import SlackCallback
-from srunx.monitor.scheduler import ScheduledReporter
-from srunx.monitor.report_types import ReportConfig
+from srunx.observability.notifications.legacy_slack import SlackCallback
+from srunx.observability.monitoring.scheduler import ScheduledReporter
+from srunx.observability.monitoring.types import ReportConfig
 
 client = Slurm()
 callback = SlackCallback(webhook_url="your_webhook_url")
@@ -340,8 +340,8 @@ Create custom callbacks by extending the `Callback` base class:
 
 ``` python
 from srunx.callbacks import Callback
-from srunx.models import Job
-from srunx.monitor.types import ResourceSnapshot
+from srunx.domain import Job
+from srunx.observability.monitoring.types import ResourceSnapshot
 
 class CustomCallback(Callback):
     def on_job_completed(self, job: Job) -> None:
@@ -371,7 +371,7 @@ monitor.watch_continuous()
 Configure monitoring behavior:
 
 ``` python
-from srunx.monitor.types import MonitorConfig, WatchMode
+from srunx.observability.monitoring.types import MonitorConfig, WatchMode
 
 config = MonitorConfig(
     poll_interval=60,      # Poll every 60 seconds
@@ -475,9 +475,9 @@ srunx watch jobs 12345
 
 ``` python
 from srunx import Slurm, Job
-from srunx.monitor import ResourceMonitor, JobMonitor
-from srunx.monitor.types import MonitorConfig
-from srunx.callbacks import SlackCallback
+from srunx.observability.monitoring import ResourceMonitor, JobMonitor
+from srunx.observability.monitoring.types import MonitorConfig
+from srunx.observability.notifications.legacy_slack import SlackCallback
 
 client = Slurm()
 callback = SlackCallback(webhook_url="your_webhook_url")

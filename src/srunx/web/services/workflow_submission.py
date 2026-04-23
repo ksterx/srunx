@@ -4,7 +4,7 @@ Drives the ``POST /api/workflows/{name}/run`` happy path when no
 ``sweep`` spec is present:
 
 1. Resolve the profile + render the workflow via the canonical
-   :func:`~srunx.rendering.render_workflow_for_submission` helper.
+   :func:`~srunx.runtime.rendering.render_workflow_for_submission` helper.
 2. Hold the per-mount sync lock across the entire BFS submit via
    :func:`_submission_common.hold_workflow_mounts_web`.
 3. BFS-submit each job in topological order, writing
@@ -31,25 +31,27 @@ from typing import Any
 import anyio
 from fastapi import HTTPException, Request
 
-from srunx.db.connection import transaction
-from srunx.db.repositories.base import now_iso
-from srunx.db.repositories.job_state_transitions import (
+from srunx.common.logging import get_logger
+from srunx.domain import Job, ShellJob, Workflow
+from srunx.observability.storage.connection import transaction
+from srunx.observability.storage.repositories.base import now_iso
+from srunx.observability.storage.repositories.job_state_transitions import (
     JobStateTransitionRepository,
 )
-from srunx.db.repositories.jobs import JobRepository
-from srunx.db.repositories.watches import WatchRepository
-from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
-from srunx.db.repositories.workflow_runs import WorkflowRunRepository
-from srunx.logging import get_logger
-from srunx.models import Job, ShellJob, Workflow
-from srunx.rendering import (
+from srunx.observability.storage.repositories.jobs import JobRepository
+from srunx.observability.storage.repositories.watches import WatchRepository
+from srunx.observability.storage.repositories.workflow_run_jobs import (
+    WorkflowRunJobRepository,
+)
+from srunx.observability.storage.repositories.workflow_runs import WorkflowRunRepository
+from srunx.runtime.rendering import (
     RenderedWorkflow,
     SubmissionRenderContext,
     render_workflow_for_submission,
 )
-from srunx.runner import WorkflowRunner
+from srunx.runtime.sweep.state_service import WorkflowRunStateService
+from srunx.runtime.workflow.runner import WorkflowRunner
 from srunx.slurm.ssh import SlurmSSHAdapter
-from srunx.sweep.state_service import WorkflowRunStateService
 
 from ..schemas.workflows import WorkflowRunRequest
 from ._submission_common import (
@@ -529,7 +531,7 @@ class WorkflowSubmissionService:
 
         # Phase 2: Render scripts via the canonical helper. Mount
         # translation and template resolution live in
-        # :mod:`srunx.rendering` so Web non-sweep, Web sweep, and MCP
+        # :mod:`srunx.runtime.rendering` so Web non-sweep, Web sweep, and MCP
         # share identical semantics.
         submission_context = build_submission_context(mount, profile)
         shell_check_workflow = (
@@ -685,8 +687,10 @@ class WorkflowSubmissionService:
                 target_ref=f"workflow_run:{run_id}",
             )
             if run_opts.notify and run_opts.endpoint_id is not None:
-                from srunx.db.repositories.endpoints import EndpointRepository
-                from srunx.db.repositories.subscriptions import (
+                from srunx.observability.storage.repositories.endpoints import (
+                    EndpointRepository,
+                )
+                from srunx.observability.storage.repositories.subscriptions import (
                     SubscriptionRepository,
                 )
 
