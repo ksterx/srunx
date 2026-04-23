@@ -201,6 +201,269 @@ class TestJobsRouter:
         assert resp.status_code == 502
 
 
+class TestJobsRouterScriptPath:
+    """POST /api/jobs ``script_path`` mode (#136 in-place execution).
+
+    Validator-side cases hit the request path before any I/O so the
+    mocks below are deliberately minimal — those tests assert the
+    422 contract without touching the SSH adapter at all.
+
+    The dispatch tests stub :func:`mount_sync_session` so the lock
+    acquisition + rsync no-op out, then assert that
+    :meth:`SlurmSSHAdapter.submit_remote_sbatch` was called with the
+    correctly translated remote path.
+    """
+
+    def test_neither_script_content_nor_path_rejects(self, client: TestClient) -> None:
+        resp = client.post("/api/jobs", json={"name": "x"})
+        assert resp.status_code == 422
+        assert "exactly one of script_content / script_path" in resp.text
+
+    def test_both_script_content_and_path_rejects(self, client: TestClient) -> None:
+        resp = client.post(
+            "/api/jobs",
+            json={
+                "name": "x",
+                "script_content": "#!/bin/bash\n",
+                "script_path": "/tmp/run.sh",
+                "mount_name": MOUNT,
+            },
+        )
+        assert resp.status_code == 422
+        assert "mutually exclusive" in resp.text
+
+    def test_script_path_without_mount_rejects(self, client: TestClient) -> None:
+        resp = client.post(
+            "/api/jobs",
+            json={"name": "x", "script_path": "/tmp/run.sh"},
+        )
+        assert resp.status_code == 422
+        assert "script_path requires mount_name" in resp.text
+
+    def test_script_path_dispatches_in_place(
+        self,
+        client: TestClient,
+        mock_adapter: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from contextlib import contextmanager
+        from unittest.mock import patch
+
+        from srunx.ssh.core.config import MountConfig, ServerProfile
+
+        # Reuse the same mount root the ``client`` fixture set up so
+        # the path validation passes against the real on-disk dir.
+        mount_local = tmp_path / "project"
+        script = mount_local / "run.sh"
+        script.write_text("#!/bin/bash\necho hi\n")
+
+        fake_profile = ServerProfile(
+            hostname="x",
+            username="u",
+            key_filename="~/.ssh/id_rsa",
+            mounts=[
+                MountConfig(
+                    name=MOUNT,
+                    local=str(mount_local),
+                    remote="/home/u/project",
+                )
+            ],
+        )
+
+        # ``adapter.scheduler_key`` becomes the profile name fed into
+        # ``mount_sync_session`` — match the mock to the profile we're
+        # constructing so the assertion below exercises the full
+        # ``ssh:<profile>`` → profile-name unwrap.
+        mock_adapter.scheduler_key = "ssh:test-profile"
+
+        submitted = MagicMock()
+        submitted.job_id = 99001
+        submitted.name = "in-place-job"
+        mock_adapter.submit_remote_sbatch.return_value = submitted
+
+        @contextmanager
+        def fake_session(**kwargs):  # type: ignore[no-untyped-def]
+            yield MagicMock(performed=True, warnings=())
+
+        with (
+            patch(
+                "srunx.web.sync_utils.get_current_profile",
+                return_value=fake_profile,
+            ),
+            patch("srunx.sync.service.mount_sync_session", fake_session),
+        ):
+            resp = client.post(
+                "/api/jobs",
+                json={
+                    "name": "in-place-job",
+                    "script_path": str(script),
+                    "mount_name": MOUNT,
+                },
+            )
+
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["job_id"] == 99001
+        assert body["name"] == "in-place-job"
+
+        # Local→remote translation: ``project/run.sh`` under
+        # ``/home/u/project`` → ``/home/u/project/run.sh``. submit_cwd
+        # is the script's parent dir on the remote.
+        mock_adapter.submit_remote_sbatch.assert_called_once()
+        _, kwargs = mock_adapter.submit_remote_sbatch.call_args
+        args = mock_adapter.submit_remote_sbatch.call_args.args
+        assert args[0] == "/home/u/project/run.sh"
+        assert kwargs["submit_cwd"] == "/home/u/project"
+        assert kwargs["job_name"] == "in-place-job"
+        # Legacy tmp-upload path must NOT have run when script_path
+        # was provided.
+        mock_adapter.submit_job.assert_not_called()
+
+    def test_script_path_outside_mount_returns_403(
+        self,
+        client: TestClient,
+        mock_adapter: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        from unittest.mock import patch
+
+        from srunx.ssh.core.config import MountConfig, ServerProfile
+
+        mount_local = tmp_path / "project"
+        # The escape target sits OUTSIDE mount_local — the
+        # ``Path.is_relative_to`` check must reject it.
+        outside = tmp_path / "elsewhere" / "evil.sh"
+        outside.parent.mkdir()
+        outside.write_text("#!/bin/bash\n")
+
+        fake_profile = ServerProfile(
+            hostname="x",
+            username="u",
+            key_filename="~/.ssh/id_rsa",
+            mounts=[
+                MountConfig(
+                    name=MOUNT,
+                    local=str(mount_local),
+                    remote="/home/u/project",
+                )
+            ],
+        )
+
+        with patch(
+            "srunx.web.sync_utils.get_current_profile",
+            return_value=fake_profile,
+        ):
+            resp = client.post(
+                "/api/jobs",
+                json={
+                    "name": "evil",
+                    "script_path": str(outside),
+                    "mount_name": MOUNT,
+                },
+            )
+        assert resp.status_code == 403
+        assert "outside mount" in resp.text
+        # The adapter must never see an off-mount script_path.
+        mock_adapter.submit_remote_sbatch.assert_not_called()
+
+    def test_script_path_unknown_mount_returns_404(
+        self,
+        client: TestClient,
+        mock_adapter: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        from unittest.mock import patch
+
+        from srunx.ssh.core.config import MountConfig, ServerProfile
+
+        mount_local = tmp_path / "project"
+        script = mount_local / "run.sh"
+        script.write_text("#!/bin/bash\n")
+
+        # Profile has a mount, but its name doesn't match the request.
+        fake_profile = ServerProfile(
+            hostname="x",
+            username="u",
+            key_filename="~/.ssh/id_rsa",
+            mounts=[
+                MountConfig(
+                    name="other",
+                    local=str(mount_local),
+                    remote="/home/u/project",
+                )
+            ],
+        )
+
+        with patch(
+            "srunx.web.sync_utils.get_current_profile",
+            return_value=fake_profile,
+        ):
+            resp = client.post(
+                "/api/jobs",
+                json={
+                    "name": "x",
+                    "script_path": str(script),
+                    "mount_name": "missing-mount",
+                },
+            )
+        assert resp.status_code == 404
+        assert "missing-mount" in resp.text
+
+    def test_sync_failure_returns_502(
+        self,
+        client: TestClient,
+        mock_adapter: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """An rsync ``RuntimeError`` (non-zero exit) surfaces as 502."""
+        from contextlib import contextmanager
+        from unittest.mock import patch
+
+        from srunx.ssh.core.config import MountConfig, ServerProfile
+
+        mount_local = tmp_path / "project"
+        script = mount_local / "run.sh"
+        script.write_text("#!/bin/bash\n")
+
+        fake_profile = ServerProfile(
+            hostname="x",
+            username="u",
+            key_filename="~/.ssh/id_rsa",
+            mounts=[
+                MountConfig(
+                    name=MOUNT,
+                    local=str(mount_local),
+                    remote="/home/u/project",
+                )
+            ],
+        )
+
+        @contextmanager
+        def boom_session(**kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("rsync exited with status 23")
+            yield  # unreachable; satisfies type checker
+
+        with (
+            patch(
+                "srunx.web.sync_utils.get_current_profile",
+                return_value=fake_profile,
+            ),
+            patch("srunx.sync.service.mount_sync_session", boom_session),
+        ):
+            resp = client.post(
+                "/api/jobs",
+                json={
+                    "name": "fails",
+                    "script_path": str(script),
+                    "mount_name": MOUNT,
+                },
+            )
+        assert resp.status_code == 502
+        assert "Mount sync failed" in resp.text
+        mock_adapter.submit_remote_sbatch.assert_not_called()
+
+
 # ── Resources Router ──────────────────────────────
 
 
