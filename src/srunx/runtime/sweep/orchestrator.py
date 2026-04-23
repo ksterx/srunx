@@ -26,8 +26,8 @@ from srunx.exceptions import SweepExecutionError
 from srunx.logging import get_logger
 from srunx.notifications.service import NotificationService
 from srunx.rendering import SubmissionRenderContext
-from srunx.sweep import CellSpec, SweepSpec
-from srunx.sweep.state_service import WorkflowRunStateService
+from srunx.runtime.sweep import CellSpec, SweepSpec
+from srunx.runtime.sweep.state_service import WorkflowRunStateService
 
 # In-process registry of live orchestrators keyed by ``sweep_run_id``.
 # The cancel endpoint (``POST /api/sweep_runs/{id}/cancel``) looks up
@@ -98,7 +98,7 @@ class SweepOrchestrator:
 
     def _expand_cells(self) -> list[dict[str, Any]]:
         """Cross-product matrix axes over base_args, return list of effective args."""
-        from srunx.sweep.expand import expand_matrix
+        from srunx.runtime.sweep.expand import expand_matrix
 
         base_args: dict[str, Any] = {
             **(self.workflow_data.get("args") or {}),
@@ -566,7 +566,9 @@ def drain_sweep_pending_cells(sweep_run_id: int) -> int:
             # Aggregator evaluate: if every in-flight cell is already
             # done, the sweep transitions to its final status in the
             # same TX.
-            from srunx.sweep.aggregator import evaluate_and_fire_sweep_status_event
+            from srunx.runtime.sweep.aggregator import (
+                evaluate_and_fire_sweep_status_event,
+            )
 
             evaluate_and_fire_sweep_status_event(conn=conn, sweep_run_id=sweep_run_id)
     return k

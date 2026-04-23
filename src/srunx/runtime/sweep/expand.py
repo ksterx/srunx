@@ -10,7 +10,7 @@ import itertools
 from typing import Any
 
 from srunx.exceptions import WorkflowValidationError
-from srunx.sweep import ScalarValue, SweepSpec
+from srunx.runtime.sweep import ScalarValue, SweepSpec
 
 _MAX_CELL_COUNT = 1000
 _SCALAR_TYPES: tuple[type, ...] = (str, int, float, bool)

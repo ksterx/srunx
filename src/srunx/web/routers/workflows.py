@@ -805,8 +805,8 @@ async def _hold_workflow_mounts_web(
     lock — preserves the race-free submission invariant for callers
     that opted out of the transfer.
     """
-    from srunx.cli.submission_plan import collect_touched_mounts
     from srunx.config import get_config
+    from srunx.runtime.submission_plan import collect_touched_mounts
     from srunx.ssh.core.config import ConfigManager
     from srunx.sync.lock import SyncLockTimeoutError
     from srunx.sync.service import SyncAbortedError, mount_sync_session
@@ -1003,7 +1003,7 @@ def _resolve_in_place_target(
     :func:`resolve_mount_for_path` so nested mounts pick the deepest
     owner.
     """
-    from srunx.cli.submission_plan import (
+    from srunx.runtime.submission_plan import (
         render_text_matches_source,
         resolve_mount_for_path,
         translate_local_to_remote,

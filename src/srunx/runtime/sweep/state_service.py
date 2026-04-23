@@ -63,7 +63,7 @@ class WorkflowRunStateService:
            :func:`srunx.sweep.aggregator.evaluate_and_fire_sweep_status_event`.
         """
         # Circular import guard: aggregator imports this module's siblings.
-        from srunx.sweep.aggregator import evaluate_and_fire_sweep_status_event
+        from srunx.runtime.sweep.aggregator import evaluate_and_fire_sweep_status_event
 
         # Reject terminal → non-terminal regressions. A poller observing
         # a stale view (e.g. sweep cells lack workflow_run_jobs rows and
