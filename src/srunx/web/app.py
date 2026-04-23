@@ -12,8 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from srunx.db.models import SweepRun
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
+from srunx.observability.storage.models import SweepRun
 from srunx.rendering import SubmissionRenderContext
 from srunx.slurm.ssh import SlurmSSHAdapter
 from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
@@ -227,9 +227,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
          ResourceSnapshotter — each gated by its own ``SRUNX_DISABLE_*`` env var
          and all collectively disabled under ``uvicorn --reload``.
     """
-    from srunx.config import get_config as get_srunx_config
-    from srunx.db.connection import init_db, open_connection
-    from srunx.db.migrations import bootstrap_from_config
+    from srunx.common.config import get_config as get_srunx_config
+    from srunx.observability.storage.connection import init_db, open_connection
+    from srunx.observability.storage.migrations import bootstrap_from_config
 
     # 1. DB bootstrap (always — cheap + idempotent).
     try:
@@ -307,11 +307,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     import anyio
 
-    from srunx.pollers.active_watch_poller import ActiveWatchPoller
-    from srunx.pollers.delivery_poller import DeliveryPoller
-    from srunx.pollers.reload_guard import should_start_pollers
-    from srunx.pollers.resource_snapshotter import ResourceSnapshotter
-    from srunx.pollers.supervisor import Poller, PollerSupervisor
+    from srunx.observability.monitoring.pollers.active_watch_poller import (
+        ActiveWatchPoller,
+    )
+    from srunx.observability.monitoring.pollers.delivery_poller import DeliveryPoller
+    from srunx.observability.monitoring.pollers.reload_guard import should_start_pollers
+    from srunx.observability.monitoring.pollers.resource_snapshotter import (
+        ResourceSnapshotter,
+    )
+    from srunx.observability.monitoring.pollers.supervisor import (
+        Poller,
+        PollerSupervisor,
+    )
 
     # 4. Sweep crash-recovery pass. Spawned as a background task on the
     # lifespan task group so the server can become ready without waiting
@@ -410,7 +417,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     )
             elif adapter is not None:
                 try:
-                    from srunx.monitor.resource_source import (
+                    from srunx.observability.monitoring.resource_source import (
                         SSHAdapterResourceSource,
                     )
                     from srunx.web.deps import get_adapter_or_none
@@ -437,7 +444,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 )
             else:
                 try:
-                    from srunx.monitor.resource_monitor import ResourceMonitor
+                    from srunx.observability.monitoring.resource_monitor import (
+                        ResourceMonitor,
+                    )
 
                     # min_gpus=0 because we're observing, not waiting on a threshold.
                     pollers.append(
