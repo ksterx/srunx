@@ -1,17 +1,17 @@
 """Local SLURM client — in-process ``sbatch`` / ``squeue`` / ``scancel``."""
 
+from __future__ import annotations
+
 import glob
 import os
 import re
 import subprocess
 import tempfile
 import time
-from collections.abc import Sequence
 from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from srunx.callbacks import Callback
 from srunx.logging import get_logger
 from srunx.models import (
     BaseJob,
@@ -23,6 +23,7 @@ from srunx.models import (
     render_job_script,
     render_shell_job_script,
 )
+from srunx.runtime.lifecycle import JobLifecycleSink, NoOpSink
 from srunx.slurm.parsing import GPU_TRES_RE
 from srunx.utils import get_job_status, job_status_msg
 
@@ -39,37 +40,48 @@ class LocalClient:
     def __init__(
         self,
         default_template: str | None = None,
-        callbacks: Sequence[Callback] | None = None,
+        sink: JobLifecycleSink | None = None,
     ):
         """Initialize the local SLURM client.
 
         Args:
             default_template: Path to default job template.
-            callbacks: List of callbacks.
+            sink: Receives submit / terminal lifecycle events. ``None``
+                means no observability side effects are performed — DB
+                recording and callback dispatch live behind concrete
+                sinks in :mod:`srunx.observability`. The backward-compat
+                :class:`~srunx.client.Slurm` shim wires the default
+                ``CallbackSink`` + ``DBRecorderSink`` chain from its
+                own ``callbacks=`` parameter.
         """
         self.default_template = default_template or self._get_default_template()
-        self.callbacks = list(callbacks) if callbacks else []
+        self._sink: JobLifecycleSink = sink if sink is not None else NoOpSink()
 
     def submit(
         self,
         job: RunnableJobType,
         template_path: str | None = None,
-        callbacks: Sequence[Callback] | None = None,
+        sink: JobLifecycleSink | None = None,
         verbose: bool = False,
         record_history: bool = True,
         workflow_name: str | None = None,
         workflow_run_id: int | None = None,
         *,
-        submission_context: "SubmissionRenderContext | None" = None,
+        submission_context: SubmissionRenderContext | None = None,
     ) -> RunnableJobType:
         """Submit a job to SLURM.
 
         Args:
             job: Job configuration.
             template_path: Optional template path (uses default if not provided).
-            callbacks: List of callbacks.
+            sink: Optional per-call lifecycle sink; when given its
+                ``on_submit`` fires *in addition* to the instance sink
+                configured at construction. Use to attach a one-off
+                listener without mutating the client's default chain.
             verbose: Whether to print the rendered content.
-            record_history: Whether to record job in history database.
+            record_history: Whether to record job in history database
+                (passed through to the sink — the default
+                :class:`~srunx.observability.DBRecorderSink` respects it).
             workflow_name: Name of the workflow if part of a workflow.
             workflow_run_id: ``workflow_runs.id`` when the job was
                 submitted from a workflow; persisted on the ``jobs`` row
@@ -159,29 +171,31 @@ class LocalClient:
 
         logger.debug(f"Successfully submitted job '{job.name}' with ID {job_id}")
 
-        # Record in the state DB (best-effort; failures log at debug
-        # and never surface to the caller — see cli_helpers.py).
-        # Local ``LocalClient`` only ever writes the local-transport triple;
-        # SSH submissions take the ``SlurmSSHAdapter.submit`` path which
-        # passes its own (transport_type='ssh', profile_name=...,
-        # scheduler_key='ssh:<profile>') values.
-        if record_history:
-            from srunx.db.cli_helpers import record_submission_from_job
-
-            record_submission_from_job(
+        # Lifecycle events fan out through the instance sink (+ optional
+        # per-call sink). The default :class:`DBRecorderSink` persists the
+        # local-transport triple; SSH submissions take the
+        # ``SlurmSSHAdapter.submit`` path which builds its own sink chain
+        # with ``(transport_type='ssh', profile_name=...,
+        # scheduler_key='ssh:<profile>')``.
+        self._sink.on_submit(
+            job,
+            workflow_name=workflow_name,
+            workflow_run_id=workflow_run_id,
+            transport_type="local",
+            profile_name=None,
+            scheduler_key="local",
+            record_history=record_history,
+        )
+        if sink is not None:
+            sink.on_submit(
                 job,
                 workflow_name=workflow_name,
                 workflow_run_id=workflow_run_id,
                 transport_type="local",
                 profile_name=None,
                 scheduler_key="local",
+                record_history=record_history,
             )
-
-        all_callbacks = self.callbacks[:]
-        if callbacks:
-            all_callbacks.extend(callbacks)
-        for callback in all_callbacks:
-            callback.on_job_submitted(job)
 
         return job
 
@@ -228,7 +242,7 @@ class LocalClient:
         job_id: int,
         stdout_offset: int = 0,
         stderr_offset: int = 0,
-    ) -> "LogChunk":
+    ) -> LogChunk:
         """Return new log content since the given byte offsets.
 
         Reads local log files using ``open`` + ``seek`` instead of a
@@ -419,7 +433,7 @@ class LocalClient:
 
         return jobs
 
-    def queue_by_ids(self, job_ids: list[int]) -> dict[int, "JobSnapshot"]:
+    def queue_by_ids(self, job_ids: list[int]) -> dict[int, JobSnapshot]:
         """Return a mapping of ``job_id`` -> :class:`JobSnapshot` for active jobs.
 
         Active jobs are read from ``squeue``. Jobs that have already left
@@ -525,14 +539,15 @@ class LocalClient:
         self,
         job_obj_or_id: JobType | int,
         poll_interval: int = 5,
-        callbacks: Sequence[Callback] | None = None,
+        sink: JobLifecycleSink | None = None,
     ) -> JobType:
         """Wait for a job to complete.
 
         Args:
             job_obj_or_id: Job object or job ID.
             poll_interval: Polling interval in seconds.
-            callbacks: List of callbacks.
+            sink: Optional per-call sink for a one-off listener in
+                addition to the instance sink.
 
         Returns:
             Completed job object.
@@ -544,10 +559,6 @@ class LocalClient:
             job = self.retrieve(job_obj_or_id)
         else:
             job = job_obj_or_id
-
-        all_callbacks = self.callbacks[:]
-        if callbacks:
-            all_callbacks.extend(callbacks)
 
         msg = f"👀 {'MONITORING':<12} Job {job.name:<12} (ID: {job.job_id})"
         logger.info(msg)
@@ -566,32 +577,21 @@ class LocalClient:
             match job.status:
                 case JobStatus.COMPLETED:
                     logger.info(job_status_msg(job))
-                    self._record_completion(job)
-                    for callback in all_callbacks:
-                        callback.on_job_completed(job)
+                    self._emit_terminal(job, sink)
                     return job
                 case JobStatus.FAILED:
-                    self._record_completion(job)
-                    err_msg = self._build_error_msg(job)
-                    for callback in all_callbacks:
-                        callback.on_job_failed(job)
-                    raise RuntimeError(err_msg)
+                    self._emit_terminal(job, sink)
+                    raise RuntimeError(self._build_error_msg(job))
                 case JobStatus.CANCELLED | JobStatus.TIMEOUT:
-                    self._record_completion(job)
-                    err_msg = self._build_error_msg(job)
-                    for callback in all_callbacks:
-                        callback.on_job_cancelled(job)
-                    raise RuntimeError(err_msg)
+                    self._emit_terminal(job, sink)
+                    raise RuntimeError(self._build_error_msg(job))
             time.sleep(poll_interval)
 
-    @staticmethod
-    def _record_completion(job: BaseJob) -> None:
-        """Record job completion in the state DB."""
-        if job.job_id is None:
-            return
-        from srunx.db.cli_helpers import record_completion
-
-        record_completion(int(job.job_id), job.status)
+    def _emit_terminal(self, job: BaseJob, extra_sink: JobLifecycleSink | None) -> None:
+        """Fire on_terminal on the instance sink (+ optional per-call sink)."""
+        self._sink.on_terminal(job)
+        if extra_sink is not None:
+            extra_sink.on_terminal(job)
 
     @staticmethod
     def _build_error_msg(job: BaseJob) -> str:
@@ -611,13 +611,13 @@ class LocalClient:
         self,
         job: RunnableJobType,
         template_path: str | None = None,
-        callbacks: Sequence[Callback] | None = None,
+        sink: JobLifecycleSink | None = None,
         poll_interval: int = 5,
         verbose: bool = False,
         workflow_name: str | None = None,
         workflow_run_id: int | None = None,
         *,
-        submission_context: "SubmissionRenderContext | None" = None,
+        submission_context: SubmissionRenderContext | None = None,
     ) -> RunnableJobType:
         """Submit a job and wait for completion.
 
@@ -632,13 +632,13 @@ class LocalClient:
         submitted_job = self.submit(
             job,
             template_path=template_path,
-            callbacks=callbacks,
+            sink=sink,
             verbose=verbose,
             workflow_name=workflow_name,
             workflow_run_id=workflow_run_id,
         )
         monitored_job = self.monitor(
-            submitted_job, poll_interval=poll_interval, callbacks=callbacks
+            submitted_job, poll_interval=poll_interval, sink=sink
         )
 
         # Ensure the return type matches the expected type
@@ -926,44 +926,3 @@ class LocalClient:
     def _get_default_template(self) -> str:
         """Get the default job template path."""
         return str(files("srunx.runtime").joinpath("_jinja", "base.slurm.jinja"))
-
-
-# Convenience functions for backward compatibility
-def submit_job(
-    job: RunnableJobType,
-    template_path: str | None = None,
-    callbacks: Sequence[Callback] | None = None,
-    verbose: bool = False,
-) -> RunnableJobType:
-    """Submit a job to SLURM (convenience function).
-
-    Args:
-        job: Job configuration.
-        template_path: Optional template path (uses default if not provided).
-        callbacks: List of callbacks.
-        verbose: Whether to print the rendered content.
-    """
-    client = LocalClient()
-    return client.submit(
-        job, template_path=template_path, callbacks=callbacks, verbose=verbose
-    )
-
-
-def retrieve_job(job_id: int) -> BaseJob:
-    """Get job status (convenience function).
-
-    Args:
-        job_id: SLURM job ID.
-    """
-    client = LocalClient()
-    return client.retrieve(job_id)
-
-
-def cancel_job(job_id: int) -> None:
-    """Cancel a job (convenience function).
-
-    Args:
-        job_id: SLURM job ID.
-    """
-    client = LocalClient()
-    client.cancel(job_id)
