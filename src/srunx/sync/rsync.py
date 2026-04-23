@@ -472,11 +472,11 @@ class RsyncClient:
             rsync that just succeeded is the user's main signal).
 
         Raises:
-            RuntimeError: For any other ssh / network failure
-            (connection refused, host key mismatch, host
-            unreachable, …). Callers that want "best effort" can
-            catch and downgrade; the marker-read code in
-            :func:`check_owner` is the prior art for that pattern.
+            RuntimeError: For any other ssh / network failure (connection
+                refused, host key mismatch, host unreachable, …). Callers
+                that want "best effort" can catch and downgrade; the
+                marker-read code in :func:`check_owner` is the prior art
+                for that pattern.
         """
         quoted = shlex.quote(remote_path)
         # Single round-trip: existence check, then prefer sha256sum
