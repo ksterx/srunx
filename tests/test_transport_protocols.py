@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from srunx.client_protocol import JobOperationsProtocol, LogChunk
 from srunx.exceptions import (
-    JobNotFound,
+    JobNotFoundError,
     RemoteCommandError,
     SubmissionError,
     TransportAuthError,
@@ -51,7 +51,7 @@ class TestExceptionHierarchy:
         assert issubclass(RemoteCommandError, TransportError)
 
     def test_job_not_found_independent(self) -> None:
-        assert not issubclass(JobNotFound, TransportError)
+        assert not issubclass(JobNotFoundError, TransportError)
 
     def test_submission_error_independent(self) -> None:
         assert not issubclass(SubmissionError, TransportError)

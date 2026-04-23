@@ -1033,7 +1033,7 @@ class SlurmSSHAdapter:
     def cancel(self, job_id: int) -> None:
         """Cancel *job_id* on the remote cluster.
 
-        Raises :class:`~srunx.exceptions.JobNotFound` when ``scancel``
+        Raises :class:`~srunx.exceptions.JobNotFoundError` when ``scancel``
         reports the job is missing, :class:`TransportError` subclasses
         for SSH-layer failures. The legacy :meth:`cancel_job` API is
         preserved below as a no-op alias for backwards compat.
@@ -1042,7 +1042,7 @@ class SlurmSSHAdapter:
         import paramiko
 
         from srunx.exceptions import (
-            JobNotFound,
+            JobNotFoundError,
             RemoteCommandError,
             TransportAuthError,
             TransportConnectionError,
@@ -1060,11 +1060,13 @@ class SlurmSSHAdapter:
         except RuntimeError as exc:
             # ``_run_slurm_cmd`` wraps non-zero-exit stderr into RuntimeError.
             # SLURM's scancel emits "Invalid job id specified" for unknown
-            # ids; surface that as JobNotFound so callers can handle it as
+            # ids; surface that as JobNotFoundError so callers can handle it as
             # a user-level condition rather than a transport failure.
             msg = str(exc).lower()
             if "invalid job id" in msg or "invalid job specification" in msg:
-                raise JobNotFound(f"Job {job_id} not found on remote cluster") from exc
+                raise JobNotFoundError(
+                    f"Job {job_id} not found on remote cluster"
+                ) from exc
             raise RemoteCommandError(str(exc)) from exc
 
     def status(self, job_id: int) -> BaseJob:
@@ -1073,7 +1075,7 @@ class SlurmSSHAdapter:
         Uses :meth:`queue_by_ids` (already Protocol-compliant) so both
         active and terminal jobs resolve through the same code path as
         the notification poller. Raises
-        :class:`~srunx.exceptions.JobNotFound` when SLURM has no record
+        :class:`~srunx.exceptions.JobNotFoundError` when SLURM has no record
         of ``job_id``.
 
         The returned :class:`BaseJob` is a static snapshot — per the
@@ -1086,13 +1088,13 @@ class SlurmSSHAdapter:
         """
         import time as _time
 
-        from srunx.exceptions import JobNotFound
+        from srunx.exceptions import JobNotFoundError
         from srunx.models import BaseJob, JobStatus
 
         info_map = self.queue_by_ids([int(job_id)])
         info = info_map.get(int(job_id))
         if info is None:
-            raise JobNotFound(f"Job {job_id} not found on remote cluster")
+            raise JobNotFoundError(f"Job {job_id} not found on remote cluster")
 
         try:
             status_enum = JobStatus(info.status)
