@@ -7,8 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from srunx.domain.jobs import ContainerResource
 from srunx.logging import get_logger
-from srunx.models import ContainerResource
 
 logger = get_logger(__name__)
 

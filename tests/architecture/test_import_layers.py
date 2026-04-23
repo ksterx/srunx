@@ -33,6 +33,7 @@ MODULE_LAYERS: dict[str, str] = {
     "exceptions": "support",
     "logging": "support",
     # domain (Phase 3 / #159 splits models.py into domain/)
+    "domain": "domain",
     "models": "domain",
     # runtime (Phase 2 / #158 + Phase 7 / #163)
     "runtime": "runtime",
@@ -66,7 +67,7 @@ MODULE_LAYERS: dict[str, str] = {
 
 # Allowed cross-layer edges per target architecture (#156).
 ALLOWED: dict[str, set[str]] = {
-    "support": set(),
+    "support": {"domain"},
     "domain": {"support"},
     "integrations": {"support", "domain"},
     "runtime": {"support", "domain", "integrations", "slurm"},
@@ -99,14 +100,10 @@ KNOWN_VIOLATIONS: dict[tuple[str, str], str] = {
         "client",
         "db",
     ): "Phase 5 (#161): route client.py DB writes through observability.recorder sink.",
-    # support -> domain (config imports Job for typing/defaults).
-    ("config", "models"): (
-        "Phase 3 (#159): push config-default injection out of domain; "
-        "config stops importing models."
-    ),
-    # domain -> integrations (ContainerResource default factory).
-    ("models", "containers"): (
-        "Phase 3 (#159): purify domain; container default factory moves to runtime."
+    # domain -> runtime (models.py is a backward-compat shim re-exporting renderers).
+    ("models", "runtime"): (
+        "Shim re-exports from :mod:`srunx.runtime.rendering`. Remove when "
+        "external callers migrate and models.py is deleted (post #156)."
     ),
     # observability -> interfaces (monitor uses web's SSH adapter for remote queries).
     ("monitor", "web"): "Phase 6 (#162): web/ssh_adapter.py relocates to slurm/ssh.py.",

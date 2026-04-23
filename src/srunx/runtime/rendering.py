@@ -19,21 +19,29 @@ truth for path fields. Translation from local → remote paths happens
 
 from __future__ import annotations
 
+import shlex
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from srunx.models import (
-    Job,
-    RunnableJobType,
-    ShellJob,
-    Workflow,
-    render_job_script,
-    render_shell_job_script,
-)
-from srunx.runner import WorkflowRunner
+import jinja2
+from rich.console import Console
+from rich.syntax import Syntax
+
+from srunx.domain import Job, JobEnvironment, RunnableJobType, ShellJob, Workflow
+from srunx.logging import get_logger
 from srunx.runtime.templates import get_template_path
+
+# NOTE: ``srunx.runner`` is imported lazily inside
+# :func:`render_workflow_for_submission` to avoid a circular import.
+# ``runner`` imports ``srunx.callbacks`` which (via ``srunx.__init__``)
+# resolves ``srunx.models`` — now a shim that re-exports from this
+# module. Proper fix lands in Phase 5 (#161) when callbacks move out
+# of the import hot path.
+
+logger = get_logger(__name__)
+console = Console()
 
 
 @dataclass(frozen=True)
@@ -179,6 +187,8 @@ def render_workflow_for_submission(
         jinja2.TemplateError: If template rendering fails.
     """
     # --- 1. Load the workflow (args + deps are resolved here). ---
+    from srunx.runner import WorkflowRunner
+
     runner = WorkflowRunner.from_yaml(
         yaml_path,
         args_override=args_override,
@@ -445,3 +455,236 @@ def _find_mount_by_name(
         if getattr(m, "name", None) == name:
             return m
     return None
+
+
+# ---------------------------------------------------------------------------
+# SLURM script rendering helpers (moved from :mod:`srunx.models` in Phase 3).
+# ---------------------------------------------------------------------------
+
+
+def _render_base_script(
+    template_path: Path | str,
+    template_vars: dict,
+    output_filename: str,
+    output_dir: Path | str | None = None,
+    verbose: bool = False,
+) -> str:
+    """Base function for rendering SLURM scripts from templates.
+
+    Args:
+        template_path: Path to the Jinja template file.
+        template_vars: Variables to pass to the template.
+        output_filename: Name of the output file.
+        output_dir: Directory where the generated script will be saved.
+        verbose: Whether to print the rendered content.
+
+    Returns:
+        Path to the generated SLURM batch script.
+
+    Raises:
+        FileNotFoundError: If the template file does not exist.
+        jinja2.TemplateError: If template rendering fails.
+    """
+    template_file = Path(template_path)
+    if not template_file.is_file():
+        raise FileNotFoundError(f"Template file '{template_path}' not found")
+
+    with open(template_file, encoding="utf-8") as f:
+        template_content = f.read()
+
+    # ``keep_trailing_newline=True`` so the rendered output preserves
+    # the source file's trailing ``\n`` instead of silently stripping
+    # it (Jinja's default). Workflow Phase 2's IN_PLACE eligibility
+    # check relies on ``rendered_bytes == source_bytes``; with the
+    # default behaviour, every script ending in ``\n`` (i.e. every
+    # POSIX-conforming shell script) compared as different and the
+    # in-place path was effectively dead. Codex blocker #2 on PR #141.
+    template = jinja2.Template(
+        template_content,
+        undefined=jinja2.StrictUndefined,
+        keep_trailing_newline=True,
+    )
+
+    # Debug: log template variables
+    logger.debug(f"Template variables: {template_vars}")
+
+    rendered_content = template.render(template_vars)
+
+    if verbose:
+        console.print(
+            Syntax(rendered_content, "bash", theme="monokai", line_numbers=True)
+        )
+
+    # Generate output file
+    if output_dir is not None:
+        output_path = Path(output_dir) / output_filename
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(rendered_content)
+
+        return str(output_path)
+
+    else:
+        logger.info("`output_dir` is not specified, rendered content is not saved")
+        return ""
+
+
+def render_job_script(
+    template_path: Path | str,
+    job: Job,
+    output_dir: Path | str | None = None,
+    verbose: bool = False,
+    extra_srun_args: str | None = None,
+    extra_launch_prefix: str | None = None,
+) -> str:
+    """Render a SLURM job script from a template.
+
+    Args:
+        template_path: Path to the Jinja template file.
+        job: Job configuration.
+        output_dir: Directory where the generated script will be saved.
+        verbose: Whether to print the rendered content.
+        extra_srun_args: Additional srun flags to append after auto-generated ones.
+        extra_launch_prefix: Additional launch prefix to append after auto-generated ones.
+
+    Returns:
+        Path to the generated SLURM batch script.
+
+    Raises:
+        FileNotFoundError: If the template file does not exist.
+        jinja2.TemplateError: If template rendering fails.
+    """
+    # Prepare template variables.
+    #
+    # ``list[str]`` commands are rendered with ``shlex.join`` so shell
+    # metacharacters stay quoted. The previous ``" ".join(...)`` silently
+    # collapsed commands like ``["bash", "-c", "echo X; sleep 5; echo Y"]``
+    # into ``bash -c echo X; sleep 5; echo Y`` — the third argument's shell
+    # metacharacters escaped their intended ``-c`` payload and got
+    # reinterpreted by the outer shell. ``shlex.join`` preserves the
+    # original token boundaries via minimal single-quote wrapping.
+    if isinstance(job.command, str):
+        command_str = job.command
+    else:
+        command_str = shlex.join(job.command or [])
+    environment_setup, srun_args, launch_prefix = _build_environment_setup(
+        job.environment
+    )
+    # Fallback to Job-level metadata when explicit args absent.
+    # Explicit args always win to preserve existing Web non-sweep path
+    # (which passes extras from raw YAML directly).
+    effective_extra_srun_args = (
+        extra_srun_args if extra_srun_args is not None else job.srun_args
+    )
+    effective_extra_launch_prefix = (
+        extra_launch_prefix if extra_launch_prefix is not None else job.launch_prefix
+    )
+    # Merge user-specified extras with auto-generated values
+    if effective_extra_srun_args:
+        srun_args = f"{srun_args} {effective_extra_srun_args}".strip()
+    if effective_extra_launch_prefix:
+        launch_prefix = f"{launch_prefix} {effective_extra_launch_prefix}".strip()
+
+    template_vars = {
+        "job_name": job.name,
+        "command": command_str,
+        "log_dir": job.log_dir,
+        "work_dir": job.work_dir,
+        "environment_setup": environment_setup,
+        "srun_args": srun_args,
+        "launch_prefix": launch_prefix,
+        "container": job.environment.container,
+        **job.resources.model_dump(),
+    }
+
+    return _render_base_script(
+        template_path=template_path,
+        template_vars=template_vars,
+        output_filename=f"{job.name}.slurm",
+        output_dir=output_dir,
+        verbose=verbose,
+    )
+
+
+def _build_environment_setup(
+    environment: JobEnvironment,
+) -> tuple[str, str, str]:
+    """Build environment setup script.
+
+    Returns:
+        A 3-tuple of (env_setup_lines, srun_args, launch_prefix).
+        - env_setup_lines: Shell setup including env vars, conda/venv activation,
+          and container prelude (if any).
+        - srun_args: Flags passed to srun (Pyxis uses this).
+        - launch_prefix: Command wrapper (Apptainer uses this).
+    """
+    from srunx.containers import get_runtime
+
+    setup_lines: list[str] = []
+
+    # 1. Environment variables (single-quoted to prevent shell injection)
+    for key, value in environment.env_vars.items():
+        escaped_value = str(value).replace("'", "'\\''")
+        setup_lines.append(f"export {key}='{escaped_value}'")
+
+    # 2. Conda/venv activation (independent of container)
+    if environment.conda:
+        home_dir = Path.home()
+        escaped_conda = environment.conda.replace("'", "'\\''")
+        setup_lines.extend(
+            [
+                f"source {str(home_dir)}/miniconda3/bin/activate",
+                "conda deactivate",
+                f"conda activate '{escaped_conda}'",
+            ]
+        )
+    elif environment.venv:
+        escaped_venv = environment.venv.replace("'", "'\\''")
+        setup_lines.append(f"source '{escaped_venv}'/bin/activate")
+
+    # 3. Container setup (independent of conda/venv)
+    # Only process container if it has an image — a runtime-only container
+    # (no image) is not actionable and would generate broken commands.
+    srun_args = ""
+    launch_prefix = ""
+    if environment.container and environment.container.image:
+        runtime = get_runtime(environment.container.runtime)
+        spec = runtime.build_launch_spec(environment.container)
+        if spec.prelude:
+            setup_lines.append(spec.prelude)
+        srun_args = spec.srun_args
+        launch_prefix = spec.launch_prefix
+
+    return "\n".join(setup_lines), srun_args, launch_prefix
+
+
+def render_shell_job_script(
+    template_path: Path | str,
+    job: ShellJob,
+    output_dir: Path | str | None = None,
+    verbose: bool = False,
+) -> str:
+    """Render a SLURM shell job script from a template.
+
+    Args:
+        template_path: Path to the Jinja template file.
+        job: ShellJob configuration.
+        output_dir: Directory where the generated script will be saved.
+        verbose: Whether to print the rendered content.
+
+    Returns:
+        Path to the generated SLURM batch script.
+
+    Raises:
+        FileNotFoundError: If the template file does not exist.
+        jinja2.TemplateError: If template rendering fails.
+    """
+    template_file = Path(template_path)
+    output_filename = f"{template_file.stem}.slurm"
+
+    return _render_base_script(
+        template_path=template_path,
+        template_vars=job.script_vars,
+        output_filename=output_filename,
+        output_dir=output_dir,
+        verbose=verbose,
+    )
