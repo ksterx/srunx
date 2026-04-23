@@ -20,9 +20,12 @@ def user_templates_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Override the user templates directory to a temp directory."""
     templates_dir = tmp_path / "templates"
     templates_dir.mkdir()
-    monkeypatch.setattr("srunx.template._user_templates_dir", lambda: templates_dir)
     monkeypatch.setattr(
-        "srunx.template._user_meta_path", lambda: templates_dir / "meta.json"
+        "srunx.runtime.templates._user_templates_dir", lambda: templates_dir
+    )
+    monkeypatch.setattr(
+        "srunx.runtime.templates._user_meta_path",
+        lambda: templates_dir / "meta.json",
     )
     return templates_dir
 

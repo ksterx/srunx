@@ -26,7 +26,7 @@ from srunx.models import (
 
 def _get_default_template() -> str:
     """Get the default job template path."""
-    return str(files("srunx.templates").joinpath("base.slurm.jinja"))
+    return str(files("srunx.runtime").joinpath("_jinja", "base.slurm.jinja"))
 
 
 class TestTemplateRendering:
@@ -370,7 +370,7 @@ class TestContainerRenderIntegration:
 
     def _get_template(self, name: str) -> str:
         """Get a template path by name."""
-        return str(files("srunx.templates").joinpath(f"{name}.slurm.jinja"))
+        return str(files("srunx.runtime").joinpath("_jinja", f"{name}.slurm.jinja"))
 
     def test_base_pyxis_output(self):
         """Test base template + Pyxis output contains --container-image, --container-mounts (AC-4)."""
