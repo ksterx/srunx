@@ -393,7 +393,7 @@ class TestWorkflowRunner:
         assert rendered_jobs[0]["name"] == "simple_job"
         assert rendered_jobs[0]["command"] == ["echo", "hello"]
 
-    @patch("srunx.runner.Slurm")
+    @patch("srunx.runtime.workflow.runner.Slurm")
     def test_run_simple_workflow(self, mock_slurm_class):
         """Test running simple workflow."""
         mock_slurm = Mock()
@@ -427,7 +427,7 @@ class TestWorkflowRunner:
         assert call_kwargs["workflow_name"] == "test"
         assert isinstance(call_kwargs["workflow_run_id"], int)
 
-    @patch("srunx.runner.Slurm")
+    @patch("srunx.runtime.workflow.runner.Slurm")
     def test_run_workflow_with_dependencies(self, mock_slurm_class):
         """Test running workflow with dependencies."""
         mock_slurm = Mock()
@@ -464,7 +464,7 @@ class TestWorkflowRunner:
         assert "job2" in results
         assert mock_slurm.run.call_count == 2
 
-    @patch("srunx.runner.Slurm")
+    @patch("srunx.runtime.workflow.runner.Slurm")
     def test_run_workflow_job_failure(self, mock_slurm_class):
         """Test running workflow with job failure."""
         mock_slurm = Mock()
@@ -564,8 +564,8 @@ class TestWorkflowRunner:
         assert job.log_dir == "/custom/logs"
         assert job.work_dir == "/custom/work"
 
-    @patch("srunx.runner.WorkflowRunner.from_yaml")
-    @patch("srunx.runner.WorkflowRunner.run")
+    @patch("srunx.runtime.workflow.runner.WorkflowRunner.from_yaml")
+    @patch("srunx.runtime.workflow.runner.WorkflowRunner.run")
     def test_execute_from_yaml(self, mock_run, mock_from_yaml):
         """Test execute_from_yaml method."""
         mock_runner = Mock()
@@ -584,7 +584,7 @@ class TestWorkflowRunner:
 class TestRunWorkflowFromFile:
     """Test run_workflow_from_file convenience function."""
 
-    @patch("srunx.runner.WorkflowRunner")
+    @patch("srunx.runtime.workflow.runner.WorkflowRunner")
     def test_run_workflow_from_file(self, mock_runner_class):
         """Test run_workflow_from_file convenience function."""
         mock_runner = Mock()
@@ -758,7 +758,7 @@ class TestWorkflowExecutionControl:
         ):
             runner._get_jobs_to_execute(to_job="nonexistent")
 
-    @patch("srunx.runner.Slurm")
+    @patch("srunx.runtime.workflow.runner.Slurm")
     def test_run_single_job_ignores_dependencies(self, mock_slurm_class):
         """Test that single job execution ignores dependencies."""
         mock_slurm = Mock()
@@ -792,7 +792,7 @@ class TestWorkflowExecutionControl:
         assert "job1" not in results
         mock_slurm.run.assert_called_once()
 
-    @patch("srunx.runner.Slurm")
+    @patch("srunx.runtime.workflow.runner.Slurm")
     def test_run_from_job_ignores_external_dependencies(self, mock_slurm_class):
         """Test that --from execution ignores dependencies outside the execution range."""
         mock_slurm = Mock()

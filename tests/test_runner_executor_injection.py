@@ -4,7 +4,7 @@ Phase 2 Step 1 of the SSH sweep integration. Verifies that:
 
 * Default (``executor_factory=None``) preserves the legacy shape: the
   runner still uses ``self.slurm`` under the hood so existing
-  ``@patch("srunx.runner.Slurm")`` tests keep working.
+  ``@patch("srunx.runtime.workflow.runner.Slurm")`` tests keep working.
 * A custom factory is leased as a context manager, its ``run`` /
   ``get_job_output_detailed`` methods are invoked on the yielded
   executor, and the CM's ``__exit__`` runs after each use.
@@ -68,9 +68,9 @@ def _make_workflow() -> tuple[Workflow, Job]:
     return Workflow(name="test", jobs=[job]), job
 
 
-@patch("srunx.runner._transition_workflow_run")
+@patch("srunx.runtime.workflow.runner._transition_workflow_run")
 @patch("srunx.db.cli_helpers.create_cli_workflow_run")
-@patch("srunx.runner.Slurm")
+@patch("srunx.runtime.workflow.runner.Slurm")
 def test_default_factory_uses_self_slurm(
     mock_slurm_class: Mock,
     mock_create: Mock,
@@ -79,7 +79,7 @@ def test_default_factory_uses_self_slurm(
     """With ``executor_factory=None`` the runner still talks to ``self.slurm``.
 
     This is the backward-compat anchor: every existing test that patches
-    ``srunx.runner.Slurm`` depends on this behaviour.
+    ``srunx.runtime.workflow.runner.Slurm`` depends on this behaviour.
     """
     mock_slurm = Mock()
     mock_slurm_class.return_value = mock_slurm
@@ -105,9 +105,9 @@ def test_default_factory_uses_self_slurm(
     assert call_kwargs["workflow_run_id"] == 123
 
 
-@patch("srunx.runner._transition_workflow_run")
+@patch("srunx.runtime.workflow.runner._transition_workflow_run")
 @patch("srunx.db.cli_helpers.create_cli_workflow_run")
-@patch("srunx.runner.Slurm")
+@patch("srunx.runtime.workflow.runner.Slurm")
 def test_custom_factory_is_leased_and_invoked(
     _mock_slurm_class: Mock,
     mock_create: Mock,
@@ -152,9 +152,9 @@ def test_custom_factory_is_leased_and_invoked(
     assert enter_count == exit_count == 1
 
 
-@patch("srunx.runner._transition_workflow_run")
+@patch("srunx.runtime.workflow.runner._transition_workflow_run")
 @patch("srunx.db.cli_helpers.create_cli_workflow_run")
-@patch("srunx.runner.Slurm")
+@patch("srunx.runtime.workflow.runner.Slurm")
 def test_custom_factory_is_used_for_log_retrieval_on_failure(
     _mock_slurm_class: Mock,
     mock_create: Mock,
@@ -238,9 +238,9 @@ jobs:
 # ---------------------------------------------------------------------------
 
 
-@patch("srunx.runner._transition_workflow_run")
+@patch("srunx.runtime.workflow.runner._transition_workflow_run")
 @patch("srunx.db.cli_helpers.create_cli_workflow_run")
-@patch("srunx.runner.Slurm")
+@patch("srunx.runtime.workflow.runner.Slurm")
 def test_submission_context_is_forwarded_to_executor_run(
     _mock_slurm_class: Mock,
     mock_create: Mock,
@@ -278,9 +278,9 @@ def test_submission_context_is_forwarded_to_executor_run(
     assert kwargs["submission_context"] is ctx
 
 
-@patch("srunx.runner._transition_workflow_run")
+@patch("srunx.runtime.workflow.runner._transition_workflow_run")
 @patch("srunx.db.cli_helpers.create_cli_workflow_run")
-@patch("srunx.runner.Slurm")
+@patch("srunx.runtime.workflow.runner.Slurm")
 def test_default_submission_context_is_none(
     _mock_slurm_class: Mock,
     mock_create: Mock,

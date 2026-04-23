@@ -59,7 +59,9 @@ class TestMCPArgsOverride:
         self, tmp_path: Path, isolated_db: Path
     ) -> None:
         yaml_path = _write_workflow(tmp_path)
-        with patch("srunx.runner.WorkflowRunner.from_yaml") as from_yaml:
+        with patch(
+            "srunx.runtime.workflow.runner.WorkflowRunner.from_yaml"
+        ) as from_yaml:
             mock_runner = MagicMock()
             mock_runner.run.return_value = {}
             mock_runner.workflow.name = "mcp_wf"
@@ -82,7 +84,9 @@ class TestMCPArgsOverride:
         canonical render entry.
         """
         yaml_path = _write_workflow(tmp_path)
-        with patch("srunx.runner.WorkflowRunner.from_yaml") as from_yaml:
+        with patch(
+            "srunx.runtime.workflow.runner.WorkflowRunner.from_yaml"
+        ) as from_yaml:
             mock_runner = MagicMock()
             mock_runner.run.return_value = {}
             mock_runner.workflow.name = "mcp_wf"
@@ -152,7 +156,9 @@ class TestMCPBackwardCompat:
         self, tmp_path: Path, isolated_db: Path
     ) -> None:
         yaml_path = _write_workflow(tmp_path)
-        with patch("srunx.runner.WorkflowRunner.from_yaml") as from_yaml:
+        with patch(
+            "srunx.runtime.workflow.runner.WorkflowRunner.from_yaml"
+        ) as from_yaml:
             mock_runner = MagicMock()
             mock_runner.run.return_value = {}
             mock_runner.workflow.name = "mcp_wf"
@@ -289,7 +295,9 @@ class TestMCPMountRouting:
                 new=MagicMock(),
             ),
             patch("srunx.slurm.ssh_executor.SlurmSSHExecutorPool") as pool_cls,
-            patch("srunx.runner.WorkflowRunner.from_yaml") as from_yaml,
+            patch(
+                "srunx.runtime.workflow.runner.WorkflowRunner.from_yaml"
+            ) as from_yaml,
         ):
             mock_pool = MagicMock()
             pool_cls.return_value = mock_pool
