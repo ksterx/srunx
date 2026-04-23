@@ -1,67 +1,16 @@
-class WorkflowError(Exception):
-    """Base exception for workflow errors."""
+"""Backward-compat shim. Canonical home: :mod:`srunx.common.exceptions`.
 
+Aliases the canonical module via ``sys.modules`` so attribute access
+and ``isinstance`` checks route through one module object. The star
+import below exists only so that static type-checkers see names like
+``srunx.exceptions.JobNotFound`` resolve statically.
+"""
 
-class WorkflowValidationError(WorkflowError):
-    """Exception raised when workflow validation fails."""
+from __future__ import annotations
 
+import sys as _sys
 
-class WorkflowExecutionError(WorkflowError):
-    """Exception raised when workflow execution fails."""
+from srunx.common import exceptions as _canonical
+from srunx.common.exceptions import *  # noqa: F401, F403
 
-
-class SweepExecutionError(WorkflowError):
-    """Exception raised when sweep materialize / execution fails at the orchestrator boundary."""
-
-
-# ---------------------------------------------------------------------------
-# Transport / job operation exceptions (introduced by CLI transport unification)
-# ---------------------------------------------------------------------------
-
-
-class TransportError(Exception):
-    """Base class for transport-layer failures (local subprocess or SSH).
-
-    Callers (CLI / poller) catch this to render a uniform user-facing
-    error. Always attach a human-readable ``str(exc)`` summary.
-    """
-
-
-class TransportConnectionError(TransportError):
-    """SSH connection failed or local sbatch binary unavailable."""
-
-
-class TransportAuthError(TransportError):
-    """SSH authentication failed (wrong key, refused, etc.)."""
-
-
-class TransportTimeoutError(TransportError):
-    """SSH or scontrol / sbatch call exceeded its timeout."""
-
-
-class RemoteCommandError(TransportError):
-    """A remote command (e.g. ``scontrol show job``) returned non-zero.
-
-    Distinct from :class:`SubmissionError` — used for read-path commands
-    that are not ``sbatch`` itself.
-    """
-
-
-class JobNotFoundError(Exception):
-    """Job ID does not exist on the target SLURM cluster.
-
-    Separate from :class:`TransportError` because 'missing job' is a
-    user-level condition, not a transport failure.
-    """
-
-
-# Backward-compat alias (pre-#169 name).
-JobNotFound = JobNotFoundError
-
-
-class SubmissionError(Exception):
-    """sbatch invocation reached the cluster but returned non-zero.
-
-    The sbatch process started (so transport succeeded) but sbatch
-    itself rejected the script (syntax error, quota, etc.).
-    """
+_sys.modules[__name__] = _canonical

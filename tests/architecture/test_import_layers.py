@@ -27,8 +27,12 @@ SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "srunx"
 # Map each top-level package/module under ``srunx/`` to its TARGET layer.
 # Source files move in later phases; the layer name is stable.
 MODULE_LAYERS: dict[str, str] = {
-    # common (Phase 8 / #164 will move these under src/srunx/common/)
+    # common — canonical package landed in Phase 8e (#164); the
+    # top-level shims (config / exceptions / logging / _version) stay
+    # mapped for back-compat and route into srunx.common.* via sys.modules
+    # aliasing.
     "_version": "common",
+    "common": "common",
     "config": "common",
     "exceptions": "common",
     "logging": "common",
