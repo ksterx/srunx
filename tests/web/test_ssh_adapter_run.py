@@ -417,6 +417,135 @@ class TestMonitorTimeout:
         assert result == "COMPLETED"
 
 
+class TestSSHAdapterRunInPlace:
+    """Phase 2 (#135): adapter.run picks IN_PLACE only with caller permission.
+
+    The IN_PLACE submission path is gated on
+    ``submission_context.allow_in_place=True`` so callers that do
+    NOT hold the per-(profile, mount) sync lock cannot race a
+    concurrent rsync. CLI workflow runs flip the flag inside
+    ``_hold_workflow_mounts``; Web/MCP paths leave it ``False``.
+    Tests cover both halves of that gate plus the eligibility checks
+    inside the IN_PLACE branch (mount membership, render-vs-source
+    bytes equality).
+    """
+
+    def _setup_in_place_adapter(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
+        """Build an adapter with one mount, mocked submit + recording."""
+        from srunx.ssh.core.config import MountConfig
+
+        mount_local = tmp_path / "ml"
+        mount_local.mkdir()
+        script = mount_local / "train.sh"
+        script.write_text("#!/bin/bash\necho hi\n")
+
+        adapter = _bare_adapter()
+        adapter._mounts = (
+            MountConfig(name="ml", local=str(mount_local), remote="/r/ml"),
+        )
+
+        # Mock both submit paths so we can assert which fired.
+        sbatch_job_mock = MagicMock()
+        sbatch_job_mock.job_id = "1"
+        sbatch_job_mock.name = "train"
+        adapter._client.submit_sbatch_job = MagicMock(  # type: ignore[method-assign]
+            return_value=sbatch_job_mock
+        )
+
+        remote_mock = MagicMock()
+        remote_mock.job_id = "2"
+        remote_mock.name = "train"
+        adapter._client.submit_remote_sbatch_file = MagicMock(  # type: ignore[method-assign]
+            return_value=remote_mock
+        )
+
+        monkeypatch.setattr(
+            adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_job_submission",
+            staticmethod(lambda *a, **k: None),
+        )
+        monkeypatch.setattr(
+            SlurmSSHAdapter,
+            "_record_completion_safe",
+            staticmethod(lambda *a, **k: None),
+        )
+
+        return adapter, script
+
+    def test_allow_in_place_false_keeps_temp_upload(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Default ``allow_in_place=False`` → temp-upload, never in-place.
+
+        This is the Web/MCP safety contract: without the workflow
+        lock, the adapter must NOT take the IN_PLACE shortcut even
+        when the script is mount-resident.
+        """
+        from srunx.models import ShellJob
+        from srunx.rendering import SubmissionRenderContext
+
+        adapter, script = self._setup_in_place_adapter(tmp_path, monkeypatch)
+        job = ShellJob(name="train", script_path=str(script))
+
+        ctx = SubmissionRenderContext(mounts=adapter._mounts, allow_in_place=False)
+        adapter.run(job, submission_context=ctx)
+
+        adapter._client.submit_sbatch_job.assert_called_once()  # type: ignore[attr-defined]
+        adapter._client.submit_remote_sbatch_file.assert_not_called()  # type: ignore[attr-defined]
+
+    def test_allow_in_place_true_takes_in_place_path(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``allow_in_place=True`` + mount-resident + render==source → IN_PLACE.
+
+        Proves the full IN_PLACE eligibility chain works end-to-end
+        through ``adapter.run`` — covers the ``rendered bytes ==
+        source bytes`` check, the mount membership check, and the
+        ``submit_remote_sbatch_file`` dispatch.
+        """
+        from srunx.models import ShellJob
+        from srunx.rendering import SubmissionRenderContext
+
+        adapter, script = self._setup_in_place_adapter(tmp_path, monkeypatch)
+        job = ShellJob(name="train", script_path=str(script))
+
+        ctx = SubmissionRenderContext(mounts=adapter._mounts, allow_in_place=True)
+        adapter.run(job, submission_context=ctx)
+
+        adapter._client.submit_remote_sbatch_file.assert_called_once()  # type: ignore[attr-defined]
+        # The temp-upload path must NOT fire when IN_PLACE took over.
+        adapter._client.submit_sbatch_job.assert_not_called()  # type: ignore[attr-defined]
+        # The IN_PLACE call passed the translated remote path + a
+        # submit_cwd under the mount.
+        call = adapter._client.submit_remote_sbatch_file.call_args  # type: ignore[attr-defined]
+        assert call.args[0] == "/r/ml/train.sh"
+        assert call.kwargs["submit_cwd"] == "/r/ml"
+
+    def test_in_place_skipped_when_script_outside_mount(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Even with ``allow_in_place=True``, scripts outside any mount go via temp."""
+        from srunx.models import ShellJob
+        from srunx.rendering import SubmissionRenderContext
+
+        adapter, _script = self._setup_in_place_adapter(tmp_path, monkeypatch)
+
+        outside = tmp_path / "scratch"
+        outside.mkdir()
+        outside_script = outside / "x.sh"
+        outside_script.write_text("#!/bin/bash\necho hi\n")
+        job = ShellJob(name="x", script_path=str(outside_script))
+
+        ctx = SubmissionRenderContext(mounts=adapter._mounts, allow_in_place=True)
+        adapter.run(job, submission_context=ctx)
+
+        adapter._client.submit_sbatch_job.assert_called_once()  # type: ignore[attr-defined]
+        adapter._client.submit_remote_sbatch_file.assert_not_called()  # type: ignore[attr-defined]
+
+
 class TestSSHAdapterRunSubmissionContext:
     """Batch 2a: ``submission_context`` drives mount-aware path rewriting.
 

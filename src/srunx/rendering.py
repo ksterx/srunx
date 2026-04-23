@@ -62,6 +62,22 @@ class SubmissionRenderContext:
     mount_name: str | None = None
     mounts: tuple[Any, ...] = field(default_factory=tuple)
     default_work_dir: str | None = None
+    allow_in_place: bool = False
+    """Permission flag for the IN_PLACE submission path.
+
+    Workflow Phase 2 (#135): :meth:`SlurmSSHAdapter.run` only takes
+    the IN_PLACE shortcut (sbatch the user's mount-resident script
+    verbatim, skipping the temp upload) when this flag is True,
+    AND the source bytes equal the rendered bytes, AND the source
+    sits under one of the adapter's mounts.
+
+    Default ``False`` so callers that haven't grabbed the per-mount
+    sync lock (Web ``/api/workflows/run`` today, MCP sweep cells)
+    can't accidentally race a concurrent rsync. The CLI workflow
+    runner — which holds the lock for the lifetime of the run via
+    :func:`srunx.cli.workflow._hold_workflow_mounts` — flips this
+    to ``True`` when constructing the context. Closes Codex
+    blocker #3 on PR #141."""
 
 
 @dataclass(frozen=True)

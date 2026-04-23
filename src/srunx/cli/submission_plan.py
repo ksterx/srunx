@@ -254,16 +254,26 @@ def render_matches_source(rendered_path: Path, source_path: Path) -> bool:
     identical the script can run *in place* on the cluster (the
     user's source file is what executes); when they differ the
     rendered output is a generated artifact and must take the
-    temp-upload path. Codex follow-up on PR #134 / #140.
+    temp-upload path.
+
+    Trailing newlines are normalised before comparison so a Jinja
+    pass that round-trips a no-substitution script doesn't get
+    flagged as "different" because of a stripped final ``\\n``.
+    Codex blocker #2 on PR #141 caught this — we also fixed the
+    Jinja env in :func:`_render_base_script` to ``keep_trailing_newline``,
+    but rstripping defends against any future template/Jinja behaviour
+    drift.
 
     Both paths must exist; missing files return ``False`` so the
     caller treats the mismatch as "render produced something
     different" and stays on the safe (temp-upload) path.
     """
     try:
-        return rendered_path.read_bytes() == source_path.read_bytes()
+        rendered = rendered_path.read_bytes()
+        source = source_path.read_bytes()
     except OSError:
         return False
+    return rendered.rstrip(b"\n") == source.rstrip(b"\n")
 
 
 def _translate_cwd(cwd: Path | None, profile: ServerProfile | None) -> str | None:

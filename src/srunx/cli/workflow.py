@@ -49,6 +49,29 @@ def _resolve_sync_flag(sync: bool | None) -> bool:
     return get_config().sync.auto
 
 
+def _in_place_context(rt: "ResolvedTransport") -> "Any":
+    """Return ``rt.submission_context`` with ``allow_in_place=True``.
+
+    The CLI workflow runner holds the per-(profile, mount) sync lock
+    for the entire run via :func:`_hold_workflow_mounts`, so it is
+    safe for the SSH adapter to take the IN_PLACE submission path
+    inside this run. The flag lives on
+    :class:`~srunx.rendering.SubmissionRenderContext` because it
+    rides the existing context that the sweep orchestrator and the
+    non-sweep runner already pass through to the adapter — adding
+    it here avoids touching every executor / Protocol signature.
+    Closes Codex blocker #3 on PR #141.
+
+    Returns ``None`` when there's no context to clone (e.g. local
+    transport); callers fall back to ``rt.submission_context``.
+    """
+    import dataclasses
+
+    if rt.submission_context is None:
+        return None
+    return dataclasses.replace(rt.submission_context, allow_in_place=True)
+
+
 @contextlib.contextmanager
 def _hold_workflow_mounts(
     *,
@@ -102,9 +125,22 @@ def _hold_workflow_mounts(
         yield
         return
 
+    # Sort by profile.mounts order so concurrent ``srunx flow run``
+    # invocations across overlapping mount sets always acquire locks
+    # in the same global order, eliminating lock-inversion deadlocks.
+    # Codex follow-up #2 on PR #141.
+    mount_order = {m.name: i for i, m in enumerate(profile.mounts)}
+    mounts.sort(key=lambda m: mount_order.get(m.name, len(mount_order)))
+
     config = get_config()
-    try:
-        with contextlib.ExitStack() as stack:
+    with contextlib.ExitStack() as stack:
+        # Acquisition + sync errors must surface as BadParameter so
+        # the CLI exits with a clear message. Errors raised from
+        # **inside** the workflow body (the ``yield`` block — job
+        # failures, sweep cancellations, adapter exceptions) MUST
+        # propagate unchanged — wrapping them as "rsync failed"
+        # would mask the real failure. Codex blocker #1 on PR #141.
+        try:
             for mount in mounts:
                 outcome = stack.enter_context(
                     mount_sync_session(
@@ -117,15 +153,17 @@ def _hold_workflow_mounts(
                 )
                 if outcome.performed:
                     Console().print(f"⇅  Synced mount [cyan]{mount.name}[/cyan]")
-            yield
-    except SyncAbortedError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    except SyncLockTimeoutError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    except RuntimeError as exc:
-        # rsync subprocess failure — abort rather than silently
-        # submitting a stale workspace.
-        raise typer.BadParameter(f"rsync failed: {exc}") from exc
+        except SyncAbortedError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        except SyncLockTimeoutError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        except RuntimeError as exc:
+            raise typer.BadParameter(f"rsync failed: {exc}") from exc
+
+        # Body executes here. Any exception escapes the ExitStack
+        # which still releases the locks via __exit__, then bubbles
+        # up to the workflow CLI's top-level handler unchanged.
+        yield
 
 
 def _build_workflow_callbacks(
@@ -405,6 +443,7 @@ def _run_sweep(
     endpoint_id: int | None,
     preset: str,
     rt: ResolvedTransport,
+    submission_context: Any | None = None,
 ) -> None:
     """Drive :class:`SweepOrchestrator` under a SIGINT → request_cancel guard.
 
@@ -417,6 +456,12 @@ def _run_sweep(
     cell through the pool + mount translation path already used by the
     Web / MCP sweep surfaces.
     """
+    # Caller may supply an override (CLI workflow Phase 2 passes one
+    # with ``allow_in_place=True`` after the workflow lock is held).
+    # When omitted, fall back to the transport's default context.
+    effective_context = (
+        submission_context if submission_context is not None else rt.submission_context
+    )
     orchestrator = SweepOrchestrator(
         workflow_yaml_path=yaml_file,
         workflow_data=workflow_data,
@@ -427,7 +472,7 @@ def _run_sweep(
         endpoint_id=endpoint_id,
         preset=preset,
         executor_factory=rt.executor_factory,
-        submission_context=rt.submission_context,
+        submission_context=effective_context,
     )
 
     original_handler = signal.getsignal(signal.SIGINT)
@@ -591,6 +636,15 @@ def _execute_workflow(
                     else None,
                     sync_required=_resolve_sync_flag(sync),
                 ):
+                    # Lock is held → flip ``allow_in_place`` on a
+                    # context copy so the SSH adapter is permitted
+                    # to take the IN_PLACE submission path for any
+                    # cell that qualifies.
+                    in_place_ctx = (
+                        _in_place_context(rt)
+                        if rt.transport_type == "ssh"
+                        else rt.submission_context
+                    )
                     _run_sweep(
                         yaml_file=yaml_file,
                         workflow_data=workflow_data,
@@ -600,6 +654,7 @@ def _execute_workflow(
                         endpoint_id=endpoint_id,
                         preset=effective_preset,
                         rt=rt,
+                        submission_context=in_place_ctx,
                     )
                 return
 
@@ -669,6 +724,15 @@ def _execute_workflow(
                 workflow_for_mounts=runner.workflow,
                 sync_required=_resolve_sync_flag(sync),
             ):
+                # Lock is held → flip ``allow_in_place`` so the SSH
+                # adapter's ShellJob branch is permitted to take the
+                # IN_PLACE path. Mutate the runner's stored context
+                # rather than re-building the runner so all the
+                # per-job state (parsed dependencies, etc.) survives.
+                if rt.transport_type == "ssh":
+                    in_place_ctx = _in_place_context(rt)
+                    if in_place_ctx is not None:
+                        runner._submission_context = in_place_ctx  # noqa: SLF001
                 results = runner.run(from_job=from_job, to_job=to_job, single_job=job)
 
             logger.info("Job Results:")

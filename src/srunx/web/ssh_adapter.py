@@ -1229,7 +1229,21 @@ class SlurmSSHAdapter:
            callback and return the updated job. Raises :class:`RuntimeError`
            on terminal failure so the workflow runner's retry / failure
            path triggers identically to the local ``Slurm`` executor.
+
+        IN_PLACE submission (skip the temp upload, run the user's
+        mount-resident script verbatim) is gated on
+        ``submission_context.allow_in_place`` so callers that do NOT
+        hold the per-(profile, mount) sync lock cannot race a
+        concurrent rsync. CLI workflow runs flip the flag inside
+        :func:`srunx.cli.workflow._hold_workflow_mounts`; Web /
+        MCP paths leave it ``False`` and keep the safe temp-upload
+        behaviour. Closes Codex blocker #3 on PR #141.
         """
+        allow_in_place = (
+            submission_context.allow_in_place
+            if submission_context is not None
+            else False
+        )
         # Inline imports keep the module import cost flat and mirror the
         # pattern used in ``srunx.client.Slurm`` (e.g. ``record_submission_from_job``).
         from srunx.models import (
@@ -1296,8 +1310,15 @@ class SlurmSSHAdapter:
                     )
                 elif isinstance(job, ShellJob):
                     script_path = render_shell_job_script(job.script_path, job, tmpdir)
-                    # IN_PLACE eligibility check.
-                    if self._mounts:
+                    # IN_PLACE eligibility check — only attempted when
+                    # the caller passed ``allow_in_place=True``,
+                    # confirming they're holding the per-(profile,
+                    # mount) sync lock for the lifetime of this call.
+                    # Without that lock a concurrent rsync could swap
+                    # the bytes between our render check and the
+                    # cluster's sbatch read. Codex blocker #3 on
+                    # PR #141.
+                    if allow_in_place and self._mounts:
                         try:
                             source_path = Path(job.script_path)
                         except (OSError, ValueError):
@@ -1316,9 +1337,10 @@ class SlurmSSHAdapter:
                                 in_place_remote_path = translate_local_to_remote(
                                     source_path, mount
                                 )
-                                # Prefer the script's own directory on the
-                                # remote so relative ``#SBATCH --output=``
-                                # paths resolve where the user expects.
+                                # Prefer the script's own directory on
+                                # the remote so relative ``#SBATCH
+                                # --output=`` paths resolve where the
+                                # user expects.
                                 in_place_submit_cwd = translate_local_to_remote(
                                     source_path.parent, mount
                                 )

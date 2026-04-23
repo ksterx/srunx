@@ -253,6 +253,82 @@ def test_flow_run_local_workflow_no_mount_resolution(
     assert rsync_calls == []  # no sync attempt for local transport
 
 
+def test_flow_run_workflow_body_failure_not_misreported_as_rsync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job/sweep failure inside ``runner.run()`` must not wear "rsync failed".
+
+    Regression test for Codex blocker #1 on PR #141: the previous
+    implementation wrapped the entire ``yield`` in a ``except RuntimeError``
+    that translated *any* runtime error to ``BadParameter("rsync
+    failed: ...")``. Workflow body failures (job submission errors,
+    adapter timeouts) got mislabeled as sync failures.
+    """
+    mount_local = tmp_path / "ml-project"
+    mount_local.mkdir()
+    s1 = mount_local / "step1.sbatch"
+    s1.write_text("#!/bin/bash\necho hi\n")
+
+    yaml_path = tmp_path / "wf.yaml"
+    _write_workflow(yaml_path, ("step1", str(s1)))
+
+    profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml")
+    executor = _patch_workflow_transport(monkeypatch, profile)
+
+    monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", lambda *a, **k: None)
+
+    # Body failure: the executor blows up the job.
+    executor.run.side_effect = RuntimeError("SLURM rejected the job")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app, ["flow", "run", str(yaml_path), "--profile", "ml-cluster"]
+    )
+
+    assert result.exit_code != 0
+    combined = (result.stdout or "") + (result.stderr or "")
+    assert "SLURM rejected" in combined or "rejected" in combined
+    # The "rsync failed" wrapper must not appear on a workflow-body
+    # failure — the original message must surface verbatim.
+    assert "rsync failed" not in combined.lower()
+
+
+def test_flow_run_passes_allow_in_place_via_submission_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI flips ``allow_in_place=True`` on the runner's context.
+
+    Regression for Codex blocker #3 on PR #141: the SSH adapter
+    must not take the IN_PLACE shortcut on Web/MCP paths that don't
+    hold the workflow lock. The CLI flips the flag inside
+    ``_hold_workflow_mounts``; this test asserts the executor sees
+    a context with ``allow_in_place=True``.
+    """
+    mount_local = tmp_path / "ml-project"
+    mount_local.mkdir()
+    s1 = mount_local / "step1.sbatch"
+    s1.write_text("#!/bin/bash\necho hi\n")
+
+    yaml_path = tmp_path / "wf.yaml"
+    _write_workflow(yaml_path, ("step1", str(s1)))
+
+    profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml")
+    executor = _patch_workflow_transport(monkeypatch, profile)
+
+    monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", lambda *a, **k: None)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app, ["flow", "run", str(yaml_path), "--profile", "ml-cluster"]
+    )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    executor.run.assert_called_once()
+    submission_ctx = executor.run.call_args.kwargs.get("submission_context")
+    assert submission_ctx is not None
+    assert submission_ctx.allow_in_place is True
+
+
 def test_flow_run_rsync_failure_aborts_workflow(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
