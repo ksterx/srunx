@@ -7,11 +7,11 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-
 from srunx.db.connection import open_connection
 from srunx.db.migrations import apply_migrations
 from srunx.db.repositories.base import now_iso
 from srunx.db.repositories.events import EventRepository
+
 from srunx.sweep.aggregator import evaluate_and_fire_sweep_status_event
 
 

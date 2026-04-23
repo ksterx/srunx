@@ -15,13 +15,13 @@ from typing import Any
 
 import anyio
 import pytest
-
 from srunx.db.models import Event
 from srunx.db.repositories.deliveries import DeliveryRepository
 from srunx.db.repositories.endpoints import EndpointRepository
 from srunx.db.repositories.events import EventRepository
 from srunx.db.repositories.subscriptions import SubscriptionRepository
 from srunx.db.repositories.watches import WatchRepository
+
 from srunx.notifications.adapters import registry as adapter_registry
 from srunx.notifications.adapters.base import DeliveryError
 from srunx.pollers.delivery_poller import DeliveryPoller

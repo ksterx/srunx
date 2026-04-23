@@ -21,9 +21,9 @@ from typing import Any
 
 import pytest
 import yaml  # type: ignore
-
 from srunx.db.connection import open_connection, transaction
 from srunx.db.repositories.sweep_runs import SweepRunRepository
+
 from srunx.exceptions import SweepExecutionError
 from srunx.sweep import CellSpec, SweepSpec
 from srunx.sweep.orchestrator import SweepOrchestrator

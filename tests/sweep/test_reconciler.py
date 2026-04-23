@@ -12,10 +12,10 @@ from unittest.mock import MagicMock
 
 import pytest
 import yaml  # type: ignore
-
 from srunx.db.connection import open_connection, transaction
 from srunx.db.repositories.base import now_iso
 from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+
 from srunx.sweep import CellSpec
 from srunx.sweep.orchestrator import SweepOrchestrator
 from srunx.sweep.reconciler import SweepReconciler

@@ -13,7 +13,6 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-
 from srunx.db.connection import open_connection
 from srunx.db.migrations import (
     MIGRATIONS,

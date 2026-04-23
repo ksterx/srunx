@@ -10,6 +10,7 @@ from srunx.db.repositories.endpoints import EndpointRepository
 from srunx.db.repositories.events import EventRepository
 from srunx.db.repositories.subscriptions import SubscriptionRepository
 from srunx.db.repositories.watches import WatchRepository
+
 from srunx.notifications.service import NotificationService
 
 

@@ -10,7 +10,6 @@ create a ``workflow_runs`` row and link submitted jobs back via
 from __future__ import annotations
 
 import pytest
-
 from srunx.db.cli_helpers import (
     compute_job_stats,
     compute_workflow_stats,
@@ -18,6 +17,7 @@ from srunx.db.cli_helpers import (
     list_recent_jobs,
     record_submission_from_job,
 )
+
 from srunx.models import Job, JobEnvironment, JobResource
 
 

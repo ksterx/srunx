@@ -8,7 +8,6 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-
 from srunx.db.connection import open_connection
 from srunx.db.migrations import apply_migrations
 from srunx.db.repositories.job_state_transitions import (

@@ -14,9 +14,9 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
-
 from srunx.db.connection import init_db, open_connection
 from srunx.db.repositories.jobs import JobRepository
+
 from srunx.web.app import create_app
 from srunx.web.deps import get_adapter
 

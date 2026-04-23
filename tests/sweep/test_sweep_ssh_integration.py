@@ -26,10 +26,10 @@ from unittest.mock import MagicMock
 import anyio
 import pytest
 import yaml
-
-from srunx.client_protocol import WorkflowJobExecutorProtocol
 from srunx.db.connection import open_connection, transaction
 from srunx.db.repositories.sweep_runs import SweepRunRepository
+
+from srunx.client_protocol import WorkflowJobExecutorProtocol
 from srunx.models import JobStatus, RunnableJobType
 from srunx.sweep import SweepSpec
 from srunx.sweep.orchestrator import SweepOrchestrator

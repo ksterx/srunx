@@ -13,8 +13,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import anyio
-
-from srunx.client_protocol import JobStatusInfo
 from srunx.db.repositories.deliveries import DeliveryRepository
 from srunx.db.repositories.endpoints import EndpointRepository
 from srunx.db.repositories.events import EventRepository
@@ -26,6 +24,8 @@ from srunx.db.repositories.subscriptions import SubscriptionRepository
 from srunx.db.repositories.watches import WatchRepository
 from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
 from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+
+from srunx.client_protocol import JobStatusInfo
 from srunx.pollers.active_watch_poller import ActiveWatchPoller
 
 # ---------------------------------------------------------------------------
