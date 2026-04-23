@@ -17,8 +17,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-from srunx.db.connection import init_db
 
+from srunx.db.connection import init_db
 from srunx.web.app import create_app
 from srunx.web.deps import get_adapter
 

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+
 from srunx.db.connection import open_connection
 from srunx.db.migrations import apply_migrations
 from srunx.db.models import ResourceSnapshot

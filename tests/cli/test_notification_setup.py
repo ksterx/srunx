@@ -141,13 +141,13 @@ def test_cli_sbatch_with_endpoint_creates_watch_and_subscription(
     row, and ``attach_notification_watch`` creates the watch +
     subscription in the same per-test DB.
     """
+    from typer.testing import CliRunner
+
+    from srunx.cli.main import app
     from srunx.db.connection import init_db, open_connection
     from srunx.db.repositories.endpoints import EndpointRepository
     from srunx.db.repositories.subscriptions import SubscriptionRepository
     from srunx.db.repositories.watches import WatchRepository
-    from typer.testing import CliRunner
-
-    from srunx.cli.main import app
     from srunx.models import BaseJob, Job, JobStatus
 
     # Isolate the state DB
@@ -226,11 +226,11 @@ def test_cli_sbatch_with_unknown_endpoint_still_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A missing endpoint name logs a warning and the job is still submitted."""
-    from srunx.db.connection import init_db, open_connection
-    from srunx.db.repositories.watches import WatchRepository
     from typer.testing import CliRunner
 
     from srunx.cli.main import app
+    from srunx.db.connection import init_db, open_connection
+    from srunx.db.repositories.watches import WatchRepository
     from srunx.models import BaseJob, JobStatus
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))

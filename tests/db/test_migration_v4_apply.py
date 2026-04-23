@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from srunx.db.connection import open_connection
 from srunx.db.migrations import apply_migrations
 

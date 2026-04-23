@@ -8,6 +8,8 @@ import stat
 from pathlib import Path
 
 import pytest
+
+from srunx.db import connection as conn_mod
 from srunx.db.connection import (
     get_config_dir,
     get_db_path,
@@ -16,8 +18,6 @@ from srunx.db.connection import (
     open_connection,
     transaction,
 )
-
-from srunx.db import connection as conn_mod
 
 # ---- Path resolution ----
 

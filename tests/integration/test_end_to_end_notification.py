@@ -17,6 +17,7 @@ from typing import Any
 
 import anyio
 import pytest
+
 from srunx.db.connection import open_connection
 from srunx.db.migrations import apply_migrations
 from srunx.db.models import Event
@@ -25,7 +26,6 @@ from srunx.db.repositories.endpoints import EndpointRepository
 from srunx.db.repositories.events import EventRepository
 from srunx.db.repositories.subscriptions import SubscriptionRepository
 from srunx.db.repositories.watches import WatchRepository
-
 from srunx.notifications.adapters.base import DeliveryAdapter, DeliveryError
 from srunx.notifications.service import NotificationService
 from srunx.pollers.delivery_poller import DeliveryPoller

@@ -34,11 +34,11 @@ from typing import Any
 
 import pytest
 import yaml  # type: ignore
+
 from srunx.db.connection import open_connection, transaction
 from srunx.db.repositories.deliveries import DeliveryRepository
 from srunx.db.repositories.endpoints import EndpointRepository
 from srunx.db.repositories.sweep_runs import SweepRunRepository
-
 from srunx.sweep import CellSpec, SweepSpec
 from srunx.sweep.orchestrator import SweepOrchestrator
 from srunx.sweep.state_service import WorkflowRunStateService

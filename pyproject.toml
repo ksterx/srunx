@@ -134,6 +134,13 @@ exclude_lines = [
 select = ["I", "E", "F", "B", "C", "UP"]
 ignore = ["E501", "C901", "F841", "B017"]
 
+[tool.ruff.lint.isort]
+# Pin first-party detection explicitly — auto-detection disagrees between
+# local (src/ layout inspected) and CI (editable install not yet present
+# at lint time), producing different isort groupings for the same file.
+# Explicit ``known-first-party`` makes the outcome identical everywhere.
+known-first-party = ["srunx"]
+
 [tool.ruff.lint.per-file-ignores]
 "src/srunx/web/routers/*.py" = ["B008"]  # Depends() in function defaults is standard FastAPI
 

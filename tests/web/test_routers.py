@@ -73,9 +73,8 @@ def client(  # type: ignore[misc]
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> TestClient:
-    from srunx.db.connection import init_db
-
     import srunx.web.config as config_mod
+    from srunx.db.connection import init_db
     from srunx.web.config import get_web_config
 
     # Isolate the srunx DB to a tmp dir so workflow_runs don't leak

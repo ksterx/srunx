@@ -12,8 +12,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from srunx.db.models import Event
 
+from srunx.db.models import Event
 from srunx.notifications.adapters.slack_webhook import SlackWebhookDeliveryAdapter
 from srunx.notifications.presets import should_deliver
 

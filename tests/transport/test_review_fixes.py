@@ -19,6 +19,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from srunx.callbacks import NotificationWatchCallback
+from srunx.client_protocol import JobStatusInfo
 from srunx.db.connection import open_connection
 from srunx.db.migrations import (
     MIGRATIONS,
@@ -30,9 +33,6 @@ from srunx.db.repositories.job_state_transitions import (
 )
 from srunx.db.repositories.jobs import JobRepository
 from srunx.db.repositories.watches import WatchRepository
-
-from srunx.callbacks import NotificationWatchCallback
-from srunx.client_protocol import JobStatusInfo
 from srunx.pollers.active_watch_poller import ActiveWatchPoller
 from srunx.transport import (
     TransportHandle,
@@ -251,7 +251,6 @@ class TestWorkflowResponseResolvesSSHChildren:
             WorkflowRunJobRepository,
         )
         from srunx.db.repositories.workflow_runs import WorkflowRunRepository
-
         from srunx.web.routers.workflows import _build_run_response
 
         conn, _ = tmp_srunx_db

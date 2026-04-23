@@ -26,8 +26,8 @@ from typing import Any
 
 import pytest
 import yaml  # type: ignore
-from srunx.db.connection import open_connection, transaction
 
+from srunx.db.connection import open_connection, transaction
 from srunx.runner import WorkflowRunner
 from srunx.sweep.state_service import WorkflowRunStateService
 

@@ -15,8 +15,8 @@ from typing import Any
 
 import anyio
 import pytest
-from srunx.db.models import ResourceSnapshot as DbResourceSnapshot
 
+from srunx.db.models import ResourceSnapshot as DbResourceSnapshot
 from srunx.monitor.types import ResourceSnapshot as MonitorResourceSnapshot
 from srunx.pollers.resource_snapshotter import ResourceSnapshotter
 

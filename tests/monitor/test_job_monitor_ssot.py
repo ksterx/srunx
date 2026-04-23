@@ -18,10 +18,10 @@ from collections.abc import Iterator
 from unittest.mock import MagicMock
 
 import pytest
+
 from srunx.db.repositories.job_state_transitions import (
     JobStateTransitionRepository,
 )
-
 from srunx.models import Job, JobStatus
 from srunx.monitor.job_monitor import JobMonitor
 
