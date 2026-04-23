@@ -1,4 +1,4 @@
-"""Tests for :class:`srunx.notifications.adapters.slack_webhook.SlackWebhookDeliveryAdapter`.
+"""Tests for :class:`srunx.notifications.adapters.slack_webhook.SlackWebhookAdapter`.
 
 ``slack_sdk.WebhookClient.send`` is mocked via
 ``unittest.mock.patch`` — no live HTTP calls are made.
@@ -14,7 +14,7 @@ import pytest
 
 from srunx.db.models import Event
 from srunx.notifications.adapters.base import DeliveryError
-from srunx.notifications.adapters.slack_webhook import SlackWebhookDeliveryAdapter
+from srunx.notifications.adapters.slack_webhook import SlackWebhookAdapter
 
 
 def _make_event(
@@ -50,13 +50,13 @@ class TestSend:
     """High-level ``send()`` behaviour."""
 
     def test_missing_webhook_url_raises(self) -> None:
-        adapter = SlackWebhookDeliveryAdapter()
+        adapter = SlackWebhookAdapter()
         event = _make_event("job.submitted", "job:1", {"job_id": 1, "name": "x"})
         with pytest.raises(DeliveryError, match="webhook_url"):
             adapter.send(event, {})
 
     def test_non_ok_response_raises(self) -> None:
-        adapter = SlackWebhookDeliveryAdapter()
+        adapter = SlackWebhookAdapter()
         event = _make_event("job.submitted", "job:1", {"job_id": 1, "name": "x"})
         endpoint_config = {"webhook_url": "https://hooks.slack.com/services/A/B/C"}
 
@@ -71,7 +71,7 @@ class TestSend:
                 adapter.send(event, endpoint_config)
 
     def test_exception_wrapped(self) -> None:
-        adapter = SlackWebhookDeliveryAdapter()
+        adapter = SlackWebhookAdapter()
         event = _make_event("job.submitted", "job:1", {"job_id": 1, "name": "x"})
         endpoint_config = {"webhook_url": "https://hooks.slack.com/services/A/B/C"}
 
@@ -86,7 +86,7 @@ class TestSend:
                 adapter.send(event, endpoint_config)
 
     def test_ok_response_does_not_raise(self) -> None:
-        adapter = SlackWebhookDeliveryAdapter()
+        adapter = SlackWebhookAdapter()
         event = _make_event("job.submitted", "job:1", {"job_id": 1, "name": "x"})
         endpoint_config = {"webhook_url": "https://hooks.slack.com/services/A/B/C"}
 
@@ -105,7 +105,7 @@ class TestSanitization:
     """Every user-supplied identifier should flow through ``sanitize_slack_text``."""
 
     def test_job_name_sanitized_in_blocks(self) -> None:
-        adapter = SlackWebhookDeliveryAdapter()
+        adapter = SlackWebhookAdapter()
         event = _make_event(
             "job.submitted",
             "job:1",
@@ -191,7 +191,7 @@ class TestEventKinds:
         source_ref: str,
         payload: dict[str, Any],
     ) -> None:
-        adapter = SlackWebhookDeliveryAdapter()
+        adapter = SlackWebhookAdapter()
         event = _make_event(kind, source_ref, payload)
         endpoint_config = {"webhook_url": "https://hooks.slack.com/services/A/B/C"}
 

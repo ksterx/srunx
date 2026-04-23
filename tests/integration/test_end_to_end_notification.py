@@ -32,7 +32,7 @@ from srunx.pollers.delivery_poller import DeliveryPoller
 
 
 class RecordingAdapter:
-    """Stand-in for ``SlackWebhookDeliveryAdapter`` that records calls."""
+    """Stand-in for ``SlackWebhookAdapter`` that records calls."""
 
     kind = "slack_webhook"
 

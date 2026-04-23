@@ -64,7 +64,7 @@ def local_http() -> Any:
 def test_delivery_poller_posts_to_local_http(
     tmp_path: Path, local_http: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Full pipeline through the real SlackWebhookDeliveryAdapter → local HTTP."""
+    """Full pipeline through the real SlackWebhookAdapter → local HTTP."""
     # --- Patch slack_sdk.WebhookClient so the adapter targets our local server.
     from slack_sdk.webhook import WebhookClient
 

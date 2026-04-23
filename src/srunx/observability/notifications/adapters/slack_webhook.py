@@ -13,11 +13,11 @@ from typing import Any
 from slack_sdk import WebhookClient
 
 from srunx.db.models import Event
-from srunx.notifications.adapters.base import DeliveryError
-from srunx.notifications.sanitize import sanitize_slack_text
+from srunx.observability.notifications.adapters.base import DeliveryError
+from srunx.observability.notifications.sanitize import sanitize_slack_text
 
 
-class SlackWebhookDeliveryAdapter:
+class SlackWebhookAdapter:
     """Deliver events via a Slack Incoming Webhook URL."""
 
     kind: str = "slack_webhook"
@@ -102,9 +102,7 @@ class SlackWebhookDeliveryAdapter:
         source_ref = event.source_ref
 
         if kind == "job.submitted":
-            fallback_id = SlackWebhookDeliveryAdapter._id_from_source_ref(
-                source_ref, "job"
-            )
+            fallback_id = SlackWebhookAdapter._id_from_source_ref(source_ref, "job")
             job_id = sanitize_slack_text(
                 str(payload.get("job_id") or fallback_id or "?")
             )
@@ -116,9 +114,7 @@ class SlackWebhookDeliveryAdapter:
             return text, [_section(body)]
 
         if kind == "job.status_changed":
-            fallback_id = SlackWebhookDeliveryAdapter._id_from_source_ref(
-                source_ref, "job"
-            )
+            fallback_id = SlackWebhookAdapter._id_from_source_ref(source_ref, "job")
             job_id = sanitize_slack_text(
                 str(payload.get("job_id") or fallback_id or "?")
             )
@@ -137,7 +133,7 @@ class SlackWebhookDeliveryAdapter:
             return text, [_section(body)]
 
         if kind == "workflow_run.status_changed":
-            fallback_id = SlackWebhookDeliveryAdapter._id_from_source_ref(
+            fallback_id = SlackWebhookAdapter._id_from_source_ref(
                 source_ref, "workflow_run"
             )
             run_id = sanitize_slack_text(
@@ -161,7 +157,7 @@ class SlackWebhookDeliveryAdapter:
             return text, [_section(body)]
 
         if kind == "sweep_run.status_changed":
-            return SlackWebhookDeliveryAdapter._format_sweep_run_event(event)
+            return SlackWebhookAdapter._format_sweep_run_event(event)
 
         if kind == "resource.threshold_crossed":
             partition = sanitize_slack_text(str(payload.get("partition", "all")))
@@ -205,7 +201,7 @@ class SlackWebhookDeliveryAdapter:
         ``representative_error``, ``sweep_run_id``, ``name``.
         """
         payload = event.payload or {}
-        fallback_id = SlackWebhookDeliveryAdapter._id_from_source_ref(
+        fallback_id = SlackWebhookAdapter._id_from_source_ref(
             event.source_ref, "sweep_run"
         )
         sweep_id = sanitize_slack_text(

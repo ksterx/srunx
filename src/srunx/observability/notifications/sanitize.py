@@ -2,7 +2,7 @@
 
 Extracted verbatim from :meth:`srunx.callbacks.SlackCallback._sanitize_text`
 so both the CLI-side ``SlackCallback`` and the new
-``SlackWebhookDeliveryAdapter`` can share a single implementation.
+``SlackWebhookAdapter`` can share a single implementation.
 """
 
 from __future__ import annotations
