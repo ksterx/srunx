@@ -9,45 +9,21 @@ aggregates child job statuses into the workflow run via an internal
 
 from __future__ import annotations
 
-import contextlib
-import functools
 import re
 import sqlite3
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-import anyio
-import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from srunx.db.connection import transaction
-from srunx.db.repositories.base import now_iso
-from srunx.db.repositories.job_state_transitions import (
-    JobStateTransitionRepository,
-)
-from srunx.db.repositories.jobs import JobRepository
-from srunx.db.repositories.watches import WatchRepository
-from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
-from srunx.db.repositories.workflow_runs import WorkflowRunRepository
-from srunx.exceptions import SweepExecutionError, WorkflowValidationError
 from srunx.logging import get_logger
-from srunx.models import (
-    Job,
-    ShellJob,
-    Workflow,
-)
-from srunx.rendering import (
-    RenderedWorkflow,
-    SubmissionRenderContext,
-    render_workflow_for_submission,
-)
 from srunx.runner import WorkflowRunner
 from srunx.slurm.ssh import SlurmSSHAdapter
-from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
+from srunx.slurm.ssh_executor import (
+    SlurmSSHExecutorPool as SlurmSSHExecutorPool,  # re-export for test patches
+)
 from srunx.sweep import SweepSpec
 from srunx.sweep.orchestrator import SweepOrchestrator
-from srunx.sweep.state_service import WorkflowRunStateService
 
 from ..deps import get_adapter, get_db_conn
 from ..schemas.workflows import (
@@ -57,6 +33,7 @@ from ..schemas.workflows import (
     WorkflowRunRequest,
 )
 from ..services import _submission_common
+from ..services.sweep_submission import SweepSubmissionService
 from ..services.workflow_run_cancellation import WorkflowRunCancellationService
 from ..services.workflow_run_query import (
     WorkflowRunQueryService,
@@ -71,16 +48,27 @@ from ..services.workflow_run_query import (
     serialize_run as _serialize_run,  # noqa: F401 — preserved for import parity
 )
 from ..services.workflow_storage import WorkflowStorageService
+from ..services.workflow_submission import WorkflowSubmissionService
 from ..services.workflow_validation import WorkflowValidationService
 
 # Re-exports for backward compatibility — external callers and tests that
 # ``from srunx.web.routers.workflows import WorkflowJobInput`` (etc.) keep
 # working. The canonical home is now ``srunx.web.schemas.workflows``.
+#
+# ``WorkflowRunner`` / ``SweepSpec`` / ``SweepOrchestrator`` /
+# ``SlurmSSHExecutorPool`` are listed so
+# ``unittest.mock.patch('srunx.web.routers.workflows.<name>')`` test
+# targets keep a live attribute to replace — services receive these
+# classes via constructor args so the patches flow through.
 __all__ = [
+    "SlurmSSHExecutorPool",
+    "SweepOrchestrator",
+    "SweepSpec",
     "SweepSpecRequest",
     "WorkflowCreateRequest",
     "WorkflowJobInput",
     "WorkflowRunRequest",
+    "WorkflowRunner",
     "router",
 ]
 
@@ -204,587 +192,10 @@ async def create_workflow(body: WorkflowCreateRequest) -> dict[str, Any]:
 _WORKFLOW_RUN_PRESETS = ("terminal", "running_and_terminal", "all")
 
 
-def _filter_workflow_jobs(
-    workflow: Workflow,
-    from_job: str | None,
-    to_job: str | None,
-    single_job: str | None,
-) -> list[Job | ShellJob]:
-    """Filter workflow jobs based on execution control parameters."""
-    all_jobs = {job.name: job for job in workflow.jobs}
-
-    if single_job:
-        if single_job not in all_jobs:
-            raise HTTPException(422, f"Job '{single_job}' not found in workflow")
-        job = all_jobs[single_job]
-        # Create a copy-like job with no dependencies for standalone execution
-        return [job]
-
-    names = [job.name for job in workflow.jobs]
-
-    start_idx = 0
-    end_idx = len(names)
-
-    if from_job:
-        if from_job not in all_jobs:
-            raise HTTPException(422, f"Job '{from_job}' not found in workflow")
-        start_idx = names.index(from_job)
-
-    if to_job:
-        if to_job not in all_jobs:
-            raise HTTPException(422, f"Job '{to_job}' not found in workflow")
-        end_idx = names.index(to_job) + 1
-
-    if from_job and to_job and start_idx >= end_idx:
-        raise HTTPException(
-            422,
-            f"from_job '{from_job}' must appear before to_job '{to_job}' in the workflow",
-        )
-
-    selected_names = set(names[start_idx:end_idx])
-    return [job for job in workflow.jobs if job.name in selected_names]
-
-
-@contextlib.asynccontextmanager
-async def _hold_workflow_mounts_web(
-    workflow: Workflow,
-    runner: WorkflowRunner,
-    *,
-    sync_required: bool = True,
-) -> AsyncIterator[Any]:
-    """Hold the per-mount sync lock across the whole workflow submission.
-
-    Workflow Phase 2 (#135) — web parity with the CLI's
-    :func:`srunx.cli.workflow._hold_workflow_mounts`. Each unique
-    mount touched by the workflow's :class:`ShellJob` ``script_path``
-    values is rsynced **once** under
-    :func:`~srunx.sync.service.mount_sync_session`, and the
-    per-(profile, mount) lock is held for the entire ``async with``
-    block so a concurrent ``srunx flow run`` / ``/api/workflows/run``
-    can't rsync different bytes between our sync and our submission.
-
-    Sort order matches the profile's ``mounts`` list so two web
-    requests touching overlapping mount sets always acquire locks
-    in the same global order — eliminates lock-inversion deadlock,
-    same fix as Codex follow-up #2 on PR #141.
-
-    Yields the resolved :class:`ServerProfile` so the caller can use
-    it for path translation / submission-context construction. Yields
-    ``None`` when no SSH profile is configured (legacy local path).
-
-    Lock acquisition + rsync errors surface as
-    :class:`HTTPException(502)`. Exceptions raised from the body
-    (sbatch failures, render errors) propagate **unchanged** so the
-    caller can route them through the existing per-phase ``_fail``
-    bookkeeping. Mirrors the CLI exception-scoping rationale (Codex
-    blocker #1 on PR #141).
-
-    ``sync_required=False`` skips the rsync but still acquires the
-    lock — preserves the race-free submission invariant for callers
-    that opted out of the transfer.
-    """
-    from srunx.config import get_config
-    from srunx.runtime.submission_plan import collect_touched_mounts
-    from srunx.ssh.core.config import ConfigManager
-    from srunx.sync.lock import SyncLockTimeoutError
-    from srunx.sync.service import SyncAbortedError, mount_sync_session
-
-    from ..config import get_web_config
-    from ..sync_utils import get_current_profile
-
-    def _resolve_profile_with_name() -> tuple[Any, str | None]:
-        # Mirrors ``sync_utils.get_current_profile`` but returns the
-        # name too — :func:`acquire_sync_lock` keys the lock file on
-        # ``(profile_name, mount_name)`` so we need both halves.
-        web_cfg = get_web_config()
-        cm = ConfigManager()
-        name = web_cfg.ssh_profile or cm.get_current_profile_name()
-        if not name:
-            return None, None
-        return cm.get_profile(name), name
-
-    profile, profile_name = await anyio.to_thread.run_sync(_resolve_profile_with_name)
-    if profile is None:
-        # Fall back to the patched-in ``get_current_profile`` so tests
-        # that mock the helper directly (without seeding the
-        # ``ConfigManager`` registry) still see a profile here.
-        profile = await anyio.to_thread.run_sync(get_current_profile)
-        if profile is None:
-            yield None
-            return
-        profile_name = profile_name or runner.default_project or ""
-
-    mounts = collect_touched_mounts(workflow, profile)
-    if not mounts:
-        yield profile
-        return
-
-    mount_order = {m.name: i for i, m in enumerate(profile.mounts)}
-    mounts.sort(key=lambda m: mount_order.get(m.name, len(mount_order)))
-
-    config = get_config()
-    # Lock-file key — falls back to the workflow's default_project so
-    # we never hand an empty string to acquire_sync_lock.
-    effective_profile_name = profile_name or runner.default_project or "default"
-
-    def _enter_all_mounts() -> contextlib.ExitStack:
-        # ExitStack lifetime spans the ``async with`` body; constructed
-        # off-thread because mount_sync_session is a synchronous CM
-        # (file lock + subprocess rsync). The stack is closed back in
-        # ``_close_stack`` after the body exits.
-        stack = contextlib.ExitStack()
-        try:
-            for mount in mounts:
-                outcome = stack.enter_context(
-                    mount_sync_session(
-                        profile_name=effective_profile_name,
-                        profile=profile,
-                        mount=mount,
-                        config=config.sync,
-                        sync_required=sync_required,
-                    )
-                )
-                if outcome.performed:
-                    logger.info("Synced mount '%s'", mount.name)
-        except BaseException:
-            stack.close()
-            raise
-        return stack
-
-    try:
-        stack = await anyio.to_thread.run_sync(_enter_all_mounts)
-    except SyncAbortedError as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Mount sync failed: {exc}"
-        ) from exc
-    except SyncLockTimeoutError as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Mount sync failed: {exc}"
-        ) from exc
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Mount sync failed: {exc}"
-        ) from exc
-
-    try:
-        # Body exceptions MUST propagate as-is (sbatch failures vs sync
-        # failures must stay distinguishable to the caller's per-phase
-        # _fail bookkeeping). Codex blocker #1 on PR #141.
-        yield profile
-    finally:
-        await anyio.to_thread.run_sync(stack.close)
-
-
-def _build_submission_context(
-    mount_name: str | None,
-    profile: Any,
-) -> SubmissionRenderContext:
-    """Construct a :class:`SubmissionRenderContext` from the Web profile + mount.
-
-    - ``mount_name`` is the selected ``?mount=<name>`` query parameter.
-      When ``None``, no mount translation is performed.
-    - ``profile`` is the configured :class:`ServerProfile` (or ``None``
-      when no SSH profile is set up). Its ``mounts`` list is frozen into
-      a tuple so the context stays hashable / immutable.
-    - ``default_work_dir`` is the selected mount's remote path (so jobs
-      whose ``work_dir`` is empty inherit the mount root).
-    """
-    mounts: tuple[Any, ...] = tuple(profile.mounts) if profile is not None else ()
-    default_work_dir: str | None = None
-    if mount_name is not None and profile is not None:
-        for m in profile.mounts:
-            if m.name == mount_name:
-                default_work_dir = m.remote
-                break
-    return SubmissionRenderContext(
-        mount_name=mount_name,
-        mounts=mounts,
-        default_work_dir=default_work_dir,
-    )
-
-
-def _render_workflow(
-    yaml_path: Path,
-    *,
-    submission_context: SubmissionRenderContext,
-    args_override: dict[str, Any] | None = None,
-    single_job: str | None = None,
-) -> RenderedWorkflow:
-    """Thin wrapper around :func:`render_workflow_for_submission`.
-
-    The previous ``_prepare_render_context`` / ``_render_scripts`` pair
-    re-implemented a mount-aware render local to the Web router; this
-    delegates to the canonical helper so Web non-sweep, Web sweep, and
-    MCP all share identical semantics.
-    """
-    return render_workflow_for_submission(
-        yaml_path,
-        args_override=args_override,
-        context=submission_context,
-        single_job=single_job,
-    )
-
-
-def _enforce_shell_script_roots(
-    workflow: Workflow,
-    mount: str,
-    profile: Any,
-) -> None:
-    """Guard that every :class:`ShellJob`'s script_path stays under allowed roots.
-
-    The canonical render helper reads :class:`ShellJob` scripts verbatim
-    (``render_shell_job_script`` uses ``script_path`` as the template); we
-    still need the directory-traversal check that the old ``_render_scripts``
-    performed before the file was opened. Called before render so bogus
-    paths surface as 403 with no partial render side effects.
-    """
-    from srunx.security import find_shell_script_violation
-
-    allowed_roots = [_workflow_dir(mount).resolve()]
-    if profile:
-        allowed_roots.extend(Path(m.local).resolve() for m in profile.mounts)
-    violation = find_shell_script_violation(workflow, allowed_roots)
-    if violation is not None:
-        raise HTTPException(
-            403,
-            f"Script path '{violation.script_path}' is outside allowed directories",
-        )
-
-
-def _resolve_in_place_target(
-    job: Job | ShellJob,
-    rendered_text: str,
-    profile: Any,
-) -> tuple[str, str] | None:
-    """Decide whether *job* qualifies for the in-place sbatch path.
-
-    Workflow Phase 2 (#135): only :class:`ShellJob` instances whose
-    ``script_path`` resolves under one of the SSH profile's mount
-    ``local`` roots, and whose Jinja-rendered bytes still equal the
-    on-disk source bytes, can run the user's file verbatim on the
-    cluster. Anything else (``Job`` with ``command``, ShellJob outside
-    every mount, or rendered output that diverged from source) must
-    fall back to the legacy temp-upload path so the rendered artifact
-    actually reaches the cluster.
-
-    Returns ``(remote_path, submit_cwd)`` when the in-place path is
-    safe, otherwise ``None``. ``submit_cwd`` is the script's parent
-    directory on the remote so relative paths inside the user's
-    ``#SBATCH`` directives resolve as they would on a head-node
-    ``sbatch ./script.sh``. Same ``parent_remote or remote_script``
-    fallback the single-job /api/jobs path uses.
-
-    Path security: the workflow's ``_enforce_shell_script_roots``
-    guard already rejected scripts outside every allowed root before
-    render, so reaching here means the path is safe to translate.
-    The mount lookup is a longest-prefix match via
-    :func:`resolve_mount_for_path` so nested mounts pick the deepest
-    owner.
-    """
-    from srunx.runtime.submission_plan import (
-        render_text_matches_source,
-        resolve_mount_for_path,
-        translate_local_to_remote,
-    )
-
-    if profile is None or not isinstance(job, ShellJob):
-        return None
-
-    script_attr = getattr(job, "script_path", None)
-    if not script_attr:
-        return None
-
-    try:
-        source_path = Path(script_attr)
-    except (TypeError, ValueError):
-        return None
-
-    mount = resolve_mount_for_path(source_path, profile)
-    if mount is None:
-        return None
-
-    if not render_text_matches_source(rendered_text, source_path):
-        return None
-
-    remote_path = translate_local_to_remote(source_path, mount)
-    parent_remote, _, _ = remote_path.rpartition("/")
-    submit_cwd = parent_remote or remote_path
-    return remote_path, submit_cwd
-
-
-async def _submit_jobs_bfs(
-    workflow: Workflow,
-    scripts: dict[str, str],
-    run_opts: WorkflowRunRequest,
-    adapter: SlurmSSHAdapter,
-    *,
-    conn: sqlite3.Connection,
-    run_id: int,
-    profile: Any = None,
-    unrendered_jobs_by_name: dict[str, Job | ShellJob] | None = None,
-) -> dict[str, str]:
-    """Submit jobs in topological order via BFS, returning {name: slurm_id}.
-
-    Each successful submit is persisted atomically:
-
-    1. ``jobs`` row via :meth:`JobRepository.record_submission` (with
-       ``submission_source='workflow'`` + ``workflow_run_id``).
-    2. Seed ``job_state_transitions`` with ``PENDING`` so the active
-       watch poller's first observation produces a real transition.
-    3. Link to the workflow via :meth:`WorkflowRunJobRepository.create`.
-
-    On sbatch failure we record a membership row with ``job_id=None`` so
-    the response can still reflect the attempted job set, then raise.
-
-    Per-job dispatch (workflow Phase 2 / #135 web parity): when
-    *profile* is supplied AND a job is a :class:`ShellJob` whose
-    rendered bytes match the on-disk source AND that source lives
-    under one of the profile's mounts, sbatch runs against the
-    already-on-remote path via :meth:`SlurmSSHAdapter.submit_remote_sbatch`
-    (no tmp upload, the user's own ``#SBATCH`` directives win).
-    Everything else stays on the legacy temp-upload path —
-    :meth:`SlurmSSHAdapter.submit_job` ships the rendered bytes to
-    ``$SRUNX_TEMP_DIR`` so the cluster runs what srunx generated.
-    """
-    from collections import deque
-
-    job_repo = JobRepository(conn)
-    wrj_repo = WorkflowRunJobRepository(conn)
-    transition_repo = JobStateTransitionRepository(conn)
-
-    filtered_names = {job.name for job in workflow.jobs}
-    job_map: dict[str, Job | ShellJob] = {job.name: job for job in workflow.jobs}
-    dependents: dict[str, list[str]] = {job.name: [] for job in workflow.jobs}
-    in_degree: dict[str, int] = {
-        job.name: len(
-            [d for d in job.parsed_dependencies if d.job_name in filtered_names]
-        )
-        for job in workflow.jobs
-    }
-
-    for job in workflow.jobs:
-        for dep in job.parsed_dependencies:
-            if dep.job_name in filtered_names:
-                dependents[dep.job_name].append(job.name)
-
-    queue: deque[str] = deque(
-        job.name for job in workflow.jobs if in_degree[job.name] == 0
-    )
-    submitted: dict[str, str] = {}
-
-    while queue:
-        current_name = queue.popleft()
-        current_job = job_map[current_name]
-
-        dep_parts: list[str] = []
-        if not run_opts.single_job:
-            for dep in current_job.parsed_dependencies:
-                if dep.job_name in submitted:
-                    parent_id = submitted[dep.job_name]
-                    dep_parts.append(f"{dep.dep_type}:{parent_id}")
-        dependency = ",".join(dep_parts) if dep_parts else None
-
-        depends_on = [
-            d.job_name
-            for d in current_job.parsed_dependencies
-            if d.job_name in filtered_names
-        ]
-
-        # The rendered ``current_job`` may have its ``script_path`` already
-        # translated to remote form by ``_normalize_paths_for_mount``, which
-        # makes the in-place mount lookup miss. Use the unrendered job (with
-        # its original local path) when the caller threaded one through.
-        # See #150 root cause.
-        in_place_job = (
-            unrendered_jobs_by_name.get(current_name, current_job)
-            if unrendered_jobs_by_name is not None
-            else current_job
-        )
-        in_place = _resolve_in_place_target(
-            in_place_job, scripts[current_name], profile
-        )
-
-        try:
-            if in_place is not None:
-                remote_path, submit_cwd = in_place
-
-                def _in_place_submit(
-                    rp: str = remote_path,
-                    cwd: str = submit_cwd,
-                    n: str = current_name,
-                    d: str | None = dependency,
-                ) -> int:
-                    submitted_obj = adapter.submit_remote_sbatch(
-                        rp,
-                        submit_cwd=cwd,
-                        job_name=n,
-                        dependency=d,
-                    )
-                    if submitted_obj is None or submitted_obj.job_id is None:
-                        raise RuntimeError("remote sbatch returned no job_id")
-                    return int(submitted_obj.job_id)
-
-                slurm_id = await anyio.to_thread.run_sync(_in_place_submit)
-            else:
-                result = await anyio.to_thread.run_sync(
-                    lambda s=scripts[current_name],  # type: ignore[misc]
-                    n=current_name,
-                    d=dependency: adapter.submit_job(s, job_name=n, dependency=d)
-                )
-                slurm_id = int(result["job_id"])
-            submitted[current_name] = str(slurm_id)
-        except Exception as exc:
-            # R3: record a membership row with ``job_id=None`` so the
-            # GET /runs/{id} response still shows the failed node.
-            # Best-effort — a write failure must not mask the original
-            # sbatch exception.
-            try:
-
-                def _record_failed(
-                    jname: str = current_name,
-                    deps: list[str] = depends_on,
-                ) -> None:
-                    wrj_repo.create(
-                        workflow_run_id=run_id,
-                        job_name=jname,
-                        depends_on=deps or None,
-                        job_id=None,
-                    )
-
-                await anyio.to_thread.run_sync(_record_failed)
-            except Exception:
-                logger.debug(
-                    "Failed to record membership for the failed job",
-                    exc_info=True,
-                )
-            raise HTTPException(
-                status_code=502,
-                detail=f"sbatch failed for '{current_name}': {exc}",
-            ) from exc
-
-        # R1: persist the three related rows atomically. On autocommit
-        # connections (isolation_level=None) each ``execute`` would
-        # otherwise commit on its own — a mid-sequence failure would
-        # leave e.g. the jobs row inserted with no transition or
-        # membership to match it, breaking poller dedup downstream.
-        #
-        # Transport axis: pick up the adapter's scheduler_key so SSH-
-        # submitted workflow jobs land on the correct (ssh, profile,
-        # scheduler_key) triple — otherwise the poller would query
-        # local SLURM for remote job ids.
-        wf_scheduler_key = adapter.scheduler_key
-        if wf_scheduler_key.startswith("ssh:"):
-            wf_transport_type = "ssh"
-            wf_profile_name: str | None = wf_scheduler_key[len("ssh:") :]
-        else:
-            wf_transport_type = "local"
-            wf_profile_name = None
-
-        def _persist(
-            jid: int = slurm_id,
-            jname: str = current_name,
-            job_obj: Job | ShellJob = current_job,
-            deps: list[str] = depends_on,
-            tt: str = wf_transport_type,
-            pn: str | None = wf_profile_name,
-            sk: str = wf_scheduler_key,
-        ) -> None:
-            resources = getattr(job_obj, "resources", None)
-            environment = getattr(job_obj, "environment", None)
-            command_val = getattr(job_obj, "command", None)
-            with transaction(conn, "IMMEDIATE"):
-                job_repo.record_submission(
-                    job_id=jid,
-                    name=jname,
-                    status="PENDING",
-                    submission_source="workflow",
-                    transport_type=tt,  # type: ignore[arg-type]
-                    profile_name=pn,
-                    scheduler_key=sk,
-                    workflow_run_id=run_id,
-                    command=command_val if isinstance(command_val, list) else None,
-                    nodes=getattr(resources, "nodes", None) if resources else None,
-                    gpus_per_node=(
-                        getattr(resources, "gpus_per_node", None) if resources else None
-                    ),
-                    memory_per_node=(
-                        getattr(resources, "memory_per_node", None)
-                        if resources
-                        else None
-                    ),
-                    time_limit=(
-                        getattr(resources, "time_limit", None) if resources else None
-                    ),
-                    partition=(
-                        getattr(resources, "partition", None) if resources else None
-                    ),
-                    nodelist=(
-                        getattr(resources, "nodelist", None) if resources else None
-                    ),
-                    conda=getattr(environment, "conda", None) if environment else None,
-                    venv=getattr(environment, "venv", None) if environment else None,
-                    env_vars=(
-                        getattr(environment, "env_vars", None) if environment else None
-                    ),
-                )
-                transition_repo.insert(
-                    job_id=jid,
-                    from_status=None,
-                    to_status="PENDING",
-                    source="webhook",
-                    scheduler_key=sk,
-                )
-                wrj_repo.create(
-                    workflow_run_id=run_id,
-                    job_name=jname,
-                    depends_on=deps or None,
-                    job_id=jid,
-                    scheduler_key=sk,
-                )
-
-        await anyio.to_thread.run_sync(_persist)
-
-        for dep_name in dependents[current_name]:
-            in_degree[dep_name] -= 1
-            if in_degree[dep_name] == 0:
-                queue.append(dep_name)
-
-    return submitted
-
-
-async def _run_sweep_background(
-    orchestrator: SweepOrchestrator,
-    sweep_run_id: int,
-    pool: SlurmSSHExecutorPool | None = None,
-) -> None:
-    """Background task body: drive already-materialized cells to completion.
-
-    Exceptions are logged and swallowed — the sweep's status columns in
-    the DB are authoritative, and the aggregator will converge the sweep
-    to a terminal state even if this task crashes mid-flight.
-
-    When a ``pool`` is supplied, every pooled SSH adapter is torn down
-    after the orchestrator returns (success or crash) so a completed
-    sweep never leaks SSH sessions against the cluster.
-    """
-    try:
-        await orchestrator.arun_from_materialized(sweep_run_id)
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "Background sweep task for sweep_run_id=%s raised",
-            sweep_run_id,
-            exc_info=True,
-        )
-    finally:
-        if pool is not None:
-            try:
-                await anyio.to_thread.run_sync(pool.close)
-            except Exception:  # noqa: BLE001 — pool cleanup is best-effort
-                logger.warning(
-                    "Failed to close SSH executor pool for sweep_run_id=%s",
-                    sweep_run_id,
-                    exc_info=True,
-                )
+# ── Sweep shims — preserved as module-level entry points so
+# ``tests/sweep/test_sweep_ssh_integration.py`` can call
+# ``wf_mod._dispatch_sweep(...)`` / ``wf_mod._run_sweep_background(...)``
+# directly. Real logic lives in ``SweepSubmissionService``.
 
 
 async def _dispatch_sweep(
@@ -796,176 +207,33 @@ async def _dispatch_sweep(
     adapter: SlurmSSHAdapter,
     mount: str | None = None,
 ) -> dict[str, Any]:
-    """Materialize synchronously + spawn the orchestrator as a background task.
-
-    Returns 202 as soon as the cells exist in the DB so HTTP clients
-    don't block on the full sweep. Matrix validation (non-scalar
-    values, reserved axis names, oversize matrices) is routed through
-    :class:`WorkflowValidationError` by ``expand_matrix`` and surfaced
-    as HTTP 422.
-
-    Sweep cells run through a per-sweep :class:`SlurmSSHExecutorPool`
-    bounded by ``min(max_parallel, 8)`` so concurrent cells share a small
-    set of pooled SSH sessions against the cluster. The pool is closed in
-    :func:`_run_sweep_background` once the orchestrator returns.
-    """
-    assert body.sweep is not None  # narrowed by caller
-    # ``SweepSpec`` / ``SweepOrchestrator`` are module-imported so
-    # tests can patch them via ``srunx.web.routers.workflows.*``.
-
-    # Read raw YAML once so the orchestrator can see base ``args`` and
-    # the workflow name. ``from_yaml`` would redundantly parse it.
-    def _load_raw() -> dict[str, Any]:
-        raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-        return raw if isinstance(raw, dict) else {}
-
-    workflow_data = await anyio.to_thread.run_sync(_load_raw)
-
-    try:
-        sweep_spec = SweepSpec(
-            matrix=body.sweep.matrix,
-            fail_fast=body.sweep.fail_fast,
-            max_parallel=body.sweep.max_parallel,
-        )
-    except Exception as exc:  # noqa: BLE001 — Pydantic / value errors
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    # C3 (security): apply the same ShellJob script-root guard the
-    # non-sweep path runs, before any DB materialize side effect. The
-    # matrix axes in ``sweep.matrix`` are scalars (validated by
-    # ``expand_matrix``) so a per-cell check would only be redundant;
-    # the base workflow's ShellJob ``script_path`` is the entire attack
-    # surface. ``mount`` is required by the caller (``run_workflow``)
-    # so it is non-None in practice; keep the guard defensive for
-    # direct callers.
-    profile = await anyio.to_thread.run_sync(_get_current_profile)
-    base_runner: WorkflowRunner | None = None
-    if mount is not None:
-        try:
-            base_runner = await anyio.to_thread.run_sync(
-                lambda: WorkflowRunner.from_yaml(
-                    yaml_path,
-                    args_override=body.args_override or None,
-                )
-            )
-        except WorkflowValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001 — YAML load / Jinja errors
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        assert base_runner is not None  # narrowed by the from_yaml call above
-        runner_for_guard = base_runner
-        await anyio.to_thread.run_sync(
-            lambda: _enforce_shell_script_roots(
-                runner_for_guard.workflow, mount, profile
-            )
-        )
-
-        # Workflow Phase 2 (#135 web parity): rsync each touched mount
-        # **once** at dispatch time, even when the sweep expands into
-        # many cells targeting the same mount. The lock is released as
-        # soon as the rsync completes — sweep cells then take the
-        # legacy temp-upload path (the CLI keeps ``allow_in_place=False``
-        # for sweeps because cell-specific Jinja args can move
-        # ``script_path`` to a mount the base render didn't touch).
-        async with _hold_workflow_mounts_web(
-            runner_for_guard.workflow, runner_for_guard, sync_required=True
-        ):
-            pass
-
-    endpoint_id: int | None = None
-    if body.notify and body.endpoint_id is not None:
-        endpoint_id = body.endpoint_id
-    elif body.notify and body.endpoint_id is None:
-        # Non-fatal — matches the non-sweep path's contract: the sweep
-        # still runs, but no external deliveries are wired.
-        logger.warning("sweep run: notify=true with no endpoint_id; skipping")
-
-    # Build a per-sweep SSH executor pool so each cell's runner submits
-    # through the configured cluster adapter instead of the local
-    # :class:`Slurm` client. Size is capped at 8 to avoid opening more
-    # SSH sessions than most clusters comfortably accept from a single
-    # web host. ``pool.lease`` matches ``WorkflowJobExecutorFactory`` so
-    # it can be handed to the orchestrator without further wrapping.
-    pool_size = max(1, min(sweep_spec.max_parallel, 8))
-    pool = SlurmSSHExecutorPool(
-        adapter.connection_spec,
-        callbacks=[],
-        size=pool_size,
+    """Dispatch shim — see :meth:`SweepSubmissionService.dispatch`."""
+    sweep_service = SweepSubmissionService(
+        sweep_spec_cls=SweepSpec,
+        orchestrator_cls=SweepOrchestrator,
+        profile_resolver=_get_current_profile,
+        workflow_runner_cls=WorkflowRunner,
+        executor_pool_cls=SlurmSSHExecutorPool,
+    )
+    return await sweep_service.dispatch(
+        yaml_path=yaml_path,
+        name=name,
+        body=body,
+        request=request,
+        adapter=adapter,
+        mount=mount,
     )
 
-    # Hand the mount-aware render context through to the orchestrator so
-    # every sweep cell's ``WorkflowRunner`` sees the same ``work_dir`` /
-    # ``log_dir`` translation as the non-sweep path. ``profile`` was
-    # already resolved above for the ShellJob script-root guard.
-    submission_context = _build_submission_context(mount, profile)
 
-    orchestrator = SweepOrchestrator(
-        workflow_yaml_path=yaml_path,
-        workflow_data={"name": name, **workflow_data},
-        args_override=body.args_override or None,
-        sweep_spec=sweep_spec,
-        submission_source="web",
-        endpoint_id=endpoint_id,
-        preset=body.preset,
-        executor_factory=pool.lease,
-        submission_context=submission_context,
-    )
+async def _run_sweep_background(
+    orchestrator: Any,
+    sweep_run_id: int,
+    pool: SlurmSSHExecutorPool | None = None,
+) -> None:
+    """Background-task shim — see :func:`run_sweep_background`."""
+    from ..services.sweep_submission import run_sweep_background
 
-    try:
-        sweep_run_id = await anyio.to_thread.run_sync(orchestrator.materialize)
-    except WorkflowValidationError as exc:
-        pool.close()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except SweepExecutionError as exc:
-        pool.close()
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except BaseException:
-        pool.close()
-        raise
-
-    # Spawn the execution loop on the app's lifespan task group so the
-    # HTTP request can return 202 immediately. ``task_group`` is set up
-    # in :func:`srunx.web.app.lifespan`; fall back to a stand-alone
-    # ``asyncio.create_task`` if the app state hasn't been wired (e.g.
-    # a bare ``TestClient`` without lifespan). Either way the pool is
-    # closed inside :func:`_run_sweep_background`.
-    task_group = getattr(request.app.state, "task_group", None)
-    if task_group is not None:
-        task_group.start_soon(_run_sweep_background, orchestrator, sweep_run_id, pool)
-    else:
-        # Fallback for test harnesses that don't run lifespan: keep a
-        # weak-ish reference to the spawned task so it isn't garbage-
-        # collected mid-flight.
-        import asyncio
-
-        pending = getattr(request.app.state, "background_tasks", None)
-        if pending is None:
-            pending = set()
-            request.app.state.background_tasks = pending
-        task = asyncio.create_task(
-            _run_sweep_background(orchestrator, sweep_run_id, pool)
-        )
-        pending.add(task)
-        task.add_done_callback(pending.discard)
-
-    # Read the freshly-materialized row so counters + status reflect the
-    # DB state, not the orchestrator's pre-run view.
-    from srunx.db.connection import open_connection as _open
-    from srunx.db.repositories.sweep_runs import SweepRunRepository
-
-    def _load_sweep() -> Any:
-        db_conn = _open()
-        try:
-            return SweepRunRepository(db_conn).get(sweep_run_id)
-        finally:
-            db_conn.close()
-
-    sweep_row = await anyio.to_thread.run_sync(_load_sweep)
-    return {
-        "sweep_run_id": sweep_run_id,
-        "status": sweep_row.status if sweep_row is not None else "pending",
-        "cell_count": sweep_row.cell_count if sweep_row is not None else 0,
-    }
+    await run_sweep_background(orchestrator, sweep_run_id, pool)
 
 
 @router.post("/{name}/run", status_code=202)
@@ -979,15 +247,11 @@ async def run_workflow(
 ) -> dict[str, Any]:
     """Run a workflow: sync mounts, submit jobs with SLURM dependencies.
 
-    On success, creates a ``kind='workflow_run'`` watch that
+    On success, creates a kind='workflow_run' watch that
     :class:`~srunx.pollers.active_watch_poller.ActiveWatchPoller`
     consumes to drive aggregate status transitions after the request
     returns.
     """
-    # ``request`` is forwarded to ``_dispatch_sweep`` so the sweep
-    # branch can spawn the execution loop on the app's lifespan task
-    # group (avoiding a blocked HTTP response). Non-sweep branches
-    # don't need it.
     if not _SAFE_NAME.match(name):
         raise HTTPException(status_code=422, detail="Invalid workflow name")
     if not mount:
@@ -995,34 +259,24 @@ async def run_workflow(
 
     run_opts = body or WorkflowRunRequest()
 
-    # Validate preset up-front — before mounting, rendering, and
-    # ``sbatch``ing. Deferring this check until Phase 5 (post-submit)
-    # means a bogus preset returns 422 with jobs already queued on
-    # the cluster, leaving orphans behind. The implementation set
-    # matches ``SubscriptionRepository`` + the subscriptions router
-    # guard (P1-3) — ``digest`` has no delivery pipeline yet.
-    if run_opts.notify and run_opts.preset not in _WORKFLOW_RUN_PRESETS:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"Invalid preset '{run_opts.preset}'. Allowed: {_WORKFLOW_RUN_PRESETS}"
-            ),
-        )
-
-    # R7: sanitize structured sweep / args_override payloads. YAML-level
-    # guard still runs on upload; this catches requests that bypass it.
-    if run_opts.args_override:
-        _reject_python_prefix_web(run_opts.args_override, source="args_override")
+    # Sweep-axis python:-prefix guard must run before dispatching into
+    # the sweep service (the matrix is consumed there and wouldn't
+    # re-check). The args_override guard runs inside
+    # WorkflowSubmissionService.run for the non-sweep branch.
     if run_opts.sweep is not None:
         _reject_python_prefix_web(run_opts.sweep.matrix, source="sweep.matrix")
+        if run_opts.args_override:
+            _reject_python_prefix_web(run_opts.args_override, source="args_override")
 
     yaml_path = _find_yaml(name, mount)
 
-    # Sweep branch: materialize synchronously so the 202 response carries
-    # a real ``sweep_run_id``, then spawn the execution loop on the app's
-    # lifespan task group. Per-cell workflow_run rows are created inside
-    # the orchestrator's happy-path TX; the client polls
-    # ``/api/sweep_runs/{id}``.
+    # Sweep branch: materialize synchronously so the 202 response
+    # carries a real sweep_run_id, then spawn the execution loop on the
+    # app's lifespan task group.
+    #
+    # SweepSpec / SweepOrchestrator are passed by reference so that
+    # unittest.mock.patch('srunx.web.routers.workflows.SweepSpec',
+    # ...) continues to affect the materialize call.
     if run_opts.sweep is not None:
         return await _dispatch_sweep(
             yaml_path=yaml_path,
@@ -1033,281 +287,24 @@ async def run_workflow(
             mount=mount,
         )
 
-    # Load and optionally filter workflow
-    runner = await anyio.to_thread.run_sync(
-        lambda: WorkflowRunner.from_yaml(
-            yaml_path,
-            args_override=run_opts.args_override or None,
-        )
+    submission_service = WorkflowSubmissionService(
+        profile_resolver=_get_current_profile,
+        terminal_statuses=_WORKFLOW_TERMINAL_STATUSES,
+        allowed_presets=_WORKFLOW_RUN_PRESETS,
+        # Pass the router's ``WorkflowRunner`` attribute so tests that
+        # patch ``srunx.web.routers.workflows.WorkflowRunner`` reach
+        # the ``from_yaml`` call.
+        workflow_runner_cls=WorkflowRunner,
     )
-    workflow = runner.workflow
-    if run_opts.from_job or run_opts.to_job or run_opts.single_job:
-        filtered_jobs = _filter_workflow_jobs(
-            workflow, run_opts.from_job, run_opts.to_job, run_opts.single_job
-        )
-        workflow = Workflow(name=workflow.name, jobs=filtered_jobs)
-
-    run_repo = WorkflowRunRepository(conn)
-    watch_repo = WatchRepository(conn)
-
-    # Create run record (skip for dry runs)
-    run_id: int | None = None
-    if not run_opts.dry_run:
-        run_id = await anyio.to_thread.run_sync(
-            lambda: run_repo.create(
-                workflow_name=name,
-                yaml_path=str(yaml_path),
-                args=runner.args or None,
-                triggered_by="web",
-            )
-        )
-
-    def _fail(reason: str) -> None:
-        if run_id is None:
-            return
-        # Route through WorkflowRunStateService so a status_changed event
-        # is emitted (subscribers of the auto-created workflow_run watch
-        # then receive a Slack-etc. delivery). Read the current status
-        # fresh — the poller may have already advanced the row before
-        # the failure fires.
-        with transaction(conn, "IMMEDIATE"):
-            latest = run_repo.get(run_id)
-            if latest is None or latest.status in _WORKFLOW_TERMINAL_STATUSES:
-                return
-            WorkflowRunStateService.update(
-                conn=conn,
-                workflow_run_id=run_id,
-                from_status=latest.status,
-                to_status="failed",
-                error=reason,
-                completed_at=now_iso(),
-            )
-
-    # Resolve the SSH profile up-front so render + the shell-script
-    # guard see the same mount registry the lock-and-submit path will
-    # use. ``_hold_workflow_mounts_web`` re-resolves it internally
-    # (matches the CLI structure) — the per-request profile read is
-    # cheap and keeps the render path independent of the lock context.
-    profile = await anyio.to_thread.run_sync(_get_current_profile)
-
-    # Phase 2: Render scripts via the canonical helper. Mount translation
-    # and template resolution live in :mod:`srunx.rendering` so Web
-    # non-sweep, Web sweep, and MCP share identical semantics.
-    #
-    # The shell script-root check runs against the set the helper will
-    # actually read. ``single_job`` restricts the helper to that one
-    # target; ``from_job`` / ``to_job`` are post-render filters so the
-    # helper reads every job in the YAML. Checking the full
-    # ``runner.workflow`` in those cases matches the helper's read set.
-    submission_context = _build_submission_context(mount, profile)
-    shell_check_workflow = (
-        Workflow(
-            name=runner.workflow.name,
-            jobs=[j for j in runner.workflow.jobs if j.name == run_opts.single_job],
-        )
-        if run_opts.single_job
-        else runner.workflow
+    return await submission_service.run(
+        name=name,
+        mount=mount,
+        yaml_path=yaml_path,
+        run_opts=run_opts,
+        request=request,
+        adapter=adapter,
+        conn=conn,
     )
-    try:
-        await anyio.to_thread.run_sync(
-            lambda: _enforce_shell_script_roots(shell_check_workflow, mount, profile)
-        )
-        rendered = await anyio.to_thread.run_sync(
-            lambda: _render_workflow(
-                yaml_path,
-                submission_context=submission_context,
-                args_override=run_opts.args_override or None,
-                single_job=run_opts.single_job,
-            )
-        )
-    except HTTPException:
-        # 403 shell-script-root violation: propagate without _fail side
-        # effects (no jobs queued, no cluster state to roll back).
-        raise
-    except Exception as exc:
-        reason = f"Script rendering failed: {exc}"
-        await anyio.to_thread.run_sync(functools.partial(_fail, reason))
-        raise HTTPException(status_code=500, detail=reason) from exc
-
-    # When ``from_job`` / ``to_job`` are set the canonical helper doesn't
-    # prune; apply the existing filter over the rendered result. The
-    # ``single_job`` case is already handled inside the helper.
-    if run_opts.from_job or run_opts.to_job:
-        filtered_names = {
-            j.name
-            for j in _filter_workflow_jobs(
-                rendered.workflow,
-                run_opts.from_job,
-                run_opts.to_job,
-                None,
-            )
-        }
-        rendered_jobs = tuple(
-            rj for rj in rendered.jobs if rj.job.name in filtered_names
-        )
-    else:
-        rendered_jobs = rendered.jobs
-
-    # The rendered workflow drives everything downstream so ``work_dir`` /
-    # ``log_dir`` translations stay visible to the submit + dry-run paths.
-    submission_workflow = Workflow(
-        name=rendered.workflow.name,
-        jobs=[rj.job for rj in rendered_jobs],
-    )
-    scripts: dict[str, str] = {rj.job.name: rj.script_text for rj in rendered_jobs}
-
-    # Phase 3: Dry run early return
-    if run_opts.dry_run:
-        job_names_in_wf = {job.name for job in submission_workflow.jobs}
-        return {
-            "dry_run": True,
-            "jobs": [
-                {
-                    "name": job.name,
-                    "script": scripts.get(job.name, ""),
-                    "depends_on": [
-                        d.job_name
-                        for d in job.parsed_dependencies
-                        if d.job_name in job_names_in_wf
-                    ],
-                    "resources": job.resources.model_dump()
-                    if isinstance(job, Job)
-                    else {},
-                }
-                for job in submission_workflow.jobs
-            ],
-            "execution_order": [job.name for job in submission_workflow.jobs],
-        }
-
-    # Phase 4: Submit each job + persist + link to workflow_run + seed transition.
-    #
-    # Workflow Phase 2 (#135 web parity): hold the per-(profile, mount)
-    # sync lock across the entire BFS so a concurrent /api/jobs or
-    # ``srunx flow run`` can't rsync different bytes between our sync
-    # and our submissions. Lock acquisition / rsync errors raise
-    # HTTPException(502) tagged "Mount sync failed: …"; sbatch
-    # failures from inside the body keep their existing
-    # "sbatch failed for X" detail so the two failure classes stay
-    # distinguishable in the API response.
-    assert run_id is not None
-    try:
-        # Pass the UNRENDERED workflow to the lock-acquisition helper so
-        # ``collect_touched_mounts`` sees the original local script_paths
-        # (mount.local form) rather than the post-render remote form.
-        # Without this, no mounts get aggregated and the in-place dispatch
-        # never fires for any cell. Same root cause #150 also fixes for
-        # ``_resolve_in_place_target`` — both consumers of script_path
-        # must read from the unrendered side.
-        async with _hold_workflow_mounts_web(
-            runner.workflow, runner, sync_required=True
-        ) as locked_profile:
-            unrendered_by_name: dict[str, Job | ShellJob] = {
-                j.name: j for j in runner.workflow.jobs
-            }
-            try:
-                await _submit_jobs_bfs(
-                    submission_workflow,
-                    scripts,
-                    run_opts,
-                    adapter,
-                    conn=conn,
-                    run_id=run_id,
-                    profile=locked_profile,
-                    unrendered_jobs_by_name=unrendered_by_name,
-                )
-            except HTTPException as exc:
-                reason = (
-                    f"Submission failed: {exc.detail}"
-                    if isinstance(exc.detail, str)
-                    else "Submission failed"
-                )
-
-                # R2: cancel any jobs that were already accepted by sbatch before
-                # the failure. Without this the workflow_run is marked failed
-                # but cluster resources keep running the orphan jobs (and any
-                # independent successors the DAG may have scheduled).
-                def _load_orphan_ids() -> list[int]:
-                    memberships = WorkflowRunJobRepository(conn).list_by_run(run_id)
-                    return [m.job_id for m in memberships if m.job_id is not None]
-
-                orphan_ids = await anyio.to_thread.run_sync(_load_orphan_ids)
-                for jid in orphan_ids:
-                    try:
-                        await anyio.to_thread.run_sync(
-                            lambda x=jid: adapter.cancel_job(int(x))  # type: ignore[misc]
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Failed to cancel orphan SLURM job %s during workflow-run rollback",
-                            jid,
-                            exc_info=True,
-                        )
-
-                await anyio.to_thread.run_sync(functools.partial(_fail, reason))
-                raise
-    except HTTPException as exc:
-        # Lock-acquisition failures land here (raised from
-        # ``_hold_workflow_mounts_web`` before the body runs). Mark
-        # the run as failed with the sync-failure reason. Body-raised
-        # exceptions were already handled inside the inner try/except,
-        # which re-raises after recording — we only need to mark and
-        # rethrow here when the outer raise originates from the lock
-        # acquisition itself.
-        if isinstance(exc.detail, str) and exc.detail.startswith("Mount sync failed"):
-            await anyio.to_thread.run_sync(functools.partial(_fail, exc.detail))
-        raise
-
-    # Phase 5: open the workflow_run watch so the poller can drive
-    # status transitions going forward. ``workflow_runs.status='running'``
-    # is deliberately NOT written here — the run record stays ``pending``
-    # (as created above) until ``ActiveWatchPoller`` observes a child
-    # job in RUNNING state (P1-1). Writing ``running`` eagerly would
-    # race the poller's "otherwise→pending" rule and emit a spurious
-    # ``running → pending`` transition (+ a
-    # ``workflow_run.status_changed`` event to every subscriber) on the
-    # very first cycle, while all children are still PENDING in SLURM.
-    #
-    # When ``notify`` is requested, also pair the watch with a
-    # subscription for the chosen endpoint; the delivery poller then
-    # fans ``workflow_run.status_changed`` events out to Slack/etc.
-    def _open_watch() -> int | None:
-        new_watch_id = watch_repo.create(
-            kind="workflow_run",
-            target_ref=f"workflow_run:{run_id}",
-        )
-        if run_opts.notify and run_opts.endpoint_id is not None:
-            from srunx.db.repositories.endpoints import EndpointRepository
-            from srunx.db.repositories.subscriptions import SubscriptionRepository
-
-            endpoint = EndpointRepository(conn).get(run_opts.endpoint_id)
-            if endpoint is None or endpoint.disabled_at is not None:
-                # Non-fatal: the watch still exists, the run is open,
-                # the user just won't get external notifications. Jobs
-                # are already queued on the cluster — 4xx'ing here
-                # would be misleading.
-                logger.warning(
-                    "workflow_run %s: requested endpoint_id=%s not usable "
-                    "(missing or disabled); skipping subscription",
-                    run_id,
-                    run_opts.endpoint_id,
-                )
-                return new_watch_id
-            SubscriptionRepository(conn).create(
-                watch_id=new_watch_id,
-                endpoint_id=run_opts.endpoint_id,
-                preset=run_opts.preset,
-            )
-        return new_watch_id
-
-    await anyio.to_thread.run_sync(_open_watch)
-
-    def _load_final() -> dict[str, Any]:
-        final_run = run_repo.get(run_id)  # type: ignore[arg-type]
-        if final_run is None:
-            return {"id": str(run_id), "status": "pending"}
-        return _build_run_response(conn, final_run)
-
-    return await anyio.to_thread.run_sync(_load_final)
 
 
 @router.delete("/{name}")
