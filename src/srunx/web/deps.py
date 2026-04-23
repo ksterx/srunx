@@ -17,8 +17,7 @@ from srunx.db.repositories.subscriptions import SubscriptionRepository
 from srunx.db.repositories.watches import WatchRepository
 from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
 from srunx.db.repositories.workflow_runs import WorkflowRunRepository
-
-from .ssh_adapter import SlurmSSHAdapter
+from srunx.slurm.ssh import SlurmSSHAdapter
 
 # Thread-safe singleton SSH adapter — connected at startup via lifespan
 _adapter: SlurmSSHAdapter | None = None

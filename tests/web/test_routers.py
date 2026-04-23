@@ -1440,7 +1440,7 @@ class TestConfigSSHConnect:
         with (
             patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
             patch(
-                "srunx.web.ssh_adapter.SlurmSSHAdapter",
+                "srunx.slurm.ssh.SlurmSSHAdapter",
                 return_value=mock_new_adapter,
             ),
             patch("srunx.web.deps.swap_adapter", return_value=None),
@@ -1474,7 +1474,7 @@ class TestConfigSSHConnect:
         with (
             patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
             patch(
-                "srunx.web.ssh_adapter.SlurmSSHAdapter",
+                "srunx.slurm.ssh.SlurmSSHAdapter",
                 return_value=mock_new_adapter,
             ),
         ):
@@ -1502,7 +1502,7 @@ class TestConfigSSHConnect:
         with (
             patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
             patch(
-                "srunx.web.ssh_adapter.SlurmSSHAdapter",
+                "srunx.slurm.ssh.SlurmSSHAdapter",
                 side_effect=ConnectionError("Host unreachable"),
             ),
         ):
@@ -1552,7 +1552,7 @@ class TestConfigSSHConnect:
         with (
             patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
             patch(
-                "srunx.web.ssh_adapter.SlurmSSHAdapter",
+                "srunx.slurm.ssh.SlurmSSHAdapter",
                 return_value=mock_adapter,
             ),
         ):
@@ -1593,7 +1593,7 @@ class TestConfigSSHConnect:
         with (
             patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
             patch(
-                "srunx.web.ssh_adapter.SlurmSSHAdapter",
+                "srunx.slurm.ssh.SlurmSSHAdapter",
                 return_value=mock_adapter,
             ),
         ):
@@ -1622,7 +1622,7 @@ class TestConfigSSHConnect:
         with (
             patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
             patch(
-                "srunx.web.ssh_adapter.SlurmSSHAdapter",
+                "srunx.slurm.ssh.SlurmSSHAdapter",
                 side_effect=OSError("Connection refused"),
             ),
         ):

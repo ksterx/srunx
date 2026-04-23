@@ -10,7 +10,7 @@ This module decouples "fetch cluster state" from "interpret it":
 
 * :class:`ResourceSource` is a structural contract.
 * :class:`SSHAdapterResourceSource` adapts the existing
-  :class:`srunx.web.ssh_adapter.SlurmSSHAdapter.get_resources` so
+  :class:`srunx.slurm.ssh.SlurmSSHAdapter.get_resources` so
   remote clusters flow through the same code path already used by
   ``/api/resources``. When ``partition=None`` it sums across every
   partition so the cluster-wide snapshot matches the local subprocess
@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from srunx.monitor.types import ResourceSnapshot
 
 if TYPE_CHECKING:
-    from srunx.web.ssh_adapter import SlurmSSHAdapter
+    from srunx.slurm.ssh import SlurmSSHAdapter
 
 
 @runtime_checkable

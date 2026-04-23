@@ -658,8 +658,8 @@ def _resolve_mount_context(
     no current profile, unknown mount name, etc.
     """
     from srunx.rendering import SubmissionRenderContext
+    from srunx.slurm.ssh import SlurmSSHAdapter
     from srunx.ssh.core.config import ConfigManager
-    from srunx.web.ssh_adapter import SlurmSSHAdapter
 
     cm = ConfigManager()
     profile = cm.get_current_profile()
@@ -722,7 +722,7 @@ def run_workflow(
     """
     try:
         from srunx.runner import WorkflowRunner
-        from srunx.web.ssh_executor import SlurmSSHExecutorPool
+        from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
 
         if args is not None:
             _reject_python_prefix_mcp(args, source="args")

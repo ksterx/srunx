@@ -3,7 +3,7 @@
 Step 4 of the Phase 2 SSH sweep integration. Provides:
 
 * :class:`SSHWorkflowJobExecutor` — a protocol-conforming wrapper around
-  a single :class:`~srunx.web.ssh_adapter.SlurmSSHAdapter` lease.
+  a single :class:`~srunx.slurm.ssh.SlurmSSHAdapter` lease.
 * :class:`SlurmSSHExecutorPool` — a thread-safe bounded pool of pre-built
   adapters for concurrent sweep cells, exposing a context-manager factory
   that satisfies :data:`~srunx.client_protocol.WorkflowJobExecutorFactory`.
@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from srunx.client_protocol import WorkflowJobExecutorProtocol
 from srunx.logging import get_logger
-from srunx.web.ssh_adapter import SlurmSSHAdapter, SlurmSSHAdapterSpec
+from srunx.slurm.ssh import SlurmSSHAdapter, SlurmSSHAdapterSpec
 
 if TYPE_CHECKING:
     from srunx.callbacks import Callback

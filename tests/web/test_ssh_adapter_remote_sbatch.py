@@ -16,7 +16,7 @@ import pytest
 
 from srunx.callbacks import Callback
 from srunx.models import ShellJob
-from srunx.web.ssh_adapter import SlurmSSHAdapter
+from srunx.slurm.ssh import SlurmSSHAdapter
 
 
 def _bare_adapter(

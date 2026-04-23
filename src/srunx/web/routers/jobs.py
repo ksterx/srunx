@@ -20,9 +20,9 @@ from srunx.db.repositories.subscriptions import SubscriptionRepository
 from srunx.db.repositories.watches import WatchRepository
 from srunx.logging import get_logger
 from srunx.notifications.service import NotificationService
+from srunx.slurm.ssh import SlurmSSHAdapter
 
 from ..deps import get_adapter, get_db_conn
-from ..ssh_adapter import SlurmSSHAdapter
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 logger = get_logger(__name__)

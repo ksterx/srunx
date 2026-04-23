@@ -111,8 +111,6 @@ KNOWN_VIOLATIONS: dict[tuple[str, str], str] = {
         "Shim re-exports from :mod:`srunx.runtime.rendering`. Remove when "
         "external callers migrate and models.py is deleted (post #156)."
     ),
-    # observability -> interfaces (monitor uses web's SSH adapter for remote queries).
-    ("monitor", "web"): "Phase 6 (#162): web/ssh_adapter.py relocates to slurm/ssh.py.",
     # observability -> runtime (poller reaches into sweep state service).
     ("pollers", "sweep"): (
         "Phase 8 (#164): sweep state_service split — pure state ops move under observability."
@@ -132,12 +130,23 @@ KNOWN_VIOLATIONS: dict[tuple[str, str], str] = {
         "use storage facade."
     ),
     ("sweep", "notifications"): "Phase 8 (#164): notifications accessed via sink.",
-    # slurm -> observability / interfaces (transport registry cross-layer coupling).
+    # slurm -> observability (transport registry still imports callbacks).
     ("transport", "callbacks"): "Phase 5 (#161): transport registry uses sink.",
-    (
-        "transport",
-        "web",
-    ): "Phase 6 (#162): web/ssh_adapter.py relocates to slurm/ssh.py.",
+    # slurm -> observability (SSH adapter still writes DB + invokes callbacks
+    # directly; sink extraction comes in a Phase 5 follow-up for SSH).
+    ("slurm", "callbacks"): (
+        "SSH adapter / executor still import legacy ``Callback``. "
+        "Phase 5 sink pattern extended to SSH in a follow-up."
+    ),
+    ("slurm", "db"): (
+        "SSH adapter writes ``srunx.db`` rows directly. "
+        "Phase 5 sink pattern extended to SSH in a follow-up."
+    ),
+    # slurm -> interfaces (SSH adapter consumes cli-layer submission plan).
+    ("slurm", "cli"): (
+        "Phase 8 (#164): ``cli/submission_plan.py`` moves to ``runtime/`` "
+        "(interfaces-agnostic submission plan)."
+    ),
 }
 
 

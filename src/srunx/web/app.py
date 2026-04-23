@@ -15,6 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from srunx.db.models import SweepRun
 from srunx.logging import get_logger
 from srunx.rendering import SubmissionRenderContext
+from srunx.slurm.ssh import SlurmSSHAdapter
+from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
 from srunx.ssh.core.config import MountConfig
 from srunx.sweep.reconciler import ExecutorFactoryBundle, ExecutorFactoryProvider
 
@@ -32,8 +34,6 @@ from .routers import (
 from .routers import subscriptions as subscriptions_router
 from .routers import sweep_runs as sweep_runs_router
 from .routers import watches as watches_router
-from .ssh_adapter import SlurmSSHAdapter
-from .ssh_executor import SlurmSSHExecutorPool
 
 _FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
 logger = get_logger(__name__)

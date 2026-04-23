@@ -14,7 +14,7 @@ import pytest
 
 from srunx.callbacks import Callback
 from srunx.models import Job, JobStatus
-from srunx.web.ssh_adapter import (
+from srunx.slurm.ssh import (
     SlurmSSHAdapter,
     SlurmSSHAdapterSpec,
     SSHMonitorTimeoutError,
