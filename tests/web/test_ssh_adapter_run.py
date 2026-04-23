@@ -524,6 +524,39 @@ class TestSSHAdapterRunInPlace:
         assert call.args[0] == "/r/ml/train.sh"
         assert call.kwargs["submit_cwd"] == "/r/ml"
 
+    def test_in_place_skipped_when_render_differs_from_source(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``allow_in_place=True`` + Jinja substitution → temp-upload anyway.
+
+        The IN_PLACE eligibility chain has three checks (allow flag,
+        mount membership, rendered==source). When Jinja substitution
+        actually changed bytes (the script had ``{{ ... }}`` tokens
+        and ``script_vars`` filled them), the rendered output is a
+        new artifact with no home in the mount and must take the
+        temp-upload path even though the source path is mount-resident.
+        """
+        from srunx.models import ShellJob
+        from srunx.rendering import SubmissionRenderContext
+
+        adapter, script = self._setup_in_place_adapter(tmp_path, monkeypatch)
+        # Rewrite the source so it contains an actual Jinja variable.
+        script.write_text("#!/bin/bash\necho '{{ greeting }}'\n", encoding="utf-8")
+
+        # Provide script_vars so render produces different bytes.
+        job = ShellJob(
+            name="train",
+            script_path=str(script),
+            script_vars={"greeting": "hi"},
+        )
+
+        ctx = SubmissionRenderContext(mounts=adapter._mounts, allow_in_place=True)
+        adapter.run(job, submission_context=ctx)
+
+        # Render did substitute → temp-upload is the only safe path.
+        adapter._client.submit_sbatch_job.assert_called_once()  # type: ignore[attr-defined]
+        adapter._client.submit_remote_sbatch_file.assert_not_called()  # type: ignore[attr-defined]
+
     def test_in_place_skipped_when_script_outside_mount(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

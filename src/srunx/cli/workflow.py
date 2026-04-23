@@ -636,15 +636,18 @@ def _execute_workflow(
                     else None,
                     sync_required=_resolve_sync_flag(sync),
                 ):
-                    # Lock is held → flip ``allow_in_place`` on a
-                    # context copy so the SSH adapter is permitted
-                    # to take the IN_PLACE submission path for any
-                    # cell that qualifies.
-                    in_place_ctx = (
-                        _in_place_context(rt)
-                        if rt.transport_type == "ssh"
-                        else rt.submission_context
-                    )
+                    # IN_PLACE for sweep cells is intentionally NOT
+                    # enabled here. Each sweep cell re-renders the
+                    # workflow with cell-specific Jinja args, which
+                    # can move ``ShellJob.script_path`` to a mount we
+                    # never collected (and never locked). Until
+                    # cell-aware mount aggregation lands (tracked in
+                    # follow-up to #135), keep ``allow_in_place=False``
+                    # for sweeps so cells stay on the temp-upload path.
+                    # The mount sync itself still happens once per
+                    # touched mount for the lock-set computed off the
+                    # base render, which is the larger Phase 2 win.
+                    # Codex blocker on PR #141 v2.
                     _run_sweep(
                         yaml_file=yaml_file,
                         workflow_data=workflow_data,
@@ -654,7 +657,9 @@ def _execute_workflow(
                         endpoint_id=endpoint_id,
                         preset=effective_preset,
                         rt=rt,
-                        submission_context=in_place_ctx,
+                        # ``submission_context`` left as the default
+                        # (rt.submission_context with
+                        # ``allow_in_place=False``); see comment above.
                     )
                 return
 
