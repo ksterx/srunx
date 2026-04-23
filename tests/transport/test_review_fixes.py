@@ -163,7 +163,7 @@ class TestMonitorJobsThreadsSchedulerKey:
             return 1
 
         monkeypatch.setattr(
-            "srunx.cli.notification_setup.attach_notification_watch",
+            "srunx.cli._helpers.notification_setup.attach_notification_watch",
             _fake_attach,
         )
 
@@ -469,7 +469,7 @@ class TestNotificationWatchCallbackSchedulerKey:
         job.job_id = 123
 
         with patch(
-            "srunx.cli.notification_setup.attach_notification_watch",
+            "srunx.cli._helpers.notification_setup.attach_notification_watch",
             side_effect=_fake_attach,
         ):
             cb.on_job_submitted(job)

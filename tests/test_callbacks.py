@@ -494,7 +494,7 @@ class TestNotificationWatchCallback:
         cb = NotificationWatchCallback(endpoint_name="my-slack", preset="terminal")
 
         with patch(
-            "srunx.cli.notification_setup.attach_notification_watch"
+            "srunx.cli._helpers.notification_setup.attach_notification_watch"
         ) as mock_attach:
             cb.on_job_submitted(job)
             mock_attach.assert_called_once_with(
@@ -510,7 +510,7 @@ class TestNotificationWatchCallback:
         cb = NotificationWatchCallback(endpoint_name="my-slack")
 
         with patch(
-            "srunx.cli.notification_setup.attach_notification_watch"
+            "srunx.cli._helpers.notification_setup.attach_notification_watch"
         ) as mock_attach:
             cb.on_job_submitted(job)
             mock_attach.assert_not_called()
@@ -520,7 +520,7 @@ class TestNotificationWatchCallback:
         cb = NotificationWatchCallback(endpoint_name="my-slack")
 
         with patch(
-            "srunx.cli.notification_setup.attach_notification_watch",
+            "srunx.cli._helpers.notification_setup.attach_notification_watch",
             side_effect=RuntimeError("DB error"),
         ):
             # Must not raise — downstream callbacks depend on this
@@ -535,7 +535,7 @@ class TestNotificationWatchCallback:
         )
 
         with patch(
-            "srunx.cli.notification_setup.attach_notification_watch"
+            "srunx.cli._helpers.notification_setup.attach_notification_watch"
         ) as mock_attach:
             cb.on_job_submitted(job)
             mock_attach.assert_called_once_with(

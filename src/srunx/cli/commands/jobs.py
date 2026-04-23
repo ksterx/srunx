@@ -18,7 +18,7 @@ from srunx.cli._helpers.sbatch_helpers import (
     _print_in_place_sync_preview,
     _submit_via_transport,
 )
-from srunx.cli.transport_options import LocalOpt, ProfileOpt, QuietOpt
+from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.exceptions import JobNotFoundError, TransportError
 from srunx.logging import get_logger
 from srunx.models import (
@@ -484,7 +484,7 @@ def sbatch(
 
         # Attach a durable notification watch if the user asked for one.
         if effective_endpoint and submitted_job.job_id is not None:
-            from srunx.cli.notification_setup import attach_notification_watch
+            from srunx.cli._helpers.notification_setup import attach_notification_watch
 
             attach_notification_watch(
                 job_id=int(submitted_job.job_id),

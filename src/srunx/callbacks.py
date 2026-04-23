@@ -123,7 +123,7 @@ class NotificationWatchCallback(Callback):
     This is the endpoint-watch bridge for CLI code paths that still
     drive submission through :class:`~srunx.client.Slurm` + the
     :class:`Callback` fan-out. On each ``on_job_submitted``, it calls
-    :func:`srunx.cli.notification_setup.attach_notification_watch` so
+    :func:`srunx.cli._helpers.notification_setup.attach_notification_watch` so
     the poller pipeline takes over delivery — no in-process Slack send.
 
     Failures are swallowed with a warning: a missing/disabled endpoint
@@ -153,7 +153,7 @@ class NotificationWatchCallback(Callback):
     def on_job_submitted(self, job: JobType) -> None:
         if job.job_id is None:
             return
-        from srunx.cli.notification_setup import attach_notification_watch
+        from srunx.cli._helpers.notification_setup import attach_notification_watch
 
         try:
             attach_notification_watch(

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from srunx.cli.submission_plan import (
+from srunx.runtime.submission_plan import (
     SubmissionMode,
     plan_sbatch_submission,
     resolve_mount_for_path,
@@ -269,7 +269,7 @@ class TestCollectTouchedMounts:
 
     def test_empty_workflow_returns_empty_list(self, tmp_path: Path) -> None:
         """A workflow with no jobs touches no mounts."""
-        from srunx.cli.submission_plan import collect_touched_mounts
+        from srunx.runtime.submission_plan import collect_touched_mounts
 
         local = tmp_path / "ml"
         local.mkdir()
@@ -282,8 +282,8 @@ class TestCollectTouchedMounts:
 
     def test_dedup_across_multiple_shelljobs_same_mount(self, tmp_path: Path) -> None:
         """Two ShellJobs under the same mount yield one mount, not two."""
-        from srunx.cli.submission_plan import collect_touched_mounts
         from srunx.models import ShellJob
+        from srunx.runtime.submission_plan import collect_touched_mounts
 
         local = tmp_path / "ml"
         local.mkdir()
@@ -303,8 +303,8 @@ class TestCollectTouchedMounts:
 
     def test_skips_jobs_outside_any_mount(self, tmp_path: Path) -> None:
         """ShellJobs outside the mount roots are dropped (will go via tmp)."""
-        from srunx.cli.submission_plan import collect_touched_mounts
         from srunx.models import ShellJob
+        from srunx.runtime.submission_plan import collect_touched_mounts
 
         local = tmp_path / "ml"
         local.mkdir()
@@ -325,8 +325,8 @@ class TestCollectTouchedMounts:
 
     def test_skips_command_jobs(self, tmp_path: Path) -> None:
         """``Job`` (command-style, no script_path) contributes nothing."""
-        from srunx.cli.submission_plan import collect_touched_mounts
         from srunx.models import Job
+        from srunx.runtime.submission_plan import collect_touched_mounts
 
         local = tmp_path / "ml"
         local.mkdir()
@@ -340,7 +340,7 @@ class TestCollectTouchedMounts:
 
 class TestRenderMatchesSource:
     def test_identical_bytes_match(self, tmp_path: Path) -> None:
-        from srunx.cli.submission_plan import render_matches_source
+        from srunx.runtime.submission_plan import render_matches_source
 
         a = tmp_path / "a"
         a.write_bytes(b"#!/bin/bash\necho hi\n")
@@ -349,7 +349,7 @@ class TestRenderMatchesSource:
         assert render_matches_source(a, b) is True
 
     def test_different_bytes_do_not_match(self, tmp_path: Path) -> None:
-        from srunx.cli.submission_plan import render_matches_source
+        from srunx.runtime.submission_plan import render_matches_source
 
         a = tmp_path / "a"
         a.write_bytes(b"#!/bin/bash\necho hi\n")
@@ -359,7 +359,7 @@ class TestRenderMatchesSource:
 
     def test_missing_file_returns_false(self, tmp_path: Path) -> None:
         """Missing file → False (caller must fall back to tmp upload)."""
-        from srunx.cli.submission_plan import render_matches_source
+        from srunx.runtime.submission_plan import render_matches_source
 
         a = tmp_path / "a"
         a.write_bytes(b"x")

@@ -26,12 +26,12 @@ from srunx.cli._helpers.sbatch_helpers import (  # noqa: F401
     _parse_container_args,
     _parse_env_vars,
 )
+from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.cli.commands.config import config_app
 from srunx.cli.commands.jobs import sbatch, scancel, sinfo, squeue, tail
 from srunx.cli.commands.reports import sacct, sreport
 from srunx.cli.commands.templates import template_app
 from srunx.cli.commands.ui import ui
-from srunx.cli.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.cli.watch import watch_app
 from srunx.client import Slurm  # noqa: F401
 from srunx.config import get_config, get_config_paths  # noqa: F401
