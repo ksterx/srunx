@@ -1043,6 +1043,7 @@ async def _submit_jobs_bfs(
     conn: sqlite3.Connection,
     run_id: int,
     profile: Any = None,
+    unrendered_jobs_by_name: dict[str, Job | ShellJob] | None = None,
 ) -> dict[str, str]:
     """Submit jobs in topological order via BFS, returning {name: slurm_id}.
 
@@ -1111,7 +1112,19 @@ async def _submit_jobs_bfs(
             if d.job_name in filtered_names
         ]
 
-        in_place = _resolve_in_place_target(current_job, scripts[current_name], profile)
+        # The rendered ``current_job`` may have its ``script_path`` already
+        # translated to remote form by ``_normalize_paths_for_mount``, which
+        # makes the in-place mount lookup miss. Use the unrendered job (with
+        # its original local path) when the caller threaded one through.
+        # See #150 root cause.
+        in_place_job = (
+            unrendered_jobs_by_name.get(current_name, current_job)
+            if unrendered_jobs_by_name is not None
+            else current_job
+        )
+        in_place = _resolve_in_place_target(
+            in_place_job, scripts[current_name], profile
+        )
 
         try:
             if in_place is not None:
@@ -1700,9 +1713,19 @@ async def run_workflow(
     # distinguishable in the API response.
     assert run_id is not None
     try:
+        # Pass the UNRENDERED workflow to the lock-acquisition helper so
+        # ``collect_touched_mounts`` sees the original local script_paths
+        # (mount.local form) rather than the post-render remote form.
+        # Without this, no mounts get aggregated and the in-place dispatch
+        # never fires for any cell. Same root cause #150 also fixes for
+        # ``_resolve_in_place_target`` — both consumers of script_path
+        # must read from the unrendered side.
         async with _hold_workflow_mounts_web(
-            submission_workflow, runner, sync_required=True
+            runner.workflow, runner, sync_required=True
         ) as locked_profile:
+            unrendered_by_name: dict[str, Job | ShellJob] = {
+                j.name: j for j in runner.workflow.jobs
+            }
             try:
                 await _submit_jobs_bfs(
                     submission_workflow,
@@ -1712,6 +1735,7 @@ async def run_workflow(
                     conn=conn,
                     run_id=run_id,
                     profile=locked_profile,
+                    unrendered_jobs_by_name=unrendered_by_name,
                 )
             except HTTPException as exc:
                 reason = (

@@ -2165,13 +2165,16 @@ class TestWorkflowsRouterInPlace:
 
     @pytest.mark.skip(
         reason=(
-            "#135 web TODO: `collect_touched_mounts` reads the rendered "
-            "workflow whose script_paths were already translated to remote, "
-            "so it returns no mounts and the in-place dispatch never fires. "
-            "Fix is to thread the unrendered `runner.workflow` into "
-            "`_hold_workflow_mounts_web`. Tests cover the intended dispatch shape; "
-            "the implementation under test passes manual inspection but the test "
-            "scaffolding can't exercise the in-place branch until the threading is fixed."
+            "#150 root cause runs deeper than just threading the unrendered "
+            "workflow. `render_workflow_for_submission` translates "
+            "`ShellJob.script_path` from local to remote (mount.remote/...) "
+            "BEFORE rendering, so `render_shell_job_script` then tries to "
+            "read the remote path locally — fails or returns wrong bytes. "
+            "Fix requires either: (a) renaming/duplicating the script_path field "
+            "so render reads from local while submit uses remote, or "
+            "(b) deferring path translation to per-mode handling. Both are "
+            "larger refactors than this PR. The dispatch shape under test is "
+            "correct; the renderer pipeline mismatch is what blocks the assertion."
         )
     )
     def test_shelljob_in_place_uses_submit_remote_sbatch(
@@ -2283,13 +2286,16 @@ class TestWorkflowsRouterInPlace:
 
     @pytest.mark.skip(
         reason=(
-            "#135 web TODO: `collect_touched_mounts` reads the rendered "
-            "workflow whose script_paths were already translated to remote, "
-            "so it returns no mounts and the in-place dispatch never fires. "
-            "Fix is to thread the unrendered `runner.workflow` into "
-            "`_hold_workflow_mounts_web`. Tests cover the intended dispatch shape; "
-            "the implementation under test passes manual inspection but the test "
-            "scaffolding can't exercise the in-place branch until the threading is fixed."
+            "#150 root cause runs deeper than just threading the unrendered "
+            "workflow. `render_workflow_for_submission` translates "
+            "`ShellJob.script_path` from local to remote (mount.remote/...) "
+            "BEFORE rendering, so `render_shell_job_script` then tries to "
+            "read the remote path locally — fails or returns wrong bytes. "
+            "Fix requires either: (a) renaming/duplicating the script_path field "
+            "so render reads from local while submit uses remote, or "
+            "(b) deferring path translation to per-mode handling. Both are "
+            "larger refactors than this PR. The dispatch shape under test is "
+            "correct; the renderer pipeline mismatch is what blocks the assertion."
         )
     )
     def test_mixed_workflow_dispatches_per_job(
@@ -2373,13 +2379,16 @@ class TestWorkflowsRouterInPlace:
 
     @pytest.mark.skip(
         reason=(
-            "#135 web TODO: `collect_touched_mounts` reads the rendered "
-            "workflow whose script_paths were already translated to remote, "
-            "so it returns no mounts and the in-place dispatch never fires. "
-            "Fix is to thread the unrendered `runner.workflow` into "
-            "`_hold_workflow_mounts_web`. Tests cover the intended dispatch shape; "
-            "the implementation under test passes manual inspection but the test "
-            "scaffolding can't exercise the in-place branch until the threading is fixed."
+            "#150 root cause runs deeper than just threading the unrendered "
+            "workflow. `render_workflow_for_submission` translates "
+            "`ShellJob.script_path` from local to remote (mount.remote/...) "
+            "BEFORE rendering, so `render_shell_job_script` then tries to "
+            "read the remote path locally — fails or returns wrong bytes. "
+            "Fix requires either: (a) renaming/duplicating the script_path field "
+            "so render reads from local while submit uses remote, or "
+            "(b) deferring path translation to per-mode handling. Both are "
+            "larger refactors than this PR. The dispatch shape under test is "
+            "correct; the renderer pipeline mismatch is what blocks the assertion."
         )
     )
     def test_single_mount_synced_only_once_for_multiple_shelljobs(
@@ -2520,13 +2529,16 @@ class TestWorkflowsRouterInPlace:
 
     @pytest.mark.skip(
         reason=(
-            "#135 web TODO: `collect_touched_mounts` reads the rendered "
-            "workflow whose script_paths were already translated to remote, "
-            "so it returns no mounts and the in-place dispatch never fires. "
-            "Fix is to thread the unrendered `runner.workflow` into "
-            "`_hold_workflow_mounts_web`. Tests cover the intended dispatch shape; "
-            "the implementation under test passes manual inspection but the test "
-            "scaffolding can't exercise the in-place branch until the threading is fixed."
+            "#150 root cause runs deeper than just threading the unrendered "
+            "workflow. `render_workflow_for_submission` translates "
+            "`ShellJob.script_path` from local to remote (mount.remote/...) "
+            "BEFORE rendering, so `render_shell_job_script` then tries to "
+            "read the remote path locally — fails or returns wrong bytes. "
+            "Fix requires either: (a) renaming/duplicating the script_path field "
+            "so render reads from local while submit uses remote, or "
+            "(b) deferring path translation to per-mode handling. Both are "
+            "larger refactors than this PR. The dispatch shape under test is "
+            "correct; the renderer pipeline mismatch is what blocks the assertion."
         )
     )
     def test_sync_failure_surfaces_as_502(
