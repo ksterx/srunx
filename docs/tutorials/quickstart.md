@@ -7,39 +7,45 @@ This guide will help you get started with srunx quickly.
 Submit a simple Python script:
 
 ``` bash
-srunx submit python my_script.py
+srunx sbatch --wrap "python my_script.py"
 ```
 
 Submit with specific resources:
 
 ``` bash
-srunx submit python train.py --name ml_job --gpus-per-node 1 --nodes 2
+srunx sbatch --wrap "python train.py" --name ml_job --gpus-per-node 1 --nodes 2
 ```
 
 Submit with conda environment:
 
 ``` bash
-srunx submit python process.py --conda ml_env --memory 32GB
+srunx sbatch --wrap "python process.py" --conda ml_env --memory 32GB
 ```
 
 ## Job Management
 
-Check job status:
+Check a job's current status (active queue only):
 
 ``` bash
-srunx status <job_id>
+srunx squeue -j <job_id>
+```
+
+Check historical status (finished jobs too, via the srunx state DB):
+
+``` bash
+srunx sacct -j <job_id>
 ```
 
 List your jobs:
 
 ``` bash
-srunx list
+srunx squeue
 ```
 
 Cancel a job:
 
 ``` bash
-srunx cancel <job_id>
+srunx scancel <job_id>
 ```
 
 ## Workflow Example
@@ -88,32 +94,32 @@ srunx supports multiple environment types:
 ### Conda Environment
 
 ``` bash
-srunx submit python script.py --conda my_env
+srunx sbatch --wrap "python script.py" --conda my_env
 ```
 
 ### Python Virtual Environment
 
 ``` bash
-srunx submit python script.py --venv /path/to/venv
+srunx sbatch --wrap "python script.py" --venv /path/to/venv
 ```
 
 ### Container (Pyxis)
 
 ``` bash
-srunx submit python script.py --container /path/to/container.sqsh
+srunx sbatch --wrap "python script.py" --container /path/to/container.sqsh
 ```
 
 ### Apptainer / Singularity Container
 
 ``` bash
-srunx submit python script.py \
+srunx sbatch --wrap "python script.py \"
   --container "runtime=apptainer,image=/path/to/image.sif,nv=true"
 ```
 
 Or specify the runtime separately:
 
 ``` bash
-srunx submit python script.py \
+srunx sbatch --wrap "python script.py \"
   --container /path/to/image.sif \
   --container-runtime apptainer
 ```
@@ -123,7 +129,7 @@ srunx submit python script.py \
 Containers can be combined with conda or venv:
 
 ``` bash
-srunx submit python script.py \
+srunx sbatch --wrap "python script.py \"
   --container "runtime=apptainer,image=pytorch.sif,nv=true,bind=/data:/data" \
   --conda ml_env
 ```
@@ -178,7 +184,7 @@ of the three child workflow runs, then streams their progress.
 While the sweep is running, list your jobs in another terminal:
 
 ``` bash
-srunx list
+srunx squeue
 ```
 
 You should see up to two `echo` jobs in `RUNNING` state at a time, with

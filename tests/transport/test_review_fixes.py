@@ -139,7 +139,7 @@ class TestPollerThreadsSchedulerKey:
 class TestMonitorJobsThreadsSchedulerKey:
     """Final-review Bug #2: ``srunx monitor jobs`` must not drop scheduler_key.
 
-    Before the fix, ``cli/monitor.py:monitor_jobs`` called
+    Before the fix, ``cli/watch.py:watch_jobs`` called
     ``attach_notification_watch(job_id=..., endpoint_name=...,
     preset=...)`` with no ``scheduler_key=``. The default ``'local'``
     would then land on the SSH-backed job's watch — the poller would
@@ -149,12 +149,12 @@ class TestMonitorJobsThreadsSchedulerKey:
     into every attach call.
     """
 
-    def test_ssh_monitor_attaches_watch_under_ssh_scheduler_key(
+    def test_ssh_watch_attaches_watch_under_ssh_scheduler_key(
         self, monkeypatch
     ) -> None:
-        """A CLI ``monitor jobs --profile dgx 777`` attach must carry
+        """A CLI ``watch jobs --profile dgx 777`` attach must carry
         ``scheduler_key='ssh:dgx'`` to ``attach_notification_watch``."""
-        from srunx.cli import monitor as monitor_cli
+        from srunx.cli import watch as monitor_cli
 
         captured: list[dict[str, object]] = []
 
@@ -204,7 +204,7 @@ class TestMonitorJobsThreadsSchedulerKey:
             monkeypatch.setattr(monitor_cli, "JobMonitor", _NoopMonitor)
 
             # Invoke the command function directly (bypasses Typer).
-            monitor_cli.monitor_jobs(
+            monitor_cli.watch_jobs(
                 job_ids=[777],
                 all_jobs=False,
                 schedule=None,
@@ -221,7 +221,7 @@ class TestMonitorJobsThreadsSchedulerKey:
 
         assert captured, "attach_notification_watch was not invoked"
         assert captured[0].get("scheduler_key") == "ssh:dgx", (
-            "Bug #2 regressed: CLI monitor dropped scheduler_key on the "
+            "Bug #2 regressed: CLI watch dropped scheduler_key on the "
             "attach_notification_watch call"
         )
         assert captured[0].get("job_id") == 777

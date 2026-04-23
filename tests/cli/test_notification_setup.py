@@ -130,7 +130,7 @@ def test_attach_watch_disabled_endpoint_skipped(isolated_db: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cli_submit_with_endpoint_creates_watch_and_subscription(
+def test_cli_sbatch_with_endpoint_creates_watch_and_subscription(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -179,9 +179,9 @@ def test_cli_submit_with_endpoint_creates_watch_and_subscription(
     result = runner.invoke(
         app,
         [
-            "submit",
-            "echo",
-            "hi",
+            "sbatch",
+            "--wrap",
+            "echo hi",
             "--name",
             "cli-e2e",
             "--endpoint",
@@ -221,7 +221,7 @@ def test_cli_submit_with_endpoint_creates_watch_and_subscription(
     assert not isinstance(Job, type) or True  # noqa: SIM101 (placeholder)
 
 
-def test_cli_submit_with_unknown_endpoint_still_succeeds(
+def test_cli_sbatch_with_unknown_endpoint_still_succeeds(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -248,9 +248,9 @@ def test_cli_submit_with_unknown_endpoint_still_succeeds(
     result = runner.invoke(
         app,
         [
-            "submit",
-            "echo",
-            "skip",
+            "sbatch",
+            "--wrap",
+            "echo skip",
             "--name",
             "cli-nope",
             "--endpoint",
@@ -297,7 +297,7 @@ def test_rejects_unimplemented_preset(isolated_db: Path) -> None:
 def test_dedups_existing_watch_subscription(isolated_db: Path) -> None:
     """Attaching twice for the same (job, endpoint, preset) reuses the row.
 
-    Before the dedup guard, running ``srunx monitor jobs 123 --endpoint
+    Before the dedup guard, running ``srunx watch jobs 123 --endpoint
     foo`` twice would spawn a second watch + subscription targeting the
     same job. Deliveries stay idempotent via ``idempotency_key``, but
     the DB would accumulate zombie rows.

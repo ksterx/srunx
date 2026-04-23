@@ -40,27 +40,27 @@ srunx supports multiple container runtimes for job execution. Containers are ort
 **Pyxis (NVIDIA Enroot)** — default runtime, uses `srun --container-*` flags:
 
 ``` bash
-srunx submit python train.py --container /path/to/image.sqsh
+srunx sbatch --wrap "python train.py" --container /path/to/image.sqsh
 ```
 
 **Apptainer** — wraps the command with `apptainer exec`:
 
 ``` bash
-srunx submit python train.py \
+srunx sbatch --wrap "python train.py \"
   --container "runtime=apptainer,image=/path/to/image.sif,nv=true"
 ```
 
 **Singularity** — same as Apptainer with `singularity` binary:
 
 ``` bash
-srunx submit python train.py \
+srunx sbatch --wrap "python train.py \"
   --container "runtime=singularity,image=/path/to/image.sif,nv=true"
 ```
 
 The runtime can also be specified with a separate flag:
 
 ``` bash
-srunx submit python train.py \
+srunx sbatch --wrap "python train.py \"
   --container /path/to/image.sif \
   --container-runtime apptainer
 ```
@@ -86,7 +86,7 @@ The `--container` flag accepts a key=value format for detailed configuration:
 Example with multiple options:
 
 ``` bash
-srunx submit python train.py --container \
+srunx sbatch --wrap "python train.py" --container \
   "runtime=apptainer,image=pytorch.sif,nv=true,bind=/data:/data;/models:/models,cleanenv=true"
 ```
 
@@ -95,7 +95,7 @@ srunx submit python train.py --container \
 Containers can be combined with conda or venv. The environment activation runs on the host before the containerized command:
 
 ``` bash
-srunx submit python train.py \
+srunx sbatch --wrap "python train.py \"
   --container "runtime=apptainer,image=pytorch.sif,nv=true,bind=/opt/conda:/opt/conda" \
   --conda ml_env
 ```
@@ -108,7 +108,7 @@ srunx submit python train.py \
 If a default container is configured (via `SRUNX_DEFAULT_CONTAINER` or config file), you can suppress it for individual jobs:
 
 ``` bash
-srunx submit python train.py --no-container
+srunx sbatch --wrap "python train.py" --no-container
 ```
 
 ## Command Line Interface
@@ -118,13 +118,13 @@ srunx submit python train.py --no-container
 Basic submission:
 
 ``` bash
-srunx submit <command>
+srunx sbatch --wrap "<command>"
 ```
 
 With resource specification:
 
 ``` bash
-srunx submit python train.py \
+srunx sbatch --wrap "python train.py \"
   --name "training_job" \
   --nodes 2 \
   --gpus-per-node 2 \
@@ -135,28 +135,34 @@ srunx submit python train.py \
 
 ### Job Monitoring
 
-Check status:
+Check a specific job's state (active queue):
 
 ``` bash
-srunx status 12345
+srunx squeue -j 12345
+```
+
+For finished jobs (srunx state DB):
+
+``` bash
+srunx sacct -j 12345
 ```
 
 List all jobs:
 
 ``` bash
-srunx list
+srunx squeue
 ```
 
 List with GPU allocation info:
 
 ``` bash
-srunx list --show-gpus
+srunx squeue --show-gpus
 ```
 
 List in JSON format:
 
 ``` bash
-srunx list --format json
+srunx squeue --format json
 ```
 
 ### Job Control
@@ -164,13 +170,13 @@ srunx list --format json
 Cancel a job:
 
 ``` bash
-srunx cancel 12345
+srunx scancel 12345
 ```
 
 Monitor job until completion:
 
 ``` bash
-srunx submit python script.py --wait
+srunx sbatch --wrap "python script.py" --wait
 ```
 
 ## Workflows
@@ -393,13 +399,13 @@ Enable debug logging:
 
 ``` bash
 export SRUNX_LOG_LEVEL=DEBUG
-srunx submit python script.py
+srunx sbatch --wrap "python script.py"
 ```
 
 Preview job submission (show summary without submitting):
 
 ``` bash
-srunx submit --dry-run python script.py
+srunx sbatch --dry-run python script.py
 ```
 
 View rendered SLURM scripts:

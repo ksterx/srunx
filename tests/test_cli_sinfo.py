@@ -60,7 +60,7 @@ class TestResourcesCommand:
             )
             mock_monitor_class.return_value = mock_monitor
 
-            result = runner.invoke(app, ["resources"])
+            result = runner.invoke(app, ["sinfo"])
 
             assert result.exit_code == 0
             assert "GPU Resources" in result.stdout
@@ -87,7 +87,7 @@ class TestResourcesCommand:
             mock_monitor.get_partition_resources.return_value = mock_snapshot
             mock_monitor_class.return_value = mock_monitor
 
-            result = runner.invoke(app, ["resources", "--partition", "gpu"])
+            result = runner.invoke(app, ["sinfo", "--partition", "gpu"])
 
             assert result.exit_code == 0
             assert "GPU Resources - gpu" in result.stdout
@@ -113,7 +113,7 @@ class TestResourcesCommand:
             )
             mock_monitor_class.return_value = mock_monitor
 
-            result = runner.invoke(app, ["resources", "--format", "json"])
+            result = runner.invoke(app, ["sinfo", "--format", "json"])
 
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -136,7 +136,7 @@ class TestResourcesCommand:
             mock_monitor.get_partition_resources.return_value = mock_snapshot
             mock_monitor_class.return_value = mock_monitor
 
-            result = runner.invoke(app, ["resources", "-p", "gpu", "-f", "json"])
+            result = runner.invoke(app, ["sinfo", "-p", "gpu", "-f", "json"])
 
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -173,7 +173,7 @@ class TestResourcesCommand:
             mock_monitor.get_partition_resources.return_value = snapshot
             mock_monitor_class.return_value = mock_monitor
 
-            result = runner.invoke(app, ["resources", "--format", "json"])
+            result = runner.invoke(app, ["sinfo", "--format", "json"])
 
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -200,7 +200,7 @@ class TestResourcesCommand:
             mock_monitor.get_partition_resources.return_value = snapshot
             mock_monitor_class.return_value = mock_monitor
 
-            result = runner.invoke(app, ["resources", "--format", "json"])
+            result = runner.invoke(app, ["sinfo", "--format", "json"])
 
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -220,7 +220,7 @@ class TestResourcesCommand:
             )
             mock_monitor_class.return_value = mock_monitor
 
-            result = runner.invoke(app, ["resources"])
+            result = runner.invoke(app, ["sinfo"])
 
             assert result.exit_code == 1
             assert "Error" in result.stdout
@@ -246,9 +246,7 @@ class TestResourcesCommand:
             mock_monitor.get_partition_resources.return_value = snapshot
             mock_monitor_class.return_value = mock_monitor
 
-            result = runner.invoke(
-                app, ["resources", "-p", "nonexistent", "-f", "json"]
-            )
+            result = runner.invoke(app, ["sinfo", "-p", "nonexistent", "-f", "json"])
 
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -266,7 +264,7 @@ class TestResourcesCommand:
             mock_monitor_class.return_value = mock_monitor
 
             # Test -p and -f short flags
-            result = runner.invoke(app, ["resources", "-p", "gpu", "-f", "json"])
+            result = runner.invoke(app, ["sinfo", "-p", "gpu", "-f", "json"])
 
             assert result.exit_code == 0
             data = json.loads(result.stdout)
@@ -295,7 +293,7 @@ class TestResourcesCommand:
             mock_monitor.get_partition_resources.return_value = snapshot
             mock_monitor_class.return_value = mock_monitor
 
-            result = runner.invoke(app, ["resources", "--format", "json"])
+            result = runner.invoke(app, ["sinfo", "--format", "json"])
 
             assert result.exit_code == 0
             data = json.loads(result.stdout)

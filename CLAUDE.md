@@ -11,19 +11,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### CLI Usage
 
-#### Job Management
-- `uv run srunx submit <command>` - Submit SLURM job (local)
-- `uv run srunx submit --script <path>` - Submit a pre-authored sbatch script (ShellJob)
-- `uv run srunx submit --profile <name> <command>` - Submit over SSH to a configured profile
-- `uv run srunx status <job_id>` - Check job status
-- `uv run srunx list` - List jobs
-- `uv run srunx list --show-gpus` - List jobs with GPU allocation
-- `uv run srunx list --format json` - List jobs in JSON format
-- `uv run srunx cancel <job_id>` - Cancel job
-- `uv run srunx logs <job_id> --follow` - Stream job logs (local / `--profile` for SSH)
+#### Job Management (SLURM-aligned commands)
+Command names mirror SLURM's CLI (`sbatch` / `squeue` / `scancel` / `sinfo` /
+`sacct` / `sreport`) so a SLURM user can map their muscle memory directly.
+`tail` and `watch` are srunx-specific wrappers that have no direct SLURM
+counterpart.
 
-##### Transport Selection (Phase 1 unified CLI)
-Most commands above accept `--profile <name>` / `--local` / `--quiet`. Resolution order:
+- `uv run srunx sbatch <script>` - Submit a sbatch script (positional, like real sbatch)
+- `uv run srunx sbatch --wrap "cmd ..."` - Wrap a command into a SLURM job (mutually exclusive with the positional script)
+- `uv run srunx sbatch --profile <name> ...` - Submit over SSH to a configured profile
+- `uv run srunx squeue` - List user's jobs in the queue
+- `uv run srunx squeue --show-gpus` - Include GPU allocation column
+- `uv run srunx squeue --format json` - Emit JSON instead of a table
+- `uv run srunx scancel <job_id>` - Cancel a job
+- `uv run srunx sinfo` - Display current GPU/node resource availability
+- `uv run srunx sinfo --partition gpu --format json` - Partition resources as JSON
+- `uv run srunx sacct` - DB-backed job execution history (uses srunx.db, not real sacct)
+- `uv run srunx sreport` - Aggregated execution report from srunx.db
+- `uv run srunx tail <job_id> --follow` - Stream job logs (use `--profile` for SSH)
+
+`sbatch` accepts the standard SLURM short flags (`-J` / `-N` / `-n` / `-c` /
+`-t` / `-p` / `-w` / `-D`) and `--gres=gpu:N`. srunx-specific extensions
+(`--profile` / `--conda` / `--venv` / `--container` / `--template` / etc.)
+layer on top. `status` was intentionally dropped — use `squeue -j <id>` or
+`sacct -j <id>` depending on whether the job is active or historical.
+
+##### Transport Selection (unified CLI)
+All job-management commands above accept `--profile <name>` / `--local` /
+`--quiet`. Resolution order:
 1. `--profile <name>` (explicit)
 2. `--local` (mutually exclusive with `--profile`)
 3. `$SRUNX_SSH_PROFILE` environment variable
@@ -32,39 +47,42 @@ Most commands above accept `--profile <name>` / `--local` / `--quiet`. Resolutio
 When a non-default transport is selected, a 1-line banner is emitted on stderr
 (`→ transport: ssh:<profile> (from --profile)`). `--quiet` suppresses it.
 
-`srunx ssh submit` / `srunx ssh logs` still work but now print a deprecation
-warning pointing to the unified commands above.
+`srunx ssh submit` / `srunx ssh logs` have been removed — use `srunx sbatch
+--profile <name> <script>` / `srunx tail --profile <name> <job_id>` instead.
 
-#### Monitoring
-- `uv run srunx monitor jobs <job_id>` - Monitor job until completion
-- `uv run srunx monitor jobs <job_id> --continuous` - Continuously monitor job state changes
-- `uv run srunx monitor jobs --all` - Monitor all user jobs
-- `uv run srunx monitor jobs <job_id> --interval 30` - Monitor with 30s polling interval
-- `uv run srunx monitor resources --min-gpus 4` - Wait for 4 GPUs to become available
-- `uv run srunx monitor resources --min-gpus 2 --continuous` - Continuously monitor GPU availability
-- `uv run srunx monitor resources --min-gpus 4 --partition gpu` - Monitor specific partition
-- `uv run srunx monitor cluster --schedule 1h --notify $WEBHOOK` - Send periodic cluster reports
-- `uv run srunx resources` - Display current GPU resource availability
-- `uv run srunx resources --partition gpu --format json` - Show partition resources in JSON
+#### Watching / monitoring
+- `uv run srunx watch jobs <job_id>` - Block until a job reaches a terminal state
+- `uv run srunx watch jobs <job_id> --continuous` - Stream state transitions (no timeout)
+- `uv run srunx watch jobs --all` - Watch every user job
+- `uv run srunx watch jobs <job_id> --interval 30` - Custom polling interval
+- `uv run srunx watch resources --min-gpus 4` - Block until N GPUs are free
+- `uv run srunx watch resources --min-gpus 2 --continuous` - Stream GPU availability changes
+- `uv run srunx watch resources --min-gpus 4 --partition gpu` - Scoped to one partition
+- `uv run srunx watch cluster --schedule 1h --notify $WEBHOOK` - Periodic cluster reports
 
 #### SSH Integration
-- `uv run srunx ssh submit <script>` - Submit script to remote SLURM server via SSH
 - `uv run srunx ssh profile list` - List SSH connection profiles
 - `uv run srunx ssh profile add <name>` - Add SSH connection profile
 - `uv run srunx ssh profile mount add <profile> <name> --local <path> --remote <path>` - Add mount point
 - `uv run srunx ssh profile mount list <profile>` - List mount points
 - `uv run srunx ssh profile mount remove <profile> <name>` - Remove mount point
+- `uv run srunx ssh test` - Test connectivity for a profile
 - `uv run srunx ssh sync` - Sync current directory's mount (auto-detect profile and mount from cwd)
 - `uv run srunx ssh sync <profile> <name>` - Sync a specific mount
 - `uv run srunx ssh sync --dry-run` - Preview sync without transferring
 
 #### Workflows
 - `uv run srunx flow run <yaml_file>` - Execute workflow from YAML
-- `uv run srunx flow validate <yaml_file>` - Validate workflow YAML
+- `uv run srunx flow run <yaml_file> --validate` - Validate without executing (replaces the old `flow validate` subcommand)
 
 #### Configuration
 - `uv run srunx config show` - Show current configuration
 - `uv run srunx config paths` - Show configuration file paths
+
+#### Templates
+- `uv run srunx template list` - List available SLURM script templates
+- `uv run srunx template show <name>` - Show template contents
+- Submit with a specific template: `srunx sbatch --template <name> --wrap "<cmd>"`
 
 ### Testing
 - `uv run pytest` - Run all tests
@@ -75,31 +93,32 @@ warning pointing to the unified commands above.
 ### Direct Usage Examples
 
 #### Job Submission
-- `uv run srunx submit python train.py --name ml_job --gpus-per-node 1`
-- `uv run srunx submit python process.py --conda ml_env --nodes 2`
+- `uv run srunx sbatch --wrap "python train.py" --name ml_job --gpus-per-node 1`
+- `uv run srunx sbatch train.sh --conda ml_env --nodes 2`
+- `uv run srunx sbatch --wrap "python eval.py" --gres=gpu:4`  # SLURM-native --gres form
 
 #### Monitoring Workflows
 ```bash
-# Submit a job and monitor until completion
-job_id=$(uv run srunx submit python train.py --gpus-per-node 2 | grep "Job ID" | awk '{print $3}')
-uv run srunx monitor jobs $job_id
+# Submit a job and watch until completion
+job_id=$(uv run srunx sbatch --wrap "python train.py" --gpus-per-node 2 | grep "Job ID" | awk '{print $3}')
+uv run srunx watch jobs $job_id
 
 # Wait for GPUs to become available, then submit
-uv run srunx monitor resources --min-gpus 4
-uv run srunx submit python train.py --gpus-per-node 4
+uv run srunx watch resources --min-gpus 4
+uv run srunx sbatch --wrap "python train.py" --gpus-per-node 4
 
-# Continuously monitor all user jobs with notifications
-uv run srunx monitor jobs --all --continuous --interval 30
+# Continuously watch all user jobs with notifications
+uv run srunx watch jobs --all --continuous --interval 30
 
 # Send periodic cluster reports
-uv run srunx monitor cluster --schedule 1h --notify $SLACK_WEBHOOK
+uv run srunx watch cluster --schedule 1h --notify $SLACK_WEBHOOK
 
 # Check current resource availability
-uv run srunx resources --partition gpu
+uv run srunx sinfo --partition gpu
 ```
 
 #### SSH Integration
-- `uv run srunx ssh submit train.py --host dgx-server --job-name remote_training`
+- `uv run srunx sbatch train.sh --profile dgx-server --name remote_training`
 - `uv run srunx ssh profile add myserver --hostname dgx.example.com --username researcher`
 
 #### Workflows

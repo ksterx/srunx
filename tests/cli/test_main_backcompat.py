@@ -2,8 +2,8 @@
 
 Captures the AC-10.2 / AC-6.x contracts the transport unification spec
 promises: default flag-less invocations stay byte-compatible with
-pre-transport CLI, and explicit ``--profile`` routes submit / cancel /
-status through the SSH adapter path (not the local ``Slurm`` singleton).
+pre-transport CLI, and explicit ``--profile`` routes sbatch / scancel
+through the SSH adapter path (not the local ``Slurm`` singleton).
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ class TestDefaultPathSilentBanner:
     must not see any new line.
     """
 
-    def test_submit_emits_no_banner_on_default_path(self):
+    def test_sbatch_emits_no_banner_on_default_path(self):
         runner = CliRunner()
         with patch("srunx.cli.main.Slurm") as slurm_cls:
             client = MagicMock()
@@ -31,19 +31,19 @@ class TestDefaultPathSilentBanner:
                 job_id=12345, name="job", command=["echo", "hi"]
             )
             slurm_cls.return_value = client
-            result = runner.invoke(app, ["submit", "echo", "hi"])
+            result = runner.invoke(app, ["sbatch", "--wrap", "echo hi"])
         assert result.exit_code == 0
         # Banner suppression: no ``●`` bullet + no ``via`` source string.
         assert "via" not in result.stderr
         assert "via" not in result.output
 
-    def test_list_emits_no_banner_on_default_path(self):
+    def test_squeue_emits_no_banner_on_default_path(self):
         runner = CliRunner()
         with patch("srunx.cli.main.Slurm") as slurm_cls:
             client = MagicMock()
             client.queue.return_value = []
             slurm_cls.return_value = client
-            result = runner.invoke(app, ["list"])
+            result = runner.invoke(app, ["squeue"])
         assert result.exit_code == 0
         assert "via" not in result.stderr
 
@@ -57,14 +57,14 @@ class TestExplicitSourceEmitsBanner:
             client = MagicMock()
             client.queue.return_value = []
             slurm_cls.return_value = client
-            result = runner.invoke(app, ["list", "--local"])
+            result = runner.invoke(app, ["squeue", "--local"])
         assert result.exit_code == 0
         assert "local" in result.stderr
         assert "via --local" in result.stderr
 
 
 class TestSSHHappyPath:
-    """AC-6.1 / AC-6.2: --profile routes through the SSH adapter.
+    """AC-6.1: --profile routes through the SSH adapter.
 
     We swap ``_build_ssh_handle`` for a handle whose ``job_ops`` is a mock,
     so the CLI exercises the SSH branch of :func:`resolve_transport` without
@@ -77,9 +77,6 @@ class TestSSHHappyPath:
         job_ops = MagicMock()
         job_ops.submit.side_effect = lambda job, **_: job
         job_ops.cancel.return_value = None
-        job_ops.status.return_value = MagicMock(
-            job_id=12345, name="mocked", status=MagicMock(name="RUNNING")
-        )
         job_ops.queue.return_value = []
         handle = TransportHandle(
             scheduler_key=scheduler_key,
@@ -94,30 +91,17 @@ class TestSSHHappyPath:
         pool.close.return_value = None
         return handle, pool, job_ops
 
-    def test_cancel_with_profile_routes_through_ssh_adapter(self):
-        """AC-6.1: srunx cancel --profile foo 12345 hits adapter.cancel()."""
+    def test_scancel_with_profile_routes_through_ssh_adapter(self):
+        """AC-6.1: srunx scancel --profile foo 12345 hits adapter.cancel()."""
         handle, pool, job_ops = self._fake_handle()
         runner = CliRunner()
         with patch(
             "srunx.transport.registry._build_ssh_handle",
             return_value=(handle, pool),
         ):
-            result = runner.invoke(app, ["cancel", "--profile", "dgx", "12345"])
+            result = runner.invoke(app, ["scancel", "--profile", "dgx", "12345"])
         assert result.exit_code == 0, result.output + result.stderr
         job_ops.cancel.assert_called_once_with(12345)
-
-    def test_status_with_profile_routes_through_ssh_adapter(self):
-        """AC-6.2: srunx status --profile foo 12345 hits adapter.status()."""
-        handle, pool, job_ops = self._fake_handle()
-        runner = CliRunner()
-        with patch(
-            "srunx.transport.registry._build_ssh_handle",
-            return_value=(handle, pool),
-        ):
-            result = runner.invoke(app, ["status", "--profile", "dgx", "12345"])
-        # status may exit 0 or print output — we only care that the
-        # adapter path was taken.
-        job_ops.status.assert_called_once_with(12345)
 
 
 class TestProfileWhitespaceNormalized:
@@ -125,7 +109,7 @@ class TestProfileWhitespaceNormalized:
 
     def test_whitespace_only_profile_rejected(self):
         runner = CliRunner()
-        result = runner.invoke(app, ["list", "--profile", "   "])
+        result = runner.invoke(app, ["squeue", "--profile", "   "])
         assert result.exit_code != 0
         # Error message from typer.BadParameter or similar
         combined = (result.output + result.stderr).lower()

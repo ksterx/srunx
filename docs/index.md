@@ -84,13 +84,13 @@ hide:
 === "Submit"
 
     ```bash
-    srunx submit python train.py --gpus-per-node 2 --conda ml_env
+    srunx sbatch --wrap "python train.py" --gpus-per-node 2 --conda ml_env
     ```
 
 === "Container"
 
     ```bash
-    srunx submit python train.py \
+    srunx sbatch --wrap "python train.py \"
       --container "runtime=apptainer,image=pytorch.sif,nv=true"
     ```
 
