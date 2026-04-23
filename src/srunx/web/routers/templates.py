@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from srunx.slurm.ssh import SlurmSSHAdapter  # noqa: F811
 from srunx.template import (
     get_template_info,
     get_template_path,
@@ -15,7 +16,6 @@ from srunx.template import (
 )
 
 from ..deps import get_adapter
-from ..ssh_adapter import SlurmSSHAdapter  # noqa: F811
 
 router = APIRouter(prefix="/api/templates", tags=["templates"])
 

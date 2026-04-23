@@ -226,13 +226,13 @@ class TestMCPMountRouting:
         )
         with (
             patch(
-                "srunx.web.ssh_adapter.SlurmSSHAdapter.__init__", return_value=None
+                "srunx.slurm.ssh.SlurmSSHAdapter.__init__", return_value=None
             ) as adapter_init,
             patch(
-                "srunx.web.ssh_adapter.SlurmSSHAdapter.connection_spec",
+                "srunx.slurm.ssh.SlurmSSHAdapter.connection_spec",
                 new=MagicMock(),
             ),
-            patch("srunx.web.ssh_executor.SlurmSSHExecutorPool") as pool_cls,
+            patch("srunx.slurm.ssh_executor.SlurmSSHExecutorPool") as pool_cls,
             patch("srunx.sweep.orchestrator.SweepOrchestrator") as orch_cls,
         ):
             mock_pool = MagicMock()
@@ -283,12 +283,12 @@ class TestMCPMountRouting:
             lambda self: "pyxis",
         )
         with (
-            patch("srunx.web.ssh_adapter.SlurmSSHAdapter.__init__", return_value=None),
+            patch("srunx.slurm.ssh.SlurmSSHAdapter.__init__", return_value=None),
             patch(
-                "srunx.web.ssh_adapter.SlurmSSHAdapter.connection_spec",
+                "srunx.slurm.ssh.SlurmSSHAdapter.connection_spec",
                 new=MagicMock(),
             ),
-            patch("srunx.web.ssh_executor.SlurmSSHExecutorPool") as pool_cls,
+            patch("srunx.slurm.ssh_executor.SlurmSSHExecutorPool") as pool_cls,
             patch("srunx.runner.WorkflowRunner.from_yaml") as from_yaml,
         ):
             mock_pool = MagicMock()
@@ -346,7 +346,7 @@ class TestMCPMountRouting:
             "srunx.ssh.core.config.ConfigManager.get_current_profile_name",
             lambda self: "pyxis",
         )
-        with patch("srunx.web.ssh_adapter.SlurmSSHAdapter.__init__", return_value=None):
+        with patch("srunx.slurm.ssh.SlurmSSHAdapter.__init__", return_value=None):
             result = run_workflow(str(yaml_path), mount="cookbook2")
 
         assert result["success"] is False

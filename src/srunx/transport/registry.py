@@ -406,9 +406,9 @@ def _build_ssh_handle(
             factory rejects the configuration.
     """
     # Conditional imports — see module docstring.
+    from srunx.slurm.ssh import SlurmSSHAdapter, SlurmSSHAdapterSpec
+    from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
     from srunx.ssh.core.config import ConfigManager
-    from srunx.web.ssh_adapter import SlurmSSHAdapter, SlurmSSHAdapterSpec
-    from srunx.web.ssh_executor import SlurmSSHExecutorPool
 
     cm = ConfigManager()
     profile = cm.get_profile(profile_name)

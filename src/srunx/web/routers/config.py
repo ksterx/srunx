@@ -201,8 +201,9 @@ async def connect_ssh_profile(name: str) -> SSHConnectResponse:
     """Switch the live SSH connection to a different profile."""
     import anyio
 
+    from srunx.slurm.ssh import SlurmSSHAdapter
+
     from ..deps import swap_adapter
-    from ..ssh_adapter import SlurmSSHAdapter
 
     cm = _get_config_manager()
     profile = cm.get_profile(name)
@@ -267,7 +268,7 @@ async def test_ssh_profile(name: str) -> SSHTestResult:
     """Test SSH connectivity and SLURM availability for a profile without switching."""
     import anyio
 
-    from ..ssh_adapter import SlurmSSHAdapter
+    from srunx.slurm.ssh import SlurmSSHAdapter
 
     cm = _get_config_manager()
     profile = cm.get_profile(name)

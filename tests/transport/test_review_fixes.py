@@ -370,7 +370,7 @@ class TestStatusSnapshotDoesNotRefresh:
     def test_status_returns_parked_refresh_clock(self) -> None:
         from unittest.mock import patch as _patch
 
-        from srunx.web.ssh_adapter import SlurmSSHAdapter
+        from srunx.slurm.ssh import SlurmSSHAdapter
 
         # Build an adapter bypassing __init__ so we don't need real SSH.
         adapter = object.__new__(SlurmSSHAdapter)
@@ -787,11 +787,11 @@ class TestPoolOrphanProtection:
         with (
             patch("srunx.ssh.core.config.ConfigManager", return_value=fake_cm),
             patch(
-                "srunx.web.ssh_adapter.SlurmSSHAdapter",
+                "srunx.slurm.ssh.SlurmSSHAdapter",
                 return_value=MagicMock(connection_spec=MagicMock()),
             ),
             patch(
-                "srunx.web.ssh_executor.SlurmSSHExecutorPool",
+                "srunx.slurm.ssh_executor.SlurmSSHExecutorPool",
                 return_value=fake_pool,
             ),
             patch(

@@ -1,7 +1,7 @@
 """Phase 2 Step 5 integration tests: SSH executor factory wiring.
 
 Verifies the thin glue between :class:`SweepOrchestrator` and
-:class:`~srunx.web.ssh_executor.SlurmSSHExecutorPool` introduced in Step 5:
+:class:`~srunx.slurm.ssh_executor.SlurmSSHExecutorPool` introduced in Step 5:
 
 * ``executor_factory=None`` (CLI default) keeps the legacy local
   :class:`Slurm` singleton path.
@@ -420,8 +420,8 @@ class TestWebDispatchPoolLifecycle:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        from srunx.slurm.ssh import SlurmSSHAdapterSpec
         from srunx.web.routers import workflows as wf_mod
-        from srunx.web.ssh_adapter import SlurmSSHAdapterSpec
 
         yaml_path = _write_wf(tmp_path)
         spec = SlurmSSHAdapterSpec(
@@ -581,8 +581,8 @@ class TestWebDispatchPoolLifecycle:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``max_parallel=20`` → pool size clamped to 8."""
+        from srunx.slurm.ssh import SlurmSSHAdapterSpec
         from srunx.web.routers import workflows as wf_mod
-        from srunx.web.ssh_adapter import SlurmSSHAdapterSpec
 
         yaml_path = _write_wf(tmp_path)
         spec = SlurmSSHAdapterSpec(

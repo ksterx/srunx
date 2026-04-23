@@ -80,7 +80,7 @@ class TestSlurmSSHAdapterProtocolCompliance:
 
     def test_ssh_adapter_has_protocol_methods(self) -> None:
         """Structural check: all 5 Protocol methods are defined."""
-        from srunx.web.ssh_adapter import SlurmSSHAdapter
+        from srunx.slurm.ssh import SlurmSSHAdapter
 
         for method in ("submit", "cancel", "status", "queue", "tail_log_incremental"):
             assert hasattr(SlurmSSHAdapter, method), f"missing method: {method}"
@@ -88,7 +88,7 @@ class TestSlurmSSHAdapterProtocolCompliance:
 
     def test_ssh_adapter_backcompat_aliases_preserved(self) -> None:
         """Existing method names must still be callable (non-breaking change)."""
-        from srunx.web.ssh_adapter import SlurmSSHAdapter
+        from srunx.slurm.ssh import SlurmSSHAdapter
 
         for legacy_method in (
             "submit_job",
@@ -106,7 +106,7 @@ class TestSlurmSSHAdapterProtocolCompliance:
         """``status`` returns a BaseJob whose ``status`` attribute is a JobStatus."""
         from srunx.client_protocol import JobStatusInfo
         from srunx.models import BaseJob, JobStatus
-        from srunx.web.ssh_adapter import SlurmSSHAdapter
+        from srunx.slurm.ssh import SlurmSSHAdapter
 
         # Patch out ``queue_by_ids`` to avoid touching any SSH client.
         with patch.object(
@@ -124,7 +124,7 @@ class TestSlurmSSHAdapterProtocolCompliance:
     def test_ssh_adapter_status_raises_job_not_found(self) -> None:
         """Missing job → JobNotFound, matching the Protocol contract."""
         from srunx.exceptions import JobNotFound
-        from srunx.web.ssh_adapter import SlurmSSHAdapter
+        from srunx.slurm.ssh import SlurmSSHAdapter
 
         with patch.object(SlurmSSHAdapter, "queue_by_ids", return_value={}):
             adapter = SlurmSSHAdapter.__new__(SlurmSSHAdapter)
@@ -134,7 +134,7 @@ class TestSlurmSSHAdapterProtocolCompliance:
     def test_ssh_adapter_queue_returns_list_base_job(self) -> None:
         """``queue`` adapts list_jobs dicts into Pydantic BaseJob instances."""
         from srunx.models import BaseJob, JobStatus
-        from srunx.web.ssh_adapter import SlurmSSHAdapter
+        from srunx.slurm.ssh import SlurmSSHAdapter
 
         fake_rows = [
             {
@@ -160,7 +160,7 @@ class TestSlurmSSHAdapterProtocolCompliance:
     def test_ssh_adapter_tail_log_incremental_returns_log_chunk(self) -> None:
         """``tail_log_incremental`` returns a Pydantic LogChunk."""
         from srunx.client_protocol import LogChunk
-        from srunx.web.ssh_adapter import SlurmSSHAdapter
+        from srunx.slurm.ssh import SlurmSSHAdapter
 
         with patch.object(
             SlurmSSHAdapter,

@@ -1368,7 +1368,7 @@ def sinfo(
                 # ``get_cluster_snapshot`` because those are SSH-only,
                 # and bouncing through a fresh Protocol adds no value
                 # over the existing ``SSHAdapterResourceSource``.
-                from srunx.web.ssh_adapter import SlurmSSHAdapter
+                from srunx.slurm.ssh import SlurmSSHAdapter
 
                 adapter = cast(SlurmSSHAdapter, rt.job_ops)
                 source = SSHAdapterResourceSource(lambda: adapter)

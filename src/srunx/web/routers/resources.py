@@ -7,8 +7,9 @@ from typing import Any
 import anyio
 from fastapi import APIRouter, Depends, HTTPException
 
+from srunx.slurm.ssh import SlurmSSHAdapter
+
 from ..deps import get_adapter
-from ..ssh_adapter import SlurmSSHAdapter
 
 router = APIRouter(prefix="/api/resources", tags=["resources"])
 

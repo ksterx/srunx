@@ -21,12 +21,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from srunx.models import Job, JobStatus, render_job_script
-from srunx.template import get_template_path
-from srunx.web.ssh_adapter import SlurmSSHAdapter, SlurmSSHAdapterSpec
-from srunx.web.ssh_executor import (
+from srunx.slurm.ssh import SlurmSSHAdapter, SlurmSSHAdapterSpec
+from srunx.slurm.ssh_executor import (
     SlurmSSHExecutorPool,
     SSHWorkflowJobExecutor,
 )
+from srunx.template import get_template_path
 
 # --- Helpers ---------------------------------------------------------
 
@@ -337,11 +337,11 @@ class TestRenderParity:
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
         )
         monkeypatch.setattr(
-            "srunx.web.ssh_adapter.SlurmSSHAdapter._record_job_submission",
+            "srunx.slurm.ssh.SlurmSSHAdapter._record_job_submission",
             staticmethod(lambda *a, **k: None),
         )
         monkeypatch.setattr(
-            "srunx.web.ssh_adapter.SlurmSSHAdapter._record_completion_safe",
+            "srunx.slurm.ssh.SlurmSSHAdapter._record_completion_safe",
             staticmethod(lambda *a, **k: None),
         )
 

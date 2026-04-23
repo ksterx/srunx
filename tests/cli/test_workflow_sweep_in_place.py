@@ -434,7 +434,7 @@ class TestLockedMountNamesSafetyNet:
         """Adapter rejects IN_PLACE when ``mount.name`` not in locked set."""
         from srunx.models import JobStatus, ShellJob
         from srunx.rendering import SubmissionRenderContext
-        from srunx.web.ssh_adapter import SlurmSSHAdapter
+        from srunx.slurm.ssh import SlurmSSHAdapter
 
         # Build a real ShellJob that lives under the adapter's mount.
         mount_local = tmp_path / "ml"
@@ -496,7 +496,7 @@ class TestLockedMountNamesSafetyNet:
         """
         from srunx.models import JobStatus, ShellJob
         from srunx.rendering import SubmissionRenderContext
-        from srunx.web.ssh_adapter import SlurmSSHAdapter
+        from srunx.slurm.ssh import SlurmSSHAdapter
 
         mount_local = tmp_path / "ml"
         mount_local.mkdir()

@@ -50,13 +50,13 @@ from srunx.rendering import (
 )
 from srunx.runner import WorkflowRunner
 from srunx.security import find_python_prefix
+from srunx.slurm.ssh import SlurmSSHAdapter
+from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
 from srunx.sweep import SweepSpec
 from srunx.sweep.orchestrator import SweepOrchestrator
 from srunx.sweep.state_service import WorkflowRunStateService
 
 from ..deps import get_adapter, get_db_conn
-from ..ssh_adapter import SlurmSSHAdapter
-from ..ssh_executor import SlurmSSHExecutorPool
 
 logger = get_logger(__name__)
 
