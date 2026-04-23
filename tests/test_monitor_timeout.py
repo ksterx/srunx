@@ -23,7 +23,7 @@ class TestJobMonitorTimeout:
         job = Job(name="job1", job_id=123, command=["test"])
         job._status = JobStatus.RUNNING
         monitor.client = MagicMock()
-        monitor.client.retrieve = MagicMock(return_value=job)
+        monitor.client.status = MagicMock(return_value=job)
 
         start_time = time.time()
         with pytest.raises(TimeoutError):
@@ -42,7 +42,7 @@ class TestJobMonitorTimeout:
         job = Job(name="job1", job_id=123, command=["test"])
         job._status = JobStatus.COMPLETED
         monitor.client = MagicMock()
-        monitor.client.retrieve = MagicMock(return_value=job)
+        monitor.client.status = MagicMock(return_value=job)
 
         start_time = time.time()
         monitor.watch_until()
@@ -63,7 +63,7 @@ class TestJobMonitorTimeout:
 
         call_count = 0
 
-        def mock_retrieve(job_id):
+        def mock_status(job_id):
             nonlocal call_count
             call_count += 1
             if call_count >= 3:
@@ -71,7 +71,7 @@ class TestJobMonitorTimeout:
                 monitor._stop_requested = True
             return job
 
-        monitor.client.retrieve = mock_retrieve
+        monitor.client.status = mock_status
 
         start_time = time.time()
         monitor.watch_until()
@@ -89,7 +89,7 @@ class TestJobMonitorTimeout:
         job = Job(name="job1", job_id=123, command=["test"])
         job._status = JobStatus.RUNNING
         monitor.client = MagicMock()
-        monitor.client.retrieve = MagicMock(return_value=job)
+        monitor.client.status = MagicMock(return_value=job)
 
         start_time = time.time()
         with pytest.raises(TimeoutError):
@@ -207,7 +207,7 @@ class TestContinuousModeTimeout:
 
         call_count = 0
 
-        def mock_retrieve(job_id):
+        def mock_status(job_id):
             nonlocal call_count
             call_count += 1
             if call_count >= 5:
@@ -215,7 +215,7 @@ class TestContinuousModeTimeout:
                 monitor._stop_requested = True
             return job
 
-        monitor.client.retrieve = mock_retrieve
+        monitor.client.status = mock_status
 
         start_time = time.time()
         monitor.watch_continuous()
@@ -240,13 +240,13 @@ class TestPollIntervalTiming:
 
         poll_times = []
 
-        def mock_retrieve(job_id):
+        def mock_status(job_id):
             poll_times.append(time.time())
             if len(poll_times) >= 3:
                 monitor._stop_requested = True
             return job
 
-        monitor.client.retrieve = mock_retrieve
+        monitor.client.status = mock_status
 
         monitor.watch_until()
 
