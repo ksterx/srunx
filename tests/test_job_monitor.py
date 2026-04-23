@@ -51,7 +51,7 @@ class TestJobMonitor:
         job2._status = JobStatus.COMPLETED
 
         monitor.client = MagicMock()
-        monitor.client.retrieve = MagicMock(side_effect=[job1, job2])
+        monitor.client.status = MagicMock(side_effect=[job1, job2])
 
         assert monitor.check_condition() is True
 
@@ -66,7 +66,7 @@ class TestJobMonitor:
         job2._status = JobStatus.RUNNING
 
         monitor.client = MagicMock()
-        monitor.client.retrieve = MagicMock(side_effect=[job1, job2])
+        monitor.client.status = MagicMock(side_effect=[job1, job2])
 
         assert monitor.check_condition() is False
 
@@ -79,7 +79,7 @@ class TestJobMonitor:
         job._status = JobStatus.FAILED
 
         monitor.client = MagicMock()
-        monitor.client.retrieve = MagicMock(return_value=job)
+        monitor.client.status = MagicMock(return_value=job)
 
         assert monitor.check_condition() is True
 
@@ -94,7 +94,7 @@ class TestJobMonitor:
         job2._status = JobStatus.COMPLETED
 
         monitor.client = MagicMock()
-        monitor.client.retrieve = MagicMock(side_effect=[job1, job2])
+        monitor.client.status = MagicMock(side_effect=[job1, job2])
 
         state = monitor.get_current_state()
         assert state == {"123": "RUNNING", "456": "COMPLETED"}
@@ -105,7 +105,7 @@ class TestJobMonitor:
 
         # Mock client to raise exception
         monitor.client = MagicMock()
-        monitor.client.retrieve = MagicMock(side_effect=Exception("SLURM error"))
+        monitor.client.status = MagicMock(side_effect=Exception("SLURM error"))
 
         jobs = monitor._get_monitored_jobs()
         assert len(jobs) == 1
@@ -198,7 +198,7 @@ class TestJobMonitor:
         # First call: RUNNING
         job_running = Job(name="job1", job_id=123, command=["test"])
         job_running._status = JobStatus.RUNNING
-        monitor.client.retrieve = MagicMock(return_value=job_running)
+        monitor.client.status = MagicMock(return_value=job_running)
 
         monitor._notify_callbacks("state_changed")
         assert callback.on_job_running.call_count == 1
@@ -210,7 +210,7 @@ class TestJobMonitor:
         # Third call: COMPLETED (should notify — clear cache for new mock)
         job_completed = Job(name="job1", job_id=123, command=["test"])
         job_completed._status = JobStatus.COMPLETED
-        monitor.client.retrieve = MagicMock(return_value=job_completed)
+        monitor.client.status = MagicMock(return_value=job_completed)
         monitor._cached_jobs = None
 
         monitor._notify_callbacks("state_changed")
@@ -229,7 +229,7 @@ class TestJobMonitor:
         monitor.client = MagicMock()
         job = Job(name="job1", job_id=123, command=["test"])
         job._status = JobStatus.RUNNING
-        monitor.client.retrieve = MagicMock(return_value=job)
+        monitor.client.status = MagicMock(return_value=job)
 
         # Should not raise exception
         monitor._notify_callbacks("state_changed")
@@ -255,7 +255,7 @@ class TestJobMonitor:
         monitor.client = MagicMock()
         call_count = 0
 
-        def mock_retrieve(job_id):
+        def mock_status(job_id):
             nonlocal call_count
             call_count += 1
             job = Job(name="job1", job_id=123, command=["test"])
@@ -269,7 +269,7 @@ class TestJobMonitor:
                 job._status = JobStatus.RUNNING
             return job
 
-        monitor.client.retrieve = mock_retrieve
+        monitor.client.status = mock_status
 
         # Run watch_continuous in thread with timeout
         thread = threading.Thread(target=monitor.watch_continuous)
@@ -300,7 +300,7 @@ class TestJobMonitor:
         monitor.client = MagicMock()
         call_count = 0
 
-        def mock_retrieve(job_id):
+        def mock_status(job_id):
             nonlocal call_count
             call_count += 1
             job = Job(name="job1", job_id=123, command=["test"])
@@ -310,7 +310,7 @@ class TestJobMonitor:
                 monitor._stop_requested = True
             return job
 
-        monitor.client.retrieve = mock_retrieve
+        monitor.client.status = mock_status
 
         # Run watch_continuous in thread
         thread = threading.Thread(target=monitor.watch_continuous)
@@ -337,7 +337,7 @@ class TestJobMonitor:
         monitor.client = MagicMock()
         job = Job(name="job1", job_id=123, command=["test"])
         job._status = JobStatus.RUNNING
-        monitor.client.retrieve = MagicMock(return_value=job)
+        monitor.client.status = MagicMock(return_value=job)
 
         # Start monitoring in thread
         thread = threading.Thread(target=monitor.watch_continuous)
@@ -364,12 +364,12 @@ class TestJobMonitor:
         # Mock client to return completed jobs
         monitor.client = MagicMock()
 
-        def mock_retrieve(job_id):
+        def mock_status(job_id):
             job = Job(name=f"job_{job_id}", job_id=job_id, command=["test"])
             job._status = JobStatus.COMPLETED
             return job
 
-        monitor.client.retrieve = mock_retrieve
+        monitor.client.status = mock_status
 
         # Check all jobs are monitored
         state = monitor.get_current_state()
@@ -411,7 +411,7 @@ class TestJobMonitor:
             JobStatus.COMPLETED,  # Duplicate - should not notify
         ]
 
-        def mock_retrieve(job_id):
+        def mock_status(job_id):
             nonlocal call_count
             job = Job(name="job999", job_id=999, command=["test"])
             if call_count < len(states):
@@ -422,7 +422,7 @@ class TestJobMonitor:
             call_count += 1
             return job
 
-        monitor.client.retrieve = mock_retrieve
+        monitor.client.status = mock_status
 
         # Run monitoring
         thread = threading.Thread(target=monitor.watch_continuous)
