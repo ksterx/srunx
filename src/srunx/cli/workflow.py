@@ -129,7 +129,7 @@ def _resolve_sweep_locked_mounts(
     treats that as "no enforcement" which matches the legacy
     pre-#143 behaviour.
     """
-    from srunx.cli.submission_plan import collect_touched_mounts_across_cells
+    from srunx.runtime.submission_plan import collect_touched_mounts_across_cells
     from srunx.ssh.core.config import ConfigManager
 
     if rt.profile_name is None:
@@ -193,7 +193,7 @@ def _hold_workflow_mounts(
         yield
         return
 
-    from srunx.cli.submission_plan import collect_touched_mounts
+    from srunx.runtime.submission_plan import collect_touched_mounts
     from srunx.ssh.core.config import ConfigManager
     from srunx.sync.lock import SyncLockTimeoutError
     from srunx.sync.service import SyncAbortedError, mount_sync_session

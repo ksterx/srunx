@@ -91,7 +91,7 @@ class TestFindPythonPrefix:
         assert dataclasses.is_dataclass(violation)
         # frozen=True -> attribute assignment must fail
         try:
-            violation.source = "other"  # type: ignore[misc]
+            violation.source = "other"  # type: ignore[misc, union-attr]
         except dataclasses.FrozenInstanceError:
             return
         raise AssertionError("PythonPrefixViolation must be frozen")

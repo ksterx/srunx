@@ -89,12 +89,12 @@ def _submit_via_transport(
     sbatch's precedence. Closes Codex blocker #1: previously these
     flags silently no-op'd in ShellJob (positional-script) mode.
     """
-    from srunx.cli.submission_plan import (
+    from srunx.exceptions import TransportError
+    from srunx.models import ShellJob as _ShellJob
+    from srunx.runtime.submission_plan import (
         SubmissionMode,
         plan_sbatch_submission,
     )
-    from srunx.exceptions import TransportError
-    from srunx.models import ShellJob as _ShellJob
     from srunx.sync.lock import SyncLockTimeoutError
     from srunx.sync.service import SyncAbortedError, mount_sync_session
 
@@ -324,7 +324,7 @@ def _print_in_place_sync_preview(
 
     resolved_profile_name = sched_key[len("ssh:") :]
 
-    from srunx.cli.submission_plan import resolve_mount_for_path
+    from srunx.runtime.submission_plan import resolve_mount_for_path
     from srunx.ssh.core.config import ConfigManager
 
     profile = ConfigManager().get_profile(resolved_profile_name)

@@ -1291,7 +1291,7 @@ class SlurmSSHAdapter:
             # tempfile path performs.
             import tempfile as _tempfile
 
-            from srunx.cli.submission_plan import (
+            from srunx.runtime.submission_plan import (
                 render_matches_source,
                 resolve_mount_for_path,
                 translate_local_to_remote,

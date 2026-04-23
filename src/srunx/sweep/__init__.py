@@ -1,42 +1,40 @@
-"""Sweep domain: matrix expansion, cell spec, orchestrator helpers.
+"""Backward-compat shim. Canonical home: :mod:`srunx.runtime.sweep`.
 
-Design reference: ``.claude/specs/workflow-parameter-sweep/design.md``.
+External code should migrate to ``srunx.runtime.sweep``. Submodules are
+aliased via ``sys.modules`` so legacy ``from srunx.sweep.X import Y``
+call-sites and monkey-patches keep working during the Phase 8f
+transition.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import sys as _sys
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from srunx.runtime.sweep import *  # noqa: F401, F403
+from srunx.runtime.sweep import (  # noqa: F401
+    aggregator as _aggregator,
+)
+from srunx.runtime.sweep import (
+    expand as _expand,
+)
+from srunx.runtime.sweep import (
+    orchestrator as _orchestrator,
+)
+from srunx.runtime.sweep import (
+    reconciler as _reconciler,
+)
+from srunx.runtime.sweep import (
+    state_service as _state_service,
+)
 
-ScalarValue = str | int | float | bool
+_sys.modules[f"{__name__}.aggregator"] = _aggregator
+_sys.modules[f"{__name__}.expand"] = _expand
+_sys.modules[f"{__name__}.orchestrator"] = _orchestrator
+_sys.modules[f"{__name__}.reconciler"] = _reconciler
+_sys.modules[f"{__name__}.state_service"] = _state_service
 
-
-class SweepSpec(BaseModel):
-    """Declarative matrix spec: axes, fail-fast, parallelism cap."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    matrix: dict[str, list[ScalarValue]] = Field(default_factory=dict)
-    fail_fast: bool = False
-    max_parallel: int
-
-    @field_validator("max_parallel")
-    @classmethod
-    def _validate_max_parallel(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("max_parallel must be >= 1")
-        return value
-
-
-class CellSpec(BaseModel):
-    """Materialized cell: workflow_run id plus effective args."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    workflow_run_id: int
-    effective_args: dict[str, Any]
-    cell_index: int
-
-
-__all__ = ["CellSpec", "ScalarValue", "SweepSpec"]
+aggregator = _aggregator
+expand = _expand
+orchestrator = _orchestrator
+reconciler = _reconciler
+state_service = _state_service

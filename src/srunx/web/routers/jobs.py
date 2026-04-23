@@ -269,7 +269,7 @@ def _resolve_in_place_plan(
     """
     from pathlib import Path
 
-    from srunx.cli.submission_plan import translate_local_to_remote
+    from srunx.runtime.submission_plan import translate_local_to_remote
 
     matching = [m for m in profile.mounts if m.name == mount_name]
     if not matching:

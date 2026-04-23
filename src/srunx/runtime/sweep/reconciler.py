@@ -26,9 +26,9 @@ from srunx.db.models import SweepRun
 from srunx.db.repositories.sweep_runs import SweepRunRepository
 from srunx.logging import get_logger
 from srunx.rendering import SubmissionRenderContext
-from srunx.sweep import CellSpec, SweepSpec
-from srunx.sweep.aggregator import evaluate_and_fire_sweep_status_event
-from srunx.sweep.orchestrator import SweepOrchestrator
+from srunx.runtime.sweep import CellSpec, SweepSpec
+from srunx.runtime.sweep.aggregator import evaluate_and_fire_sweep_status_event
+from srunx.runtime.sweep.orchestrator import SweepOrchestrator
 
 logger = get_logger(__name__)
 

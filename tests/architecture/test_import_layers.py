@@ -39,13 +39,13 @@ MODULE_LAYERS: dict[str, str] = {
     # domain (Phase 3 / #159 splits models.py into domain/)
     "domain": "domain",
     "models": "domain",
-    # runtime (Phase 2 / #158 + Phase 7 / #163)
+    # runtime (Phase 2 / #158 + Phase 7 / #163 + Phase 8f / #164)
     "runtime": "runtime",
     "rendering": "runtime",  # shim — canonical home: srunx.runtime.rendering
     "runner": "runtime",  # shim — canonical home: srunx.runtime.workflow.runner
     "template": "runtime",  # shim — canonical home: srunx.runtime.templates
-    "sweep": "runtime",
-    "security": "runtime",
+    "sweep": "runtime",  # shim — canonical home: srunx.runtime.sweep
+    "security": "runtime",  # shim — canonical home: srunx.runtime.security
     # slurm (Phase 4 / #160 + Phase 6 / #162)
     "client": "slurm",
     "client_protocol": "slurm",
@@ -132,16 +132,11 @@ KNOWN_VIOLATIONS: dict[tuple[str, str], str] = {
         "``workflow_runs`` rows directly. Resolved by extending Phase 5's sink "
         "pattern into the workflow runner (follow-up)."
     ),
-    # runtime -> observability (sweep orchestration writes DB + notifications directly).
-    (
-        "sweep",
-        "callbacks",
-    ): "Phase 7/8 (#163/#164): sweep orchestration goes through sink.",
-    ("sweep", "db"): (
-        "Phase 7/8 (#163/#164): sweep orchestrator/reconciler/state_service "
-        "use storage facade."
+    ("runtime", "notifications"): (
+        "``runtime.sweep`` (aggregator / orchestrator / state_service) invokes "
+        "``NotificationService`` directly. Sink extraction into the sweep "
+        "orchestrator is the Phase 5-follow-up that resolves this."
     ),
-    ("sweep", "notifications"): "Phase 8 (#164): notifications accessed via sink.",
     # slurm -> observability (transport registry still imports callbacks).
     ("transport", "callbacks"): "Phase 5 (#161): transport registry uses sink.",
     # slurm -> observability (SSH adapter still writes DB + invokes callbacks
@@ -154,11 +149,9 @@ KNOWN_VIOLATIONS: dict[tuple[str, str], str] = {
         "SSH adapter writes ``srunx.db`` rows directly. "
         "Phase 5 sink pattern extended to SSH in a follow-up."
     ),
-    # slurm -> interfaces (SSH adapter consumes cli-layer submission plan).
-    ("slurm", "cli"): (
-        "Phase 8 (#164): ``cli/submission_plan.py`` moves to ``runtime/`` "
-        "(interfaces-agnostic submission plan)."
-    ),
+    # NOTE: ``slurm -> cli`` (SSH adapter consuming ``cli.submission_plan``)
+    # was resolved by Phase 8f — ``submission_plan.py`` now lives under
+    # ``runtime/`` so the import is ``slurm -> runtime`` (allowed).
 }
 
 
