@@ -29,7 +29,7 @@ import pytest
 from typer.testing import CliRunner
 
 from srunx.cli.main import app
-from srunx.cli.submission_plan import collect_touched_mounts_across_cells
+from srunx.runtime.submission_plan import collect_touched_mounts_across_cells
 from srunx.ssh.core.client_types import SlurmJob
 from srunx.ssh.core.config import MountConfig, ServerProfile
 

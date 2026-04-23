@@ -7,7 +7,7 @@ import typer
 from rich.console import Console
 
 from srunx.callbacks import Callback, SlackCallback
-from srunx.cli.transport_options import LocalOpt, ProfileOpt, QuietOpt
+from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.client import Slurm
 from srunx.monitor.job_monitor import JobMonitor
 from srunx.monitor.report_types import ReportConfig
@@ -145,7 +145,7 @@ def watch_jobs(
         #                notifications the user asked for)
         callbacks: list[Callback] = []
         if endpoint:
-            from srunx.cli.notification_setup import attach_notification_watch
+            from srunx.cli._helpers.notification_setup import attach_notification_watch
             from srunx.config import get_config
 
             effective_preset = preset or get_config().notifications.default_preset

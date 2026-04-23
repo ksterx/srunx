@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from srunx.ssh.core.config import MountConfig
 
 from srunx.callbacks import Callback, NotificationWatchCallback, SlackCallback
-from srunx.cli.transport_options import LocalOpt, ProfileOpt, QuietOpt
+from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.config import get_config
 from srunx.exceptions import WorkflowValidationError
 from srunx.logging import configure_workflow_logging, get_logger

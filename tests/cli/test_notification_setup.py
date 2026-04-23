@@ -1,4 +1,4 @@
-"""Tests for :mod:`srunx.cli.notification_setup`.
+"""Tests for :mod:`srunx.cli._helpers.notification_setup`.
 
 Covers the CLI notification bridge: after ``srunx submit`` creates a
 SLURM job + records it to the state DB, this helper wires up the
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from srunx.cli.notification_setup import attach_notification_watch
+from srunx.cli._helpers.notification_setup import attach_notification_watch
 
 
 @pytest.fixture

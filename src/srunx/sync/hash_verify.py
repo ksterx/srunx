@@ -94,9 +94,9 @@ def local_sha256(path: Path) -> str:
 def _local_to_remote(path: Path, mount: MountConfig) -> str:
     """Translate a local path under *mount* into its remote equivalent.
 
-    Mirrors :func:`srunx.cli.submission_plan.translate_local_to_remote`,
+    Mirrors :func:`srunx.runtime.submission_plan.translate_local_to_remote`,
     duplicated here so the ``srunx.sync`` layer doesn't import upward
-    into ``srunx.cli``. Same contract: caller has already verified
+    into ``srunx.runtime``. Same contract: caller has already verified
     *path* lives under ``mount.local`` (e.g. via the planner).
 
     Joins with ``/`` explicitly because the remote side is POSIX —

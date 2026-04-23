@@ -37,7 +37,7 @@ def _submit_via_transport(
 
     Local transport keeps the rich ``Slurm.submit`` signature
     (callbacks + template_path + verbose). The SSH transport goes
-    through :func:`srunx.cli.submission_plan.plan_sbatch_submission`
+    through :func:`srunx.runtime.submission_plan.plan_sbatch_submission`
     to decide between:
 
     * IN_PLACE: rsync the owning mount (unless ``--no-sync``),
