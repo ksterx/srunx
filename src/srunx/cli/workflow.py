@@ -1,8 +1,10 @@
 """CLI interface for workflow management."""
 
+import contextlib
 import os
 import signal
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -32,6 +34,98 @@ from srunx.transport import (
 )
 
 logger = get_logger(__name__)
+
+
+def _resolve_sync_flag(sync: bool | None) -> bool:
+    """Resolve the effective ``--sync`` value (CLI > config default).
+
+    The Workflow Phase 2 CLI surface mirrors ``srunx sbatch`` here:
+    ``None`` means "fall back to ``[sync] auto``" (default true).
+    Explicit ``--sync`` / ``--no-sync`` always wins. Kept as a tiny
+    free function so the sweep + non-sweep call sites stay readable.
+    """
+    if sync is not None:
+        return sync
+    return get_config().sync.auto
+
+
+@contextlib.contextmanager
+def _hold_workflow_mounts(
+    *,
+    rt: "ResolvedTransport",
+    workflow_for_mounts: "Workflow | None",
+    sync_required: bool,
+) -> Iterator[None]:
+    """Acquire per-mount sync locks for every mount the workflow touches.
+
+    Phase 2 (#135): scans the workflow's :class:`ShellJob` ``script_path``
+    values for mounts under the resolved SSH profile, then opens a
+    :func:`mount_sync_session` for each unique mount via
+    :class:`contextlib.ExitStack`. Locks are held across every job
+    submission inside the workflow run, closing the same race window
+    ``mount_sync_session`` closes for single-job ``sbatch``.
+
+    No-ops when:
+
+    * Transport is local — there's no remote workspace to sync.
+    * No profile is bound (legacy direct-hostname path).
+    * Workflow has no ShellJobs touching any mount.
+
+    Each mount is rsynced **at most once** even when the workflow
+    fans out into many cells (sweep) or many ShellJobs targeting the
+    same mount, so a 100-cell sweep doesn't trigger 100 rsyncs.
+
+    ``sync_required=False`` (``--no-sync``) still acquires the locks
+    but skips the rsync invocation; this preserves the lock-held
+    invariant while letting the user opt out of the transfer.
+    """
+    if (
+        rt.transport_type != "ssh"
+        or rt.profile_name is None
+        or workflow_for_mounts is None
+    ):
+        yield
+        return
+
+    from srunx.cli.submission_plan import collect_touched_mounts
+    from srunx.ssh.core.config import ConfigManager
+    from srunx.sync.lock import SyncLockTimeoutError
+    from srunx.sync.service import SyncAbortedError, mount_sync_session
+
+    profile = ConfigManager().get_profile(rt.profile_name)
+    if profile is None:
+        yield
+        return
+
+    mounts = collect_touched_mounts(workflow_for_mounts, profile)
+    if not mounts:
+        yield
+        return
+
+    config = get_config()
+    try:
+        with contextlib.ExitStack() as stack:
+            for mount in mounts:
+                outcome = stack.enter_context(
+                    mount_sync_session(
+                        profile_name=rt.profile_name,
+                        profile=profile,
+                        mount=mount,
+                        config=config.sync,
+                        sync_required=sync_required,
+                    )
+                )
+                if outcome.performed:
+                    Console().print(f"⇅  Synced mount [cyan]{mount.name}[/cyan]")
+            yield
+    except SyncAbortedError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    except SyncLockTimeoutError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    except RuntimeError as exc:
+        # rsync subprocess failure — abort rather than silently
+        # submitting a stale workspace.
+        raise typer.BadParameter(f"rsync failed: {exc}") from exc
 
 
 def _build_workflow_callbacks(
@@ -384,6 +478,7 @@ def _execute_workflow(
     profile: str | None = None,
     local: bool = False,
     quiet: bool = False,
+    sync: bool | None = None,
 ) -> None:
     """Common workflow execution logic."""
     # Configure logging for workflow execution
@@ -485,16 +580,27 @@ def _execute_workflow(
                     _enforce_shell_script_roots_cli(_check_runner.workflow, rt)
 
                 endpoint_id = _resolve_endpoint_id(endpoint)
-                _run_sweep(
-                    yaml_file=yaml_file,
-                    workflow_data=workflow_data,
-                    args_override=args_override,
-                    sweep_spec=sweep_spec,
-                    callbacks=callbacks,
-                    endpoint_id=endpoint_id,
-                    preset=effective_preset,
+                # Phase 2 (#135): hold the per-(profile, mount) sync
+                # lock across every cell in the sweep so a concurrent
+                # invocation can't rsync mid-sweep, AND so the rsync
+                # itself runs once per mount instead of once per cell.
+                with _hold_workflow_mounts(
                     rt=rt,
-                )
+                    workflow_for_mounts=_check_runner.workflow
+                    if rt.transport_type == "ssh"
+                    else None,
+                    sync_required=_resolve_sync_flag(sync),
+                ):
+                    _run_sweep(
+                        yaml_file=yaml_file,
+                        workflow_data=workflow_data,
+                        args_override=args_override,
+                        sweep_spec=sweep_spec,
+                        callbacks=callbacks,
+                        endpoint_id=endpoint_id,
+                        preset=effective_preset,
+                        rt=rt,
+                    )
                 return
 
             # Non-sweep path.
@@ -550,8 +656,20 @@ def _execute_workflow(
                     console.print(f"  - {job_obj.name}: {command_str}")
                 return
 
-            # Execute workflow
-            results = runner.run(from_job=from_job, to_job=to_job, single_job=job)
+            # Execute workflow.
+            #
+            # Phase 2 (#135): wrap the call in ``_hold_workflow_mounts``
+            # so each mount that any ShellJob's ``script_path`` lives
+            # under is rsynced **once** at the start, and the per-mount
+            # lock is held across every job in the workflow. The lock
+            # serialisation closes the same race
+            # ``mount_sync_session`` closes for single-job ``sbatch``.
+            with _hold_workflow_mounts(
+                rt=rt,
+                workflow_for_mounts=runner.workflow,
+                sync_required=_resolve_sync_flag(sync),
+            ):
+                results = runner.run(from_job=from_job, to_job=to_job, single_job=job)
 
             logger.info("Job Results:")
             for task_name, job_result in results.items():
@@ -690,6 +808,18 @@ def run_command(
             help="Maximum concurrent sweep cells (overrides YAML sweep.max_parallel)",
         ),
     ] = None,
+    sync: Annotated[
+        bool | None,
+        typer.Option(
+            "--sync/--no-sync",
+            help=(
+                "Rsync each touched mount once at the start of the run "
+                "(default ``[sync] auto``, true unless disabled). "
+                "``--no-sync`` skips the rsync but still acquires the "
+                "per-mount lock for race-free submission."
+            ),
+        ),
+    ] = None,
     profile: ProfileOpt = None,
     local: LocalOpt = False,
     quiet: QuietOpt = False,
@@ -713,6 +843,7 @@ def run_command(
         profile=profile,
         local=local,
         quiet=quiet,
+        sync=sync,
     )
 
 

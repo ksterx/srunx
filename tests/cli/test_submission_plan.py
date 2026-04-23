@@ -264,6 +264,109 @@ class TestPlanSbatchSubmission:
         assert plan.submit_cwd == "/cluster/share/ml/runs"
 
 
+class TestCollectTouchedMounts:
+    """Workflow Phase 2 (#135): touched-mount aggregation across ShellJobs."""
+
+    def test_empty_workflow_returns_empty_list(self, tmp_path: Path) -> None:
+        """A workflow with no jobs touches no mounts."""
+        from srunx.cli.submission_plan import collect_touched_mounts
+
+        local = tmp_path / "ml"
+        local.mkdir()
+        profile = _make_profile(tmp_path, mounts=[_make_mount(local)])
+
+        class _StubWorkflow:
+            jobs = ()
+
+        assert collect_touched_mounts(_StubWorkflow(), profile) == []
+
+    def test_dedup_across_multiple_shelljobs_same_mount(self, tmp_path: Path) -> None:
+        """Two ShellJobs under the same mount yield one mount, not two."""
+        from srunx.cli.submission_plan import collect_touched_mounts
+        from srunx.models import ShellJob
+
+        local = tmp_path / "ml"
+        local.mkdir()
+        for name in ("a.sh", "b.sh"):
+            (local / name).write_text("#!/bin/bash\n")
+        mount = _make_mount(local)
+        profile = _make_profile(tmp_path, mounts=[mount])
+
+        class _Wf:
+            jobs = (
+                ShellJob(name="a", script_path=str(local / "a.sh")),
+                ShellJob(name="b", script_path=str(local / "b.sh")),
+            )
+
+        result = collect_touched_mounts(_Wf(), profile)
+        assert result == [mount]
+
+    def test_skips_jobs_outside_any_mount(self, tmp_path: Path) -> None:
+        """ShellJobs outside the mount roots are dropped (will go via tmp)."""
+        from srunx.cli.submission_plan import collect_touched_mounts
+        from srunx.models import ShellJob
+
+        local = tmp_path / "ml"
+        local.mkdir()
+        (local / "in.sh").write_text("#!/bin/bash\n")
+        outside = tmp_path / "scratch"
+        outside.mkdir()
+        (outside / "out.sh").write_text("#!/bin/bash\n")
+        mount = _make_mount(local)
+        profile = _make_profile(tmp_path, mounts=[mount])
+
+        class _Wf:
+            jobs = (
+                ShellJob(name="i", script_path=str(local / "in.sh")),
+                ShellJob(name="o", script_path=str(outside / "out.sh")),
+            )
+
+        assert collect_touched_mounts(_Wf(), profile) == [mount]
+
+    def test_skips_command_jobs(self, tmp_path: Path) -> None:
+        """``Job`` (command-style, no script_path) contributes nothing."""
+        from srunx.cli.submission_plan import collect_touched_mounts
+        from srunx.models import Job
+
+        local = tmp_path / "ml"
+        local.mkdir()
+        profile = _make_profile(tmp_path, mounts=[_make_mount(local)])
+
+        class _Wf:
+            jobs = (Job(name="cmd", command=["echo", "hi"]),)
+
+        assert collect_touched_mounts(_Wf(), profile) == []
+
+
+class TestRenderMatchesSource:
+    def test_identical_bytes_match(self, tmp_path: Path) -> None:
+        from srunx.cli.submission_plan import render_matches_source
+
+        a = tmp_path / "a"
+        a.write_bytes(b"#!/bin/bash\necho hi\n")
+        b = tmp_path / "b"
+        b.write_bytes(b"#!/bin/bash\necho hi\n")
+        assert render_matches_source(a, b) is True
+
+    def test_different_bytes_do_not_match(self, tmp_path: Path) -> None:
+        from srunx.cli.submission_plan import render_matches_source
+
+        a = tmp_path / "a"
+        a.write_bytes(b"#!/bin/bash\necho hi\n")
+        b = tmp_path / "b"
+        b.write_bytes(b"#!/bin/bash\necho HELLO\n")
+        assert render_matches_source(a, b) is False
+
+    def test_missing_file_returns_false(self, tmp_path: Path) -> None:
+        """Missing file → False (caller must fall back to tmp upload)."""
+        from srunx.cli.submission_plan import render_matches_source
+
+        a = tmp_path / "a"
+        a.write_bytes(b"x")
+        b = tmp_path / "missing"
+        assert render_matches_source(a, b) is False
+
+
 @pytest.mark.parametrize("sync_enabled", [True, False])
 def test_in_place_preserves_remote_path_regardless_of_sync(
     tmp_path: Path, sync_enabled: bool
