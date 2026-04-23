@@ -7,8 +7,8 @@ from loguru import logger
 from srunx.callbacks import Callback
 from srunx.client import Slurm
 from srunx.models import BaseJob, JobStatus
-from srunx.monitor.base import BaseMonitor
-from srunx.monitor.types import MonitorConfig
+from srunx.observability.monitoring.base import BaseMonitor
+from srunx.observability.monitoring.types import MonitorConfig
 
 if TYPE_CHECKING:
     from srunx.client_protocol import JobOperationsProtocol

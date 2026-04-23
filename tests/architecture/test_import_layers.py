@@ -112,8 +112,10 @@ KNOWN_VIOLATIONS: dict[tuple[str, str], str] = {
         "external callers migrate and models.py is deleted (post #156)."
     ),
     # observability -> runtime (poller reaches into sweep state service).
-    ("pollers", "sweep"): (
-        "Phase 8 (#164): sweep state_service split — pure state ops move under observability."
+    ("observability", "sweep"): (
+        "Phase 8c (#164): poller still imports sweep state_service directly. "
+        "Phase 8f (#164): sweep state_service split — pure state ops move under "
+        "observability, removing this edge."
     ),
     # runtime -> observability (runner mixes DAG execution with DB + callbacks).
     ("runtime", "callbacks"): (

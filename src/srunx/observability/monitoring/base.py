@@ -9,7 +9,7 @@ from typing import Any
 from loguru import logger
 
 from srunx.callbacks import Callback
-from srunx.monitor.types import MonitorConfig
+from srunx.observability.monitoring.types import MonitorConfig
 
 
 class BaseMonitor(ABC):

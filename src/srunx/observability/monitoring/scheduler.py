@@ -14,14 +14,14 @@ from loguru import logger
 from srunx.callbacks import Callback
 from srunx.client import Slurm
 from srunx.models import JobStatus
-from srunx.monitor.report_types import (
+from srunx.observability.monitoring.resource_monitor import ResourceMonitor
+from srunx.observability.monitoring.types import (
     JobStats,
     Report,
     ReportConfig,
     ResourceStats,
     RunningJob,
 )
-from srunx.monitor.resource_monitor import ResourceMonitor
 
 
 class ScheduledReporter:
@@ -39,8 +39,8 @@ class ScheduledReporter:
     Example:
         >>> from srunx import Slurm
         >>> from srunx.callbacks import SlackCallback
-        >>> from srunx.monitor.scheduler import ScheduledReporter
-        >>> from srunx.monitor.report_types import ReportConfig
+        >>> from srunx.observability.monitoring.scheduler import ScheduledReporter
+        >>> from srunx.observability.monitoring.types import ReportConfig
         >>>
         >>> client = Slurm()
         >>> callback = SlackCallback(webhook_url)

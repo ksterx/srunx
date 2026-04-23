@@ -27,7 +27,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from srunx.monitor.types import ResourceSnapshot
+from srunx.observability.monitoring.types import ResourceSnapshot
 
 if TYPE_CHECKING:
     from srunx.slurm.ssh import SlurmSSHAdapter
