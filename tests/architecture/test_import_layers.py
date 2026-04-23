@@ -35,12 +35,10 @@ MODULE_LAYERS: dict[str, str] = {
     # domain (Phase 3 / #159 splits models.py into domain/)
     "models": "domain",
     # runtime (Phase 2 / #158 + Phase 7 / #163)
-    "rendering": "runtime",
+    "runtime": "runtime",
+    "rendering": "runtime",  # shim — canonical home: srunx.runtime.rendering
     "runner": "runtime",
-    "template": "runtime",
-    # ``templates/`` is a Jinja asset dir, not a Python package — intentionally
-    # left unmapped so a future accidental ``src/srunx/templates/foo.py`` trips
-    # ``test_every_top_level_module_is_mapped``.
+    "template": "runtime",  # shim — canonical home: srunx.runtime.templates
     "sweep": "runtime",
     "security": "runtime",
     # slurm (Phase 4 / #160 + Phase 6 / #162)

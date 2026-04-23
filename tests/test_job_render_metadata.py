@@ -22,7 +22,8 @@ BASE_TEMPLATE_PATH = (
     Path(__file__).resolve().parent.parent
     / "src"
     / "srunx"
-    / "templates"
+    / "runtime"
+    / "_jinja"
     / "base.slurm.jinja"
 )
 

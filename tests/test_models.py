@@ -633,7 +633,8 @@ class TestRenderJobScript:
             Path(__file__).resolve().parent.parent
             / "src"
             / "srunx"
-            / "templates"
+            / "runtime"
+            / "_jinja"
             / "base.slurm.jinja"
         )
         job = Job(
@@ -661,7 +662,8 @@ class TestRenderJobScript:
             Path(__file__).resolve().parent.parent
             / "src"
             / "srunx"
-            / "templates"
+            / "runtime"
+            / "_jinja"
             / "base.slurm.jinja"
         )
         job = Job(
@@ -820,7 +822,8 @@ class TestPerJobTemplate:
             Path(__file__).resolve().parent.parent
             / "src"
             / "srunx"
-            / "templates"
+            / "runtime"
+            / "_jinja"
             / "base.slurm.jinja"
         )
         job = Job(name="adv", command=["python", "train.py"], log_dir="", work_dir="")
@@ -838,7 +841,8 @@ class TestShellInjectionPrevention:
             Path(__file__).resolve().parent.parent
             / "src"
             / "srunx"
-            / "templates"
+            / "runtime"
+            / "_jinja"
             / "base.slurm.jinja"
         )
         job = Job(
@@ -863,7 +867,8 @@ class TestShellInjectionPrevention:
             Path(__file__).resolve().parent.parent
             / "src"
             / "srunx"
-            / "templates"
+            / "runtime"
+            / "_jinja"
             / "base.slurm.jinja"
         )
         job = Job(
@@ -885,7 +890,8 @@ class TestShellInjectionPrevention:
             Path(__file__).resolve().parent.parent
             / "src"
             / "srunx"
-            / "templates"
+            / "runtime"
+            / "_jinja"
             / "base.slurm.jinja"
         )
         job = Job(
@@ -908,7 +914,8 @@ class TestShellInjectionPrevention:
             Path(__file__).resolve().parent.parent
             / "src"
             / "srunx"
-            / "templates"
+            / "runtime"
+            / "_jinja"
             / "base.slurm.jinja"
         )
         job = Job(

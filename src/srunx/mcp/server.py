@@ -255,7 +255,7 @@ def submit_job(
             from srunx.models import _build_environment_setup
 
             template_path = (
-                Path(__file__).parent.parent / "templates" / "base.slurm.jinja"
+                Path(__file__).parent.parent / "runtime" / "_jinja" / "base.slurm.jinja"
             )
 
             import jinja2
