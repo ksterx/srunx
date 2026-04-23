@@ -38,7 +38,7 @@ MODULE_LAYERS: dict[str, str] = {
     # runtime (Phase 2 / #158 + Phase 7 / #163)
     "runtime": "runtime",
     "rendering": "runtime",  # shim — canonical home: srunx.runtime.rendering
-    "runner": "runtime",
+    "runner": "runtime",  # shim — canonical home: srunx.runtime.workflow.runner
     "template": "runtime",  # shim — canonical home: srunx.runtime.templates
     "sweep": "runtime",
     "security": "runtime",
@@ -116,10 +116,16 @@ KNOWN_VIOLATIONS: dict[tuple[str, str], str] = {
         "Phase 8 (#164): sweep state_service split — pure state ops move under observability."
     ),
     # runtime -> observability (runner mixes DAG execution with DB + callbacks).
-    ("runner", "callbacks"): (
-        "Phase 7 (#163): runner.py split; callback dispatch via sink (Phase 5)."
+    ("runtime", "callbacks"): (
+        "``runtime.workflow.runner`` still invokes ``Callback`` methods directly. "
+        "Resolved by extending Phase 5's sink pattern into the workflow runner "
+        "(follow-up)."
     ),
-    ("runner", "db"): "Phase 7 (#163): runner.py split; DB access via storage facade.",
+    ("runtime", "db"): (
+        "``runtime.workflow.runner`` / ``runtime.workflow.transitions`` write "
+        "``workflow_runs`` rows directly. Resolved by extending Phase 5's sink "
+        "pattern into the workflow runner (follow-up)."
+    ),
     # runtime -> observability (sweep orchestration writes DB + notifications directly).
     (
         "sweep",
