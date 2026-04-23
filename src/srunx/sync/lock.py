@@ -25,7 +25,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from srunx.config import _user_config_dir
+from srunx.common.config import _user_config_dir
 from srunx.logging import get_logger
 
 logger = get_logger(__name__)
