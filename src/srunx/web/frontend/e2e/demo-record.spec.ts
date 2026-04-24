@@ -291,8 +291,8 @@ test("record sbatch submission demo", async ({ page }) => {
   await moveCursor(page, VIEWPORT.width - 60, VIEWPORT.height - 60, 0);
   await page.waitForTimeout(500);
 
-  // 1. Click Explorer in sidebar
-  const explorerToggle = 'button:has-text("Explorer")';
+  // 1. Click Explorer in sidebar (NavLink → anchor)
+  const explorerToggle = 'aside a:has-text("Explorer")';
   await focusOn(page, explorerToggle);
   await moveToElement(page, explorerToggle, 800);
   await page.waitForTimeout(250);
