@@ -407,4 +407,4 @@ Contributions welcome — please open an issue or PR on [GitHub](https://github.
 
 ## License
 
-[Apache-2.0](LICENSE)
+Apache-2.0

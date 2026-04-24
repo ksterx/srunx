@@ -106,7 +106,7 @@
 }
 
 html {
-  font-size: 14px;
+  font-size: 15px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -154,10 +154,10 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--text-primary);
 }
 
-h1 { font-size: 1.75rem; }
-h2 { font-size: 1.35rem; }
-h3 { font-size: 1.1rem; }
-h4 { font-size: 0.95rem; }
+h1 { font-size: 1.85rem; }
+h2 { font-size: 1.45rem; }
+h3 { font-size: 1.2rem; }
+h4 { font-size: 1rem; }
 
 code, pre, .mono {
   font-family: var(--font-mono);
@@ -175,20 +175,10 @@ a:hover {
 
 /* ── Scan-line texture overlay ────────────────── */
 
+/* Scan-line overlay removed — it reduced legibility without earning its weight.
+   Flip opacity >0 to re-enable. */
 body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 9999;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(0, 0, 0, 0.03) 2px,
-    rgba(0, 0, 0, 0.03) 4px
-  );
-  mix-blend-mode: multiply;
+  content: none;
 }
 
 /* ── Grid background pattern ──────────────────── */
@@ -232,7 +222,7 @@ body::after {
 }
 
 .panel-header h3 {
-  font-size: 0.85rem;
+  font-size: 0.82rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-secondary);
@@ -337,10 +327,10 @@ body::after {
 
 .data-table thead th {
   font-family: var(--font-display);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   color: var(--text-muted);
   text-align: left;
   padding: var(--sp-3) var(--sp-4);
@@ -360,14 +350,14 @@ body::after {
 }
 
 .data-table tbody td {
-  padding: var(--sp-3) var(--sp-4);
+  padding: var(--sp-4) var(--sp-4);
   border-bottom: 1px solid var(--border-ghost);
-  font-size: 0.875rem;
+  font-size: 0.9rem;
 }
 
 .data-table .col-mono {
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: 0.82rem;
 }
 
 .data-table .col-muted {
@@ -405,10 +395,10 @@ body::after {
 
 .badge {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.72rem;
   font-weight: 500;
   letter-spacing: 0.05em;
-  padding: 2px 8px;
+  padding: 3px 8px;
   border-radius: 3px;
   display: inline-flex;
   align-items: center;
@@ -451,10 +441,10 @@ body::after {
 
 .metric-label {
   font-family: var(--font-display);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   color: var(--text-muted);
 }
 
@@ -540,8 +530,8 @@ body::after {
 .overflow-hidden { overflow: hidden; }
 .relative { position: relative; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.text-sm { font-size: 0.8rem; }
-.text-xs { font-size: 0.7rem; }
+.text-sm { font-size: 0.82rem; }
+.text-xs { font-size: 0.75rem; }
 .text-muted { color: var(--text-muted); }
 .text-secondary { color: var(--text-secondary); }
 .w-full { width: 100%; }
