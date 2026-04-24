@@ -305,12 +305,14 @@ export function Jobs() {
               <tr>
                 <th style={{ width: 80 }}>Job ID</th>
                 <th>Name</th>
+                <th style={{ width: 100 }}>User</th>
                 <th style={{ width: 120 }}>Status</th>
                 <th>Command</th>
-                <th style={{ width: 100 }}>Partition</th>
+                <th style={{ width: 90 }}>Partition</th>
                 <th style={{ width: 60 }}>Nodes</th>
                 <th style={{ width: 60 }}>GPUs</th>
-                <th style={{ width: 90 }}>Time</th>
+                <th style={{ width: 80 }}>Elapsed</th>
+                <th style={{ width: 80 }}>Limit</th>
                 <th style={{ width: 90 }}>Actions</th>
               </tr>
             </thead>
@@ -354,6 +356,7 @@ export function Jobs() {
                     >
                       <td className="col-mono">{job.job_id ?? "—"}</td>
                       <td style={{ fontWeight: 500 }}>{job.name}</td>
+                      <td className="col-mono col-muted">{job.user ?? "—"}</td>
                       <td>
                         <StatusBadge status={job.status} size="sm" />
                       </td>
@@ -370,6 +373,7 @@ export function Jobs() {
                       <td className="col-mono">
                         {job.resources.gpus_per_node ?? 0}
                       </td>
+                      <td className="col-mono">{job.elapsed_time ?? "—"}</td>
                       <td className="col-mono col-muted">
                         {job.resources.time_limit ?? "—"}
                       </td>
@@ -430,7 +434,7 @@ export function Jobs() {
               ) : (
                 <tr>
                   <td
-                    colSpan={9}
+                    colSpan={11}
                     style={{
                       textAlign: "center",
                       color: "var(--text-muted)",
