@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Route, Routes } from "react-router-dom";
 import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 import { Layout } from "./components/Layout.tsx";
@@ -14,6 +15,35 @@ import { NotificationsCenter } from "./pages/NotificationsCenter.tsx";
 import { SweepRunsPage } from "./pages/SweepRunsPage.tsx";
 import { SweepRunDetailPage } from "./pages/SweepRunDetailPage.tsx";
 import { WorkflowRunStandalonePage } from "./pages/WorkflowRunStandalonePage.tsx";
+
+const FileExplorer = lazy(() =>
+  import("./components/FileExplorer.tsx").then((m) => ({
+    default: m.FileExplorer,
+  })),
+);
+
+function ExplorerRoute() {
+  return (
+    <Suspense
+      fallback={
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            height: "100%",
+            color: "var(--text-muted)",
+            fontSize: "0.85rem",
+          }}
+        >
+          Loading Explorer...
+        </div>
+      }
+    >
+      <FileExplorer />
+    </Suspense>
+  );
+}
 
 export function App() {
   return (
@@ -35,6 +65,7 @@ export function App() {
             path="workflow_runs/:id"
             element={<WorkflowRunStandalonePage />}
           />
+          <Route path="explorer" element={<ExplorerRoute />} />
           <Route path="templates" element={<Templates />} />
           <Route path="resources" element={<Resources />} />
           <Route path="notifications" element={<NotificationsCenter />} />

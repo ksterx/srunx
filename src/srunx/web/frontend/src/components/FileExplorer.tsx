@@ -169,25 +169,25 @@ function getFileIcon(name: string, type: FileEntryType, isExpanded: boolean) {
   if (type === "directory")
     return isExpanded ? (
       <FolderOpen
-        size={14}
+        size={16}
         style={{ color: "var(--st-pending)", flexShrink: 0 }}
       />
     ) : (
-      <Folder size={14} style={{ color: "var(--st-pending)", flexShrink: 0 }} />
+      <Folder size={16} style={{ color: "var(--st-pending)", flexShrink: 0 }} />
     );
   if (type === "symlink")
     return (
-      <Link2 size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+      <Link2 size={16} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
     );
   if (isSbatchFile(name))
     return (
       <FileCode
-        size={14}
+        size={16}
         style={{ color: "var(--st-running)", flexShrink: 0 }}
       />
     );
   return (
-    <File size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+    <File size={16} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
   );
 }
 
@@ -937,11 +937,11 @@ function FileViewer({
           flexDirection: "column",
           gap: 12,
           color: "var(--text-muted)",
-          fontSize: "0.8rem",
+          fontSize: "0.9rem",
           fontFamily: "var(--font-body)",
         }}
       >
-        <FileText size={32} strokeWidth={1} />
+        <FileText size={36} strokeWidth={1} />
         Select a file to view its contents
       </div>
     );
@@ -959,8 +959,8 @@ function FileViewer({
           gap: 8,
         }}
       >
-        <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
-        <span style={{ fontSize: "0.8rem" }}>Loading...</span>
+        <Loader2 size={16} style={{ animation: "spin 1s linear infinite" }} />
+        <span style={{ fontSize: "0.9rem" }}>Loading...</span>
       </div>
     );
   }
@@ -974,11 +974,11 @@ function FileViewer({
           alignItems: "center",
           justifyContent: "center",
           color: "var(--st-failed)",
-          fontSize: "0.8rem",
+          fontSize: "0.9rem",
           gap: 8,
         }}
       >
-        <AlertTriangle size={14} />
+        <AlertTriangle size={16} />
         {error}
       </div>
     );
@@ -999,18 +999,18 @@ function FileViewer({
           display: "flex",
           alignItems: "center",
           gap: 8,
-          padding: "8px 16px",
+          padding: "10px 18px",
           borderBottom: "1px solid var(--border-ghost)",
-          fontSize: "0.75rem",
+          fontSize: "0.85rem",
           fontFamily: "var(--font-mono)",
           color: "var(--text-secondary)",
           background: "var(--bg-surface)",
           flexShrink: 0,
-          minHeight: 40,
+          minHeight: 44,
         }}
       >
         <FileCode
-          size={13}
+          size={15}
           style={{ color: "var(--text-muted)", flexShrink: 0 }}
         />
         <span
@@ -1031,7 +1031,7 @@ function FileViewer({
           style={{
             marginLeft: "auto",
             color: "var(--text-muted)",
-            fontSize: "0.65rem",
+            fontSize: "0.75rem",
             flexShrink: 0,
           }}
         >
@@ -1055,11 +1055,11 @@ function FileViewer({
               <div
                 key={i}
                 style={{
-                  padding: "0 12px 0 16px",
-                  fontSize: "0.75rem",
+                  padding: "0 14px 0 18px",
+                  fontSize: "0.88rem",
                   fontFamily: "var(--font-mono)",
-                  lineHeight: "20px",
-                  height: 20,
+                  lineHeight: "22px",
+                  height: 22,
                   color: "var(--text-muted)",
                 }}
               >
@@ -1072,16 +1072,16 @@ function FileViewer({
             style={{
               flex: 1,
               margin: 0,
-              padding: "12px 16px",
-              fontSize: "0.75rem",
+              padding: "12px 18px",
+              fontSize: "0.88rem",
               fontFamily: "var(--font-mono)",
-              lineHeight: "20px",
+              lineHeight: "22px",
               overflow: "visible",
               background: "transparent",
               color: "var(--text-primary)",
             }}
           >
-            <code ref={codeRef} style={{ lineHeight: "20px" }}>
+            <code ref={codeRef} style={{ lineHeight: "22px" }}>
               {content}
             </code>
           </pre>
@@ -1157,14 +1157,14 @@ function TreeNode({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 4,
-          paddingLeft: depth * 12 + 8,
-          paddingRight: 8,
-          paddingTop: 2,
-          paddingBottom: 2,
+          gap: 6,
+          paddingLeft: depth * 14 + 10,
+          paddingRight: 10,
+          paddingTop: 1,
+          paddingBottom: 1,
           height: 24,
-          fontFamily: "var(--font-mono)",
-          fontSize: "0.75rem",
+          fontFamily: "var(--font-body)",
+          fontSize: "0.9rem",
           cursor: isInaccessible ? "default" : "pointer",
           opacity: isInaccessible ? 0.35 : 1,
           color: isSelected
@@ -1195,25 +1195,25 @@ function TreeNode({
               display: "flex",
               alignItems: "center",
               flexShrink: 0,
-              width: 12,
+              width: 14,
             }}
           >
             {isLoading ? (
               <Loader2
-                size={10}
+                size={12}
                 style={{
                   color: "var(--text-muted)",
                   animation: "spin 1s linear infinite",
                 }}
               />
             ) : isExpanded ? (
-              <ChevronDown size={10} />
+              <ChevronDown size={12} />
             ) : (
-              <ChevronRight size={10} />
+              <ChevronRight size={12} />
             )}
           </span>
         ) : (
-          <span style={{ width: 12, flexShrink: 0 }} />
+          <span style={{ width: 14, flexShrink: 0 }} />
         )}
 
         {/* Icon */}
@@ -1259,7 +1259,7 @@ function TreeNode({
               e.currentTarget.style.opacity = "0.6";
             }}
           >
-            <Play size={10} />
+            <Play size={12} />
           </button>
         )}
       </div>
@@ -1405,13 +1405,13 @@ function MountSection({
           (e.currentTarget.style.background = "var(--bg-raised)")
         }
       >
-        {isOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-        <Folder size={13} style={{ color: "var(--st-pending)" }} />
+        {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        <Folder size={15} style={{ color: "var(--st-pending)" }} />
         <span
           style={{
             flex: 1,
             fontFamily: "var(--font-display)",
-            fontSize: "0.7rem",
+            fontSize: "0.82rem",
             fontWeight: 600,
             textTransform: "uppercase",
             letterSpacing: "0.06em",
@@ -1753,7 +1753,7 @@ export function FileExplorer() {
             <span
               style={{
                 fontFamily: "var(--font-display)",
-                fontSize: "0.7rem",
+                fontSize: "0.82rem",
                 fontWeight: 600,
                 textTransform: "uppercase",
                 letterSpacing: "0.08em",
