@@ -556,7 +556,7 @@ class SlurmSSHAdapter:
         try:
             sacct_cmd = (
                 "sacct -S now-6hours "
-                "--format=JobID,JobName,State,Partition,NNodes,Elapsed,TimelimitRaw,AllocTRES "
+                "--format=JobID,JobName,State,Partition,NNodes,Elapsed,TimelimitRaw,AllocTRES,User "
                 "--noheader --parsable2"
             )
             if user:
@@ -595,6 +595,7 @@ class SlurmSSHAdapter:
 
                 num_nodes = int(parts[4]) if parts[4].strip().isdigit() else 1
 
+                owner = parts[8].strip() if len(parts) > 8 else ""
                 seen_ids.add(job_id)
                 jobs.append(
                     {
@@ -610,6 +611,7 @@ class SlurmSSHAdapter:
                             "time_limit": parts[6].strip() if len(parts) > 6 else None,
                         },
                         "partition": parts[3].strip(),
+                        "user": owner or None,
                         "nodes": num_nodes,
                         "gpus": gpus * num_nodes,
                         "elapsed_time": parts[5].strip(),

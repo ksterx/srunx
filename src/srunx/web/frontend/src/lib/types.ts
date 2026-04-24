@@ -34,6 +34,10 @@ export type CommandJob = {
   command: string[];
   resources: JobResources;
   environment?: JobEnvironment;
+  // Live-job fields surfaced by the list API (squeue / sacct). Not
+  // present on YAML-defined Jobs; optional so the same type covers both.
+  user?: string | null;
+  elapsed_time?: string;
 };
 
 export type ShellJob = {

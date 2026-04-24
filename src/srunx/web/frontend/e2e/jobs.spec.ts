@@ -67,8 +67,11 @@ test.describe("Jobs", () => {
       return route.continue();
     });
 
-    const cancelBtn = page.locator("button[title='Cancel Job']").first();
-    await cancelBtn.click();
+    // Target the 10001 (RUNNING) row explicitly — ``.first()`` would
+    // depend on the table's sort order, which changed when the page
+    // started grouping active-before-terminal then desc by job_id.
+    const row = page.locator("tr").filter({ hasText: "10001" });
+    await row.locator("button[title='Cancel Job']").click();
 
     expect(deleteCalled).toBe(true);
   });

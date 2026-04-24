@@ -9,7 +9,7 @@ import { WorkflowBuilder } from "./pages/WorkflowBuilder.tsx";
 import { Templates } from "./pages/Templates.tsx";
 import { Resources } from "./pages/Resources.tsx";
 import { Settings } from "./pages/Settings.tsx";
-import { LogViewer } from "./pages/LogViewer.tsx";
+import { JobDetail } from "./pages/JobDetail.tsx";
 import { NotificationsCenter } from "./pages/NotificationsCenter.tsx";
 import { SweepRunsPage } from "./pages/SweepRunsPage.tsx";
 import { SweepRunDetailPage } from "./pages/SweepRunDetailPage.tsx";
@@ -22,7 +22,9 @@ export function App() {
         <Route element={<Layout />}>
           <Route index element={<Dashboard />} />
           <Route path="jobs" element={<Jobs />} />
-          <Route path="jobs/:jobId/logs" element={<LogViewer />} />
+          <Route path="jobs/:jobId" element={<JobDetail />} />
+          <Route path="jobs/:jobId/logs" element={<JobDetail />} />
+          <Route path="jobs/:jobId/notifications" element={<JobDetail />} />
           <Route path="workflows" element={<Workflows />} />
           <Route path="workflows/new" element={<WorkflowBuilder />} />
           <Route path="workflows/:name/edit" element={<WorkflowBuilder />} />

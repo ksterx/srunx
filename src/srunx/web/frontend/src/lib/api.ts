@@ -9,6 +9,7 @@ import type {
   LogData,
   Mount,
   MountConfig,
+  NotificationPreset,
   ProjectConfigResponse,
   ProjectInfo,
   ResourceSnapshot,
@@ -783,6 +784,12 @@ export const subscriptions = {
 
 /* ── Watches ────────────────────────────────── */
 
+export type CreateJobWatchResult = {
+  watch_id: number;
+  subscription_id: number;
+  created: boolean;
+};
+
 export const watches = {
   list: async (opts?: {
     open?: boolean;
@@ -798,6 +805,34 @@ export const watches = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(extractDetail(err, "Failed to fetch watches"));
+    }
+    return res.json();
+  },
+
+  createForJob: async (body: {
+    job_id: number;
+    endpoint_id: number;
+    preset: NotificationPreset;
+  }): Promise<CreateJobWatchResult> => {
+    const res = await fetch("/api/watches", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "job", ...body }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to enable notification"));
+    }
+    return res.json();
+  },
+
+  close: async (watchId: number): Promise<Watch> => {
+    const res = await fetch(`/api/watches/${watchId}/close`, {
+      method: "POST",
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to close watch"));
     }
     return res.json();
   },
