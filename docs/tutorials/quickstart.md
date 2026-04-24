@@ -36,7 +36,7 @@ Check historical status (finished jobs too, via the srunx state DB):
 srunx history -j <job_id>
 ```
 
-List your jobs:
+List active jobs (all users by default, like native `squeue`):
 
 ``` bash
 srunx squeue

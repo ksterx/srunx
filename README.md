@@ -24,7 +24,7 @@ Stop juggling `sbatch` scripts, `squeue` loops, and SSH sessions.
 - **Submit & manage** SLURM jobs from CLI, browser, or Python
 - **Orchestrate** multi-step workflows with YAML and dependency graphs
 - **Monitor** GPU availability and job states with Slack notifications
-- **SSH remote** — submit jobs, sync files, and browse remote clusters from your laptop
+- **Local or remote, one CLI** — target a local SLURM or any SSH'd cluster with `--profile <name>`; no shell-in, no separate "remote" commands — the same verbs you already know
 - **Container-native** — Pyxis, Apptainer, and Singularity support built in
 
 ## Installation
@@ -67,6 +67,19 @@ Or describe the whole pipeline once and let srunx drive it:
 srunx flow run workflow.yaml
 ```
 
+### Same commands, remote cluster
+
+Every command above accepts `--profile <name>` and dispatches transparently over SSH — same syntax, same output, same feel as local:
+
+```bash
+srunx sbatch --profile dgx --name training --gpus-per-node 2 --conda ml_env -- python train.py
+srunx squeue --profile dgx
+srunx tail   --profile dgx 847291 --follow
+srunx flow run pipeline.yaml --profile dgx
+```
+
+srunx rsyncs your code under a per-mount lock, runs `sbatch` in place on the remote, and streams logs back. Your shell never leaves the laptop.
+
 ## Why srunx?
 
 Instead of stitching together `sbatch`, `squeue`, SSH, and a pipeline runner, srunx offers one coherent surface that covers the day-to-day SLURM loop.
@@ -88,24 +101,47 @@ If you need full-featured scientific workflow tooling, Snakemake / Nextflow are 
 
 ## CLI
 
-| Command | Description |
-|---------|-------------|
-| `srunx sbatch <script>` / `srunx sbatch --wrap "<cmd>"` | Submit a SLURM job |
-| `srunx squeue` | List jobs in queue (use `-j <id>` for a single job's state) |
-| `srunx scancel <id>` | Cancel a job |
-| `srunx tail <id>` | View / stream job logs |
-| `srunx sinfo` | Partition / state / nodelist listing (native-sinfo parity) |
-| `srunx gpus` | GPU aggregate summary |
-| `srunx watch jobs\|resources\|cluster` | Watch for state changes / resource availability |
-| `srunx flow` | Run / validate YAML workflows |
-| `srunx flow run --arg KEY=VALUE` | Override workflow `args` from the CLI |
-| `srunx flow run --sweep KEY=V1,V2 --max-parallel N` | Ad-hoc matrix parameter sweep |
-| `srunx ssh` | Remote SLURM operations over SSH |
-| `srunx history` | srunx's own submission history (SQLite-backed) |
-| `srunx sacct` | Real SLURM `sacct` wrapper (cluster accounting DB) |
-| `srunx config` | Manage configuration |
-| `srunx template` | Manage job templates |
-| `srunx ui` | Launch the web dashboard |
+**Every command below runs locally _or_ against a remote cluster over SSH.** Add `--profile <name>` (or set `$SRUNX_SSH_PROFILE`) and `sbatch` / `squeue` / `sinfo` / `sacct` / `history` / `gpus` / `tail` / `watch` / `flow run` transparently dispatch through the SSH adapter — no shell-in first, no separate "remote" subcommand. `srunx ssh` is just for managing those profiles (add / list / sync / test); it does not run jobs itself.
+
+`Type` column: **SLURM** = mirrors the native SLURM CLI (muscle memory maps directly); **srunx** = srunx-original command with no direct SLURM counterpart.
+
+### Job submission & control (SLURM parity)
+
+| Command | Type | Description |
+|---------|------|-------------|
+| `srunx sbatch <script>` / `srunx sbatch --wrap "<cmd>"` | SLURM | Submit a SLURM job |
+| `srunx scancel <id>` | SLURM | Cancel a job |
+
+### Status & accounting
+
+| Command | Type | Description |
+|---------|------|-------------|
+| `srunx squeue` | SLURM | List active jobs (use `-j <id>` for a single job's state) |
+| `srunx sinfo` | SLURM | Partition / state / nodelist listing (native-sinfo parity) |
+| `srunx sacct` | SLURM | Real SLURM `sacct` wrapper (cluster accounting DB) |
+| `srunx history` | srunx | srunx's own submission history (SQLite-backed) |
+| `srunx gpus` | srunx | GPU aggregate summary across partitions |
+| `srunx tail <id>` | srunx | View / stream job logs |
+| `srunx watch jobs\|resources\|cluster` | srunx | Watch for state changes / resource availability |
+
+### Workflows & sweeps
+
+| Command | Type | Description |
+|---------|------|-------------|
+| `srunx flow` | srunx | Run / validate YAML workflows |
+| `srunx flow run --arg KEY=VALUE` | srunx | Override workflow `args` from the CLI |
+| `srunx flow run --sweep KEY=V1,V2 --max-parallel N` | srunx | Ad-hoc matrix parameter sweep |
+
+### Environment & tooling
+
+| Command | Type | Description |
+|---------|------|-------------|
+| `srunx ssh` | srunx | Manage SSH profiles (add / list / sync / test) — remote execution itself is `--profile` on the commands above |
+| `srunx config` | srunx | Manage configuration |
+| `srunx template` | srunx | Manage job templates |
+| `srunx ui` | srunx | Launch the web dashboard |
+
+More CLI examples: [User Guide](https://ksterx.github.io/srunx/how-to/user_guide/) · Python-side counterparts: [API Reference](https://ksterx.github.io/srunx/reference/api/)
 
 ## Web Dashboard
 
@@ -139,6 +175,8 @@ GPU and node availability per partition.
 Browse remote files via SSH mounts. Shell scripts can be submitted as sbatch jobs directly from the file tree.
 
 <img src="https://raw.githubusercontent.com/ksterx/srunx/main/docs/assets/images/ui-explorer-sbatch.gif" width="800" alt="Explorer sbatch submission">
+
+Full walkthrough: [Web UI tutorial](https://ksterx.github.io/srunx/tutorials/webui/) · [Web UI how-to](https://ksterx.github.io/srunx/how-to/webui/) · [Explorer how-to](https://ksterx.github.io/srunx/how-to/explorer/)
 
 ## Workflow Orchestration
 
@@ -223,6 +261,8 @@ srunx flow run --sweep lr=0.001,0.01 --max-parallel 2 --dry-run train.yaml
 
 Sweeps are a first-class concept across **CLI, Web UI, and MCP**. Web-triggered sweeps route cells through a bounded `SlurmSSHExecutorPool` against the configured SSH profile, while CLI and MCP runs use the local SLURM client by default. The Web UI surfaces per-cell progress with ETA, filter / sort, and per-cell cancellation.
 
+Full workflow surface (validation, retries, partial execution, sweep recipes): [Workflows how-to](https://ksterx.github.io/srunx/how-to/workflows/)
+
 ## Monitoring
 
 ```bash
@@ -237,26 +277,30 @@ srunx sbatch --wrap "python train.py" --gpus-per-node 4
 srunx watch cluster --schedule 1h --notify $SLACK_WEBHOOK
 ```
 
+Full monitoring options (continuous watch, thresholds, scheduled reports): [Monitoring how-to](https://ksterx.github.io/srunx/how-to/monitoring/)
+
 ## Remote SSH
 
-Keep your local editor workflow while running on the cluster:
+Keep your local editor workflow while the jobs actually run on the cluster. Configure a profile **once**, and every srunx command accepts `--profile <name>` with the same syntax as local:
 
 ```bash
-# Submit to remote cluster (auto-syncs the script's mount first, then runs in-place)
-srunx sbatch train.sh --profile dgx-server
-
-# Manage connection profiles
-srunx ssh profile add myserver --ssh-host dgx1
-
-# Map local directories to remote and sync with rsync
-srunx ssh profile mount add myserver workspace \
+# One-time setup
+srunx ssh profile add dgx --ssh-host dgx1
+srunx ssh profile mount add dgx ml-exp \
   --local ~/projects/ml-exp --remote /home/user/ml-exp
-srunx ssh sync
+
+# Same verbs you already use — now against the remote cluster
+srunx sbatch train.sh --profile dgx                   # auto-rsyncs the mount + sbatch runs in-place on the remote path
+srunx squeue --profile dgx                            # live queue on the remote cluster
+srunx tail 847291 --profile dgx --follow              # stream remote logs
+srunx flow run pipeline.yaml --profile dgx            # full DAG: sync once, hold the per-mount lock, submit
 ```
 
-- SSH config hosts, saved profiles, and proxy jump support
+- SSH config hosts, saved profiles, and ProxyJump support
 - Environment variable passthrough (`--env KEY=VALUE`, `--env-local WANDB_API_KEY`)
-- File sync via rsync — auto-detects profile from current directory
+- File sync via rsync with per-mount locking — auto-detects profile from current directory
+
+Mount model, sync semantics, and in-place execution rules: [SSH sync how-to](https://ksterx.github.io/srunx/how-to/sync/)
 
 ## Slack Notifications
 
@@ -294,6 +338,8 @@ run_workflow(
 ```
 
 Passing `mount=<name>` routes the run through the matching SSH profile mount, translating `work_dir` / `log_dir` into remote paths — so the agent can launch mount-aware submissions against a remote cluster without leaving the chat.
+
+Setup + tool-by-tool usage: [MCP Setup tutorial](https://ksterx.github.io/srunx/tutorials/mcp-setup/) · [MCP Usage how-to](https://ksterx.github.io/srunx/how-to/mcp-usage/) · [MCP Tools reference](https://ksterx.github.io/srunx/reference/mcp-tools/)
 
 ## Python API
 
@@ -339,7 +385,12 @@ runner.run()                                    # blocks until the DAG finishes
 
 ## Documentation
 
-Full documentation at **[ksterx.github.io/srunx](https://ksterx.github.io/srunx/)**.
+Full docs (Diátaxis-structured) at **[ksterx.github.io/srunx](https://ksterx.github.io/srunx/)**:
+
+- **Tutorials** (learn by doing) — [Installation](https://ksterx.github.io/srunx/tutorials/installation/) · [Quickstart](https://ksterx.github.io/srunx/tutorials/quickstart/) · [Web UI](https://ksterx.github.io/srunx/tutorials/webui/) · [MCP setup](https://ksterx.github.io/srunx/tutorials/mcp-setup/)
+- **How-to guides** (solve specific tasks) — [User guide](https://ksterx.github.io/srunx/how-to/user_guide/) · [Workflows & sweeps](https://ksterx.github.io/srunx/how-to/workflows/) · [Monitoring](https://ksterx.github.io/srunx/how-to/monitoring/) · [SSH sync](https://ksterx.github.io/srunx/how-to/sync/) · [Web UI](https://ksterx.github.io/srunx/how-to/webui/) · [Explorer](https://ksterx.github.io/srunx/how-to/explorer/) · [MCP usage](https://ksterx.github.io/srunx/how-to/mcp-usage/) · [Settings](https://ksterx.github.io/srunx/how-to/settings/) · [Smoke-test notifications](https://ksterx.github.io/srunx/how-to/smoke-test-notifications/)
+- **Reference** (look up exact API) — [Python API](https://ksterx.github.io/srunx/reference/api/) · [Web API](https://ksterx.github.io/srunx/reference/webui-api/) · [MCP tools](https://ksterx.github.io/srunx/reference/mcp-tools/)
+- **Explanation** (how it works under the hood) — [Architecture](https://ksterx.github.io/srunx/explanation/architecture/) · [MCP architecture](https://ksterx.github.io/srunx/explanation/mcp-architecture/)
 
 ## Development
 

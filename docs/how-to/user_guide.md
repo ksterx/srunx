@@ -159,10 +159,38 @@ Filter to a single user (default is all users):
 srunx squeue --user alice
 ```
 
-List in JSON format:
+Live in-place refresh (like native `squeue -i`; Ctrl+C to exit):
+
+``` bash
+srunx squeue -i 5
+```
+
+Show additional columns (each `--show-*` flag adds one; `-a` enables all):
+
+``` bash
+srunx squeue --show-partition --show-cpus --show-limit --show-nodes
+srunx squeue -a
+```
+
+List in JSON format (always includes every field, regardless of `--show-*`):
 
 ``` bash
 srunx squeue --format json
+```
+
+Inspect cluster resources:
+
+``` bash
+srunx gpus                 # GPU aggregate summary across partitions
+srunx sinfo                # partition / state / nodelist (native-sinfo parity)
+```
+
+Cluster-side accounting history (real SLURM `sacct`, requires `slurmdbd`):
+
+``` bash
+srunx sacct -a -S now-1day                      # all users, last 24h
+srunx sacct -j 12345 --show-steps               # include .batch / .extern sub-steps
+srunx sacct -s FAILED,TIMEOUT -p gpu            # filter by state / partition
 ```
 
 ### Job Control
