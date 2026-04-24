@@ -47,15 +47,15 @@ test.describe("Navigation & Layout", () => {
     /* The sidebar should show "srunx" brand text */
     await expect(page.getByText("srunx")).toBeVisible();
 
-    /* Click collapse button (chevron) */
-    const collapseBtn = page.locator("aside button").last();
-    await collapseBtn.click();
+    /* Click collapse button (aria-label matches both collapse/expand states) */
+    const toggleBtn = page.locator('aside button[aria-label$="sidebar"]');
+    await toggleBtn.click();
 
     /* Brand text should be hidden after collapse */
     await expect(page.getByText("srunx")).toBeHidden();
 
-    /* Click expand button */
-    await collapseBtn.click();
+    /* Click expand button (re-query — the element re-renders on toggle) */
+    await page.locator('aside button[aria-label$="sidebar"]').click();
 
     /* Brand text should reappear */
     await expect(page.getByText("srunx")).toBeVisible();

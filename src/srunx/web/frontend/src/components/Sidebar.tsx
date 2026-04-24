@@ -196,23 +196,30 @@ export function Sidebar() {
             display: "block",
           }}
         />
-        <motion.span
-          animate={{ opacity: collapsed ? 0 : 1 }}
-          transition={{ duration: 0.12 }}
-          style={{
-            fontFamily: "var(--font-display)",
-            fontWeight: 700,
-            fontSize: "1.15rem",
-            letterSpacing: "0.06em",
-            color: "var(--text-primary)",
-            whiteSpace: "nowrap",
-            pointerEvents: collapsed ? "none" : "auto",
-            flex: 1,
-            overflow: "hidden",
-          }}
-        >
-          srunx
-        </motion.span>
+        <AnimatePresence initial={false}>
+          {!collapsed && (
+            <motion.span
+              key="brand"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.12 }}
+              style={{
+                fontFamily: "var(--font-display)",
+                fontWeight: 700,
+                fontSize: "1.15rem",
+                letterSpacing: "0.06em",
+                color: "var(--text-primary)",
+                whiteSpace: "nowrap",
+                flex: 1,
+                overflow: "hidden",
+                minWidth: 0,
+              }}
+            >
+              srunx
+            </motion.span>
+          )}
+        </AnimatePresence>
         {/* Toggle button — visible in expanded state, top-right corner */}
         {!collapsed && (
           <button
@@ -380,20 +387,27 @@ export function Sidebar() {
                   : "var(--text-muted)",
               }}
             />
-            <motion.span
-              animate={{ opacity: collapsed ? 0 : 1 }}
-              transition={{ duration: 0.12 }}
-              style={{
-                flex: 1,
-                textAlign: "left",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                pointerEvents: collapsed ? "none" : "auto",
-              }}
-            >
-              {connectedProfile ?? "No connection"}
-            </motion.span>
+            <AnimatePresence initial={false}>
+              {!collapsed && (
+                <motion.span
+                  key="profile-label"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.12 }}
+                  style={{
+                    flex: 1,
+                    textAlign: "left",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    minWidth: 0,
+                  }}
+                >
+                  {connectedProfile ?? "No connection"}
+                </motion.span>
+              )}
+            </AnimatePresence>
             {!collapsed && (
               <ChevronUpIcon
                 size={12}
@@ -489,17 +503,24 @@ function SidebarNavLink({
             />
           )}
           <span style={{ flexShrink: 0, display: "flex" }}>{icon}</span>
-          <motion.span
-            animate={{ opacity: collapsed ? 0 : 1 }}
-            transition={{ duration: 0.12 }}
-            style={{
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              pointerEvents: collapsed ? "none" : "auto",
-            }}
-          >
-            {label}
-          </motion.span>
+          <AnimatePresence initial={false}>
+            {!collapsed && (
+              <motion.span
+                key="label"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.12 }}
+                style={{
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  minWidth: 0,
+                }}
+              >
+                {label}
+              </motion.span>
+            )}
+          </AnimatePresence>
         </>
       )}
     </NavLink>
