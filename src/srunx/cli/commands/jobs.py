@@ -830,6 +830,93 @@ def _run_squeue_live(
             return
 
 
+def _run_tail_follow_ssh(
+    job_ops: Any,
+    *,
+    job_id: int,
+    last: int | None,
+    interval: float,
+) -> None:
+    """Stream incremental log output from an SSH-hosted SLURM job.
+
+    Mirrors the structural pattern of :func:`_run_squeue_live` — ``fetch``
+    runs inside a ``try`` that renders transient failures (log file not
+    yet created, SSH hiccup) without killing the loop, and
+    :class:`KeyboardInterrupt` exits cleanly. Follows ``tail -f``
+    convention of polling forever; the user is expected to stop via
+    Ctrl+C.
+
+    Log writes go straight to ``sys.stdout`` / ``sys.stderr`` (not
+    through Rich) because this is an append-oriented stream, not a
+    rewritten snapshot — using :class:`~rich.live.Live` would wipe and
+    redraw every tick and destroy the scrollback the user is there to
+    read.
+
+    ``last`` applies to the **initial** chunk only; subsequent ticks
+    print every new byte. Matches how ``tail -fn N`` works at the OS
+    level.
+    """
+    import time as _time
+
+    offset_out = 0
+    offset_err = 0
+
+    # First poll: pull everything since 0, apply --last N to whatever
+    # text we got. Subsequent offsets come from the chunk itself so
+    # we never re-read what we already printed.
+    try:
+        chunk = job_ops.tail_log_incremental(job_id, offset_out, offset_err)
+    except Exception as exc:  # noqa: BLE001 — first poll can race the log file's creation
+        typer.secho(
+            f"(log not yet available: {exc})",
+            err=True,
+            fg=typer.colors.BRIGHT_BLACK,
+        )
+    else:
+        stdout_text = chunk.stdout or ""
+        stderr_text = chunk.stderr or ""
+        if last is not None:
+            if stdout_text:
+                stdout_text = "\n".join(stdout_text.splitlines()[-last:])
+                if chunk.stdout and chunk.stdout.endswith("\n"):
+                    stdout_text += "\n"
+            if stderr_text and stderr_text != chunk.stdout:
+                stderr_text = "\n".join(stderr_text.splitlines()[-last:])
+                if chunk.stderr and chunk.stderr.endswith("\n"):
+                    stderr_text += "\n"
+        if stdout_text:
+            sys.stdout.write(stdout_text)
+            sys.stdout.flush()
+        if stderr_text and stderr_text != (chunk.stdout or ""):
+            sys.stderr.write(stderr_text)
+            sys.stderr.flush()
+        offset_out = chunk.stdout_offset
+        offset_err = chunk.stderr_offset
+
+    try:
+        while True:
+            _time.sleep(interval)
+            try:
+                chunk = job_ops.tail_log_incremental(job_id, offset_out, offset_err)
+            except Exception as exc:  # noqa: BLE001 — keep the tail alive through transient errors
+                typer.secho(
+                    f"(poll failed, retrying: {exc})",
+                    err=True,
+                    fg=typer.colors.BRIGHT_BLACK,
+                )
+                continue
+            if chunk.stdout:
+                sys.stdout.write(chunk.stdout)
+                sys.stdout.flush()
+            if chunk.stderr:
+                sys.stderr.write(chunk.stderr)
+                sys.stderr.flush()
+            offset_out = chunk.stdout_offset
+            offset_err = chunk.stderr_offset
+    except KeyboardInterrupt:
+        return
+
+
 def scancel(
     job_id: Annotated[int, typer.Argument(help="Job ID to cancel")],
     profile: ProfileOpt = None,
@@ -1082,6 +1169,17 @@ def tail(
         bool,
         typer.Option("--follow", "-f", help="Stream logs in real-time (like tail -f)"),
     ] = False,
+    interval: Annotated[
+        float,
+        typer.Option(
+            "--interval",
+            help=(
+                "Seconds between polls when --follow is set over SSH "
+                "(local follow inherits Slurm.tail_log's existing cadence). "
+                "Default 2s."
+            ),
+        ),
+    ] = 2.0,
     last: Annotated[
         int | None, typer.Option("--last", "-n", help="Show only the last N lines")
     ] = None,
@@ -1094,6 +1192,14 @@ def tail(
     quiet: QuietOpt = False,
 ) -> None:
     """Display job logs with optional real-time streaming."""
+    if follow and interval <= 0:
+        typer.secho(
+            "--interval must be a positive number of seconds.",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=2)
+
     try:
         with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
             if rt.transport_type == "local":
@@ -1107,25 +1213,21 @@ def tail(
                     follow=follow,
                     last_n=last,
                 )
+            elif follow:
+                _run_tail_follow_ssh(
+                    rt.job_ops, job_id=job_id, last=last, interval=interval
+                )
             else:
-                # SSH path: use the pure Protocol tail_log_incremental
-                # once for non-follow retrieval. --follow over SSH is a
-                # Phase 5b+ concern (loop belongs in the CLI layer, but
-                # the SSH adapter does not yet stream logs).
+                # One-shot SSH read: pull the full log, honour --last N
+                # client-side (the adapter streams by offset, not by
+                # line — slicing here is the cheapest way to keep --last
+                # working without a second protocol method).
                 chunk = rt.job_ops.tail_log_incremental(job_id, 0, 0)
-                # ``--last N`` is applied client-side on the SSH path:
-                # the adapter returns the full log content and we slice
-                # here so the flag isn't silently dropped (SF6). The
-                # local path above already honours ``last_n`` via
-                # ``Slurm.tail_log``.
                 stdout_text = chunk.stdout or ""
                 stderr_text = chunk.stderr or ""
                 if last is not None:
                     if stdout_text:
                         stdout_text = "\n".join(stdout_text.splitlines()[-last:])
-                        # Preserve the trailing newline if the original
-                        # chunk ended with one so terminal output stays
-                        # unambiguous.
                         if chunk.stdout and chunk.stdout.endswith("\n"):
                             stdout_text += "\n"
                     if stderr_text and stderr_text != chunk.stdout:
@@ -1136,12 +1238,6 @@ def tail(
                     sys.stdout.write(stdout_text)
                 if stderr_text and stderr_text != (chunk.stdout or ""):
                     sys.stderr.write(stderr_text)
-                if follow:
-                    typer.secho(
-                        "--follow is not yet supported for SSH transports.",
-                        err=True,
-                        fg=typer.colors.YELLOW,
-                    )
 
     except JobNotFoundError:
         typer.secho(

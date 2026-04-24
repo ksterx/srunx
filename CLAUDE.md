@@ -45,7 +45,7 @@ srunx-specific commands that don't map to a SLURM binary:
 - `uv run srunx sacct -a -S now-1day` - All users over the last day (like native `sacct -a -S now-1day`)
 - `uv run srunx sacct -j <job_id>` / `-u <user>` / `-s FAILED,TIMEOUT` / `-p <partition>` - Standard sacct filters
 - `uv run srunx sacct --show-steps` - Include `.batch` / `.extern` sub-step rows
-- `uv run srunx tail <job_id> --follow` - Stream job logs (use `--profile` for SSH)
+- `uv run srunx tail <job_id> --follow` - Stream job logs. Works over SSH via periodic `tail_log_incremental` polls; tune with `--interval <seconds>` (default 2s). Ctrl+C exits
 
 `sbatch` accepts the standard SLURM short flags (`-J` / `-N` / `-n` / `-c` /
 `-t` / `-p` / `-w` / `-D`) and `--gres=gpu:N`. srunx-specific extensions
