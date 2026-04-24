@@ -861,11 +861,15 @@ def _run_tail_follow_ssh(
     offset_out = 0
     offset_err = 0
 
-    # First poll: pull everything since 0, apply --last N to whatever
-    # text we got. Subsequent offsets come from the chunk itself so
-    # we never re-read what we already printed.
+    # First poll uses ``last_n=last`` so the remote runs ``tail -n N``
+    # and only the tail ships over SSH — we never bring a multi-GB log
+    # across the wire just to show its last 50 lines. The chunk
+    # returns an offset at current EOF; subsequent ticks resume from
+    # there.
     try:
-        chunk = job_ops.tail_log_incremental(job_id, offset_out, offset_err)
+        chunk = job_ops.tail_log_incremental(
+            job_id, offset_out, offset_err, last_n=last
+        )
     except Exception as exc:  # noqa: BLE001 — first poll can race the log file's creation
         typer.secho(
             f"(log not yet available: {exc})",
@@ -873,22 +877,11 @@ def _run_tail_follow_ssh(
             fg=typer.colors.BRIGHT_BLACK,
         )
     else:
-        stdout_text = chunk.stdout or ""
-        stderr_text = chunk.stderr or ""
-        if last is not None:
-            if stdout_text:
-                stdout_text = "\n".join(stdout_text.splitlines()[-last:])
-                if chunk.stdout and chunk.stdout.endswith("\n"):
-                    stdout_text += "\n"
-            if stderr_text and stderr_text != chunk.stdout:
-                stderr_text = "\n".join(stderr_text.splitlines()[-last:])
-                if chunk.stderr and chunk.stderr.endswith("\n"):
-                    stderr_text += "\n"
-        if stdout_text:
-            sys.stdout.write(stdout_text)
+        if chunk.stdout:
+            sys.stdout.write(chunk.stdout)
             sys.stdout.flush()
-        if stderr_text and stderr_text != (chunk.stdout or ""):
-            sys.stderr.write(stderr_text)
+        if chunk.stderr and chunk.stderr != chunk.stdout:
+            sys.stderr.write(chunk.stderr)
             sys.stderr.flush()
         offset_out = chunk.stdout_offset
         offset_err = chunk.stderr_offset
@@ -1218,26 +1211,15 @@ def tail(
                     rt.job_ops, job_id=job_id, last=last, interval=interval
                 )
             else:
-                # One-shot SSH read: pull the full log, honour --last N
-                # client-side (the adapter streams by offset, not by
-                # line — slicing here is the cheapest way to keep --last
-                # working without a second protocol method).
-                chunk = rt.job_ops.tail_log_incremental(job_id, 0, 0)
-                stdout_text = chunk.stdout or ""
-                stderr_text = chunk.stderr or ""
-                if last is not None:
-                    if stdout_text:
-                        stdout_text = "\n".join(stdout_text.splitlines()[-last:])
-                        if chunk.stdout and chunk.stdout.endswith("\n"):
-                            stdout_text += "\n"
-                    if stderr_text and stderr_text != chunk.stdout:
-                        stderr_text = "\n".join(stderr_text.splitlines()[-last:])
-                        if chunk.stderr and chunk.stderr.endswith("\n"):
-                            stderr_text += "\n"
-                if stdout_text:
-                    sys.stdout.write(stdout_text)
-                if stderr_text and stderr_text != (chunk.stdout or ""):
-                    sys.stderr.write(stderr_text)
+                # One-shot SSH read. ``--last N`` flows through as
+                # ``last_n`` so the remote runs ``tail -n N`` and only
+                # the tail bytes traverse the SSH link, even for a
+                # multi-GB log.
+                chunk = rt.job_ops.tail_log_incremental(job_id, 0, 0, last_n=last)
+                if chunk.stdout:
+                    sys.stdout.write(chunk.stdout)
+                if chunk.stderr and chunk.stderr != chunk.stdout:
+                    sys.stderr.write(chunk.stderr)
 
     except JobNotFoundError:
         typer.secho(

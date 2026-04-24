@@ -142,11 +142,22 @@ class JobOperations(Protocol):
         job_id: int,
         stdout_offset: int = 0,
         stderr_offset: int = 0,
+        last_n: int | None = None,
     ) -> LogChunk:
         """Return new log content since *stdout_offset* / *stderr_offset*.
 
         For ``follow`` behaviour, callers poll this method with the
         returned offsets. The Protocol itself never blocks.
+
+        ``last_n`` is an optimization hint for the *initial* read: when
+        both offsets are 0 and ``last_n`` is given, implementations
+        should return only the last N lines of the log and set the
+        returned offsets to the current file size, so subsequent calls
+        poll from the tail. When offsets are non-zero, ``last_n`` is
+        ignored (explicit offsets win — they mean "I've already read up
+        to this point"). The SSH implementation uses this to avoid
+        downloading a multi-GB log on startup when the user only asked
+        for the last N lines.
         """
         ...
 

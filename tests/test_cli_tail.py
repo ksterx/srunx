@@ -70,7 +70,13 @@ class TestTailFollowSsh:
         ]
         call_args: list[tuple[int, int]] = []
 
-        def fake_tail(job_id: int, out_off: int, err_off: int) -> LogChunk:
+        def fake_tail(
+            job_id: int,
+            out_off: int,
+            err_off: int,
+            *,
+            last_n: int | None = None,
+        ) -> LogChunk:
             call_args.append((out_off, err_off))
             return (
                 chunks.pop(0)
@@ -106,6 +112,83 @@ class TestTailFollowSsh:
         assert call_args[:3] == [(0, 0), (6, 0), (13, 5)]
         assert "first" in result.stdout
         assert "second" in result.stdout
+
+    def test_last_flag_forwarded_as_last_n_on_initial_call(
+        self, runner: CliRunner
+    ) -> None:
+        """``--last N`` must reach the adapter as ``last_n=N`` on the
+        *initial* poll so the remote runs ``tail -n N`` and only the
+        tail ships over SSH. Subsequent ticks must NOT pass ``last_n``
+        (the follow loop is already incrementing offsets).
+        """
+        seen_last_n: list[int | None] = []
+
+        def fake_tail(
+            job_id: int,
+            out_off: int,
+            err_off: int,
+            *,
+            last_n: int | None = None,
+        ) -> LogChunk:
+            seen_last_n.append(last_n)
+            return _chunk("tail\n", "", out_off=5, err_off=0)
+
+        job_ops = MagicMock()
+        job_ops.tail_log_incremental.side_effect = fake_tail
+
+        tick = {"n": 0}
+
+        def fake_sleep(_seconds: float) -> None:
+            tick["n"] += 1
+            if tick["n"] >= 2:
+                raise KeyboardInterrupt
+
+        with (
+            patch(
+                "srunx.transport.registry._build_ssh_handle",
+                return_value=(self._fake_handle(job_ops), None),
+            ),
+            patch("time.sleep", fake_sleep),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "tail",
+                    "12345",
+                    "--follow",
+                    "--interval",
+                    "0.01",
+                    "--profile",
+                    "dgx",
+                    "--last",
+                    "50",
+                ],
+            )
+
+        assert result.exit_code == 0
+        # Initial call gets last_n=50; every subsequent call gets None
+        # so the adapter falls back to pure-offset delta reads.
+        assert seen_last_n[0] == 50
+        assert all(x is None for x in seen_last_n[1:])
+
+    def test_non_follow_one_shot_forwards_last_n(self, runner: CliRunner) -> None:
+        """``srunx tail 123 --last 10 --profile X`` (no --follow) must
+        push ``last_n=10`` into the single SSH call so the remote
+        ships only the tail."""
+        job_ops = MagicMock()
+        job_ops.tail_log_incremental.return_value = _chunk(
+            "only tail lines\n", "", out_off=100, err_off=0
+        )
+        with patch(
+            "srunx.transport.registry._build_ssh_handle",
+            return_value=(self._fake_handle(job_ops), None),
+        ):
+            result = runner.invoke(
+                app,
+                ["tail", "12345", "--profile", "dgx", "--last", "10"],
+            )
+        assert result.exit_code == 0
+        job_ops.tail_log_incremental.assert_called_once_with(12345, 0, 0, last_n=10)
 
     def test_transient_poll_failure_does_not_kill_loop(self, runner: CliRunner) -> None:
         """An exception from ``tail_log_incremental`` mid-loop must

@@ -797,6 +797,7 @@ class SSHSlurmClient:
         job_name: str | None = None,
         stdout_offset: int = 0,
         stderr_offset: int = 0,
+        last_n: int | None = None,
     ) -> tuple[str, str, int, int]:
         try:
             safe_job_id = self._sanitize_job_id(job_id)
@@ -813,12 +814,12 @@ class SSHSlurmClient:
 
             if stdout_path:
                 output_content, new_stdout_offset = self._read_file_from_offset(
-                    stdout_path, stdout_offset
+                    stdout_path, stdout_offset, last_n=last_n
                 )
 
             if stderr_path and stderr_path != stdout_path:
                 error_content, new_stderr_offset = self._read_file_from_offset(
-                    stderr_path, stderr_offset
+                    stderr_path, stderr_offset, last_n=last_n
                 )
 
             if output_content or error_content:
@@ -836,11 +837,36 @@ class SSHSlurmClient:
             self.logger.error(f"Failed to get job output for {job_id}: {e}")
             return "", "", stdout_offset, stderr_offset
 
-    def _read_file_from_offset(self, path: str, offset: int) -> tuple[str, int]:
+    def _read_file_from_offset(
+        self, path: str, offset: int, *, last_n: int | None = None
+    ) -> tuple[str, int]:
+        """Read remote log content starting at *offset* (or last N lines).
+
+        Three distinct paths based on the args:
+
+        * ``offset > 0``  → ``tail -c +<offset+1> <path>`` — pure byte
+          delta since the previous poll. Steady-state for ``tail -f``.
+        * ``offset == 0`` AND ``last_n`` set → ``tail -n <last_n> <path>``
+          — transfer **only the tail** of the file; returned offset is
+          the current file size so subsequent polls continue from EOF.
+          This is the optimization for ``srunx tail --last N`` / the
+          initial frame of ``tail -fn N`` that avoids shipping a multi-GB
+          log over SSH.
+        * ``offset == 0`` AND ``last_n`` is None → ``cat <path>`` — full
+          initial read (unchanged legacy behaviour).
+        """
         quoted = shlex.quote(path)
         if offset > 0:
             out, _, rc = self.execute_command(
                 f"tail -c +{offset + 1} {quoted} 2>/dev/null"
+            )
+        elif last_n is not None and last_n > 0:
+            # ``tail -n N`` streams only the last N lines over SSH even
+            # for multi-GB logs — the remote does the work, we receive
+            # kilobytes. Offsets reset to file size so the follow loop
+            # continues from true EOF.
+            out, _, rc = self.execute_command(
+                f"tail -n {int(last_n)} {quoted} 2>/dev/null"
             )
         else:
             out, _, rc = self.execute_command(f"cat {quoted} 2>/dev/null")

@@ -910,10 +910,17 @@ class SlurmSSHAdapter:
         job_name: str | None = None,
         stdout_offset: int = 0,
         stderr_offset: int = 0,
+        last_n: int | None = None,
     ) -> tuple[str, str, int, int]:
         """Get job stdout/stderr log contents from remote.
 
         Returns ``(stdout, stderr, new_stdout_offset, new_stderr_offset)``.
+
+        ``last_n`` is the initial-read optimization: when both offsets
+        are 0 and ``last_n`` is set, only the last N lines are
+        transferred (via ``tail -n N`` on the remote) and the returned
+        offsets point at end-of-file. This avoids shipping a multi-GB
+        log across SSH when the user only wants the tail.
 
         Ensures the SSH connection is live before reading — callers that
         reach this method via a fresh :class:`SlurmSSHAdapter` (e.g. CLI
@@ -929,6 +936,7 @@ class SlurmSSHAdapter:
                 job_name=job_name,
                 stdout_offset=stdout_offset,
                 stderr_offset=stderr_offset,
+                last_n=last_n,
             )
 
     def get_job_status(self, job_id: int) -> str:
@@ -1224,6 +1232,7 @@ class SlurmSSHAdapter:
         job_id: int,
         stdout_offset: int = 0,
         stderr_offset: int = 0,
+        last_n: int | None = None,
     ) -> LogChunk:
         """Return new log content since the given byte offsets.
 
@@ -1231,6 +1240,10 @@ class SlurmSSHAdapter:
         ``(stdout, stderr, new_stdout_offset, new_stderr_offset)``. Pure
         function: no stdout writes, no blocking. Callers that want
         ``tail -f`` semantics poll this method in a loop.
+
+        ``last_n`` honours the Protocol hint — applied by the underlying
+        ``RemoteLogReader`` when both offsets are 0 so a ``tail -f -n N``
+        kicks off with only the tail of a large log on the wire.
         """
 
         import paramiko
@@ -1247,6 +1260,7 @@ class SlurmSSHAdapter:
                 int(job_id),
                 stdout_offset=stdout_offset,
                 stderr_offset=stderr_offset,
+                last_n=last_n,
             )
         except paramiko.AuthenticationException as exc:
             raise TransportAuthError(f"SSH authentication failed: {exc}") from exc

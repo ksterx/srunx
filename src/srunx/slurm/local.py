@@ -244,6 +244,7 @@ class LocalClient:
         job_id: int,
         stdout_offset: int = 0,
         stderr_offset: int = 0,
+        last_n: int | None = None,
     ) -> LogChunk:
         """Return new log content since the given byte offsets.
 
@@ -253,16 +254,22 @@ class LocalClient:
         yet exist (e.g. the job is still PENDING), returns an empty chunk
         with the offsets unchanged — callers should treat a missing file
         as "no new data" rather than a hard error.
+
+        ``last_n`` is honoured on the initial read (both offsets 0):
+        we still read the full file from disk (it's local, no network
+        cost), then slice to the last N lines and set the offset to
+        file size. This keeps the Protocol symmetric with the SSH
+        implementation's optimization.
         """
         from srunx.slurm.protocols import LogChunk
 
         stdout_path, stderr_path = self._find_log_paths(job_id)
         stdout_content, new_stdout_offset = self._read_file_from_offset(
-            stdout_path, stdout_offset
+            stdout_path, stdout_offset, last_n=last_n
         )
         if stderr_path is not None and stderr_path != stdout_path:
             stderr_content, new_stderr_offset = self._read_file_from_offset(
-                stderr_path, stderr_offset
+                stderr_path, stderr_offset, last_n=last_n
             )
         else:
             stderr_content, new_stderr_offset = "", stderr_offset
@@ -300,13 +307,22 @@ class LocalClient:
         return stdout_path, stderr_path
 
     @staticmethod
-    def _read_file_from_offset(path: str | None, offset: int) -> tuple[str, int]:
-        """Read from *offset* to EOF. Missing file → ``("", offset)``."""
+    def _read_file_from_offset(
+        path: str | None, offset: int, *, last_n: int | None = None
+    ) -> tuple[str, int]:
+        """Read log content from *offset* (or last N lines on initial read).
+
+        Missing file → ``("", offset)``. When ``offset == 0`` and
+        ``last_n`` is set, returns only the last N lines with the new
+        offset at end-of-file — matches the SSH implementation's
+        semantic so callers see consistent behaviour across transports.
+        """
         if not path:
             return "", offset
         try:
             with open(path, "rb") as f:
-                f.seek(offset)
+                if offset:
+                    f.seek(offset)
                 data = f.read()
         except FileNotFoundError:
             return "", offset
@@ -317,6 +333,12 @@ class LocalClient:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             text = data.decode("utf-8", errors="replace")
+
+        if offset == 0 and last_n is not None and last_n > 0:
+            # Slice to last N lines; new offset stays at file size so
+            # the follow loop picks up future writes from EOF.
+            lines = text.splitlines(keepends=True)
+            text = "".join(lines[-last_n:]) if lines else ""
         return text, offset + len(data)
 
     def submit_remote_sbatch(
