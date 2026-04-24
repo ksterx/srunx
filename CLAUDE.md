@@ -30,6 +30,7 @@ srunx-specific commands that don't map to a SLURM binary:
 - `uv run srunx squeue -u <user>` - Filter to a single user
 - `uv run srunx squeue --show-partition --show-cpus --show-limit --show-nodes` - Opt-in columns (each flag adds one)
 - `uv run srunx squeue -a` - Shortcut for all opt-in columns at once
+- `uv run srunx squeue -i <seconds>` - Live refresh: re-query and redraw in place every N seconds (like native `squeue -i`). Ctrl+C exits
 - `uv run srunx squeue --format json` - JSON always includes every field regardless of show flags
 - `uv run srunx scancel <job_id>` - Cancel a job
 - `uv run srunx sinfo` - Partition / state / nodelist listing (same columns as native SLURM `sinfo`)

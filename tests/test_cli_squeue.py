@@ -270,3 +270,77 @@ class TestSqueueJobIdFilter:
         data = json.loads(result.stdout)
         assert len(data) == 1
         assert data[0]["job_id"] == 12346
+
+
+class TestSqueueIterate:
+    """``-i`` / ``--iterate`` live-refresh mode.
+
+    The real loop sleeps between ticks, so tests patch the
+    ``_run_squeue_live`` helper or short-circuit it via the
+    ``time.sleep`` hook — whichever proves the contract (fetch is
+    called per tick, KeyboardInterrupt exits cleanly, invalid inputs
+    fail early).
+    """
+
+    def test_rejects_non_positive_interval(self, runner: CliRunner, mock_jobs) -> None:
+        with patch("srunx.slurm.local.Slurm") as mock_slurm:
+            client = MagicMock()
+            client.queue.return_value = mock_jobs
+            mock_slurm.return_value = client
+            result = runner.invoke(app, ["squeue", "--local", "-i", "0"])
+        assert result.exit_code != 0
+        combined = result.stdout + (result.stderr or "")
+        assert "positive" in combined.lower()
+
+    def test_rejects_json_combined_with_iterate(
+        self, runner: CliRunner, mock_jobs
+    ) -> None:
+        """Live view is human-facing; streaming JSON would need a
+        different contract (line-delimited JSON etc.) — reject until
+        someone actually asks for it."""
+        with patch("srunx.slurm.local.Slurm") as mock_slurm:
+            client = MagicMock()
+            client.queue.return_value = mock_jobs
+            mock_slurm.return_value = client
+            result = runner.invoke(
+                app, ["squeue", "--local", "-i", "5", "--format", "json"]
+            )
+        assert result.exit_code != 0
+        combined = result.stdout + (result.stderr or "")
+        assert "incompatible" in combined.lower() or "json" in combined.lower()
+
+    def test_live_loop_repolls_until_interrupt(
+        self, runner: CliRunner, mock_jobs
+    ) -> None:
+        """Each ``time.sleep`` wake-up should fetch a fresh snapshot.
+
+        We inject ``KeyboardInterrupt`` on the third sleep so the loop
+        terminates deterministically after N ticks. ``client.queue``
+        is expected to have been called: 1x for the initial frame
+        + 2x during the loop before the interrupt = 3 total.
+        """
+        sleep_calls = {"n": 0}
+
+        def fake_sleep(_seconds: float) -> None:
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 3:
+                raise KeyboardInterrupt
+
+        with (
+            patch("srunx.slurm.local.Slurm") as mock_slurm,
+            patch("time.sleep", fake_sleep),
+        ):
+            client = MagicMock()
+            client.queue.return_value = mock_jobs
+            mock_slurm.return_value = client
+            result = runner.invoke(
+                app,
+                ["squeue", "--local", "-i", "0.01"],
+                env={"COLUMNS": "200"},
+            )
+
+        # KeyboardInterrupt during the loop must exit 0 (user-initiated
+        # stop), not bubble as an error.
+        assert result.exit_code == 0, result.stdout + (result.stderr or "")
+        # Initial frame + two live ticks before interrupt = 3 fetches.
+        assert client.queue.call_count == 3
