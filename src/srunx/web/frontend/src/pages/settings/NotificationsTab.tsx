@@ -7,12 +7,33 @@ import {
   Check,
   Plus,
   Power,
+  Star,
   Trash2,
   X,
 } from "lucide-react";
 import { ErrorBanner } from "../../components/ErrorBanner.tsx";
-import { endpoints as endpointsApi } from "../../lib/api.ts";
-import type { Endpoint } from "../../lib/types.ts";
+import {
+  config as configApi,
+  endpoints as endpointsApi,
+} from "../../lib/api.ts";
+import type {
+  Endpoint,
+  NotificationPreset,
+  SrunxConfig,
+} from "../../lib/types.ts";
+
+// Keep in sync with ``ACCEPTED_PRESETS`` in
+// ``srunx.observability.notifications.attach``. ``digest`` is
+// schema-valid but the backend rejects POSTs under it until an
+// aggregator ships.
+const PRESET_OPTIONS: ReadonlyArray<{
+  value: NotificationPreset;
+  label: string;
+}> = [
+  { value: "terminal", label: "Terminal only" },
+  { value: "running_and_terminal", label: "Running + terminal" },
+  { value: "all", label: "All state changes" },
+];
 
 const SLACK_WEBHOOK_PATTERN =
   /^https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/;
@@ -269,15 +290,28 @@ function AddEndpointForm({ onCancel, onCreated }: AddFormProps) {
 type EndpointRowProps = {
   endpoint: Endpoint;
   busy: boolean;
+  isDefault: boolean;
   onToggle: () => void;
   onDelete: () => void;
+  onSetDefault: () => void;
 };
 
-function EndpointRow({ endpoint, busy, onToggle, onDelete }: EndpointRowProps) {
+function EndpointRow({
+  endpoint,
+  busy,
+  isDefault,
+  onToggle,
+  onDelete,
+  onSetDefault,
+}: EndpointRowProps) {
   const disabled = endpoint.disabled_at !== null;
 
   return (
-    <tr>
+    <tr
+      style={{
+        background: isDefault ? "rgba(129,140,248,0.06)" : undefined,
+      }}
+    >
       <td
         style={{
           padding: "var(--sp-2) var(--sp-3)",
@@ -354,6 +388,41 @@ function EndpointRow({ endpoint, busy, onToggle, onDelete }: EndpointRowProps) {
           }}
         >
           <button
+            onClick={onSetDefault}
+            disabled={busy || disabled || isDefault}
+            title={
+              isDefault
+                ? "This is the current default"
+                : disabled
+                  ? "Enable the endpoint first"
+                  : "Set as default"
+            }
+            aria-pressed={isDefault}
+            style={{
+              background: "none",
+              border: `1px solid ${
+                isDefault ? "var(--accent, #818cf8)" : "var(--border-subtle)"
+              }`,
+              color: isDefault ? "var(--accent, #818cf8)" : "var(--text-muted)",
+              cursor: busy || disabled || isDefault ? "not-allowed" : "pointer",
+              padding: "4px 8px",
+              borderRadius: "var(--radius-sm)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              fontSize: "0.7rem",
+              fontFamily: "var(--font-mono)",
+              opacity: disabled && !isDefault ? 0.5 : 1,
+            }}
+          >
+            <Star
+              size={11}
+              aria-hidden="true"
+              fill={isDefault ? "currentColor" : "none"}
+            />
+            {isDefault ? "Default" : "Set default"}
+          </button>
+          <button
             onClick={onToggle}
             disabled={busy}
             title={disabled ? "Enable" : "Disable"}
@@ -409,12 +478,19 @@ export function NotificationsTab() {
   const [success, setSuccess] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [srunxConfig, setSrunxConfig] = useState<SrunxConfig | null>(null);
+  const [savingConfig, setSavingConfig] = useState(false);
+  const presetSelectId = useId();
 
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const list = await endpointsApi.list({ include_disabled: true });
+      const [list, cfg] = await Promise.all([
+        endpointsApi.list({ include_disabled: true }),
+        configApi.get(),
+      ]);
       setEndpointList(list);
+      setSrunxConfig(cfg);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load endpoints");
     } finally {
@@ -461,6 +537,46 @@ export function NotificationsTab() {
       setBusyId(null);
     }
   };
+
+  const updateNotificationConfig = async (
+    patch: Partial<SrunxConfig["notifications"]>,
+    successMsg: string,
+  ) => {
+    if (!srunxConfig) return;
+    try {
+      setSavingConfig(true);
+      setError(null);
+      const next: SrunxConfig = {
+        ...srunxConfig,
+        notifications: { ...srunxConfig.notifications, ...patch },
+      };
+      const updated = await configApi.update(next);
+      setSrunxConfig(updated);
+      setSuccess(successMsg);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to update config");
+    } finally {
+      setSavingConfig(false);
+    }
+  };
+
+  const handleSetDefault = (ep: Endpoint) =>
+    updateNotificationConfig(
+      { default_endpoint_name: ep.name },
+      `"${ep.name}" set as default endpoint`,
+    );
+
+  const handleClearDefault = () =>
+    updateNotificationConfig(
+      { default_endpoint_name: null },
+      "Default endpoint cleared",
+    );
+
+  const handleChangePreset = (preset: NotificationPreset) =>
+    updateNotificationConfig(
+      { default_preset: preset },
+      `Default preset set to "${preset}"`,
+    );
 
   const handleDelete = async (ep: Endpoint) => {
     if (
@@ -516,6 +632,136 @@ export function NotificationsTab() {
           {success}
         </motion.div>
       )}
+
+      {/* Default delivery (drives the Bell quick-toggle on Jobs rows) */}
+      <div className="panel">
+        <div
+          className="panel-header"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <h3>
+            <Star size={14} style={{ marginRight: 8, verticalAlign: -2 }} />
+            Default Delivery
+          </h3>
+        </div>
+        <div className="panel-body">
+          <p
+            style={{
+              fontSize: "0.75rem",
+              color: "var(--text-muted)",
+              marginBottom: "var(--sp-3)",
+            }}
+          >
+            The Jobs-page Bell toggle creates a watch against this endpoint and
+            preset. Clear the endpoint to force explicit selection per job (from
+            the job's Notifications tab).
+          </p>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+              gap: "var(--sp-3)",
+            }}
+          >
+            <div>
+              <label
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "0.65rem",
+                  color: "var(--text-muted)",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                  marginBottom: 4,
+                  display: "block",
+                }}
+              >
+                Default endpoint
+              </label>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "var(--sp-2)",
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "0.82rem",
+                }}
+              >
+                <span
+                  style={{
+                    color: srunxConfig?.notifications.default_endpoint_name
+                      ? "var(--text-primary)"
+                      : "var(--text-muted)",
+                  }}
+                >
+                  {srunxConfig?.notifications.default_endpoint_name ?? "—"}
+                </span>
+                {srunxConfig?.notifications.default_endpoint_name && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={handleClearDefault}
+                    disabled={savingConfig}
+                    title="Clear default"
+                    style={{
+                      padding: "2px 8px",
+                      fontSize: "0.72rem",
+                    }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <p
+                style={{
+                  fontSize: "0.7rem",
+                  color: "var(--text-muted)",
+                  marginTop: 4,
+                }}
+              >
+                Use the ★ button on any enabled endpoint below to set it.
+              </p>
+            </div>
+
+            <div>
+              <label
+                htmlFor={presetSelectId}
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "0.65rem",
+                  color: "var(--text-muted)",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                  marginBottom: 4,
+                  display: "block",
+                }}
+              >
+                Default preset
+              </label>
+              <select
+                id={presetSelectId}
+                className="select"
+                value={srunxConfig?.notifications.default_preset ?? "terminal"}
+                onChange={(e) =>
+                  handleChangePreset(e.target.value as NotificationPreset)
+                }
+                disabled={savingConfig}
+                style={{ width: "100%", fontSize: "0.82rem" }}
+              >
+                {PRESET_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div className="panel">
         <div
@@ -611,9 +857,14 @@ export function NotificationsTab() {
                     <EndpointRow
                       key={ep.id}
                       endpoint={ep}
-                      busy={busyId === ep.id}
+                      busy={busyId === ep.id || savingConfig}
+                      isDefault={
+                        srunxConfig?.notifications.default_endpoint_name ===
+                        ep.name
+                      }
                       onToggle={() => handleToggle(ep)}
                       onDelete={() => handleDelete(ep)}
+                      onSetDefault={() => handleSetDefault(ep)}
                     />
                   ))}
                 </tbody>
