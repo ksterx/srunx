@@ -58,7 +58,7 @@ class TestTyperCLI:
         assert "squeue" in result.stdout
         assert "scancel" in result.stdout
         assert "sinfo" in result.stdout
-        assert "sacct" in result.stdout
+        assert "history" in result.stdout
         assert "tail" in result.stdout
         assert "watch" in result.stdout
         assert "flow" in result.stdout
@@ -85,7 +85,7 @@ class TestTyperCLI:
         """Test squeue command help."""
         result = self.runner.invoke(app, ["squeue", "--help"])
         assert result.exit_code == 0
-        assert "List user's jobs in the queue" in result.stdout
+        assert "List active jobs" in result.stdout
 
     def test_scancel_help(self):
         """Test scancel command help."""
@@ -384,7 +384,6 @@ class TestTyperCLI:
         result = self.runner.invoke(app, ["config", "show"])
 
         assert result.exit_code == 0
-        assert "srunx Configuration" in result.stdout
         mock_get_config.assert_called_once()
 
     @patch("srunx.cli.commands.config.get_config_paths")

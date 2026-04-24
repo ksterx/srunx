@@ -37,7 +37,11 @@ def watch_jobs(
     ] = None,
     all_jobs: Annotated[
         bool,
-        typer.Option("--all", "-a", help="Watch all user jobs"),
+        typer.Option(
+            "--all",
+            "-a",
+            help="Watch every active job in the cluster queue (all users).",
+        ),
     ] = False,
     schedule: Annotated[
         str | None,
@@ -128,12 +132,15 @@ def watch_jobs(
         # SSH via resolve_transport rather than silently falling back to
         # a local Slurm singleton.
         if all_jobs:
-            all_user_jobs = rt.job_ops.queue()
-            job_ids = [job.job_id for job in all_user_jobs if job.job_id is not None]
+            # ``queue()`` with no ``user=`` follows native ``squeue``
+            # semantics (all users). ``--all`` here means "every active
+            # job on the cluster", not just the calling user's jobs.
+            queue_jobs = rt.job_ops.queue()
+            job_ids = [job.job_id for job in queue_jobs if job.job_id is not None]
             if not job_ids:
-                console.print("[yellow]No jobs found for current user[/yellow]")
+                console.print("[yellow]No active jobs in queue[/yellow]")
                 sys.exit(0)
-            console.print(f"📋 Watching {len(job_ids)} jobs for current user")
+            console.print(f"📋 Watching {len(job_ids)} active jobs (all users)")
 
         # Setup callbacks.
         #

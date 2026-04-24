@@ -44,6 +44,7 @@ class RemoteLogReader:
         job_name: str | None = None,
         stdout_offset: int = 0,
         stderr_offset: int = 0,
+        last_n: int | None = None,
     ) -> tuple[str, str, int, int]:
         """Get job output from SLURM log files.
 
@@ -53,6 +54,11 @@ class RemoteLogReader:
 
         When *stdout_offset* / *stderr_offset* are non-zero, only the bytes
         **after** that position are returned (tail-like incremental reads).
+
+        ``last_n`` is honoured only on the initial read (both offsets 0):
+        the remote runs ``tail -n <last_n>`` so a multi-GB log only ships
+        its tail over SSH. Ignored when offsets are non-zero (the follow
+        loop is already tailing incrementally).
 
         Returns:
             ``(stdout, stderr, new_stdout_offset, new_stderr_offset)``
@@ -73,12 +79,12 @@ class RemoteLogReader:
 
             if stdout_path:
                 output_content, new_stdout_offset = self._read_file_from_offset(
-                    stdout_path, stdout_offset
+                    stdout_path, stdout_offset, last_n=last_n
                 )
 
             if stderr_path and stderr_path != stdout_path:
                 error_content, new_stderr_offset = self._read_file_from_offset(
-                    stderr_path, stderr_offset
+                    stderr_path, stderr_offset, last_n=last_n
                 )
 
             if output_content or error_content:
@@ -289,12 +295,27 @@ class RemoteLogReader:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _read_file_from_offset(self, path: str, offset: int) -> tuple[str, int]:
-        """Read a remote file from a byte offset. Returns (content, new_offset)."""
+    def _read_file_from_offset(
+        self, path: str, offset: int, *, last_n: int | None = None
+    ) -> tuple[str, int]:
+        """Read remote log content.
+
+        * ``offset > 0``: byte-delta via ``tail -c +N`` (steady-state
+          follow poll).
+        * ``offset == 0`` + ``last_n`` set: ``tail -n N`` — ship only
+          the tail of a large log across SSH. New offset = file size,
+          so subsequent polls resume from EOF.
+        * ``offset == 0`` + ``last_n`` None: full ``cat`` (legacy path,
+          e.g. the Web UI's "show everything" one-shot).
+        """
         quoted = shlex.quote(path)
         if offset > 0:
             out, _, rc = self._conn.execute_command(
                 f"tail -c +{offset + 1} {quoted} 2>/dev/null"
+            )
+        elif last_n is not None and last_n > 0:
+            out, _, rc = self._conn.execute_command(
+                f"tail -n {int(last_n)} {quoted} 2>/dev/null"
             )
         else:
             out, _, rc = self._conn.execute_command(f"cat {quoted} 2>/dev/null")

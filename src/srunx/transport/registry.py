@@ -186,22 +186,74 @@ def emit_transport_banner(
     # emission is not on any hot path.
     #
     # Rich markup: a colored dot flags transport kind (cyan for SSH,
-    # yellow for local), the scheduler_key is bold so it reads at a
-    # glance, and the source string trails in dim italic to show where
-    # the decision came from without stealing focus from the label.
+    # yellow for local), the connection target is the headline, the
+    # profile name + decision source trail in dim so "where am I
+    # running" reads at a glance without stealing focus.
     is_ssh = label.startswith("ssh:")
     dot_color = "cyan" if is_ssh else "yellow"
     source_display = {
-        "--profile": "--profile",
-        "--local": "--local",
-        "env": "$SRUNX_SSH_PROFILE",
-        "current-profile": "current profile",
-    }.get(source, source)
-    Console(file=sys.stderr).print(
-        f"[{dot_color}]●[/{dot_color}] "
-        f"[bold]{label}[/bold]  "
-        f"[dim italic]· via {source_display}[/dim italic]"
+        "--profile": "via --profile",
+        "--local": "via --local",
+        "env": "via $SRUNX_SSH_PROFILE",
+        "current-profile": "via current profile",
+    }.get(source, f"via {source}")
+    if is_ssh:
+        body = _format_ssh_banner_body(
+            profile_name=label.removeprefix("ssh:"),
+            source_display=source_display,
+        )
+    else:
+        body = f"[bold]Local SLURM[/bold]  [dim italic]({source_display})[/dim italic]"
+    Console(file=sys.stderr).print(f"[{dot_color}]●[/{dot_color}]  {body}")
+
+
+def _format_ssh_banner_body(*, profile_name: str, source_display: str) -> str:
+    """Build the SSH half of the transport banner.
+
+    Shows ``user@host`` (plus ``:port`` when non-default and
+    ``via <proxy>`` when ``proxy_jump`` is set) as the headline so the
+    banner answers "which machine am I reaching" without forcing the
+    user to remember what ``<profile_name>`` maps to. Profile name and
+    decision source are kept as parenthetical metadata.
+
+    Falls back to ``SSH profile: <name>`` when the profile lookup
+    fails (config file missing, profile removed, import error) — the
+    banner must never raise, even from a degraded state.
+    """
+    profile = _lookup_profile_silently(profile_name)
+    if profile is None:
+        return (
+            f"[bold]SSH profile: {profile_name}[/bold]  "
+            f"[dim italic]({source_display})[/dim italic]"
+        )
+    target = f"{profile.username}@{profile.hostname}"
+    if profile.port != 22:
+        target += f":{profile.port}"
+    if profile.proxy_jump:
+        target += f" via {profile.proxy_jump}"
+    return (
+        f"[bold]Connected to[/bold] [cyan]{target}[/cyan]  "
+        f"[dim italic](profile: {profile_name} · {source_display})[/dim italic]"
     )
+
+
+def _lookup_profile_silently(name: str) -> ServerProfile | None:
+    """Return the :class:`ServerProfile` for *name*, or None on any failure.
+
+    Used by the banner emitter, which must never raise — a missing
+    config file or a profile that was deleted between resolution and
+    banner emission should degrade to the fallback label, not crash
+    the CLI.
+    """
+    try:
+        from srunx.ssh.core.config import ConfigManager
+    except ImportError:
+        return None
+    try:
+        return ConfigManager().get_profile(name)
+    except Exception as exc:  # noqa: BLE001 — defensive
+        logger.debug("Could not load SSH profile %r for banner: %s", name, exc)
+        return None
 
 
 def _current_profile_name() -> str | None:

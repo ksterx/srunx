@@ -244,6 +244,7 @@ class LocalClient:
         job_id: int,
         stdout_offset: int = 0,
         stderr_offset: int = 0,
+        last_n: int | None = None,
     ) -> LogChunk:
         """Return new log content since the given byte offsets.
 
@@ -253,16 +254,22 @@ class LocalClient:
         yet exist (e.g. the job is still PENDING), returns an empty chunk
         with the offsets unchanged — callers should treat a missing file
         as "no new data" rather than a hard error.
+
+        ``last_n`` is honoured on the initial read (both offsets 0):
+        we still read the full file from disk (it's local, no network
+        cost), then slice to the last N lines and set the offset to
+        file size. This keeps the Protocol symmetric with the SSH
+        implementation's optimization.
         """
         from srunx.slurm.protocols import LogChunk
 
         stdout_path, stderr_path = self._find_log_paths(job_id)
         stdout_content, new_stdout_offset = self._read_file_from_offset(
-            stdout_path, stdout_offset
+            stdout_path, stdout_offset, last_n=last_n
         )
         if stderr_path is not None and stderr_path != stdout_path:
             stderr_content, new_stderr_offset = self._read_file_from_offset(
-                stderr_path, stderr_offset
+                stderr_path, stderr_offset, last_n=last_n
             )
         else:
             stderr_content, new_stderr_offset = "", stderr_offset
@@ -300,13 +307,22 @@ class LocalClient:
         return stdout_path, stderr_path
 
     @staticmethod
-    def _read_file_from_offset(path: str | None, offset: int) -> tuple[str, int]:
-        """Read from *offset* to EOF. Missing file → ``("", offset)``."""
+    def _read_file_from_offset(
+        path: str | None, offset: int, *, last_n: int | None = None
+    ) -> tuple[str, int]:
+        """Read log content from *offset* (or last N lines on initial read).
+
+        Missing file → ``("", offset)``. When ``offset == 0`` and
+        ``last_n`` is set, returns only the last N lines with the new
+        offset at end-of-file — matches the SSH implementation's
+        semantic so callers see consistent behaviour across transports.
+        """
         if not path:
             return "", offset
         try:
             with open(path, "rb") as f:
-                f.seek(offset)
+                if offset:
+                    f.seek(offset)
                 data = f.read()
         except FileNotFoundError:
             return "", offset
@@ -317,6 +333,12 @@ class LocalClient:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             text = data.decode("utf-8", errors="replace")
+
+        if offset == 0 and last_n is not None and last_n > 0:
+            # Slice to last N lines; new offset stays at file size so
+            # the follow loop picks up future writes from EOF.
+            lines = text.splitlines(keepends=True)
+            text = "".join(lines[-last_n:]) if lines else ""
         return text, offset + len(data)
 
     def submit_remote_sbatch(
@@ -365,19 +387,24 @@ class LocalClient:
             raise
 
     def queue(self, user: str | None = None) -> list[BaseJob]:
-        """List jobs for a user.
+        """List active jobs.
 
-        Args:
-            user: Username (defaults to current user).
+        ``user=None`` shows all users' jobs (matches native ``squeue``).
+        Pass a username to filter.
 
-        Returns:
-            List of Job objects.
+        Returns: list of :class:`BaseJob` populated with the same
+        field set as the SSH adapter's :meth:`~srunx.slurm.ssh.SlurmSSHAdapter.queue`
+        so CLI callers see a consistent shape regardless of transport.
         """
-        # Format: JobID Partition Name User State Time TimeLimit Nodes Nodelist TRES
+        # Pipe-delimited format — nodelist/reason (%R) can contain
+        # whitespace + parens, so space-splitting is fragile.
+        # Fields: %i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%b
+        # (job_id, partition, name, user, state, elapsed, limit, nodes,
+        # total_cpus, nodelist_or_reason, TRES_PER_NODE)
         cmd = [
             "squeue",
             "--format",
-            "%.18i %.9P %.30j %.12u %.8T %.10M %.9l %.6D %R %b",
+            "%i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%b",
             "--noheader",
         ]
         if user:
@@ -390,48 +417,65 @@ class LocalClient:
             if not line.strip():
                 continue
 
-            parts = line.split(maxsplit=9)  # Split into at most 10 parts
-            if len(parts) >= 5:
-                job_id = int(parts[0])
-                partition = parts[1] if len(parts) > 1 else None
-                job_name = parts[2]
-                user_name = parts[3] if len(parts) > 3 else None
-                status_str = parts[4]
-                elapsed_time = parts[5] if len(parts) > 5 else None
-                time_limit = parts[6] if len(parts) > 6 else None
-                nodes_str = parts[7] if len(parts) > 7 else "1"
-                tres = parts[9] if len(parts) > 9 else ""
+            parts = line.split("|")
+            if len(parts) < 11:
+                continue
 
-                try:
-                    status = JobStatus(status_str)
-                except ValueError:
-                    status = JobStatus.PENDING  # Default for unknown status
+            try:
+                job_id = int(parts[0].strip())
+            except ValueError:
+                continue
 
-                # Parse number of nodes
-                try:
-                    nodes = int(nodes_str)
-                except (ValueError, AttributeError):
-                    nodes = 1
+            partition = parts[1].strip() or None
+            job_name = parts[2].strip()
+            user_name = parts[3].strip() or None
+            status_str = parts[4].strip()
+            elapsed_time = parts[5].strip() or None
+            time_limit = parts[6].strip() or None
+            nodes_str = parts[7].strip()
+            cpus_str = parts[8].strip()
+            nodelist = parts[9].strip() or None
+            tres = parts[10].strip()
 
-                # Parse GPU count from TRES (e.g., "gpu:8" or "billing=8,cpu=8,gres/gpu=8,mem=100G,node=1")
-                gpus = 0
-                if tres and "gpu" in tres.lower():
-                    gpu_match = GPU_TRES_RE.search(tres)
-                    if gpu_match:
-                        gpus = int(gpu_match.group(1))
+            try:
+                status = JobStatus(status_str)
+            except ValueError:
+                status = JobStatus.PENDING  # Default for unknown status
 
-                job = BaseJob(
-                    name=job_name,
-                    job_id=job_id,
-                    user=user_name,
-                    partition=partition,
-                    elapsed_time=elapsed_time,
-                    time_limit=time_limit,
-                    nodes=nodes,
-                    gpus=gpus,
-                )
-                job.status = status
-                jobs.append(job)
+            try:
+                nodes = int(nodes_str)
+            except (ValueError, AttributeError):
+                nodes = 1
+
+            try:
+                cpus = int(cpus_str) if cpus_str else 0
+            except ValueError:
+                cpus = 0
+
+            # Parse GPU count from TRES (e.g., "gpu:8" or
+            # "billing=8,cpu=8,gres/gpu=8,mem=100G,node=1"). Total
+            # across all nodes so the column matches what a SLURM user
+            # reading ``sinfo`` / ``scontrol show job`` expects.
+            gpus_per_node = 0
+            if tres and "gpu" in tres.lower():
+                gpu_match = GPU_TRES_RE.search(tres)
+                if gpu_match:
+                    gpus_per_node = int(gpu_match.group(1))
+
+            job = BaseJob(
+                name=job_name,
+                job_id=job_id,
+                user=user_name,
+                partition=partition,
+                elapsed_time=elapsed_time,
+                time_limit=time_limit,
+                nodes=nodes,
+                cpus=cpus,
+                gpus=gpus_per_node * nodes,
+                nodelist=nodelist,
+            )
+            job.status = status
+            jobs.append(job)
 
         return jobs
 

@@ -132,7 +132,14 @@ class TestSlurmSSHAdapterProtocolCompliance:
                 adapter.status(99999)
 
     def test_ssh_adapter_queue_returns_list_base_job(self) -> None:
-        """``queue`` adapts list_jobs dicts into Pydantic BaseJob instances."""
+        """``queue`` adapts active-squeue dicts into Pydantic BaseJob instances.
+
+        Post-S1: ``queue`` routes through :meth:`_list_active_jobs`
+        (squeue only) rather than :meth:`list_jobs` (squeue + sacct
+        merge), so ``srunx squeue`` matches native SLURM ``squeue``
+        semantics. This test patches the active-only helper to prove
+        the sacct merge never runs on the CLI path.
+        """
         from srunx.domain import BaseJob, JobStatus
         from srunx.slurm.ssh import SlurmSSHAdapter
 
@@ -147,7 +154,14 @@ class TestSlurmSSHAdapterProtocolCompliance:
                 "elapsed_time": "0:10",
             }
         ]
-        with patch.object(SlurmSSHAdapter, "list_jobs", return_value=fake_rows):
+        with (
+            patch.object(
+                SlurmSSHAdapter,
+                "_list_active_jobs",
+                return_value=(fake_rows, {101}),
+            ),
+            patch.object(SlurmSSHAdapter, "list_jobs") as list_jobs_mock,
+        ):
             adapter = SlurmSSHAdapter.__new__(SlurmSSHAdapter)
             adapter._username = "alice"  # queue() reads profile's username on None
             out = adapter.queue(user="alice")
@@ -156,6 +170,8 @@ class TestSlurmSSHAdapterProtocolCompliance:
         assert isinstance(out[0], BaseJob)
         assert out[0].job_id == 101
         assert out[0]._status == JobStatus.RUNNING
+        # Regression guard — queue must NOT pull the sacct merge path.
+        list_jobs_mock.assert_not_called()
 
     def test_ssh_adapter_tail_log_incremental_returns_log_chunk(self) -> None:
         """``tail_log_incremental`` returns a Pydantic LogChunk."""

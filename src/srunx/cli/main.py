@@ -12,8 +12,8 @@ import typer
 
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.cli.commands.config import config_app
-from srunx.cli.commands.jobs import sbatch, scancel, sinfo, squeue, tail
-from srunx.cli.commands.reports import sacct, sreport
+from srunx.cli.commands.jobs import gpus, sbatch, scancel, sinfo, squeue, tail
+from srunx.cli.commands.reports import history, sacct
 from srunx.cli.commands.templates import template_app
 from srunx.cli.commands.ui import ui
 from srunx.cli.watch import watch_app
@@ -48,9 +48,10 @@ app.command("sbatch")(sbatch)
 app.command("squeue")(squeue)
 app.command("scancel")(scancel)
 app.command("sinfo")(sinfo)
+app.command("gpus")(gpus)
 app.command("tail")(tail)
+app.command("history")(history)
 app.command("sacct")(sacct)
-app.command("sreport")(sreport)
 
 
 @flow_app.command("run")

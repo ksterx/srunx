@@ -92,7 +92,7 @@ srunx watch resources --min-gpus 4 --timeout 7200
 ```
 
 !!! note
-    To display current resources without waiting, use `srunx sinfo` instead (see [User Guide](../how-to/user_guide.md)).
+    To display current GPU availability without waiting, use `srunx gpus` (aggregate summary across partitions). For partition / state / nodelist listing that mirrors native SLURM, use `srunx sinfo`.
 
 ### Continuous Resource Monitoring
 

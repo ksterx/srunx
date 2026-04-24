@@ -424,19 +424,19 @@ class JobRepository(BaseRepository):
     ) -> list[dict[str, Any]]:
         """Return the ``limit`` most recent jobs in the legacy dict shape.
 
-        Used by the ``/api/history`` router + ``srunx sacct`` CLI to
+        Used by the ``/api/history`` router + ``srunx history`` CLI to
         keep the response/display formats stable across the cutover
         from the removed ``srunx.history`` module (P2-4 #A).
 
         ``job_ids`` filters to a specific subset of jobs and bypasses
-        the ``LIMIT`` so ``srunx sacct -j <id>`` finds the job even
+        the ``LIMIT`` so ``srunx history -j <id>`` finds the job even
         when it falls outside the most recent ``limit`` rows. Codex
         follow-up #2 on PR #134 — without this push-down the CLI
         would silently report "no history found" for any job older
         than the page size.
 
         ``scheduler_key`` (e.g. ``"local"`` / ``"ssh:dgx"``) scopes
-        the query to a single transport so ``srunx sacct --profile X``
+        the query to a single transport so ``srunx history --profile X``
         only sees jobs that ran against that cluster. ``None`` keeps
         the legacy "all transports" behaviour for the Web UI history.
         """
@@ -530,8 +530,8 @@ class JobRepository(BaseRepository):
         matching the legacy behaviour.
 
         ``scheduler_key`` (e.g. ``"local"`` / ``"ssh:dgx"``) scopes the
-        aggregate to a single transport so ``srunx sreport --profile X``
-        reflects only that cluster.
+        aggregate to a single transport so the Web ``/api/history``
+        summary reflects only that cluster.
         """
         conditions: list[str] = []
         params: list[Any] = []

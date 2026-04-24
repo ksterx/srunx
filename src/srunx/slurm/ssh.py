@@ -436,10 +436,36 @@ class SlurmSSHAdapter:
 
     # ── Job Operations ────────────────────────────
 
-    def list_jobs(self, user: str | None = None) -> list[dict[str, Any]]:
-        """List SLURM jobs via squeue + recent completed/failed jobs via sacct."""
-        # --- Active jobs from squeue ---
-        fmt = "%.18i %.9P %.30j %.12u %.8T %.10M %.9l %.6D %R %b"
+    def _list_active_jobs(
+        self, user: str | None = None
+    ) -> tuple[list[dict[str, Any]], set[int]]:
+        """Return active (PENDING / RUNNING / ...) jobs from ``squeue`` only.
+
+        Split out from :meth:`list_jobs` so :meth:`queue` (the CLI
+        ``srunx squeue`` path) can call this without triggering the
+        ``sacct -S now-6hours`` merge that would otherwise inject
+        terminal-state rows from the past 6 hours — that asymmetry
+        with the local ``Slurm.queue()`` broke user expectations
+        (native ``squeue`` never shows finished jobs).
+
+        ``user=None`` shows all users' jobs (matches native ``squeue``
+        and local :meth:`~srunx.slurm.local.Slurm.queue`). Pass a
+        username to filter.
+
+        Format fields (all surfaced by :meth:`queue`):
+        ``%i`` job_id | ``%P`` partition | ``%j`` name | ``%u`` user |
+        ``%T`` state (long) | ``%M`` elapsed | ``%l`` time_limit |
+        ``%D`` nodes | ``%C`` total CPUs | ``%R`` nodelist-or-reason |
+        ``%b`` TRES_PER_NODE (for GPU extraction).
+
+        Returns ``(entries, seen_ids)`` so the merging caller can
+        dedup sacct rows against active IDs without re-scanning.
+        """
+        # ``|`` delimiter: nodelist reasons can contain whitespace and
+        # parens (e.g. "(Resources, Priority)"), so splitting on
+        # whitespace with maxsplit is fragile. Pipe is the safe
+        # separator — SLURM fields never contain it.
+        fmt = "%i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%b"
         cmd = f'squeue --format "{fmt}" --noheader'
         if user:
             _validate_identifier(user, "user")
@@ -450,45 +476,78 @@ class SlurmSSHAdapter:
         seen_ids: set[int] = set()
 
         for line in output.strip().splitlines():
-            parts = line.split()
-            if len(parts) < 9:
+            parts = line.split("|")
+            # Strict equality check — SLURM allows ``|`` inside user-chosen
+            # fields like job name (``#SBATCH --job-name=foo|bar``). Such
+            # rows split into 12+ fields; ``< 11`` would pass and the
+            # subsequent indexing would silently misalign every column
+            # downstream of the embedded pipe. Better to drop the row
+            # than render corrupted data in an admin's queue listing.
+            if len(parts) != 11:
                 continue
 
-            job_id_str = parts[0].strip()
             try:
-                job_id = int(job_id_str)
+                job_id = int(parts[0].strip())
             except ValueError:
                 continue
 
-            # parts[7] = %D (node count), parts[9] = %b (TRES per node)
-            num_nodes = int(parts[7]) if parts[7].strip().isdigit() else 1
+            partition = parts[1].strip()
+            name = parts[2].strip()
+            owner = parts[3].strip() or None
+            state = parts[4].strip()
+            elapsed = parts[5].strip()
+            time_limit = parts[6].strip()
+            nodes_str = parts[7].strip()
+            cpus_str = parts[8].strip()
+            nodelist = parts[9].strip()
+            tres = parts[10].strip()
+
+            num_nodes = int(nodes_str) if nodes_str.isdigit() else 1
+            try:
+                cpus_total = int(cpus_str) if cpus_str else 0
+            except ValueError:
+                cpus_total = 0
             gpus_per_node = 0
-            if len(parts) >= 10:
-                gpu_match = GPU_TRES_RE.search(parts[9])
-                if gpu_match:
-                    gpus_per_node = int(gpu_match.group(1))
+            gpu_match = GPU_TRES_RE.search(tres)
+            if gpu_match:
+                gpus_per_node = int(gpu_match.group(1))
 
             seen_ids.add(job_id)
             jobs.append(
                 {
-                    "name": parts[2].strip(),
+                    "name": name,
                     "job_id": job_id,
-                    "status": parts[4].strip(),
+                    "status": state,
                     "depends_on": [],
                     "command": [],
                     "resources": {
                         "nodes": num_nodes,
                         "gpus_per_node": gpus_per_node,
-                        "partition": parts[1].strip(),
-                        "time_limit": parts[6].strip(),
+                        "partition": partition,
+                        "time_limit": time_limit,
                     },
-                    "partition": parts[1].strip(),
+                    "partition": partition,
+                    "user": owner,
                     "nodes": num_nodes,
+                    "cpus": cpus_total,
                     "gpus": gpus_per_node * num_nodes,
-                    "elapsed_time": parts[5].strip(),
-                    "time_limit": parts[6].strip(),
+                    "nodelist": nodelist,
+                    "elapsed_time": elapsed,
+                    "time_limit": time_limit,
                 }
             )
+
+        return jobs, seen_ids
+
+    def list_jobs(self, user: str | None = None) -> list[dict[str, Any]]:
+        """List SLURM jobs via squeue + recent completed/failed jobs via sacct.
+
+        Used by the Web UI and MCP ``list_jobs`` tool. The CLI
+        ``srunx squeue`` path goes through :meth:`queue` instead,
+        which uses :meth:`_list_active_jobs` directly so it matches
+        native ``squeue`` semantics (active jobs only).
+        """
+        jobs, seen_ids = self._list_active_jobs(user)
 
         # --- Recently finished jobs from sacct (last 6 hours) ---
         # NOTE: --state filter is omitted because some SLURM versions
@@ -774,7 +833,7 @@ class SlurmSSHAdapter:
 
         Records the submission to the state DB and fires the
         ``on_job_submitted`` callbacks just like :meth:`submit`, so
-        Notification watches and ``srunx sacct`` see the job. Codex
+        Notification watches and ``srunx history`` see the job. Codex
         blocker #2 on PR #134 — the previous implementation skipped
         both, leaving in-place submissions invisible to the rest of
         the system.
@@ -816,7 +875,7 @@ class SlurmSSHAdapter:
         if isinstance(callbacks_job, ShellJob):
             callbacks_job.script_path = remote_path
 
-        # Record to DB so `srunx sacct` / poller pick it up. Mirrors
+        # Record to DB so `srunx history` / poller pick it up. Mirrors
         # :meth:`submit` step 3.
         if self._profile_name is not None:
             self._record_job_submission(
@@ -851,10 +910,17 @@ class SlurmSSHAdapter:
         job_name: str | None = None,
         stdout_offset: int = 0,
         stderr_offset: int = 0,
+        last_n: int | None = None,
     ) -> tuple[str, str, int, int]:
         """Get job stdout/stderr log contents from remote.
 
         Returns ``(stdout, stderr, new_stdout_offset, new_stderr_offset)``.
+
+        ``last_n`` is the initial-read optimization: when both offsets
+        are 0 and ``last_n`` is set, only the last N lines are
+        transferred (via ``tail -n N`` on the remote) and the returned
+        offsets point at end-of-file. This avoids shipping a multi-GB
+        log across SSH when the user only wants the tail.
 
         Ensures the SSH connection is live before reading — callers that
         reach this method via a fresh :class:`SlurmSSHAdapter` (e.g. CLI
@@ -870,6 +936,7 @@ class SlurmSSHAdapter:
                 job_name=job_name,
                 stdout_offset=stdout_offset,
                 stderr_offset=stderr_offset,
+                last_n=last_n,
             )
 
     def get_job_status(self, job_id: int) -> str:
@@ -1116,19 +1183,23 @@ class SlurmSSHAdapter:
         return job
 
     def queue(self, user: str | None = None) -> list[BaseJob]:
-        """List jobs for *user* (defaults to the profile's username).
+        """List *active* jobs (all users by default).
 
-        Adapts :meth:`list_jobs` (which yields dicts) into Pydantic
-        :class:`BaseJob` objects so the return type matches
-        :class:`~srunx.slurm.protocols.JobOperations.queue`.
-        ``user=None`` uses the profile's configured username, matching
-        the Protocol's "transport's current user" contract.
+        Adapts :meth:`_list_active_jobs` (squeue only, no sacct merge)
+        into Pydantic :class:`BaseJob` objects so the return type
+        matches :class:`~srunx.slurm.protocols.JobOperations.queue` and
+        the CLI ``srunx squeue`` output matches native SLURM
+        ``squeue`` semantics (active jobs only — finished jobs are the
+        domain of ``srunx history``).
+
+        ``user=None`` shows **all users' jobs**, matching native
+        ``squeue`` and the local :meth:`~srunx.slurm.local.Slurm.queue`.
+        Pass a username explicitly (e.g. from ``-u`` / ``--user``) to
+        filter to that user.
         """
         from srunx.domain import BaseJob, JobStatus
 
-        effective_user = user if user is not None else self._username or None
-
-        raw_entries = self.list_jobs(user=effective_user)
+        raw_entries, _ = self._list_active_jobs(user=user)
         out: list[BaseJob] = []
         for entry in raw_entries:
             status_str = str(entry.get("status", "UNKNOWN"))
@@ -1144,11 +1215,13 @@ class SlurmSSHAdapter:
                 name=str(entry.get("name", "job")),
                 job_id=job_id_val,
                 partition=entry.get("partition"),
+                user=entry.get("user"),
                 nodes=entry.get("nodes"),
+                cpus=entry.get("cpus"),
                 gpus=entry.get("gpus"),
+                nodelist=entry.get("nodelist") or None,
                 elapsed_time=entry.get("elapsed_time"),
                 time_limit=entry.get("time_limit"),
-                user=effective_user,
             )
             job.status = status_enum
             out.append(job)
@@ -1159,6 +1232,7 @@ class SlurmSSHAdapter:
         job_id: int,
         stdout_offset: int = 0,
         stderr_offset: int = 0,
+        last_n: int | None = None,
     ) -> LogChunk:
         """Return new log content since the given byte offsets.
 
@@ -1166,6 +1240,10 @@ class SlurmSSHAdapter:
         ``(stdout, stderr, new_stdout_offset, new_stderr_offset)``. Pure
         function: no stdout writes, no blocking. Callers that want
         ``tail -f`` semantics poll this method in a loop.
+
+        ``last_n`` honours the Protocol hint — applied by the underlying
+        ``RemoteLogReader`` when both offsets are 0 so a ``tail -f -n N``
+        kicks off with only the tail of a large log on the wire.
         """
 
         import paramiko
@@ -1182,6 +1260,7 @@ class SlurmSSHAdapter:
                 int(job_id),
                 stdout_offset=stdout_offset,
                 stderr_offset=stderr_offset,
+                last_n=last_n,
             )
         except paramiko.AuthenticationException as exc:
             raise TransportAuthError(f"SSH authentication failed: {exc}") from exc

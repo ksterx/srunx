@@ -1,10 +1,8 @@
 """Tests for ``srunx.observability.storage.cli_helpers`` — the CLI-side state-DB bridge.
 
-Focused on the workflow-identity round-trip introduced to fix the
-``srunx report --workflow`` regression: CLI-launched workflows must
-create a ``workflow_runs`` row and link submitted jobs back via
-``workflow_run_id`` so ``compute_workflow_stats`` (which JOINs on
-``workflow_run_id``) actually picks them up.
+Focused on the ``scheduler_key`` push-down that ``srunx history``
+relies on: CLI history queries must scope to the resolved transport
+so cross-cluster jobs don't bleed into each other's listings.
 """
 
 from __future__ import annotations
@@ -13,8 +11,6 @@ import pytest
 
 from srunx.domain import Job, JobEnvironment, JobResource
 from srunx.observability.storage.cli_helpers import (
-    compute_job_stats,
-    compute_workflow_stats,
     create_cli_workflow_run,
     list_recent_jobs,
     record_submission_from_job,
@@ -43,13 +39,13 @@ def _record_ssh_job(
 
 
 class TestSchedulerKeyFilter:
-    """SSH-parity for ``sacct`` / ``sreport``: scheduler_key push-down.
+    """SSH-parity for ``srunx history``: scheduler_key push-down.
 
     The CLI passes ``scheduler_key="ssh:<profile>"`` (or ``"local"``)
     into the helpers; the SQL ``WHERE`` filter must scope rows to that
     transport so cross-cluster jobs don't bleed into each other's
-    history / aggregates. ``scheduler_key=None`` keeps the legacy
-    behaviour (every transport).
+    history. ``scheduler_key=None`` keeps the legacy behaviour (every
+    transport).
     """
 
     def test_list_recent_jobs_filters_by_scheduler_key(self, _isolated_db):
@@ -74,7 +70,7 @@ class TestSchedulerKeyFilter:
     def test_list_recent_jobs_id_filter_respects_scheduler_key(self, _isolated_db):
         """``-j <id>`` push-down still scopes to the requested transport.
 
-        Without the AND-clause, ``srunx sacct -j 100 --profile dgx``
+        Without the AND-clause, ``srunx history -j 100 --profile dgx``
         would happily return a local job that happens to share the
         SLURM ``job_id`` (different clusters reuse the int counter).
         """
@@ -88,48 +84,6 @@ class TestSchedulerKeyFilter:
 
         only_ssh = list_recent_jobs(job_ids=[100], scheduler_key="ssh:dgx")
         assert {j["job_name"] for j in only_ssh} == {"dgx_100"}
-
-    def test_compute_job_stats_filters_by_scheduler_key(self, _isolated_db):
-        record_submission_from_job(_make_job("local_a", 1))
-        record_submission_from_job(_make_job("local_b", 2))
-        _record_ssh_job(_make_job("ssh_a", 3), profile="dgx")
-
-        assert compute_job_stats(scheduler_key="local")["total_jobs"] == 2
-        assert compute_job_stats(scheduler_key="ssh:dgx")["total_jobs"] == 1
-        assert compute_job_stats()["total_jobs"] == 3  # legacy: all
-
-    def test_compute_workflow_stats_filters_by_scheduler_key(self, _isolated_db):
-        """Same workflow can run on multiple clusters — stats scope per key."""
-        run_id = create_cli_workflow_run(workflow_name="multi_cluster")
-        assert run_id is not None
-
-        # Workflow run rows aren't transport-tagged; the per-job
-        # ``scheduler_key`` is what scopes the JOIN.
-        record_submission_from_job(
-            _make_job("local_step", 50),
-            workflow_name="multi_cluster",
-            workflow_run_id=run_id,
-        )
-        _record_ssh_job(
-            _make_job("dgx_step", 51),
-            profile="dgx",
-            workflow_run_id=run_id,
-        )
-        _record_ssh_job(
-            _make_job("dgx_step_2", 52),
-            profile="dgx",
-            workflow_run_id=run_id,
-        )
-
-        local_stats = compute_workflow_stats("multi_cluster", scheduler_key="local")
-        assert local_stats["total_jobs"] == 1
-
-        dgx_stats = compute_workflow_stats("multi_cluster", scheduler_key="ssh:dgx")
-        assert dgx_stats["total_jobs"] == 2
-
-        # Legacy (no scope): both clusters' rows aggregate together.
-        all_stats = compute_workflow_stats("multi_cluster")
-        assert all_stats["total_jobs"] == 3
 
 
 @pytest.fixture
@@ -174,46 +128,3 @@ class TestCreateCliWorkflowRun:
 
         monkeypatch.setattr(connection_mod, "init_db", boom)
         assert create_cli_workflow_run(workflow_name="pipeline") is None
-
-
-class TestWorkflowStatsRoundTrip:
-    """End-to-end: create run → record jobs linked to it → stats non-empty.
-
-    Guards the regression that ``compute_workflow_stats`` silently
-    returned zero counts for CLI-launched workflows (the JOIN missed
-    every row because jobs weren't linked).
-    """
-
-    def test_cli_workflow_jobs_show_up_in_report(self, _isolated_db):
-        run_id = create_cli_workflow_run(workflow_name="ml_pipeline")
-        assert run_id is not None
-
-        # Simulate two CLI-launched workflow jobs.
-        record_submission_from_job(
-            _make_job("preprocess", 100, gpus=2),
-            workflow_name="ml_pipeline",
-            workflow_run_id=run_id,
-        )
-        record_submission_from_job(
-            _make_job("train", 101, gpus=4),
-            workflow_name="ml_pipeline",
-            workflow_run_id=run_id,
-        )
-
-        stats = compute_workflow_stats("ml_pipeline")
-        assert stats["workflow_name"] == "ml_pipeline"
-        assert stats["total_jobs"] == 2
-
-    def test_missing_workflow_run_id_falls_out_of_report(self, _isolated_db):
-        """The bug this PR fixes — without linking, stats return zero."""
-        create_cli_workflow_run(workflow_name="unlinked_flow")
-        # Deliberately NOT passing workflow_run_id — matches the old
-        # CLI behaviour before P3-7.1 #93.
-        record_submission_from_job(
-            _make_job("orphan_job", 200),
-            workflow_name="unlinked_flow",
-            workflow_run_id=None,
-        )
-
-        stats = compute_workflow_stats("unlinked_flow")
-        assert stats["total_jobs"] == 0  # JOIN misses the row
