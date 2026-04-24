@@ -326,8 +326,8 @@ client.cancel(submitted.job_id)                # if you change your mind
 **Run a YAML workflow programmatically, with callbacks:**
 
 ```python
-from srunx.callbacks import SlackCallback
-from srunx.runner import WorkflowRunner
+from srunx.observability.notifications.legacy_slack import SlackCallback
+from srunx.runtime.workflow.runner import WorkflowRunner
 
 runner = WorkflowRunner.from_yaml(
     "workflow.yaml",

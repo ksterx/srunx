@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -41,7 +41,7 @@ def sacct(
     transport is shown — matching legacy behaviour.
     """
     try:
-        from srunx.db.cli_helpers import list_recent_jobs
+        from srunx.observability.storage.cli_helpers import list_recent_jobs
         from srunx.transport import (
             emit_transport_banner,
             peek_scheduler_key,
@@ -135,7 +135,10 @@ def sreport(
     aggregated together — matching legacy behaviour.
     """
     try:
-        from srunx.db.cli_helpers import compute_job_stats, compute_workflow_stats
+        from srunx.observability.storage.cli_helpers import (
+            compute_job_stats,
+            compute_workflow_stats,
+        )
         from srunx.transport import (
             emit_transport_banner,
             peek_scheduler_key,

@@ -7,8 +7,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from srunx.config import create_example_config
-from srunx.logging import get_logger
+from srunx.common.config import create_example_config, get_config, get_config_paths
+from srunx.common.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -18,9 +18,7 @@ config_app = typer.Typer(help="Configuration management")
 @config_app.command("show")
 def config_show() -> None:
     """Show current configuration."""
-    _main_module = sys.modules["srunx.cli.main"]
-
-    config = _main_module.get_config()
+    config = get_config()
 
     console = Console()
     table = Table(title="srunx Configuration")
@@ -52,9 +50,7 @@ def config_show() -> None:
 @config_app.command("paths")
 def config_paths() -> None:
     """Show configuration file paths."""
-    _main_module = sys.modules["srunx.cli.main"]
-
-    paths = _main_module.get_config_paths()
+    paths = get_config_paths()
 
     console = Console()
     console.print("Configuration file paths (in order of precedence):")
@@ -70,9 +66,7 @@ def config_init(
     ] = False,
 ) -> None:
     """Initialize configuration file."""
-    _main_module = sys.modules["srunx.cli.main"]
-
-    paths = _main_module.get_config_paths()
+    paths = get_config_paths()
     config_path = paths[0]  # Use the first (highest precedence) path
 
     if config_path.exists() and not force:

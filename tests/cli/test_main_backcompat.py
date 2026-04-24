@@ -25,7 +25,7 @@ class TestDefaultPathSilentBanner:
 
     def test_sbatch_emits_no_banner_on_default_path(self):
         runner = CliRunner()
-        with patch("srunx.cli.main.Slurm") as slurm_cls:
+        with patch("srunx.slurm.local.Slurm") as slurm_cls:
             client = MagicMock()
             client.submit.return_value = MagicMock(
                 job_id=12345, name="job", command=["echo", "hi"]
@@ -39,7 +39,7 @@ class TestDefaultPathSilentBanner:
 
     def test_squeue_emits_no_banner_on_default_path(self):
         runner = CliRunner()
-        with patch("srunx.cli.main.Slurm") as slurm_cls:
+        with patch("srunx.slurm.local.Slurm") as slurm_cls:
             client = MagicMock()
             client.queue.return_value = []
             slurm_cls.return_value = client
@@ -53,7 +53,7 @@ class TestExplicitSourceEmitsBanner:
 
     def test_local_flag_emits_banner(self):
         runner = CliRunner()
-        with patch("srunx.cli.main.Slurm") as slurm_cls:
+        with patch("srunx.slurm.local.Slurm") as slurm_cls:
             client = MagicMock()
             client.queue.return_value = []
             slurm_cls.return_value = client

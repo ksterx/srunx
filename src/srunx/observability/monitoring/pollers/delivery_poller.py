@@ -1,11 +1,11 @@
 """Delivery outbox consumer (PR 2 / C.3).
 
-See :mod:`srunx.pollers.supervisor` for the supervision contract.
+See :mod:`srunx.observability.monitoring.pollers.supervisor` for the supervision contract.
 Each :meth:`DeliveryPoller.run_cycle` call:
 
 1. Reclaims any lease whose ``leased_until`` has elapsed (crash recovery).
 2. Drains up to :attr:`MAX_CLAIMS_PER_CYCLE` claimable rows, dispatching each
-   to the :class:`~srunx.notifications.adapters.base.DeliveryAdapter`
+   to the :class:`~srunx.observability.notifications.adapters.base.DeliveryAdapter`
    registered for the target endpoint's ``kind``.
 3. Applies the retry / abandon policy based on ``attempt_count`` and the
    configured ``max_retries``.
@@ -24,14 +24,14 @@ from pathlib import Path
 
 import anyio
 
-from srunx.db.connection import open_connection
-from srunx.db.models import Delivery, Endpoint, Event
-from srunx.db.repositories.deliveries import DeliveryRepository
-from srunx.db.repositories.endpoints import EndpointRepository
-from srunx.db.repositories.events import EventRepository
-from srunx.logging import get_logger
-from srunx.notifications.adapters.base import DeliveryError
-from srunx.notifications.adapters.registry import get_adapter
+from srunx.common.logging import get_logger
+from srunx.observability.notifications.adapters.base import DeliveryError
+from srunx.observability.notifications.adapters.registry import get_adapter
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.models import Delivery, Endpoint, Event
+from srunx.observability.storage.repositories.deliveries import DeliveryRepository
+from srunx.observability.storage.repositories.endpoints import EndpointRepository
+from srunx.observability.storage.repositories.events import EventRepository
 
 logger = get_logger(__name__)
 
@@ -44,7 +44,7 @@ MAX_CLAIMS_PER_CYCLE: int = 100
 class DeliveryPoller:
     """Consume the ``deliveries`` outbox and dispatch to adapters.
 
-    Implements the :class:`~srunx.pollers.supervisor.Poller` protocol.
+    Implements the :class:`~srunx.observability.monitoring.pollers.supervisor.Poller` protocol.
     """
 
     name: str = "delivery_poller"

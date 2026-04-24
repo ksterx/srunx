@@ -1,7 +1,7 @@
 """Repository for the ``resource_snapshots`` table.
 
 See design.md § ``ResourceSnapshotRepository``. Writes are performed by
-:class:`~srunx.pollers.resource_snapshotter.ResourceSnapshotter`; reads
+:class:`~srunx.observability.monitoring.pollers.resource_snapshotter.ResourceSnapshotter`; reads
 serve history APIs and the Phase-2 scheduled reporter. The
 ``gpu_utilization`` column is a SQL generated column and never written
 directly.

@@ -13,10 +13,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal
 
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
 
 if TYPE_CHECKING:
-    from srunx.models import JobStatus, JobType
+    from srunx.domain import JobStatus, JobType
     from srunx.observability.storage.models import SubmissionSource, TransportType
 
 logger = get_logger(__name__)
@@ -54,7 +54,7 @@ def record_submission_from_job(
         if job.job_id is None:
             return
 
-        from srunx.models import Job
+        from srunx.domain import Job
         from srunx.observability.storage.connection import initialized_connection
         from srunx.observability.storage.repositories.job_state_transitions import (
             JobStateTransitionRepository,
@@ -135,7 +135,7 @@ def create_cli_workflow_run(
 ) -> int | None:
     """Insert a ``workflow_runs`` row for a CLI-launched workflow.
 
-    Called at the start of :meth:`srunx.runner.WorkflowRunner.run` so
+    Called at the start of :meth:`srunx.runtime.workflow.runner.WorkflowRunner.run` so
     CLI workflow submissions carry the same ``workflow_run_id`` that
     the Web UI path creates. Without this row, ``compute_workflow_stats``
     (``JOIN workflow_runs ON workflow_run_id``) reports zero CLI jobs

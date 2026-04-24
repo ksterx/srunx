@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from srunx.models import BaseJob, JobStatus
+from srunx.domain import BaseJob, JobStatus
 from srunx.utils import get_job_status, job_status_msg
 
 

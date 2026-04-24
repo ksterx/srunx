@@ -6,7 +6,7 @@ verifying correct LaunchSpec output for various configurations.
 
 from srunx.containers import ApptainerRuntime, PyxisRuntime, get_runtime
 from srunx.containers.base import LaunchSpec
-from srunx.models import ContainerResource
+from srunx.domain import ContainerResource
 
 
 class TestPyxisRuntime:

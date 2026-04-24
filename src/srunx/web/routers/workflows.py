@@ -2,7 +2,7 @@
 
 Workflow runs are persisted in the ``workflow_runs`` + ``workflow_run_jobs``
 tables. Status transitions are driven by
-:class:`~srunx.pollers.active_watch_poller.ActiveWatchPoller`, which
+:class:`~srunx.observability.monitoring.pollers.active_watch_poller.ActiveWatchPoller`, which
 aggregates child job statuses into the workflow run via an internal
 ``kind='workflow_run'`` watch created when the run starts.
 """
@@ -16,61 +16,27 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from srunx.logging import get_logger
-from srunx.runner import WorkflowRunner
+from srunx.common.logging import get_logger
+from srunx.runtime.sweep import SweepSpec
+from srunx.runtime.sweep.orchestrator import SweepOrchestrator
+from srunx.runtime.workflow.runner import WorkflowRunner
 from srunx.slurm.ssh import SlurmSSHAdapter
-from srunx.slurm.ssh_executor import (
-    SlurmSSHExecutorPool as SlurmSSHExecutorPool,  # re-export for test patches
-)
-from srunx.sweep import SweepSpec
-from srunx.sweep.orchestrator import SweepOrchestrator
+from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
 
 from ..deps import get_adapter, get_db_conn
 from ..schemas.workflows import (
-    SweepSpecRequest,
     WorkflowCreateRequest,
-    WorkflowJobInput,
     WorkflowRunRequest,
 )
 from ..services import _submission_common
 from ..services.sweep_submission import SweepSubmissionService
 from ..services.workflow_run_cancellation import WorkflowRunCancellationService
-from ..services.workflow_run_query import (
-    WorkflowRunQueryService,
-)
-from ..services.workflow_run_query import (
-    build_run_response as _build_run_response,  # noqa: F401 — test patch surface
-)
-from ..services.workflow_run_query import (
-    parse_run_id as _parse_run_id,  # noqa: F401 — preserved for import parity
-)
-from ..services.workflow_run_query import (
-    serialize_run as _serialize_run,  # noqa: F401 — preserved for import parity
-)
+from ..services.workflow_run_query import WorkflowRunQueryService
 from ..services.workflow_storage import WorkflowStorageService
 from ..services.workflow_submission import WorkflowSubmissionService
 from ..services.workflow_validation import WorkflowValidationService
 
-# Re-exports for backward compatibility — external callers and tests that
-# ``from srunx.web.routers.workflows import WorkflowJobInput`` (etc.) keep
-# working. The canonical home is now ``srunx.web.schemas.workflows``.
-#
-# ``WorkflowRunner`` / ``SweepSpec`` / ``SweepOrchestrator`` /
-# ``SlurmSSHExecutorPool`` are listed so
-# ``unittest.mock.patch('srunx.web.routers.workflows.<name>')`` test
-# targets keep a live attribute to replace — services receive these
-# classes via constructor args so the patches flow through.
-__all__ = [
-    "SlurmSSHExecutorPool",
-    "SweepOrchestrator",
-    "SweepSpec",
-    "SweepSpecRequest",
-    "WorkflowCreateRequest",
-    "WorkflowJobInput",
-    "WorkflowRunRequest",
-    "WorkflowRunner",
-    "router",
-]
+__all__ = ["router"]
 
 logger = get_logger(__name__)
 
@@ -84,48 +50,20 @@ _SAFE_NAME = re.compile(r"^[\w\-]+$")
 _RESERVED_NAMES = frozenset({"new"})
 
 
-# ── Shared helpers — thin delegates preserved for test patch surface ───
-# Tests patch ``srunx.web.routers.workflows._get_current_profile`` and
-# import ``_build_run_response`` directly. Keeping these as module-level
-# symbols here is load-bearing; the real implementations live in
-# ``services/_submission_common.py``.
-
-
-def _get_current_profile():  # noqa: ANN202
-    """Return the active SSH profile (router-level patch target)."""
-    return _submission_common.get_current_profile()
-
-
-def _workflow_dir(mount_name: str) -> Path:
-    return _submission_common.workflow_dir(mount_name, _get_current_profile)
-
-
-def _ensure_workflow_dir(mount_name: str) -> Path:
-    return _submission_common.ensure_workflow_dir(mount_name, _get_current_profile)
-
-
 def _find_yaml(name: str, mount_name: str) -> Path:
-    return _submission_common.find_yaml(name, mount_name, _get_current_profile)
+    return _submission_common.find_yaml(
+        name, mount_name, _submission_common.get_current_profile
+    )
 
 
 def _reject_python_prefix_web(payload: Any, *, source: str) -> None:
     _submission_common.reject_python_prefix_web(payload, source=source)
 
 
-def _reject_python_prefix_in_yaml_args(yaml_content: str) -> None:
-    _submission_common.reject_python_prefix_in_yaml_args(yaml_content)
-
-
 def _storage() -> WorkflowStorageService:
-    """Build a per-call storage service bound to the router-level
-    ``_get_current_profile`` so test patches stay effective."""
-    return WorkflowStorageService(profile_resolver=_get_current_profile)
-
-
-# Serialization shims (preserved for backward-compatible imports/tests) ──
-_serialize_workflow = WorkflowStorageService.serialize_workflow
-_workflow_to_yaml = WorkflowStorageService.workflow_to_yaml
-_validate_and_build_workflow = WorkflowStorageService.validate_and_build_workflow
+    return WorkflowStorageService(
+        profile_resolver=_submission_common.get_current_profile
+    )
 
 
 @router.get("")
@@ -211,7 +149,7 @@ async def _dispatch_sweep(
     sweep_service = SweepSubmissionService(
         sweep_spec_cls=SweepSpec,
         orchestrator_cls=SweepOrchestrator,
-        profile_resolver=_get_current_profile,
+        profile_resolver=_submission_common.get_current_profile,
         workflow_runner_cls=WorkflowRunner,
         executor_pool_cls=SlurmSSHExecutorPool,
     )
@@ -248,7 +186,7 @@ async def run_workflow(
     """Run a workflow: sync mounts, submit jobs with SLURM dependencies.
 
     On success, creates a kind='workflow_run' watch that
-    :class:`~srunx.pollers.active_watch_poller.ActiveWatchPoller`
+    :class:`~srunx.observability.monitoring.pollers.active_watch_poller.ActiveWatchPoller`
     consumes to drive aggregate status transitions after the request
     returns.
     """
@@ -288,7 +226,7 @@ async def run_workflow(
         )
 
     submission_service = WorkflowSubmissionService(
-        profile_resolver=_get_current_profile,
+        profile_resolver=_submission_common.get_current_profile,
         terminal_statuses=_WORKFLOW_TERMINAL_STATUSES,
         allowed_presets=_WORKFLOW_RUN_PRESETS,
         # Pass the router's ``WorkflowRunner`` attribute so tests that

@@ -13,8 +13,8 @@ from typing import Any
 import anyio
 from fastapi import APIRouter, Depends, HTTPException
 
-from srunx.db.repositories.sweep_runs import SweepRunRepository
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
+from srunx.observability.storage.repositories.sweep_runs import SweepRunRepository
 
 from ..deps import get_db_conn
 
@@ -23,7 +23,7 @@ logger = get_logger(__name__)
 
 
 def _serialize_sweep(row: Any) -> dict[str, Any]:
-    """Convert a :class:`~srunx.db.models.SweepRun` into a JSON-friendly dict."""
+    """Convert a :class:`~srunx.observability.storage.models.SweepRun` into a JSON-friendly dict."""
     return {
         "id": row.id,
         "name": row.name,
@@ -174,7 +174,7 @@ async def cancel_sweep_run(
     #    ``pending`` and the sweep's ``status`` is never flipped to
     #    ``draining``, which means :class:`SweepReconciler` cannot skip
     #    them on the next startup and resumes cancelled work.
-    from srunx.sweep.orchestrator import (
+    from srunx.runtime.sweep.orchestrator import (
         drain_sweep_pending_cells,
         get_active_orchestrator,
     )

@@ -6,7 +6,8 @@ from unittest.mock import Mock, patch
 import pytest
 from typer.testing import CliRunner
 
-from srunx.cli.main import _parse_env_vars, app
+from srunx.cli._helpers.sbatch_helpers import _parse_env_vars
+from srunx.cli.main import app
 
 
 def strip_ansi_codes(text: str) -> str:
@@ -144,8 +145,8 @@ class TestTyperCLI:
         assert "paths" in result.stdout
         assert "init" in result.stdout
 
-    @patch("srunx.cli.main.Slurm")
-    @patch("srunx.cli.main.get_config")
+    @patch("srunx.slurm.local.Slurm")
+    @patch("srunx.cli.commands.jobs.get_config")
     def test_sbatch_wrap_basic(self, mock_get_config, mock_slurm_class):
         """``srunx sbatch --wrap "cmd"`` submits a Job that runs cmd via bash -c.
 
@@ -182,8 +183,8 @@ class TestTyperCLI:
         # the compute node (real sbatch parity).
         assert submitted_job.command == ["bash", "-c", "python script.py"]
 
-    @patch("srunx.cli.main.Slurm")
-    @patch("srunx.cli.main.get_config")
+    @patch("srunx.slurm.local.Slurm")
+    @patch("srunx.cli.commands.jobs.get_config")
     def test_sbatch_wrap_preserves_shell_operators(
         self, mock_get_config, mock_slurm_class
     ):
@@ -233,13 +234,13 @@ class TestTyperCLI:
         """
         import tempfile
 
-        from srunx.models import (
+        from srunx.domain import (
             Job,
             JobEnvironment,
             JobResource,
-            render_job_script,
         )
-        from srunx.template import get_template_path
+        from srunx.runtime.rendering import render_job_script
+        from srunx.runtime.templates import get_template_path
 
         job = Job(
             name="wrap-parity",
@@ -260,8 +261,8 @@ class TestTyperCLI:
             "See #138."
         )
 
-    @patch("srunx.cli.main.Slurm")
-    @patch("srunx.cli.main.get_config")
+    @patch("srunx.slurm.local.Slurm")
+    @patch("srunx.cli.commands.jobs.get_config")
     def test_sbatch_positional_script(
         self, mock_get_config, mock_slurm_class, tmp_path
     ):
@@ -274,7 +275,7 @@ class TestTyperCLI:
         script_path = tmp_path / "run.sh"
         script_path.write_text("#!/bin/bash\necho hi\n")
 
-        from srunx.models import ShellJob
+        from srunx.domain import ShellJob
 
         mock_slurm = Mock()
         mock_job = Mock(spec=ShellJob)
@@ -306,8 +307,8 @@ class TestTyperCLI:
         combined = (result.stdout or "") + (result.stderr or "")
         assert "mutually exclusive" in combined.lower()
 
-    @patch("srunx.cli.main.Slurm")
-    @patch("srunx.cli.main.get_config")
+    @patch("srunx.slurm.local.Slurm")
+    @patch("srunx.cli.commands.jobs.get_config")
     def test_sbatch_gres_sets_gpus_per_node(self, mock_get_config, mock_slurm_class):
         """``--gres=gpu:4`` overrides ``--gpus-per-node`` (sbatch parity)."""
         mock_config = Mock()
@@ -331,7 +332,7 @@ class TestTyperCLI:
         submitted_job = mock_slurm.submit.call_args[0][0]
         assert submitted_job.resources.gpus_per_node == 4
 
-    @patch("srunx.cli.main.Slurm")
+    @patch("srunx.slurm.local.Slurm")
     def test_scancel_command(self, mock_slurm_class):
         """Test scancel command."""
         # Mock Slurm client
@@ -345,7 +346,7 @@ class TestTyperCLI:
         assert "Job 12345 cancelled successfully" in result.stdout
         mock_slurm.cancel.assert_called_once_with(12345)
 
-    @patch("srunx.cli.main.Slurm")
+    @patch("srunx.slurm.local.Slurm")
     def test_squeue_command_empty(self, mock_slurm_class):
         """Test squeue command with empty queue."""
         # Mock Slurm client
@@ -359,7 +360,7 @@ class TestTyperCLI:
         assert "No jobs in queue" in result.stdout
         mock_slurm.queue.assert_called_once()
 
-    @patch("srunx.cli.main.get_config")
+    @patch("srunx.cli.commands.config.get_config")
     def test_config_show_command(self, mock_get_config):
         """Test config show command."""
         # Mock config
@@ -386,7 +387,7 @@ class TestTyperCLI:
         assert "srunx Configuration" in result.stdout
         mock_get_config.assert_called_once()
 
-    @patch("srunx.cli.main.get_config_paths")
+    @patch("srunx.cli.commands.config.get_config_paths")
     def test_config_paths_command(self, mock_get_config_paths):
         """Test config paths command."""
         from pathlib import Path
@@ -420,7 +421,7 @@ class TestParseContainerArgs:
 
     def test_parse_simple_image(self):
         """Test parsing a simple image path."""
-        from srunx.cli.main import _parse_container_args
+        from srunx.cli._helpers.sbatch_helpers import _parse_container_args
 
         result = _parse_container_args("pytorch/pytorch:latest")
         assert result is not None
@@ -429,21 +430,21 @@ class TestParseContainerArgs:
 
     def test_parse_none_returns_none(self):
         """Test parsing None returns None."""
-        from srunx.cli.main import _parse_container_args
+        from srunx.cli._helpers.sbatch_helpers import _parse_container_args
 
         result = _parse_container_args(None)
         assert result is None
 
     def test_parse_empty_string_returns_none(self):
         """Test parsing empty string returns None."""
-        from srunx.cli.main import _parse_container_args
+        from srunx.cli._helpers.sbatch_helpers import _parse_container_args
 
         result = _parse_container_args("")
         assert result is None
 
     def test_parse_runtime_apptainer(self):
         """Test parsing with runtime=apptainer."""
-        from srunx.cli.main import _parse_container_args
+        from srunx.cli._helpers.sbatch_helpers import _parse_container_args
 
         result = _parse_container_args("image=test.sif,runtime=apptainer,nv=true")
         assert result is not None
@@ -453,7 +454,7 @@ class TestParseContainerArgs:
 
     def test_parse_bind_alias(self):
         """Test parsing with bind= alias for mounts."""
-        from srunx.cli.main import _parse_container_args
+        from srunx.cli._helpers.sbatch_helpers import _parse_container_args
 
         result = _parse_container_args(
             "image=test.sif,bind=/data:/data;/scratch:/scratch,runtime=apptainer"
@@ -463,7 +464,7 @@ class TestParseContainerArgs:
 
     def test_parse_mounts_key(self):
         """Test parsing with mounts= key."""
-        from srunx.cli.main import _parse_container_args
+        from srunx.cli._helpers.sbatch_helpers import _parse_container_args
 
         result = _parse_container_args(
             "image=test.sif,mounts=/data:/data;/scratch:/scratch"
@@ -473,7 +474,7 @@ class TestParseContainerArgs:
 
     def test_parse_apptainer_options(self):
         """Test parsing all Apptainer-specific options."""
-        from srunx.cli.main import _parse_container_args
+        from srunx.cli._helpers.sbatch_helpers import _parse_container_args
 
         result = _parse_container_args(
             "image=test.sif,runtime=apptainer,nv=true,rocm=true,"
@@ -491,7 +492,7 @@ class TestParseContainerArgs:
 
     def test_parse_env_in_container_args(self):
         """Test parsing env key=value pairs in container args."""
-        from srunx.cli.main import _parse_container_args
+        from srunx.cli._helpers.sbatch_helpers import _parse_container_args
 
         result = _parse_container_args(
             "image=test.sif,runtime=apptainer,env=KEY1=VAL1;KEY2=VAL2"
@@ -501,7 +502,7 @@ class TestParseContainerArgs:
 
     def test_parse_workdir(self):
         """Test parsing workdir."""
-        from srunx.cli.main import _parse_container_args
+        from srunx.cli._helpers.sbatch_helpers import _parse_container_args
 
         result = _parse_container_args("image=test.sif,workdir=/workspace")
         assert result is not None
@@ -509,7 +510,7 @@ class TestParseContainerArgs:
 
     def test_parse_bare_runtime_only(self):
         """Test parsing a bare runtime=apptainer without image."""
-        from srunx.cli.main import _parse_container_args
+        from srunx.cli._helpers.sbatch_helpers import _parse_container_args
 
         result = _parse_container_args("runtime=apptainer")
         assert result is not None
@@ -547,13 +548,13 @@ class TestNoContainerFlag:
         """Setup test environment."""
         self.runner = CliRunner()
 
-    @patch("srunx.cli.main.Slurm")
-    @patch("srunx.cli.main.get_config")
+    @patch("srunx.slurm.local.Slurm")
+    @patch("srunx.cli.commands.jobs.get_config")
     def test_no_container_suppresses_config_default_on_sbatch(
         self, mock_get_config, mock_slurm_class
     ):
         """Test --no-container on sbatch suppresses config default container."""
-        from srunx.config import SrunxConfig
+        from srunx.common.config import SrunxConfig
 
         # Config has a default container (use model_validate to avoid Pydantic
         # class identity issues when tests run together)
@@ -584,13 +585,13 @@ class TestNoContainerFlag:
         submitted_job = mock_slurm.submit.call_args[0][0]
         assert submitted_job.environment.container is None
 
-    @patch("srunx.cli.main.Slurm")
-    @patch("srunx.cli.main.get_config")
+    @patch("srunx.slurm.local.Slurm")
+    @patch("srunx.cli.commands.jobs.get_config")
     def test_container_runtime_override_on_sbatch(
         self, mock_get_config, mock_slurm_class
     ):
         """Test --container-runtime without --container overrides config default (T6.9)."""
-        from srunx.config import SrunxConfig
+        from srunx.common.config import SrunxConfig
 
         # Config has a default pyxis container (use model_validate to avoid Pydantic
         # class identity issues when tests run together)

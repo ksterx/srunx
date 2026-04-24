@@ -1,7 +1,7 @@
 """Workflow runner package.
 
 Canonical home for the YAML workflow loader and DAG-scheduling runner that
-used to live in :mod:`srunx.runner`. The top-level :mod:`srunx.runner`
+used to live in :mod:`srunx.runtime.workflow.runner`. The top-level :mod:`srunx.runtime.workflow.runner`
 module is preserved as a thin backward-compat shim re-exporting the public
 API from here.
 """

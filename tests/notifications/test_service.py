@@ -1,4 +1,4 @@
-"""Tests for :class:`srunx.notifications.service.NotificationService`.
+"""Tests for :class:`srunx.observability.notifications.service.NotificationService`.
 
 Uses the ``tmp_srunx_db`` fixture (file-backed SQLite) so we get a fully
 migrated schema and real FKs. Every test drives the service through
@@ -12,13 +12,15 @@ from pathlib import Path
 
 import pytest
 
-from srunx.db.models import Event
-from srunx.db.repositories.deliveries import DeliveryRepository
-from srunx.db.repositories.endpoints import EndpointRepository
-from srunx.db.repositories.events import EventRepository
-from srunx.db.repositories.subscriptions import SubscriptionRepository
-from srunx.db.repositories.watches import WatchRepository
-from srunx.notifications.service import NotificationService
+from srunx.observability.notifications.service import NotificationService
+from srunx.observability.storage.models import Event
+from srunx.observability.storage.repositories.deliveries import DeliveryRepository
+from srunx.observability.storage.repositories.endpoints import EndpointRepository
+from srunx.observability.storage.repositories.events import EventRepository
+from srunx.observability.storage.repositories.subscriptions import (
+    SubscriptionRepository,
+)
+from srunx.observability.storage.repositories.watches import WatchRepository
 
 # ---------------------------------------------------------------------------
 # Test helpers

@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from srunx.db.connection import open_connection
-from srunx.db.migrations import apply_migrations
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.migrations import apply_migrations
 
 
 def _migrated(tmp_path: Path) -> sqlite3.Connection:
@@ -260,7 +260,7 @@ class TestTargetRefBackfill:
 
     def test_pre_v5_legacy_refs_are_rewritten(self, tmp_path: Path) -> None:
         """Apply v1..v4, seed legacy 2-segment rows, then apply V5 and check."""
-        from srunx.db.migrations import (
+        from srunx.observability.storage.migrations import (
             MIGRATIONS,
             _apply_fk_off_migration,
             _apply_tx_migration,
@@ -351,7 +351,7 @@ class TestOpenWatchForceClose:
     def test_open_job_watches_force_closed_by_migration(self, tmp_path: Path) -> None:
         # Reach into the migration machinery: open the DB, apply only
         # up through V4, insert an open watch, then apply V5 and check.
-        from srunx.db.migrations import (
+        from srunx.observability.storage.migrations import (
             MIGRATIONS,
             _apply_fk_off_migration,
             _apply_tx_migration,
@@ -400,7 +400,7 @@ class TestDataBackfill:
     """Pre-V5 data is preserved and labelled as local transport."""
 
     def test_existing_jobs_rows_backfilled_as_local(self, tmp_path: Path) -> None:
-        from srunx.db.migrations import (
+        from srunx.observability.storage.migrations import (
             MIGRATIONS,
             _apply_fk_off_migration,
             _apply_tx_migration,

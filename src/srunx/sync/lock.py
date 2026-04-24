@@ -26,7 +26,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from srunx.common.config import _user_config_dir
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
 
 logger = get_logger(__name__)
 

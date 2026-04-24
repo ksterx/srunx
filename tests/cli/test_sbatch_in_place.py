@@ -55,8 +55,8 @@ def _patch_transport(
     mutates and returns the supplied ``callbacks_job`` to mimic the
     real adapter's contract.
     """
-    from srunx.models import JobStatus
-    from srunx.rendering import SubmissionRenderContext
+    from srunx.domain import JobStatus
+    from srunx.runtime.rendering import SubmissionRenderContext
     from srunx.transport.registry import TransportHandle
 
     job_ops = MagicMock(name="JobOperations")
@@ -335,7 +335,7 @@ def test_lock_is_held_during_submit(
             held_during_submit["acquired"] = False
 
         callbacks_job.job_id = 99
-        from srunx.models import JobStatus
+        from srunx.domain import JobStatus
 
         callbacks_job.status = JobStatus.PENDING
         return callbacks_job
@@ -467,18 +467,11 @@ def test_config_workdir_does_not_inject_chdir(
     # Inject a config-default work_dir that differs from the script's
     # explicit value. Without the fix the planner forwards the config
     # default and clobbers the script's choice.
-    # ``srunx.cli/__init__.py`` re-exports the ``main`` function as
-    # ``srunx.cli.main``, shadowing the module attribute lookup
-    # so ``import srunx.cli.main as X`` returns the function. Reach
-    # for the module via ``sys.modules`` directly so the patch lands
-    # on the module's namespace where ``get_config`` is rebound.
-    import sys
+    import srunx.cli.commands.jobs as jobs_module
+    from srunx.common.config import SrunxConfig
 
-    from srunx.config import SrunxConfig
-
-    cli_main_module = sys.modules["srunx.cli.main"]
     monkeypatch.setattr(
-        cli_main_module,
+        jobs_module,
         "get_config",
         lambda: SrunxConfig.model_validate(
             {

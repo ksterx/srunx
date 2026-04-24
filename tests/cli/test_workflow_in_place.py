@@ -58,8 +58,8 @@ def _patch_workflow_transport(
     yielding the same mock executor — matches the
     :class:`WorkflowJobExecutorFactory` contract.
     """
-    from srunx.models import JobStatus
-    from srunx.rendering import SubmissionRenderContext
+    from srunx.domain import JobStatus
+    from srunx.runtime.rendering import SubmissionRenderContext
     from srunx.transport.registry import TransportHandle
 
     executor = MagicMock(name="WorkflowExecutor")
@@ -240,17 +240,18 @@ def test_flow_run_local_workflow_no_mount_resolution(
 
     # Stub the local Slurm executor so the workflow run completes
     # without touching real SLURM.
-    from srunx.models import JobStatus
+    from srunx.domain import JobStatus
 
     def _fake_local_submit(self, job, **_kwargs):
         job.job_id = 1
         job.status = JobStatus.COMPLETED
         return job
 
-    monkeypatch.setattr("srunx.client.Slurm.submit", _fake_local_submit)
-    monkeypatch.setattr("srunx.client.Slurm.monitor", lambda self, job, **_: job)
+    monkeypatch.setattr("srunx.slurm.local.Slurm.submit", _fake_local_submit)
+    monkeypatch.setattr("srunx.slurm.local.Slurm.monitor", lambda self, job, **_: job)
     monkeypatch.setattr(
-        "srunx.client.Slurm.run", lambda self, job, **_kw: _fake_local_submit(self, job)
+        "srunx.slurm.local.Slurm.run",
+        lambda self, job, **_kw: _fake_local_submit(self, job),
     )
 
     runner = CliRunner()

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from srunx.models import Job, JobEnvironment, JobResource
+from srunx.domain import Job, JobEnvironment, JobResource
 
 
 @pytest.fixture(autouse=True)
@@ -33,12 +33,12 @@ def _isolate_legacy_history_db(tmp_path_factory, monkeypatch):
 
     After the Phase-2 history cutover, production code may call
     ``init_db(delete_legacy=True)`` (the new default) which runs
-    :func:`srunx.db.connection._delete_legacy_history_db`. That
+    :func:`srunx.observability.storage.connection._delete_legacy_history_db`. That
     helper targets ``Path.home() / '.srunx' / 'history.db'`` — outside
     any ``XDG_CONFIG_HOME`` isolation a test sets. Redirect the path
     to a session-scoped tmp dir so the delete is always safe.
     """
-    import srunx.db.connection as _conn
+    import srunx.observability.storage.connection as _conn
 
     safe_legacy = tmp_path_factory.mktemp("legacy_history_safe") / "history.db"
     monkeypatch.setattr(_conn, "LEGACY_HISTORY_DB_PATH", safe_legacy)
@@ -61,7 +61,7 @@ def tmp_srunx_db(tmp_path, monkeypatch):
     that multi-connection + WAL semantics work correctly for the outbox
     concurrency tests.
     """
-    from srunx.db.connection import init_db, open_connection
+    from srunx.observability.storage.connection import init_db, open_connection
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     db_path = init_db(delete_legacy=False)
@@ -133,15 +133,15 @@ def mock_subprocess_run(monkeypatch):
 def reset_config():
     """Reset global configuration and ensure clean test environment."""
     # Clear any cached config
-    import srunx.config
+    import srunx.common.config
 
-    srunx.config._config = None
+    srunx.common.config._config = None
 
     # Also clear any module-level defaults cache
-    import srunx.models
+    import srunx.domain
 
-    if hasattr(srunx.models, "_cached_config"):
-        srunx.models._cached_config = None
+    if hasattr(srunx.domain, "_cached_config"):
+        srunx.domain._cached_config = None
 
     # Clear environment variables that might affect config
     env_vars = [
@@ -193,7 +193,7 @@ def reset_config():
         # every job to PENDING, breaking tests that set custom statuses).
         # Returns self to match the real refresh() signature.
         with patch.object(
-            srunx.models.BaseJob, "refresh", side_effect=lambda self=None: self
+            srunx.domain.BaseJob, "refresh", side_effect=lambda self=None: self
         ):
             yield
 
@@ -205,6 +205,6 @@ def reset_config():
             del os.environ[var]
 
     # Clear config cache again
-    srunx.config._config = None
-    if hasattr(srunx.models, "_cached_config"):
-        srunx.models._cached_config = None
+    srunx.common.config._config = None
+    if hasattr(srunx.domain, "_cached_config"):
+        srunx.domain._cached_config = None

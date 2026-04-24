@@ -1,4 +1,4 @@
-"""Tests for the canonical render helper (:mod:`srunx.rendering`).
+"""Tests for the canonical render helper (:mod:`srunx.runtime.rendering`).
 
 These tests exercise the new :func:`render_workflow_for_submission` that
 unifies the Web non-sweep, Web sweep, and MCP render paths. Phase 2
@@ -21,14 +21,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from srunx.models import Job, render_job_script
-from srunx.rendering import (
+from srunx.domain import Job
+from srunx.runtime.rendering import (
     RenderedJob,
     RenderedWorkflow,
     SubmissionRenderContext,
+    render_job_script,
     render_workflow_for_submission,
 )
-from srunx.template import get_template_path
+from srunx.runtime.templates import get_template_path
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -118,7 +119,7 @@ def test_context_none_with_default_workdir_injection_disabled(tmp_path: Path) ->
     # work_dir is empty. Going through YAML would be filtered by
     # ``WorkflowRunner.parse_job`` (which swallows falsy ``work_dir`` so
     # the Pydantic default fires), so we construct the Job in-memory.
-    from srunx.rendering import _normalize_paths_for_mount
+    from srunx.runtime.rendering import _normalize_paths_for_mount
 
     job = Job(name="j1", command=["echo", "hi"], work_dir="", log_dir="")
     # Sanity: the field accepts empty strings.
@@ -150,7 +151,7 @@ def test_default_work_dir_injected_when_job_has_empty_work_dir() -> None:
     ``str | None = None`` — the helper already treats both falsy cases
     identically via ``if not current``).
     """
-    from srunx.rendering import _normalize_paths_for_mount
+    from srunx.runtime.rendering import _normalize_paths_for_mount
 
     job = Job(name="j1", command=["echo", "ok"], work_dir="", log_dir="")
     ctx = SubmissionRenderContext(default_work_dir="/mnt/remote")
@@ -612,7 +613,7 @@ def test_unknown_mount_name_does_not_translate(tmp_path: Path) -> None:
 
 def test_rendered_job_and_workflow_are_frozen() -> None:
     """The dataclasses are ``frozen=True`` so callers can't mutate results."""
-    from srunx.models import Workflow
+    from srunx.domain import Workflow
 
     job = Job(name="j", command=["echo"], work_dir="/tmp", log_dir="")
     rj = RenderedJob(job=job, script_text="x", script_filename="j.slurm")

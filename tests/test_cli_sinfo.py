@@ -7,7 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from srunx.cli.main import app
-from srunx.monitor.types import ResourceSnapshot
+from srunx.observability.monitoring.types import ResourceSnapshot
 
 
 @pytest.fixture
@@ -52,7 +52,7 @@ class TestResourcesCommand:
     def test_resources_table_format_default(self, runner, mock_snapshot_all_partitions):
         """Test resources command with default table format."""
         with patch(
-            "srunx.monitor.resource_monitor.ResourceMonitor"
+            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
         ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = (
@@ -81,7 +81,7 @@ class TestResourcesCommand:
     def test_resources_table_format_with_partition(self, runner, mock_snapshot):
         """Test resources command with specific partition."""
         with patch(
-            "srunx.monitor.resource_monitor.ResourceMonitor"
+            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
         ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = mock_snapshot
@@ -107,7 +107,7 @@ class TestResourcesCommand:
     def test_resources_json_format_default(self, runner, mock_snapshot_all_partitions):
         """Test resources command with JSON format."""
         with patch(
-            "srunx.monitor.resource_monitor.ResourceMonitor"
+            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
         ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = (
@@ -132,7 +132,7 @@ class TestResourcesCommand:
     def test_resources_json_format_with_partition(self, runner, mock_snapshot):
         """Test resources command with JSON format and partition."""
         with patch(
-            "srunx.monitor.resource_monitor.ResourceMonitor"
+            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
         ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = mock_snapshot
@@ -171,7 +171,7 @@ class TestResourcesCommand:
         )
 
         with patch(
-            "srunx.monitor.resource_monitor.ResourceMonitor"
+            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
         ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = snapshot
@@ -198,7 +198,7 @@ class TestResourcesCommand:
         )
 
         with patch(
-            "srunx.monitor.resource_monitor.ResourceMonitor"
+            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
         ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = snapshot
@@ -216,7 +216,7 @@ class TestResourcesCommand:
     def test_resources_error_handling(self, runner):
         """Test resources command error handling."""
         with patch(
-            "srunx.monitor.resource_monitor.ResourceMonitor"
+            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
         ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.side_effect = Exception(
@@ -244,7 +244,7 @@ class TestResourcesCommand:
         )
 
         with patch(
-            "srunx.monitor.resource_monitor.ResourceMonitor"
+            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
         ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = snapshot
@@ -261,7 +261,7 @@ class TestResourcesCommand:
     def test_resources_short_flags(self, runner, mock_snapshot):
         """Test resources command with short flag variants."""
         with patch(
-            "srunx.monitor.resource_monitor.ResourceMonitor"
+            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
         ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = mock_snapshot
@@ -293,7 +293,7 @@ class TestResourcesCommand:
         )
 
         with patch(
-            "srunx.monitor.resource_monitor.ResourceMonitor"
+            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
         ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = snapshot
@@ -422,7 +422,7 @@ class TestSinfoSshParity:
         subprocess fallback stays the default.
         """
         with patch(
-            "srunx.monitor.resource_monitor.ResourceMonitor"
+            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
         ) as mock_monitor_class:
             mock_monitor = MagicMock()
             mock_monitor.get_partition_resources.return_value = (

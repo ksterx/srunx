@@ -2,8 +2,8 @@
 
 Manual procedure for verifying `ActiveWatchPoller` → `DeliveryPoller` →
 `SlackWebhookDeliveryAdapter` end-to-end on a real SLURM cluster. Run
-this before cutting a release that touches the `srunx.pollers` /
-`srunx.notifications` modules.
+this before cutting a release that touches the `srunx.observability.monitoring.pollers` /
+`srunx.observability.notifications` modules.
 
 Estimated wall time: **~15 minutes**.
 
@@ -23,7 +23,7 @@ Estimated wall time: **~15 minutes**.
 ## Procedure
 
 1. **Isolate the state DB.** The pollers will write to
-   `~/.config/srunx/srunx.db`. To keep the smoke clean:
+   `~/.config/srunx/srunx.observability.storage`. To keep the smoke clean:
    ```bash
    export XDG_CONFIG_HOME="$(mktemp -d)"
    ```
@@ -102,7 +102,7 @@ Estimated wall time: **~15 minutes**.
 6. **Verify persistence.** Before inspecting, stop the web server (Ctrl+C)
    and reopen the DB directly:
    ```bash
-   sqlite3 "$XDG_CONFIG_HOME/srunx/srunx.db"
+   sqlite3 "$XDG_CONFIG_HOME/srunx/srunx.observability.storage"
    sqlite> SELECT id, status, attempt_count, delivered_at FROM deliveries;
    sqlite> SELECT from_status, to_status, source FROM job_state_transitions;
    ```

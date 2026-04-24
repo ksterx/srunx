@@ -1,4 +1,4 @@
-"""Tests for ``srunx.db.repositories.watches``."""
+"""Tests for ``srunx.observability.storage.repositories.watches``."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from srunx.db.connection import open_connection
-from srunx.db.migrations import apply_migrations
-from srunx.db.repositories.watches import WatchRepository
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.migrations import apply_migrations
+from srunx.observability.storage.repositories.watches import WatchRepository
 
 
 @pytest.fixture()
 def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     c = open_connection(db)
     apply_migrations(c)
     try:

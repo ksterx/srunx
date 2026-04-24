@@ -9,7 +9,7 @@ from srunx.callbacks import Callback
 from srunx.observability.monitoring.base import BaseMonitor
 from srunx.observability.monitoring.resource_source import ResourceSource
 from srunx.observability.monitoring.types import MonitorConfig, ResourceSnapshot
-from srunx.utils import GPU_TRES_RE
+from srunx.slurm.parsing import GPU_TRES_RE
 
 
 class ResourceMonitor(BaseMonitor):
@@ -18,7 +18,7 @@ class ResourceMonitor(BaseMonitor):
     Polls partition resources at configured intervals and notifies callbacks
     when resources become available or exhausted.
 
-    When a :class:`~srunx.monitor.resource_source.ResourceSource` is
+    When a :class:`~srunx.observability.monitoring.resource_source.ResourceSource` is
     injected, partition queries delegate to it instead of shelling out
     to local ``sinfo`` / ``squeue``. That lets ``srunx ui`` talk to a
     remote cluster through the existing SSH adapter — the previous

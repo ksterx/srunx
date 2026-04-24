@@ -13,16 +13,16 @@ from pathlib import Path
 
 import pytest
 
-from srunx.client_protocol import JobStatusInfo
-from srunx.db.repositories.job_state_transitions import (
-    JobStateTransitionRepository,
-)
-from srunx.db.repositories.jobs import JobRepository
-from srunx.db.repositories.watches import WatchRepository
-from srunx.pollers.active_watch_poller import (
+from srunx.observability.monitoring.pollers.active_watch_poller import (
     ActiveWatchPoller,
     _parse_target_ref,
 )
+from srunx.observability.storage.repositories.job_state_transitions import (
+    JobStateTransitionRepository,
+)
+from srunx.observability.storage.repositories.jobs import JobRepository
+from srunx.observability.storage.repositories.watches import WatchRepository
+from srunx.slurm.protocols import JobSnapshot
 
 # ---------------------------------------------------------------------------
 # _parse_target_ref
@@ -80,13 +80,13 @@ class TestParseTargetRef:
 
 
 class _StubQueueClient:
-    """Stub implementing ``SlurmClientProtocol.queue_by_ids`` only."""
+    """Stub implementing ``Client.queue_by_ids`` only."""
 
-    def __init__(self, responses: dict[int, JobStatusInfo]) -> None:
+    def __init__(self, responses: dict[int, JobSnapshot]) -> None:
         self.responses = responses
         self.calls: list[list[int]] = []
 
-    def queue_by_ids(self, job_ids: list[int]) -> dict[int, JobStatusInfo]:
+    def queue_by_ids(self, job_ids: list[int]) -> dict[int, JobSnapshot]:
         self.calls.append(list(job_ids))
         return {jid: self.responses[jid] for jid in job_ids if jid in self.responses}
 
@@ -162,8 +162,8 @@ class TestRegistryGroupBy:
         _seed_pending_transition(conn, 100, "PENDING")
         _seed_pending_transition(conn, 200, "PENDING")
 
-        local = _StubQueueClient({100: JobStatusInfo(status="RUNNING")})
-        ssh = _StubQueueClient({200: JobStatusInfo(status="RUNNING")})
+        local = _StubQueueClient({100: JobSnapshot(status="RUNNING")})
+        ssh = _StubQueueClient({200: JobSnapshot(status="RUNNING")})
         registry = _StubRegistry({"local": local, "ssh:dgx": ssh})
 
         poller = ActiveWatchPoller(registry=registry, db_path=db_path)  # type: ignore[arg-type]
@@ -192,7 +192,7 @@ class TestRegistryGroupBy:
         _seed_pending_transition(conn, 10, "PENDING")
         _seed_pending_transition(conn, 20, "PENDING")
 
-        local = _StubQueueClient({10: JobStatusInfo(status="RUNNING")})
+        local = _StubQueueClient({10: JobSnapshot(status="RUNNING")})
         # ``ssh:ghost`` is intentionally missing — registry.resolve returns None.
         registry = _StubRegistry({"local": local, "ssh:ghost": None})
 

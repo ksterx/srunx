@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-from srunx.client import Slurm
-from srunx.models import Job, JobStatus
+from srunx.domain import Job, JobStatus
+from srunx.slurm.local import Slurm
 
 
 class TestLogStreaming:
@@ -117,7 +117,7 @@ class TestTemplateManagement:
 
     def test_list_templates(self):
         """Test listing available templates."""
-        from srunx.template import list_templates
+        from srunx.runtime.templates import list_templates
 
         templates = list_templates()
 
@@ -126,7 +126,7 @@ class TestTemplateManagement:
 
     def test_get_template_path(self):
         """Test getting template path."""
-        from srunx.template import get_template_path
+        from srunx.runtime.templates import get_template_path
 
         # Test valid template
         path = get_template_path("base")
@@ -138,7 +138,7 @@ class TestTemplateManagement:
 
     def test_get_template_info(self):
         """Test getting template information."""
-        from srunx.template import get_template_info
+        from srunx.runtime.templates import get_template_info
 
         info = get_template_info("base")
 
@@ -268,7 +268,7 @@ class TestJobMonitorHistoryIntegration:
     """Test that JobMonitor mirrors terminal states into the state DB.
 
     Post-cutover (P2-4 #A), the mock target is
-    ``srunx.db.cli_helpers.record_completion`` (was
+    ``srunx.observability.storage.cli_helpers.record_completion`` (was
     ``srunx.history.get_history`` before the history module was
     removed). Invariants under test are unchanged:
 
@@ -280,7 +280,7 @@ class TestJobMonitorHistoryIntegration:
     """
 
     def test_notify_transition_updates_history_on_completion(self):
-        from srunx.monitor.job_monitor import JobMonitor
+        from srunx.observability.monitoring.job_monitor import JobMonitor
 
         monitor = JobMonitor(job_ids=[123])
         monitor.callbacks = []
@@ -288,12 +288,12 @@ class TestJobMonitorHistoryIntegration:
         job = Job(name="hist_test", job_id=123, command=["test"])
         job._status = JobStatus.COMPLETED
 
-        with patch("srunx.db.cli_helpers.record_completion") as rec:
+        with patch("srunx.observability.storage.cli_helpers.record_completion") as rec:
             monitor._notify_transition(job, JobStatus.COMPLETED)
             rec.assert_called_once_with(123, JobStatus.COMPLETED, scheduler_key="local")
 
     def test_notify_transition_updates_history_on_failure(self):
-        from srunx.monitor.job_monitor import JobMonitor
+        from srunx.observability.monitoring.job_monitor import JobMonitor
 
         monitor = JobMonitor(job_ids=[456])
         monitor.callbacks = []
@@ -301,14 +301,14 @@ class TestJobMonitorHistoryIntegration:
         job = Job(name="fail_test", job_id=456, command=["test"])
         job._status = JobStatus.FAILED
 
-        with patch("srunx.db.cli_helpers.record_completion") as rec:
+        with patch("srunx.observability.storage.cli_helpers.record_completion") as rec:
             monitor._notify_transition(job, JobStatus.FAILED)
             rec.assert_called_once_with(456, JobStatus.FAILED, scheduler_key="local")
 
     def test_notify_transition_skips_history_for_running(self):
         from unittest.mock import MagicMock
 
-        from srunx.monitor.job_monitor import JobMonitor
+        from srunx.observability.monitoring.job_monitor import JobMonitor
 
         monitor = JobMonitor(job_ids=[789])
         callback = MagicMock()
@@ -317,7 +317,7 @@ class TestJobMonitorHistoryIntegration:
         job = Job(name="run_test", job_id=789, command=["test"])
         job._status = JobStatus.RUNNING
 
-        with patch("srunx.db.cli_helpers.record_completion") as rec:
+        with patch("srunx.observability.storage.cli_helpers.record_completion") as rec:
             monitor._notify_transition(job, JobStatus.RUNNING)
             rec.assert_not_called()
 
@@ -326,7 +326,7 @@ class TestJobMonitorHistoryIntegration:
     def test_notify_transition_handles_history_error(self):
         from unittest.mock import MagicMock
 
-        from srunx.monitor.job_monitor import JobMonitor
+        from srunx.observability.monitoring.job_monitor import JobMonitor
 
         monitor = JobMonitor(job_ids=[101])
         callback = MagicMock()
@@ -335,7 +335,7 @@ class TestJobMonitorHistoryIntegration:
         job = Job(name="err_test", job_id=101, command=["test"])
         job._status = JobStatus.COMPLETED
 
-        with patch("srunx.db.cli_helpers.record_completion") as rec:
+        with patch("srunx.observability.storage.cli_helpers.record_completion") as rec:
             rec.side_effect = Exception("DB error")
             # record_completion is already best-effort (swallows
             # internally); monitor also wraps + must not propagate.

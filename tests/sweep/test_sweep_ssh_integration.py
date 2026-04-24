@@ -27,13 +27,14 @@ import anyio
 import pytest
 import yaml
 
-from srunx.client_protocol import WorkflowJobExecutorProtocol
-from srunx.db.connection import open_connection, transaction
-from srunx.db.repositories.sweep_runs import SweepRunRepository
-from srunx.models import JobStatus, RunnableJobType
-from srunx.sweep import SweepSpec
-from srunx.sweep.orchestrator import SweepOrchestrator
-from srunx.sweep.state_service import WorkflowRunStateService
+from srunx.domain import JobStatus, RunnableJobType
+from srunx.observability.storage.connection import open_connection, transaction
+from srunx.observability.storage.repositories.sweep_runs import SweepRunRepository
+from srunx.runtime.sweep import SweepSpec
+from srunx.runtime.sweep.orchestrator import SweepOrchestrator
+from srunx.runtime.sweep.state_service import WorkflowRunStateService
+from srunx.slurm.protocols import WorkflowJobExecutor
+from srunx.web.schemas.workflows import SweepSpecRequest, WorkflowRunRequest
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -61,7 +62,7 @@ def _write_wf(tmp_path: Path) -> Path:
 
 
 def _now_iso() -> str:
-    from srunx.db.repositories.base import now_iso
+    from srunx.observability.storage.repositories.base import now_iso
 
     return now_iso()
 
@@ -110,7 +111,7 @@ def _read_sweep(sweep_run_id: int) -> dict[str, Any]:
 
 
 class _FakeExecutor:
-    """Minimal :class:`WorkflowJobExecutorProtocol` stub.
+    """Minimal :class:`WorkflowJobExecutor` stub.
 
     Records every ``run`` invocation and returns the job flipped to
     the configured terminal status so ``WorkflowRunner`` semantics are
@@ -158,7 +159,7 @@ class _FakePool:
         self._lock = threading.Lock()
 
     @contextmanager
-    def lease(self) -> Iterator[WorkflowJobExecutorProtocol]:
+    def lease(self) -> Iterator[WorkflowJobExecutor]:
         with self._lock:
             self.lease_count += 1
         yield self.executor
@@ -247,7 +248,7 @@ class TestOrchestratorExecutorFactoryWiring:
 
             return _Stub()
 
-        from srunx import runner as runner_mod
+        import srunx.runtime.workflow.runner as runner_mod
 
         monkeypatch.setattr(
             runner_mod.WorkflowRunner, "from_yaml", staticmethod(fake_from_yaml)
@@ -297,7 +298,7 @@ class TestSweepWithFakePool:
                     # Exercise the factory so its lease counter increments.
                     assert factory is not None
                     with factory() as executor:
-                        from srunx.models import Job
+                        from srunx.domain import Job
 
                         _job = Job(name="train", command=["train.py"])
                         executor.run(_job, workflow_run_id=workflow_run_id)
@@ -306,7 +307,7 @@ class TestSweepWithFakePool:
 
             return _Stub()
 
-        from srunx import runner as runner_mod
+        import srunx.runtime.workflow.runner as runner_mod
 
         monkeypatch.setattr(
             runner_mod.WorkflowRunner, "from_yaml", staticmethod(_fake_from_yaml)
@@ -349,7 +350,7 @@ class TestSweepWithFakePool:
                 def run(self_inner, *, workflow_run_id: int) -> dict[str, Any]:
                     assert factory is not None
                     with factory() as executor:
-                        from srunx.models import Job
+                        from srunx.domain import Job
 
                         _job = Job(name="train", command=["train.py"])
                         executor.run(_job, workflow_run_id=workflow_run_id)
@@ -363,7 +364,7 @@ class TestSweepWithFakePool:
 
             return _Stub()
 
-        from srunx import runner as runner_mod
+        import srunx.runtime.workflow.runner as runner_mod
 
         monkeypatch.setattr(
             runner_mod.WorkflowRunner, "from_yaml", staticmethod(_fake_from_yaml)
@@ -485,8 +486,8 @@ class TestWebDispatchPoolLifecycle:
         fake_request.app.state.task_group = None
         fake_request.app.state.background_tasks = None
 
-        body = wf_mod.WorkflowRunRequest(
-            sweep=wf_mod.SweepSpecRequest(matrix={"lr": [0.01, 0.1]}, max_parallel=2)
+        body = WorkflowRunRequest(
+            sweep=SweepSpecRequest(matrix={"lr": [0.01, 0.1]}, max_parallel=2)
         )
 
         async def _call() -> dict[str, Any]:
@@ -633,8 +634,8 @@ class TestWebDispatchPoolLifecycle:
         fake_request.app.state.task_group = None
         fake_request.app.state.background_tasks = None
 
-        body = wf_mod.WorkflowRunRequest(
-            sweep=wf_mod.SweepSpecRequest(matrix={"lr": [0.01, 0.1]}, max_parallel=20)
+        body = WorkflowRunRequest(
+            sweep=SweepSpecRequest(matrix={"lr": [0.01, 0.1]}, max_parallel=20)
         )
 
         async def _call() -> dict[str, Any]:
@@ -684,7 +685,7 @@ class TestBackwardCompat:
 
             return _Stub()
 
-        from srunx import runner as runner_mod
+        import srunx.runtime.workflow.runner as runner_mod
 
         monkeypatch.setattr(
             runner_mod.WorkflowRunner, "from_yaml", staticmethod(_fake_from_yaml)
@@ -726,7 +727,7 @@ class TestSubmissionContextPassthrough:
         assert orch.submission_context is None
 
     def test_submission_context_is_stored_on_instance(self, tmp_path: Path) -> None:
-        from srunx.rendering import SubmissionRenderContext
+        from srunx.runtime.rendering import SubmissionRenderContext
 
         ctx = SubmissionRenderContext(
             mount_name="proj",
@@ -754,7 +755,7 @@ class TestSubmissionContextPassthrough:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``_run_cell_sync`` must pass ``submission_context`` into ``from_yaml``."""
-        from srunx.rendering import SubmissionRenderContext
+        from srunx.runtime.rendering import SubmissionRenderContext
 
         ctx = SubmissionRenderContext(
             mount_name="proj",
@@ -789,7 +790,7 @@ class TestSubmissionContextPassthrough:
 
             return _Stub()
 
-        from srunx import runner as runner_mod
+        import srunx.runtime.workflow.runner as runner_mod
 
         monkeypatch.setattr(
             runner_mod.WorkflowRunner, "from_yaml", staticmethod(fake_from_yaml)
@@ -828,7 +829,7 @@ class TestSubmissionContextPassthrough:
 
             return _Stub()
 
-        from srunx import runner as runner_mod
+        import srunx.runtime.workflow.runner as runner_mod
 
         monkeypatch.setattr(
             runner_mod.WorkflowRunner, "from_yaml", staticmethod(fake_from_yaml)

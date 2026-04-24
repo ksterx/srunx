@@ -22,7 +22,7 @@ from srunx.mcp.server import run_workflow
 @pytest.fixture
 def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    from srunx.db.connection import init_db
+    from srunx.observability.storage.connection import init_db
 
     db_path = init_db(delete_legacy=False)
     yield db_path
@@ -114,7 +114,7 @@ class TestMCPSweep:
     ) -> None:
         yaml_path = _write_workflow(tmp_path)
 
-        with patch("srunx.sweep.orchestrator.SweepOrchestrator") as orch_cls:
+        with patch("srunx.runtime.sweep.orchestrator.SweepOrchestrator") as orch_cls:
             mock_orch = MagicMock()
             mock_orch.run.return_value = _FakeSweepRun()
             orch_cls.return_value = mock_orch
@@ -239,7 +239,7 @@ class TestMCPMountRouting:
                 new=MagicMock(),
             ),
             patch("srunx.slurm.ssh_executor.SlurmSSHExecutorPool") as pool_cls,
-            patch("srunx.sweep.orchestrator.SweepOrchestrator") as orch_cls,
+            patch("srunx.runtime.sweep.orchestrator.SweepOrchestrator") as orch_cls,
         ):
             mock_pool = MagicMock()
             pool_cls.return_value = mock_pool

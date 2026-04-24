@@ -9,7 +9,7 @@ from __future__ import annotations
 import itertools
 from typing import Any
 
-from srunx.exceptions import WorkflowValidationError
+from srunx.common.exceptions import WorkflowValidationError
 from srunx.runtime.sweep import ScalarValue, SweepSpec
 
 _MAX_CELL_COUNT = 1000

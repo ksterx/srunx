@@ -24,8 +24,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from srunx.config import SyncDefaults
-from srunx.logging import get_logger
+from srunx.common.config import SyncDefaults
+from srunx.common.logging import get_logger
 from srunx.ssh.core.config import MountConfig, ServerProfile
 from srunx.sync.lock import acquire_sync_lock
 from srunx.sync.mount_helpers import sync_mount_by_name

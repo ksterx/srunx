@@ -39,7 +39,7 @@ ssh_app.add_typer(profile_app, name="profile")
 
 def setup_logging(verbose: bool = False):
     """Configure logging for SSH operations."""
-    from srunx.logging import configure_cli_logging
+    from srunx.common.logging import configure_cli_logging
 
     configure_cli_logging(level="DEBUG" if verbose else "WARNING")
 

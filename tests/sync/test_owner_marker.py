@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
-from srunx.config import SyncDefaults
+from srunx.common.config import SyncDefaults
 from srunx.ssh.core.config import MountConfig, ServerProfile
 from srunx.sync.owner_marker import (
     OwnerMarker,

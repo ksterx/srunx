@@ -14,14 +14,9 @@ from __future__ import annotations
 
 from typing import Any
 
-# Import leaf modules eagerly — they have no back-edge into
-# ``srunx.slurm.local``. The local client, by contrast, transitively
-# imports ``srunx.utils`` which now re-exports ``GPU_TRES_RE`` from
-# ``srunx.slurm.parsing``. That re-export triggers ``srunx.slurm``'s
-# own ``__init__`` during ``local.py``'s own import, so eagerly
-# pulling ``LocalClient`` here would deadlock on the half-initialised
-# ``srunx.slurm.local`` module. Use PEP 562 ``__getattr__`` to defer
-# the binding until after both modules finish loading.
+# Import leaf modules eagerly; defer ``LocalClient`` via PEP 562
+# ``__getattr__`` to avoid a circular import through ``srunx.utils``
+# → ``srunx.slurm.local``.
 from srunx.slurm.parsing import GPU_TRES_RE, parse_slurm_datetime, parse_slurm_duration
 from srunx.slurm.protocols import (
     Client,

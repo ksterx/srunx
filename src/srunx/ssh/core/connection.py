@@ -12,7 +12,7 @@ import shlex
 
 import paramiko  # type: ignore
 
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
 
 from .proxy_client import ProxySSHClient, create_proxy_aware_connection
 

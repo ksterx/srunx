@@ -16,12 +16,12 @@ from contextlib import contextmanager
 from typing import Any
 from unittest.mock import Mock, patch
 
-from srunx.models import Job, JobEnvironment, JobStatus, Workflow
-from srunx.runner import WorkflowRunner
+from srunx.domain import Job, JobEnvironment, JobStatus, Workflow
+from srunx.runtime.workflow.runner import WorkflowRunner
 
 
 class _FakeExecutor:
-    """Minimal :class:`WorkflowJobExecutorProtocol` stand-in for tests."""
+    """Minimal :class:`WorkflowJobExecutor` stand-in for tests."""
 
     def __init__(self) -> None:
         self.run_calls: list[tuple[Any, dict[str, Any]]] = []
@@ -69,7 +69,7 @@ def _make_workflow() -> tuple[Workflow, Job]:
 
 
 @patch("srunx.runtime.workflow.runner._transition_workflow_run")
-@patch("srunx.db.cli_helpers.create_cli_workflow_run")
+@patch("srunx.observability.storage.cli_helpers.create_cli_workflow_run")
 @patch("srunx.runtime.workflow.runner.Slurm")
 def test_default_factory_uses_self_slurm(
     mock_slurm_class: Mock,
@@ -106,7 +106,7 @@ def test_default_factory_uses_self_slurm(
 
 
 @patch("srunx.runtime.workflow.runner._transition_workflow_run")
-@patch("srunx.db.cli_helpers.create_cli_workflow_run")
+@patch("srunx.observability.storage.cli_helpers.create_cli_workflow_run")
 @patch("srunx.runtime.workflow.runner.Slurm")
 def test_custom_factory_is_leased_and_invoked(
     _mock_slurm_class: Mock,
@@ -153,7 +153,7 @@ def test_custom_factory_is_leased_and_invoked(
 
 
 @patch("srunx.runtime.workflow.runner._transition_workflow_run")
-@patch("srunx.db.cli_helpers.create_cli_workflow_run")
+@patch("srunx.observability.storage.cli_helpers.create_cli_workflow_run")
 @patch("srunx.runtime.workflow.runner.Slurm")
 def test_custom_factory_is_used_for_log_retrieval_on_failure(
     _mock_slurm_class: Mock,
@@ -239,7 +239,7 @@ jobs:
 
 
 @patch("srunx.runtime.workflow.runner._transition_workflow_run")
-@patch("srunx.db.cli_helpers.create_cli_workflow_run")
+@patch("srunx.observability.storage.cli_helpers.create_cli_workflow_run")
 @patch("srunx.runtime.workflow.runner.Slurm")
 def test_submission_context_is_forwarded_to_executor_run(
     _mock_slurm_class: Mock,
@@ -253,7 +253,7 @@ def test_submission_context_is_forwarded_to_executor_run(
     invocation, so SSH-backed executors can apply mount-aware path
     translation before rendering.
     """
-    from srunx.rendering import SubmissionRenderContext
+    from srunx.runtime.rendering import SubmissionRenderContext
 
     mock_create.return_value = 999
     ctx = SubmissionRenderContext(mount_name="ml", default_work_dir="/home/user/ml")
@@ -279,7 +279,7 @@ def test_submission_context_is_forwarded_to_executor_run(
 
 
 @patch("srunx.runtime.workflow.runner._transition_workflow_run")
-@patch("srunx.db.cli_helpers.create_cli_workflow_run")
+@patch("srunx.observability.storage.cli_helpers.create_cli_workflow_run")
 @patch("srunx.runtime.workflow.runner.Slurm")
 def test_default_submission_context_is_none(
     _mock_slurm_class: Mock,
@@ -311,7 +311,7 @@ def test_default_submission_context_is_none(
 
 def test_from_yaml_passes_submission_context_through(tmp_path: Any) -> None:
     """``from_yaml(submission_context=ctx)`` stores the context on the runner."""
-    from srunx.rendering import SubmissionRenderContext
+    from srunx.runtime.rendering import SubmissionRenderContext
 
     yaml_path = tmp_path / "wf.yaml"
     yaml_path.write_text(

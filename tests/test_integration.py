@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from srunx.config import SrunxConfig
-from srunx.models import (
+from srunx.common.config import SrunxConfig
+from srunx.domain import (
     ContainerResource,
     Job,
     JobEnvironment,
@@ -19,9 +19,8 @@ from srunx.models import (
     JobStatus,
     ShellJob,
     Workflow,
-    render_job_script,
-    render_shell_job_script,
 )
+from srunx.runtime.rendering import render_job_script, render_shell_job_script
 
 
 def _get_default_template() -> str:
@@ -317,7 +316,7 @@ class TestConfigurationIntegration:
 
     def test_environment_variable_config(self):
         """Test configuration through environment variables."""
-        from srunx.config import get_config
+        from srunx.common.config import get_config
 
         env_vars = {
             "SRUNX_DEFAULT_NODES": "2",

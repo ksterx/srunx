@@ -103,11 +103,11 @@ class TestGetTemplate:
 
 class TestApplyTemplate:
     @patch("srunx.web.routers.templates.get_template_path")
-    @patch("srunx.models.render_job_script")
+    @patch("srunx.runtime.rendering.render_job_script")
     def test_apply_template_preview_only(
         self, mock_render, mock_path, client: TestClient, tmp_path
     ) -> None:
-        # render_job_script is imported inside the endpoint body from srunx.models
+        # render_job_script is imported inside the endpoint body from srunx.runtime.rendering
         script_file = tmp_path / "rendered.sh"
         script_file.write_text("#!/bin/bash\necho hello")
         mock_path.return_value = str(tmp_path / "base.slurm.jinja")
@@ -139,7 +139,7 @@ class TestApplyTemplate:
 
 
 class TestCreateTemplate:
-    @patch("srunx.template.create_user_template")
+    @patch("srunx.runtime.templates.create_user_template")
     def test_create_template(self, mock_create, client: TestClient) -> None:
         mock_create.return_value = {
             "name": "my-template",
@@ -160,7 +160,7 @@ class TestCreateTemplate:
         assert data["name"] == "my-template"
 
     @patch(
-        "srunx.template.create_user_template",
+        "srunx.runtime.templates.create_user_template",
         side_effect=ValueError("Template 'dup' already exists."),
     )
     def test_create_template_conflict(self, mock_create, client: TestClient) -> None:
@@ -181,14 +181,14 @@ class TestCreateTemplate:
 
 
 class TestDeleteTemplate:
-    @patch("srunx.template.delete_user_template")
+    @patch("srunx.runtime.templates.delete_user_template")
     def test_delete_template(self, mock_delete, client: TestClient) -> None:
         resp = client.delete("/api/templates/my-template")
         assert resp.status_code == 204
         mock_delete.assert_called_once_with("my-template")
 
     @patch(
-        "srunx.template.delete_user_template",
+        "srunx.runtime.templates.delete_user_template",
         side_effect=ValueError("Cannot delete built-in template 'base'."),
     )
     def test_delete_builtin_template_fails(

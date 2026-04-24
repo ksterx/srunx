@@ -1,8 +1,8 @@
-"""Unit tests for :class:`srunx.pollers.delivery_poller.DeliveryPoller`.
+"""Unit tests for :class:`srunx.observability.monitoring.pollers.delivery_poller.DeliveryPoller`.
 
 Every test uses the ``tmp_srunx_db`` fixture for a real, file-backed SQLite
 schema and drives the poller via ``anyio.run``. Adapters are swapped into
-:data:`srunx.notifications.adapters.registry.ADAPTERS` per-test so delivery
+:data:`srunx.observability.notifications.adapters.registry.ADAPTERS` per-test so delivery
 outcomes are deterministic without going near a real Slack webhook.
 """
 
@@ -16,15 +16,17 @@ from typing import Any
 import anyio
 import pytest
 
-from srunx.db.models import Event
-from srunx.db.repositories.deliveries import DeliveryRepository
-from srunx.db.repositories.endpoints import EndpointRepository
-from srunx.db.repositories.events import EventRepository
-from srunx.db.repositories.subscriptions import SubscriptionRepository
-from srunx.db.repositories.watches import WatchRepository
-from srunx.notifications.adapters import registry as adapter_registry
-from srunx.notifications.adapters.base import DeliveryError
-from srunx.pollers.delivery_poller import DeliveryPoller
+from srunx.observability.monitoring.pollers.delivery_poller import DeliveryPoller
+from srunx.observability.notifications.adapters import registry as adapter_registry
+from srunx.observability.notifications.adapters.base import DeliveryError
+from srunx.observability.storage.models import Event
+from srunx.observability.storage.repositories.deliveries import DeliveryRepository
+from srunx.observability.storage.repositories.endpoints import EndpointRepository
+from srunx.observability.storage.repositories.events import EventRepository
+from srunx.observability.storage.repositories.subscriptions import (
+    SubscriptionRepository,
+)
+from srunx.observability.storage.repositories.watches import WatchRepository
 
 # ---------------------------------------------------------------------------
 # Test fixtures / stubs

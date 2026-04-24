@@ -1,4 +1,4 @@
-"""Tests for :class:`srunx.notifications.adapters.slack_webhook.SlackWebhookAdapter`.
+"""Tests for :class:`srunx.observability.notifications.adapters.slack_webhook.SlackWebhookAdapter`.
 
 ``slack_sdk.WebhookClient.send`` is mocked via
 ``unittest.mock.patch`` — no live HTTP calls are made.
@@ -12,9 +12,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from srunx.db.models import Event
-from srunx.notifications.adapters.base import DeliveryError
-from srunx.notifications.adapters.slack_webhook import SlackWebhookAdapter
+from srunx.observability.notifications.adapters.base import DeliveryError
+from srunx.observability.notifications.adapters.slack_webhook import SlackWebhookAdapter
+from srunx.observability.storage.models import Event
 
 
 def _make_event(
@@ -64,7 +64,7 @@ class TestSend:
         mock_client.send.return_value = _error_response()
 
         with patch(
-            "srunx.notifications.adapters.slack_webhook.WebhookClient",
+            "srunx.observability.notifications.adapters.slack_webhook.WebhookClient",
             return_value=mock_client,
         ):
             with pytest.raises(DeliveryError, match="non-OK"):
@@ -79,7 +79,7 @@ class TestSend:
         mock_client.send.side_effect = RuntimeError("connection refused")
 
         with patch(
-            "srunx.notifications.adapters.slack_webhook.WebhookClient",
+            "srunx.observability.notifications.adapters.slack_webhook.WebhookClient",
             return_value=mock_client,
         ):
             with pytest.raises(DeliveryError, match="raised"):
@@ -94,7 +94,7 @@ class TestSend:
         mock_client.send.return_value = _ok_response()
 
         with patch(
-            "srunx.notifications.adapters.slack_webhook.WebhookClient",
+            "srunx.observability.notifications.adapters.slack_webhook.WebhookClient",
             return_value=mock_client,
         ):
             adapter.send(event, endpoint_config)
@@ -117,7 +117,7 @@ class TestSanitization:
         mock_client.send.return_value = _ok_response()
 
         with patch(
-            "srunx.notifications.adapters.slack_webhook.WebhookClient",
+            "srunx.observability.notifications.adapters.slack_webhook.WebhookClient",
             return_value=mock_client,
         ):
             adapter.send(event, endpoint_config)
@@ -199,7 +199,7 @@ class TestEventKinds:
         mock_client.send.return_value = _ok_response()
 
         with patch(
-            "srunx.notifications.adapters.slack_webhook.WebhookClient",
+            "srunx.observability.notifications.adapters.slack_webhook.WebhookClient",
             return_value=mock_client,
         ):
             adapter.send(event, endpoint_config)

@@ -4,7 +4,7 @@ This module is the single entry point CLI commands use to pick between
 local SLURM and an SSH-backed cluster. Higher layers call
 :func:`resolve_transport` (context manager) and receive a
 :class:`ResolvedTransport` that exposes the same
-:class:`~srunx.client_protocol.JobOperationsProtocol` / queue client /
+:class:`~srunx.slurm.protocols.JobOperations` / queue client /
 executor factory regardless of which transport was selected.
 
 Resolution priority (see REQ-1):
@@ -45,20 +45,20 @@ from typing import TYPE_CHECKING, Any, Literal
 import typer
 from rich.console import Console
 
-from srunx.client import Slurm
-from srunx.client_protocol import (
-    JobOperationsProtocol,
-    SlurmClientProtocol,
+from srunx.common.exceptions import TransportError
+from srunx.common.logging import get_logger
+from srunx.slurm.local import Slurm
+from srunx.slurm.protocols import (
+    Client,
+    JobOperations,
     WorkflowJobExecutorFactory,
 )
-from srunx.exceptions import TransportError
-from srunx.logging import get_logger
 
 if TYPE_CHECKING:
     import sqlite3
 
     from srunx.callbacks import Callback
-    from srunx.rendering import SubmissionRenderContext
+    from srunx.runtime.rendering import SubmissionRenderContext
     from srunx.ssh.core.config import ServerProfile
 
 logger = get_logger(__name__)
@@ -88,7 +88,7 @@ class TransportHandle:
             queue / tail_log_incremental).
         queue_client: Poller-facing batch query client.
         executor_factory: Context-manager factory for
-            :class:`~srunx.client_protocol.WorkflowJobExecutorProtocol`.
+            :class:`~srunx.slurm.protocols.WorkflowJobExecutor`.
             ``None`` is not returned — local uses a
             ``nullcontext``-wrapped singleton, SSH returns a pool's
             ``lease`` method.
@@ -99,8 +99,8 @@ class TransportHandle:
     scheduler_key: str
     profile_name: str | None
     transport_type: Literal["local", "ssh"]
-    job_ops: JobOperationsProtocol
-    queue_client: SlurmClientProtocol
+    job_ops: JobOperations
+    queue_client: Client
     executor_factory: WorkflowJobExecutorFactory | None
     submission_context: SubmissionRenderContext | None
 
@@ -133,11 +133,11 @@ class ResolvedTransport:
         return self.handle.transport_type
 
     @property
-    def job_ops(self) -> JobOperationsProtocol:
+    def job_ops(self) -> JobOperations:
         return self.handle.job_ops
 
     @property
-    def queue_client(self) -> SlurmClientProtocol:
+    def queue_client(self) -> Client:
         return self.handle.queue_client
 
     @property
@@ -207,7 +207,7 @@ def emit_transport_banner(
 def _current_profile_name() -> str | None:
     """Return the active SSH profile set via ``srunx ssh profile set``, or None.
 
-    Respects :attr:`srunx.config.CliTransportConfig.use_current_profile` —
+    Respects :attr:`srunx.common.config.CliTransportConfig.use_current_profile` —
     when the user has opted out (``cli.use_current_profile = false``), this
     function returns ``None`` so ``resolve_transport`` falls straight
     through to local.
@@ -217,7 +217,7 @@ def _current_profile_name() -> str | None:
     never raise from this path.
     """
     try:
-        from srunx.config import get_config
+        from srunx.common.config import get_config
         from srunx.ssh.core.config import ConfigManager
     except ImportError:
         return None
@@ -336,7 +336,7 @@ def _resolve_submission_context(
     declares multiple mounts and the caller did not pick one (logs a
     warning so the silent no-translation fallback is visible).
     """
-    from srunx.rendering import SubmissionRenderContext
+    from srunx.runtime.rendering import SubmissionRenderContext
 
     mounts = tuple(profile_mounts) if profile_mounts else ()
     if not mounts:

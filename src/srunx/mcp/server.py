@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 import yaml  # type: ignore
 
 if TYPE_CHECKING:
-    from srunx.rendering import SubmissionRenderContext
+    from srunx.runtime.rendering import SubmissionRenderContext
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -219,7 +219,7 @@ def submit_job(
         use_ssh: If true, submit via SSH to remote SLURM cluster
     """
     try:
-        from srunx.models import Job, JobEnvironment, JobResource
+        from srunx.domain import Job, JobEnvironment, JobResource
 
         resource = JobResource(
             nodes=nodes,
@@ -252,7 +252,7 @@ def submit_job(
         )
 
         if use_ssh:
-            from srunx.models import _build_environment_setup
+            from srunx.runtime.rendering import _build_environment_setup
 
             template_path = (
                 Path(__file__).parent.parent / "runtime" / "_jinja" / "base.slurm.jinja"
@@ -285,7 +285,7 @@ def submit_job(
                     job_id=slurm_job.job_id, name=slurm_job.name, status="PENDING"
                 )
         else:
-            from srunx.client import Slurm
+            from srunx.slurm.local import Slurm
 
             slurm = Slurm()
             result = slurm.submit(job)
@@ -329,7 +329,7 @@ def list_jobs(use_ssh: bool = False) -> dict[str, Any]:
                         )
                 return _ok(jobs=jobs, count=len(jobs))
         else:
-            from srunx.client import Slurm
+            from srunx.slurm.local import Slurm
 
             slurm = Slurm()
             queued = slurm.queue()
@@ -359,7 +359,7 @@ def get_job_status(job_id: str, use_ssh: bool = False) -> dict[str, Any]:
                     return _err(f"Job {job_id}: {status}")
                 return _ok(job_id=job_id, status=status)
         else:
-            from srunx.client import Slurm
+            from srunx.slurm.local import Slurm
 
             job = Slurm.retrieve(int(job_id))
             return _ok(job_id=job_id, **_job_to_dict(job))
@@ -387,7 +387,7 @@ def cancel_job(job_id: str, use_ssh: bool = False) -> dict[str, Any]:
                     return _err(f"scancel failed: {stderr}")
                 return _ok(job_id=job_id, message="Job cancelled")
         else:
-            from srunx.client import Slurm
+            from srunx.slurm.local import Slurm
 
             slurm = Slurm()
             slurm.cancel(int(job_id))
@@ -419,7 +419,7 @@ def get_job_logs(
                     return _err(f"No logs found for job {job_id}")
                 return _ok(job_id=job_id, stdout=stdout, stderr=stderr)
         else:
-            from srunx.client import Slurm
+            from srunx.slurm.local import Slurm
 
             slurm = Slurm()
             details = slurm.get_job_output_detailed(job_id, job_name)
@@ -462,7 +462,7 @@ def get_resources(
                     return _err(f"sinfo failed: {stderr}")
                 return _ok(partition=partition, raw_output=stdout.strip())
         else:
-            from srunx.monitor.resource_monitor import ResourceMonitor
+            from srunx.observability.monitoring.resource_monitor import ResourceMonitor
 
             monitor = ResourceMonitor(min_gpus=0, partition=partition)
             snapshot = monitor.get_partition_resources()
@@ -519,8 +519,8 @@ def create_workflow(
         default_project: Default SSH project/mount name for file syncing
     """
     try:
-        from srunx.models import Workflow
-        from srunx.runner import WorkflowRunner
+        from srunx.domain import Workflow
+        from srunx.runtime.workflow.runner import WorkflowRunner
 
         # Reject python: args for security (arbitrary code execution).
         if args:
@@ -584,7 +584,7 @@ def validate_workflow(yaml_path: str) -> dict[str, Any]:
         yaml_path: Path to the YAML workflow file to validate
     """
     try:
-        from srunx.runner import WorkflowRunner
+        from srunx.runtime.workflow.runner import WorkflowRunner
 
         runner = WorkflowRunner.from_yaml(yaml_path)
         runner.workflow.validate()
@@ -617,7 +617,7 @@ def _reject_python_prefix_mcp(payload: Any, *, source: str) -> None:
     violation; callers convert that to the tool's ``{"success": False}``
     response shape.
     """
-    from srunx.security import find_python_prefix
+    from srunx.runtime.security import find_python_prefix
 
     violation = find_python_prefix(payload, source=source)
     if violation is not None:
@@ -636,7 +636,7 @@ def _enforce_shell_script_roots_mcp(workflow: Any, profile: Any) -> None:
     ``_err(...)``) instead of ``HTTPException`` because MCP has no HTTP
     layer.
     """
-    from srunx.security import find_shell_script_violation
+    from srunx.runtime.security import find_shell_script_violation
 
     allowed_roots = [Path(m.local).resolve() for m in (profile.mounts or [])]
     violation = find_shell_script_violation(workflow, allowed_roots)
@@ -657,7 +657,7 @@ def _resolve_mount_context(
     ShellJob guard). Raises ``ValueError`` on any misconfiguration —
     no current profile, unknown mount name, etc.
     """
-    from srunx.rendering import SubmissionRenderContext
+    from srunx.runtime.rendering import SubmissionRenderContext
     from srunx.slurm.ssh import SlurmSSHAdapter
     from srunx.ssh.core.config import ConfigManager
 
@@ -721,7 +721,7 @@ def run_workflow(
             local SLURM client — same behaviour as pre-5a.
     """
     try:
-        from srunx.runner import WorkflowRunner
+        from srunx.runtime.workflow.runner import WorkflowRunner
         from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
 
         if args is not None:
@@ -744,8 +744,8 @@ def run_workflow(
 
             import yaml as _yaml
 
-            from srunx.sweep import SweepSpec
-            from srunx.sweep.orchestrator import SweepOrchestrator
+            from srunx.runtime.sweep import SweepSpec
+            from srunx.runtime.sweep.orchestrator import SweepOrchestrator
 
             matrix = sweep.get("matrix") or {}
             if not isinstance(matrix, dict):
@@ -956,7 +956,7 @@ def get_workflow(yaml_path: str) -> dict[str, Any]:
             return _err("File is not a valid srunx workflow (missing 'jobs' key)")
 
         # Also validate it can be parsed
-        from srunx.runner import WorkflowRunner
+        from srunx.runtime.workflow.runner import WorkflowRunner
 
         runner = WorkflowRunner.from_yaml(yaml_path)
 
@@ -968,7 +968,7 @@ def get_workflow(yaml_path: str) -> dict[str, Any]:
                 "retry": job.retry,
                 "retry_delay": job.retry_delay,
             }
-            from srunx.models import Job, ShellJob
+            from srunx.domain import Job, ShellJob
 
             if isinstance(job, Job):
                 cmd = job.command
@@ -1106,7 +1106,7 @@ def sync_files(
 def get_config() -> dict[str, Any]:
     """Get the current srunx configuration including resource defaults and environment settings."""
     try:
-        from srunx.config import get_config as _get_config
+        from srunx.common.config import get_config as _get_config
 
         config = _get_config()
         return _ok(

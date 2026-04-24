@@ -7,15 +7,14 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 
 from srunx.callbacks import Callback
-from srunx.logging import get_logger
-from srunx.models import (
+from srunx.common.logging import get_logger
+from srunx.domain import (
     Job,
     JobType,
     ShellJob,
-    render_job_script,
-    render_shell_job_script,
 )
-from srunx.template import get_template_path
+from srunx.runtime.rendering import render_job_script, render_shell_job_script
+from srunx.runtime.templates import get_template_path
 
 logger = get_logger(__name__)
 

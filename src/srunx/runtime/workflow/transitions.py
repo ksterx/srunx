@@ -1,6 +1,6 @@
 """``workflow_runs`` status-transition helper.
 
-Pulled unchanged out of :mod:`srunx.runner` as part of Phase 7 (#163). The
+Pulled unchanged out of :mod:`srunx.runtime.workflow.runner` as part of Phase 7 (#163). The
 workflow runner calls :func:`_transition_workflow_run` at ``pending ->
 running`` and at terminal transitions so DB-backed dashboards (sweep
 aggregation, Web UI, ``srunx report``) stay in sync with the in-memory DAG
@@ -10,7 +10,7 @@ Fails closed: DB outages are logged at debug level and swallowed so they
 never take down the primary workflow flow.
 """
 
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -33,9 +33,12 @@ def _transition_workflow_run(
     DB outage never takes down the primary workflow flow.
     """
     try:
-        from srunx.db.connection import initialized_connection, transaction
-        from srunx.db.repositories.base import now_iso
-        from srunx.sweep.state_service import WorkflowRunStateService
+        from srunx.observability.storage.connection import (
+            initialized_connection,
+            transaction,
+        )
+        from srunx.observability.storage.repositories.base import now_iso
+        from srunx.runtime.sweep.state_service import WorkflowRunStateService
 
         completed_at = (
             now_iso() if to_status in {"completed", "failed", "cancelled"} else None

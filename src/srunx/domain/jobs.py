@@ -9,8 +9,8 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
-from srunx.exceptions import WorkflowValidationError
-from srunx.logging import get_logger
+from srunx.common.exceptions import WorkflowValidationError
+from srunx.common.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 def _get_config_defaults():
     """Get configuration defaults, with lazy import to avoid circular dependencies."""
     try:
-        from srunx.config import get_config
+        from srunx.common.config import get_config
 
         return get_config()
     except ImportError:
@@ -534,7 +534,7 @@ class Job(BaseJob):
             "directory (matches pre-Phase-2 CLI behavior where ``os.getcwd()`` "
             "default produced the same effective chdir). SSH submission "
             "contexts populate this from the configured mount's remote path "
-            "via :func:`srunx.rendering.normalize_job_for_submission`."
+            "via :func:`srunx.runtime.rendering.normalize_job_for_submission`."
         ),
     )
 

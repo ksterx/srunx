@@ -1,12 +1,12 @@
-"""Tests for srunx.runner module."""
+"""Tests for srunx.runtime.workflow.runner module."""
 
 from unittest.mock import Mock, patch
 
 import pytest
 import yaml  # type: ignore
 
-from srunx.exceptions import WorkflowValidationError
-from srunx.models import (
+from srunx.common.exceptions import WorkflowValidationError
+from srunx.domain import (
     Job,
     JobDependency,
     JobEnvironment,
@@ -14,7 +14,7 @@ from srunx.models import (
     ShellJob,
     Workflow,
 )
-from srunx.runner import WorkflowRunner, run_workflow_from_file
+from srunx.runtime.workflow.runner import WorkflowRunner, run_workflow_from_file
 
 
 class TestWorkflowRunner:
@@ -1648,7 +1648,7 @@ class TestSafeEvalExec:
 
     def test_safe_eval_allows_datetime(self):
         """Safe builtins should include datetime module."""
-        from srunx.runner import _safe_eval
+        from srunx.runtime.workflow.safe_eval import _safe_eval
 
         # Use str() on datetime to avoid CPython __import__ in .today()
         result = _safe_eval("str(datetime.date(2025, 1, 15))", {})
@@ -1656,14 +1656,14 @@ class TestSafeEvalExec:
 
     def test_safe_eval_allows_math(self):
         """Safe builtins should include math module."""
-        from srunx.runner import _safe_eval
+        from srunx.runtime.workflow.safe_eval import _safe_eval
 
         assert _safe_eval("math.ceil(3.2)", {}) == 4
         assert _safe_eval("math.pi > 3.14", {}) is True
 
     def test_safe_eval_allows_basic_types(self):
         """Safe builtins should include basic constructors."""
-        from srunx.runner import _safe_eval
+        from srunx.runtime.workflow.safe_eval import _safe_eval
 
         assert _safe_eval("int('42')", {}) == 42
         assert _safe_eval("str(123)", {}) == "123"
@@ -1671,70 +1671,70 @@ class TestSafeEvalExec:
 
     def test_safe_eval_blocks_os_system(self):
         """os.system must not be accessible."""
-        from srunx.runner import _safe_eval
+        from srunx.runtime.workflow.safe_eval import _safe_eval
 
         with pytest.raises((NameError, AttributeError)):
             _safe_eval("os.system('echo pwned')", {})
 
     def test_safe_eval_blocks_import(self):
         """__import__ must not be accessible."""
-        from srunx.runner import _safe_eval
+        from srunx.runtime.workflow.safe_eval import _safe_eval
 
         with pytest.raises(NameError):
             _safe_eval("__import__('os')", {})
 
     def test_safe_eval_blocks_open(self):
         """open() must not be accessible."""
-        from srunx.runner import _safe_eval
+        from srunx.runtime.workflow.safe_eval import _safe_eval
 
         with pytest.raises(NameError):
             _safe_eval("open('/etc/passwd')", {})
 
     def test_safe_eval_blocks_subprocess(self):
         """subprocess must not be accessible."""
-        from srunx.runner import _safe_eval
+        from srunx.runtime.workflow.safe_eval import _safe_eval
 
         with pytest.raises(NameError):
             _safe_eval("subprocess.run(['ls'])", {})
 
     def test_safe_exec_blocks_import_statement(self):
         """import statements must fail in sandbox."""
-        from srunx.runner import _safe_exec
+        from srunx.runtime.workflow.safe_eval import _safe_exec
 
         with pytest.raises(ValueError, match="Unsupported statement"):
             _safe_exec("import os", {})
 
     def test_safe_eval_blocks_class_escape(self):
         """Prevent sandbox escape via __class__.__bases__.__subclasses__."""
-        from srunx.runner import _safe_eval
+        from srunx.runtime.workflow.safe_eval import _safe_eval
 
         with pytest.raises((AttributeError, ValueError)):
             _safe_eval("().__class__.__bases__[0].__subclasses__()", {})
 
     def test_safe_eval_blocks_type_escape(self):
         """Prevent sandbox escape via type()."""
-        from srunx.runner import _safe_eval
+        from srunx.runtime.workflow.safe_eval import _safe_eval
 
         with pytest.raises(NameError):
             _safe_eval("type(()).__bases__[0].__subclasses__()", {})
 
     def test_safe_exec_allows_result(self):
         """exec sandbox should allow setting result variable."""
-        from srunx.runner import _safe_exec
+        from srunx.runtime.workflow.safe_eval import _safe_exec
 
         ns = _safe_exec("result = 2 + 2", {})
         assert ns["result"] == 4
 
     def test_safe_eval_with_args(self):
         """Safe eval should accept local variables."""
-        from srunx.runner import _safe_eval
+        from srunx.runtime.workflow.safe_eval import _safe_eval
 
         result = _safe_eval("args['x'] + 1", {"args": {"x": 41}})
         assert result == 42
 
     def test_python_prefix_case_insensitive(self):
         """python: prefix detection must be case-insensitive."""
-        from srunx.runner import _has_python_prefix
+        from srunx.runtime.workflow.loader import _has_python_prefix
 
         assert _has_python_prefix("python: x")
         assert _has_python_prefix("Python: x")

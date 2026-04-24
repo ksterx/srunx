@@ -25,7 +25,7 @@ from srunx.cli.workflow import app as workflow_app
 def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Point the srunx state DB at a per-test tmp dir."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    from srunx.db.connection import init_db
+    from srunx.observability.storage.connection import init_db
 
     db_path = init_db(delete_legacy=False)
     yield db_path

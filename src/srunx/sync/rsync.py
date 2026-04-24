@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, ClassVar
 
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
 
 logger = get_logger(__name__)
 

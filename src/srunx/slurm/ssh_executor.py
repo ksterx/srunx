@@ -6,7 +6,7 @@ Step 4 of the Phase 2 SSH sweep integration. Provides:
   a single :class:`~srunx.slurm.ssh.SlurmSSHAdapter` lease.
 * :class:`SlurmSSHExecutorPool` — a thread-safe bounded pool of pre-built
   adapters for concurrent sweep cells, exposing a context-manager factory
-  that satisfies :data:`~srunx.client_protocol.WorkflowJobExecutorFactory`.
+  that satisfies :data:`~srunx.slurm.protocols.WorkflowJobExecutorFactory`.
 
 The pool keeps at most ``size`` SSH sessions open to the cluster and
 discards adapters whose paramiko transport dropped, so a sweep of N
@@ -21,20 +21,20 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
-from srunx.client_protocol import WorkflowJobExecutorProtocol
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
+from srunx.slurm.protocols import WorkflowJobExecutor
 from srunx.slurm.ssh import SlurmSSHAdapter, SlurmSSHAdapterSpec
 
 if TYPE_CHECKING:
     from srunx.callbacks import Callback
-    from srunx.models import RunnableJobType
-    from srunx.rendering import SubmissionRenderContext
+    from srunx.domain import RunnableJobType
+    from srunx.runtime.rendering import SubmissionRenderContext
 
 logger = get_logger(__name__)
 
 
 class SSHWorkflowJobExecutor:
-    """Thin :class:`WorkflowJobExecutorProtocol` wrapper over a single adapter.
+    """Thin :class:`WorkflowJobExecutor` wrapper over a single adapter.
 
     Yielded by :meth:`SlurmSSHExecutorPool.lease` for the lifetime of a
     single sweep cell's ``run`` + optional log retrieval. The underlying
@@ -203,7 +203,7 @@ class SlurmSSHExecutorPool:
             logger.debug(f"Adapter disconnect failed: {exc}")
 
     @contextmanager
-    def lease(self) -> Iterator[WorkflowJobExecutorProtocol]:
+    def lease(self) -> Iterator[WorkflowJobExecutor]:
         """Context manager yielding a pooled executor.
 
         Signature matches :data:`WorkflowJobExecutorFactory`, so this

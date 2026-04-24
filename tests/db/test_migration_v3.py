@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from srunx.db.connection import open_connection
-from srunx.db.migrations import (
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.migrations import (
     MIGRATIONS,
     Migration,
     _apply_fk_off_migration,
@@ -80,7 +80,7 @@ def _foreign_keys(conn: sqlite3.Connection, table: str) -> set[tuple[str, str, s
 
 
 def test_v3_applies_cleanly_on_top_of_v1_only_db(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         _apply_through_version(conn, 1)
@@ -104,7 +104,7 @@ def test_v3_applies_cleanly_on_top_of_v1_only_db(tmp_path: Path) -> None:
 
 
 def test_v3_idempotent_when_already_applied(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -126,7 +126,7 @@ def test_v3_idempotent_when_already_applied(tmp_path: Path) -> None:
 
 def test_events_unique_dedup_survives_v3(tmp_path: Path) -> None:
     """(kind, source_ref, payload_hash) UNIQUE must exist after rebuild."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -137,7 +137,7 @@ def test_events_unique_dedup_survives_v3(tmp_path: Path) -> None:
 
 
 def test_events_has_all_expected_indexes(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -152,7 +152,7 @@ def test_events_has_all_expected_indexes(tmp_path: Path) -> None:
 
 
 def test_watches_has_all_expected_indexes(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -166,7 +166,7 @@ def test_deliveries_foreign_keys_still_point_at_events_and_subscriptions(
     tmp_path: Path,
 ) -> None:
     """After rebuilding events, deliveries.event_id FK must still resolve."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -180,7 +180,7 @@ def test_deliveries_foreign_keys_still_point_at_events_and_subscriptions(
 
 def test_subscriptions_foreign_key_to_watches_survives(tmp_path: Path) -> None:
     """After rebuilding watches, subscriptions.watch_id FK must still resolve."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -191,7 +191,7 @@ def test_subscriptions_foreign_key_to_watches_survives(tmp_path: Path) -> None:
 
 
 def test_workflow_runs_sweep_run_id_fk_is_set_null(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -215,7 +215,7 @@ def test_workflow_runs_sweep_run_id_fk_is_set_null(tmp_path: Path) -> None:
 
 
 def test_existing_events_row_survives_v3(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         _apply_through_version(conn, 2)
@@ -248,7 +248,7 @@ def test_existing_events_row_survives_v3(tmp_path: Path) -> None:
 
 
 def test_existing_watches_row_survives_v3(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         _apply_through_version(conn, 2)
@@ -277,7 +277,7 @@ def test_existing_watches_row_survives_v3(tmp_path: Path) -> None:
 
 
 def test_new_event_kind_sweep_run_status_changed_is_allowed(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -297,7 +297,7 @@ def test_new_event_kind_sweep_run_status_changed_is_allowed(tmp_path: Path) -> N
 
 
 def test_new_watch_kind_sweep_run_is_allowed(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -311,7 +311,7 @@ def test_new_watch_kind_sweep_run_is_allowed(tmp_path: Path) -> None:
 
 def test_v3_foreign_keys_globally_consistent(tmp_path: Path) -> None:
     """``PRAGMA foreign_key_check`` must report no violations after V3."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)

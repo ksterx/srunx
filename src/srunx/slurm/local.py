@@ -8,27 +8,29 @@ import re
 import subprocess
 import tempfile
 import time
+from collections.abc import Sequence
 from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from srunx.logging import get_logger
-from srunx.models import (
+from srunx.callbacks import Callback
+from srunx.common.logging import get_logger
+from srunx.domain import (
     BaseJob,
     Job,
     JobStatus,
     JobType,
     RunnableJobType,
     ShellJob,
-    render_job_script,
-    render_shell_job_script,
 )
-from srunx.runtime.lifecycle import JobLifecycleSink, NoOpSink
+from srunx.observability import CallbackSink, DBRecorderSink
+from srunx.runtime.lifecycle import CompositeSink, JobLifecycleSink, NoOpSink
+from srunx.runtime.rendering import render_job_script, render_shell_job_script
 from srunx.slurm.parsing import GPU_TRES_RE
 from srunx.utils import get_job_status, job_status_msg
 
 if TYPE_CHECKING:
-    from srunx.rendering import SubmissionRenderContext
+    from srunx.runtime.rendering import SubmissionRenderContext
     from srunx.slurm.protocols import JobSnapshot, LogChunk
 
 logger = get_logger(__name__)
@@ -50,7 +52,7 @@ class LocalClient:
                 means no observability side effects are performed — DB
                 recording and callback dispatch live behind concrete
                 sinks in :mod:`srunx.observability`. The backward-compat
-                :class:`~srunx.client.Slurm` shim wires the default
+                :class:`~srunx.slurm.local.Slurm` shim wires the default
                 ``CallbackSink`` + ``DBRecorderSink`` chain from its
                 own ``callbacks=`` parameter.
         """
@@ -216,7 +218,7 @@ class LocalClient:
 
         Thin alias for :meth:`retrieve` that satisfies
         :class:`~srunx.slurm.protocols.JobOperations`. Raises
-        :class:`~srunx.exceptions.JobNotFoundError` when ``sacct`` has no row
+        :class:`~srunx.common.exceptions.JobNotFoundError` when ``sacct`` has no row
         for ``job_id`` (the underlying ``get_job_status`` uses
         ``ValueError`` for that condition, which we rewrap here to match
         the Protocol contract).
@@ -230,7 +232,7 @@ class LocalClient:
         (with the CLI tests migrated in lockstep) can tighten this
         contract.
         """
-        from srunx.exceptions import JobNotFoundError
+        from srunx.common.exceptions import JobNotFoundError
 
         try:
             return self.retrieve(job_id)
@@ -926,3 +928,58 @@ class LocalClient:
     def _get_default_template(self) -> str:
         """Get the default job template path."""
         return str(files("srunx.runtime").joinpath("_jinja", "base.slurm.jinja"))
+
+
+class Slurm(LocalClient):
+    """Legacy wrapper around :class:`LocalClient` honouring ``callbacks=``.
+
+    The legacy constructor accepted a list of :class:`Callback`
+    instances; this subclass translates them into a
+    :class:`~srunx.observability.CallbackSink` chain, appends the
+    default :class:`~srunx.observability.DBRecorderSink`, and forwards
+    the composed sink to the canonical ``LocalClient`` constructor.
+    """
+
+    def __init__(
+        self,
+        default_template: str | None = None,
+        callbacks: Sequence[Callback] | None = None,
+        sink: JobLifecycleSink | None = None,
+    ):
+        if sink is None:
+            # Order matches legacy behaviour: DB row is written first so
+            # callbacks can safely query ``srunx.observability.storage``
+            # for their own job (e.g. a future Slack message that links
+            # back to the history table). Changing this order is a
+            # breaking contract change.
+            sinks: list[JobLifecycleSink] = [DBRecorderSink()]
+            sinks.extend(CallbackSink(cb) for cb in (callbacks or []))
+            sink = CompositeSink(sinks)
+        super().__init__(default_template=default_template, sink=sink)
+        # Preserve ``self.callbacks`` for callers that introspect it.
+        self.callbacks = list(callbacks) if callbacks else []
+
+
+def submit_job(
+    job: RunnableJobType,
+    template_path: str | None = None,
+    callbacks: Sequence[Callback] | None = None,
+    verbose: bool = False,
+) -> RunnableJobType:
+    """Submit a job to SLURM (convenience function).
+
+    Routes through :class:`Slurm` so DB recording + legacy callbacks are
+    wired by default.
+    """
+    client = Slurm(callbacks=callbacks)
+    return client.submit(job, template_path=template_path, verbose=verbose)
+
+
+def retrieve_job(job_id: int) -> BaseJob:
+    """Get job status (convenience function)."""
+    return Slurm().retrieve(job_id)
+
+
+def cancel_job(job_id: int) -> None:
+    """Cancel a job (convenience function)."""
+    Slurm().cancel(job_id)

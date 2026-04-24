@@ -5,8 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from srunx.client_protocol import JobOperationsProtocol, LogChunk
-from srunx.exceptions import (
+from srunx.common.exceptions import (
     JobNotFoundError,
     RemoteCommandError,
     SubmissionError,
@@ -15,6 +14,7 @@ from srunx.exceptions import (
     TransportError,
     TransportTimeoutError,
 )
+from srunx.slurm.protocols import JobOperations, LogChunk
 
 
 class TestLogChunk:
@@ -36,11 +36,11 @@ class TestLogChunk:
             LogChunk(stdout="", stderr="", stdout_offset=0, stderr_offset=-1)
 
 
-class TestJobOperationsProtocol:
+class TestJobOperations:
     def test_is_runtime_checkable(self) -> None:
         """Phase 1 only defines the protocol; no implementation yet."""
         # A bare object doesn't satisfy the protocol
-        assert not isinstance(object(), JobOperationsProtocol)
+        assert not isinstance(object(), JobOperations)
 
 
 class TestExceptionHierarchy:

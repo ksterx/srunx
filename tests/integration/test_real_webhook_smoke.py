@@ -16,15 +16,17 @@ from typing import Any
 import anyio
 import pytest
 
-from srunx.db.connection import open_connection
-from srunx.db.migrations import apply_migrations
-from srunx.db.repositories.deliveries import DeliveryRepository
-from srunx.db.repositories.endpoints import EndpointRepository
-from srunx.db.repositories.events import EventRepository
-from srunx.db.repositories.subscriptions import SubscriptionRepository
-from srunx.db.repositories.watches import WatchRepository
-from srunx.notifications.service import NotificationService
-from srunx.pollers.delivery_poller import DeliveryPoller
+from srunx.observability.monitoring.pollers.delivery_poller import DeliveryPoller
+from srunx.observability.notifications.service import NotificationService
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.migrations import apply_migrations
+from srunx.observability.storage.repositories.deliveries import DeliveryRepository
+from srunx.observability.storage.repositories.endpoints import EndpointRepository
+from srunx.observability.storage.repositories.events import EventRepository
+from srunx.observability.storage.repositories.subscriptions import (
+    SubscriptionRepository,
+)
+from srunx.observability.storage.repositories.watches import WatchRepository
 
 _received: list[dict[str, Any]] = []
 
@@ -77,7 +79,7 @@ def test_delivery_poller_posts_to_local_http(
     monkeypatch.setattr(WebhookClient, "__init__", patched_init)
 
     # Seed DB: endpoint + watch + subscription + event.
-    db_path = tmp_path / "srunx.db"
+    db_path = tmp_path / "srunx.observability.storage"
     conn = open_connection(db_path)
     apply_migrations(conn)
 
@@ -168,7 +170,7 @@ def test_delivery_poller_retries_on_local_500(
         monkeypatch.setattr(WebhookClient, "__init__", patched_init)
 
         # Seed.
-        db_path = tmp_path / "srunx.db"
+        db_path = tmp_path / "srunx.observability.storage"
         conn = open_connection(db_path)
         apply_migrations(conn)
 

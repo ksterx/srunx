@@ -1,4 +1,4 @@
-"""Tests for ``srunx.client_protocol`` and ``queue_by_ids`` implementations."""
+"""Tests for ``srunx.slurm.protocols`` and ``queue_by_ids`` implementations."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ import subprocess
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-from srunx.client import Slurm
-from srunx.client_protocol import (
-    JobStatusInfo,
-    SlurmClientProtocol,
+from srunx.slurm.local import Slurm
+from srunx.slurm.protocols import (
+    Client,
+    JobSnapshot,
     parse_slurm_datetime,
     parse_slurm_duration,
 )
@@ -48,11 +48,11 @@ def test_parse_slurm_duration_invalid_values() -> None:
         assert parse_slurm_duration(v) is None
 
 
-# ---- JobStatusInfo ----
+# ---- JobSnapshot ----
 
 
 def test_job_status_info_defaults_optional() -> None:
-    info = JobStatusInfo(status="RUNNING")
+    info = JobSnapshot(status="RUNNING")
     assert info.status == "RUNNING"
     assert info.started_at is None
     assert info.completed_at is None
@@ -166,4 +166,4 @@ def test_queue_by_ids_cancelled_state_word_is_extracted() -> None:
 def test_slurm_satisfies_protocol() -> None:
     client = Slurm()
     # runtime_checkable — covers structural subtyping.
-    assert isinstance(client, SlurmClientProtocol)
+    assert isinstance(client, Client)

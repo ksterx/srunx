@@ -1,7 +1,7 @@
 """Tests for history router: /api/history/*
 
 Post-cutover (P2-4 #A) the router reads from
-:class:`~srunx.db.repositories.jobs.JobRepository` via a per-request
+:class:`~srunx.observability.storage.repositories.jobs.JobRepository` via a per-request
 SQLite connection, not the legacy ``JobHistory``. These tests seed
 the new DB directly so no dependency override is needed.
 """
@@ -15,8 +15,8 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from srunx.db.connection import init_db, open_connection
-from srunx.db.repositories.jobs import JobRepository
+from srunx.observability.storage.connection import init_db, open_connection
+from srunx.observability.storage.repositories.jobs import JobRepository
 from srunx.web.app import create_app
 from srunx.web.deps import get_adapter
 

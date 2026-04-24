@@ -18,17 +18,22 @@ from typing import Any
 import anyio
 import pytest
 
-from srunx.db.connection import open_connection
-from srunx.db.migrations import apply_migrations
-from srunx.db.models import Event
-from srunx.db.repositories.deliveries import DeliveryRepository
-from srunx.db.repositories.endpoints import EndpointRepository
-from srunx.db.repositories.events import EventRepository
-from srunx.db.repositories.subscriptions import SubscriptionRepository
-from srunx.db.repositories.watches import WatchRepository
-from srunx.notifications.adapters.base import DeliveryAdapter, DeliveryError
-from srunx.notifications.service import NotificationService
-from srunx.pollers.delivery_poller import DeliveryPoller
+from srunx.observability.monitoring.pollers.delivery_poller import DeliveryPoller
+from srunx.observability.notifications.adapters.base import (
+    DeliveryAdapter,
+    DeliveryError,
+)
+from srunx.observability.notifications.service import NotificationService
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.migrations import apply_migrations
+from srunx.observability.storage.models import Event
+from srunx.observability.storage.repositories.deliveries import DeliveryRepository
+from srunx.observability.storage.repositories.endpoints import EndpointRepository
+from srunx.observability.storage.repositories.events import EventRepository
+from srunx.observability.storage.repositories.subscriptions import (
+    SubscriptionRepository,
+)
+from srunx.observability.storage.repositories.watches import WatchRepository
 
 
 class RecordingAdapter:
@@ -50,7 +55,7 @@ class RecordingAdapter:
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
     """File-backed tmp DB with full schema applied."""
-    path = tmp_path / "srunx.db"
+    path = tmp_path / "srunx.observability.storage"
     conn = open_connection(path)
     apply_migrations(conn)
     conn.close()
@@ -103,7 +108,7 @@ def test_full_flow_event_to_delivered(db_path: Path) -> None:
     adapter = RecordingAdapter()
 
     # Patch registry for this test.
-    from srunx.notifications.adapters import registry
+    from srunx.observability.notifications.adapters import registry
 
     original = registry.ADAPTERS.copy()
     registry.ADAPTERS["slack_webhook"] = adapter  # type: ignore[assignment]
@@ -166,7 +171,7 @@ def test_full_flow_retry_then_deliver(db_path: Path) -> None:
     adapter = RecordingAdapter()
     adapter.fail_next = True
 
-    from srunx.notifications.adapters import registry
+    from srunx.observability.notifications.adapters import registry
 
     original = registry.ADAPTERS.copy()
     registry.ADAPTERS["slack_webhook"] = adapter  # type: ignore[assignment]
@@ -178,7 +183,7 @@ def test_full_flow_retry_then_deliver(db_path: Path) -> None:
         # Reset next_attempt_at so the row is immediately claimable again.
         conn3 = open_connection(db_path)
         try:
-            from srunx.db.repositories.base import now_iso
+            from srunx.observability.storage.repositories.base import now_iso
 
             conn3.execute("UPDATE deliveries SET next_attempt_at = ?", (now_iso(),))
         finally:

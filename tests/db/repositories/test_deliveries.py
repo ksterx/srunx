@@ -1,4 +1,4 @@
-"""Tests for :class:`srunx.db.repositories.deliveries.DeliveryRepository`.
+"""Tests for :class:`srunx.observability.storage.repositories.deliveries.DeliveryRepository`.
 
 Covers the outbox claim/lease mechanics (the hot path of the delivery
 poller) plus the straightforward CRUD + state-transition methods.
@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from srunx.db.connection import open_connection
-from srunx.db.migrations import apply_migrations
-from srunx.db.repositories.base import now_iso
-from srunx.db.repositories.deliveries import DeliveryRepository
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.migrations import apply_migrations
+from srunx.observability.storage.repositories.base import now_iso
+from srunx.observability.storage.repositories.deliveries import DeliveryRepository
 
 # ---------------------------------------------------------------------------
 # Fixtures: seed an endpoint + watch + subscription + event so we can insert
@@ -27,7 +27,7 @@ from srunx.db.repositories.deliveries import DeliveryRepository
 
 @pytest.fixture
 def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     connection = open_connection(db)
     apply_migrations(connection)
     try:
@@ -417,7 +417,7 @@ def test_claim_one_concurrent_second_connection_misses(
     # simpler: tmp_path-based fixture doesn't expose it, so reopen
     # against the same path used by ``conn`` fixture. We rebuild it
     # here using the same tmp_path.
-    db_path = tmp_path / "srunx.db"
+    db_path = tmp_path / "srunx.observability.storage"
     conn_b = open_connection(db_path)
     try:
         repo_b = DeliveryRepository(conn_b)

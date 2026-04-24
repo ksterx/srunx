@@ -1,7 +1,7 @@
 """Preset → event filter logic.
 
 Pure function with no external dependencies. Used by
-:class:`srunx.notifications.service.NotificationService` when deciding
+:class:`srunx.observability.notifications.service.NotificationService` when deciding
 whether a given subscription should generate a delivery for an event.
 """
 

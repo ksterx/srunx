@@ -10,7 +10,7 @@ translates observed transitions into:
 3. a new row in ``events`` (``INSERT OR IGNORE`` on
    ``(kind, source_ref, payload_hash)`` — producer-side dedup),
 4. zero-or-more rows in ``deliveries`` via
-   :meth:`srunx.notifications.service.NotificationService.fan_out`,
+   :meth:`srunx.observability.notifications.service.NotificationService.fan_out`,
 5. an automatic ``watches.close()`` once the job reaches a terminal
    state (so subsequent cycles do not re-query SLURM for jobs that
    have already finished).
@@ -39,7 +39,7 @@ because there is no per-watch claim / lease yet.
 
 TODO (Phase 2): add a ``leased_until`` / ``worker_id`` sweep on
 ``watches`` before shipping multi-worker deployments, mirroring the
-pattern already in :class:`~srunx.pollers.delivery_poller.DeliveryPoller`.
+pattern already in :class:`~srunx.observability.monitoring.pollers.delivery_poller.DeliveryPoller`.
 
 See ``.claude/specs/notification-and-state-persistence/design.md``
 § ActiveWatchPoller.
@@ -56,25 +56,29 @@ from typing import TYPE_CHECKING
 
 import anyio
 
-from srunx.client_protocol import JobStatusInfo, SlurmClientProtocol
-from srunx.db.connection import open_connection, transaction
-from srunx.db.models import WorkflowRunJob
-from srunx.db.repositories.base import now_iso
-from srunx.db.repositories.deliveries import DeliveryRepository
-from srunx.db.repositories.endpoints import EndpointRepository
-from srunx.db.repositories.events import EventRepository
-from srunx.db.repositories.job_state_transitions import (
+from srunx.common.logging import get_logger
+from srunx.observability.notifications.service import NotificationService
+from srunx.observability.storage.connection import open_connection, transaction
+from srunx.observability.storage.models import WorkflowRunJob
+from srunx.observability.storage.repositories.base import now_iso
+from srunx.observability.storage.repositories.deliveries import DeliveryRepository
+from srunx.observability.storage.repositories.endpoints import EndpointRepository
+from srunx.observability.storage.repositories.events import EventRepository
+from srunx.observability.storage.repositories.job_state_transitions import (
     JobStateTransitionRepository,
 )
-from srunx.db.repositories.jobs import JobRepository
-from srunx.db.repositories.subscriptions import SubscriptionRepository
-from srunx.db.repositories.watches import WatchRepository
-from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
-from srunx.db.repositories.workflow_runs import WorkflowRunRepository
-from srunx.logging import get_logger
-from srunx.notifications.service import NotificationService
+from srunx.observability.storage.repositories.jobs import JobRepository
+from srunx.observability.storage.repositories.subscriptions import (
+    SubscriptionRepository,
+)
+from srunx.observability.storage.repositories.watches import WatchRepository
+from srunx.observability.storage.repositories.workflow_run_jobs import (
+    WorkflowRunJobRepository,
+)
+from srunx.observability.storage.repositories.workflow_runs import WorkflowRunRepository
+from srunx.runtime.sweep.state_service import WorkflowRunStateService
+from srunx.slurm.protocols import Client, JobSnapshot
 from srunx.slurm.states import SLURM_TERMINAL_JOB_STATES
-from srunx.sweep.state_service import WorkflowRunStateService
 
 if TYPE_CHECKING:
     from srunx.transport.registry import TransportRegistry
@@ -119,7 +123,7 @@ def _default_notification_service_factory(
 def _dt_to_iso(value: object) -> str | None:
     """Return an ISO string for a ``datetime`` (or ``None``).
 
-    ``JobStatusInfo`` fields may be ``None`` or ``datetime`` — both
+    ``JobSnapshot`` fields may be ``None`` or ``datetime`` — both
     the repository writes and the event payload need ``str | None``.
     """
     if value is None:
@@ -241,7 +245,7 @@ def _parse_target_id(target_ref: str, expected_prefix: str) -> int | None:
 class ActiveWatchPoller:
     """Producer side of the notification Outbox.
 
-    One instance is registered with :class:`~srunx.pollers.supervisor.PollerSupervisor`
+    One instance is registered with :class:`~srunx.observability.monitoring.pollers.supervisor.PollerSupervisor`
     at web-server start-up. Each ``run_cycle`` iteration:
 
     1. Opens a dedicated sqlite3 connection (caller-owned for the
@@ -259,7 +263,7 @@ class ActiveWatchPoller:
 
     def __init__(
         self,
-        slurm_client: SlurmClientProtocol | None = None,
+        slurm_client: Client | None = None,
         *,
         registry: TransportRegistry | None = None,
         db_path: Path | None = None,
@@ -278,10 +282,10 @@ class ActiveWatchPoller:
             registry: V5 :class:`TransportRegistry`. When provided, the
                 poller groups watches by ``scheduler_key`` and routes
                 each group to the matching
-                :class:`SlurmClientProtocol` implementation (REQ-8).
+                :class:`Client` implementation (REQ-8).
                 Takes precedence over ``slurm_client``.
             db_path: Absolute path to the srunx state DB. ``None``
-                resolves to :func:`srunx.db.connection.get_db_path` at
+                resolves to :func:`srunx.observability.storage.connection.get_db_path` at
                 connection time.
             notification_service_factory: Override the constructor
                 used to build the per-cycle :class:`NotificationService`.
@@ -317,7 +321,7 @@ class ActiveWatchPoller:
         """Execute one cycle end-to-end.
 
         The method re-raises any exception it encounters so that
-        :class:`~srunx.pollers.supervisor.PollerSupervisor` can apply
+        :class:`~srunx.observability.monitoring.pollers.supervisor.PollerSupervisor` can apply
         exponential backoff. Every handled path writes a structured
         log entry summarising the cycle.
         """
@@ -395,7 +399,7 @@ class ActiveWatchPoller:
                 job_ids = [jid for _, jid in pairs]
                 try:
                     partial_result: dict[
-                        int, JobStatusInfo
+                        int, JobSnapshot
                     ] = await anyio.to_thread.run_sync(
                         queue_client.queue_by_ids, job_ids
                     )
@@ -449,8 +453,8 @@ class ActiveWatchPoller:
     # Job branch
     # ------------------------------------------------------------------
 
-    def _resolve_queue_client(self, scheduler_key: str) -> SlurmClientProtocol | None:
-        """Resolve ``scheduler_key`` to a ``SlurmClientProtocol``.
+    def _resolve_queue_client(self, scheduler_key: str) -> Client | None:
+        """Resolve ``scheduler_key`` to a ``Client``.
 
         Preference order:
 
@@ -481,7 +485,7 @@ class ActiveWatchPoller:
         *,
         conn: sqlite3.Connection,
         job_watches: list[tuple[int, int]],
-        queue_result: dict[int, JobStatusInfo],
+        queue_result: dict[int, JobSnapshot],
         scheduler_key: str,
         job_repo: JobRepository,
         transition_repo: JobStateTransitionRepository,

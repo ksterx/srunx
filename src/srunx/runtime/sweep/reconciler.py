@@ -20,15 +20,15 @@ from typing import Any
 
 import anyio
 
-from srunx.client_protocol import WorkflowJobExecutorFactory
-from srunx.db.connection import initialized_connection, transaction
-from srunx.db.models import SweepRun
-from srunx.db.repositories.sweep_runs import SweepRunRepository
-from srunx.logging import get_logger
-from srunx.rendering import SubmissionRenderContext
+from srunx.common.logging import get_logger
+from srunx.observability.storage.connection import initialized_connection, transaction
+from srunx.observability.storage.models import SweepRun
+from srunx.observability.storage.repositories.sweep_runs import SweepRunRepository
+from srunx.runtime.rendering import SubmissionRenderContext
 from srunx.runtime.sweep import CellSpec, SweepSpec
 from srunx.runtime.sweep.aggregator import evaluate_and_fire_sweep_status_event
 from srunx.runtime.sweep.orchestrator import SweepOrchestrator
+from srunx.slurm.protocols import WorkflowJobExecutorFactory
 
 logger = get_logger(__name__)
 

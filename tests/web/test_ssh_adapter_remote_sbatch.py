@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from srunx.callbacks import Callback
-from srunx.models import ShellJob
+from srunx.domain import ShellJob
 from srunx.slurm.ssh import SlurmSSHAdapter
 
 

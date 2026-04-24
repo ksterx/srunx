@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from srunx.db.connection import init_db
+from srunx.observability.storage.connection import init_db
 from srunx.web.app import create_app
 from srunx.web.deps import get_adapter
 
@@ -75,7 +75,7 @@ def client(  # type: ignore[misc]
     app.dependency_overrides[get_adapter] = lambda: mock_adapter
 
     with patch(
-        "srunx.web.routers.workflows._get_current_profile",
+        "srunx.web.services._submission_common.get_current_profile",
         return_value=fake_profile,
     ):
         yield TestClient(app, raise_server_exceptions=False)
@@ -119,7 +119,7 @@ class TestRunWorkflowWithSweep:
             patch("srunx.web.routers.workflows.SweepSpec") as spec_cls,
         ):
             # Let the real SweepSpec through; we only stub the orchestrator.
-            from srunx.sweep import SweepSpec as _RealSweepSpec
+            from srunx.runtime.sweep import SweepSpec as _RealSweepSpec
 
             spec_cls.side_effect = _RealSweepSpec
 
@@ -139,8 +139,10 @@ class TestRunWorkflowWithSweep:
             # Also seed the sweep_runs row so the response can load
             # the freshly-materialized row (materialize is stubbed so
             # no real row exists).
-            from srunx.db.connection import open_connection
-            from srunx.db.repositories.sweep_runs import SweepRunRepository
+            from srunx.observability.storage.connection import open_connection
+            from srunx.observability.storage.repositories.sweep_runs import (
+                SweepRunRepository,
+            )
 
             conn = open_connection()
             try:
@@ -193,12 +195,14 @@ class TestRunWorkflowWithSweep:
             patch("srunx.web.routers.workflows.SweepOrchestrator") as orch_cls,
             patch("srunx.web.routers.workflows.SweepSpec") as spec_cls,
         ):
-            from srunx.sweep import SweepSpec as _RealSweepSpec
+            from srunx.runtime.sweep import SweepSpec as _RealSweepSpec
 
             spec_cls.side_effect = _RealSweepSpec
 
-            from srunx.db.connection import open_connection
-            from srunx.db.repositories.sweep_runs import SweepRunRepository
+            from srunx.observability.storage.connection import open_connection
+            from srunx.observability.storage.repositories.sweep_runs import (
+                SweepRunRepository,
+            )
 
             conn = open_connection()
             try:
@@ -240,7 +244,7 @@ class TestRunWorkflowWithSweep:
         kwargs = orch_cls.call_args.kwargs
         assert "submission_context" in kwargs
 
-        from srunx.rendering import SubmissionRenderContext
+        from srunx.runtime.rendering import SubmissionRenderContext
 
         ctx = kwargs["submission_context"]
         assert isinstance(ctx, SubmissionRenderContext)
@@ -271,12 +275,14 @@ class TestRunWorkflowWithSweep:
             patch("srunx.web.routers.workflows.SweepOrchestrator") as orch_cls,
             patch("srunx.web.routers.workflows.SweepSpec") as spec_cls,
         ):
-            from srunx.sweep import SweepSpec as _RealSweepSpec
+            from srunx.runtime.sweep import SweepSpec as _RealSweepSpec
 
             spec_cls.side_effect = _RealSweepSpec
 
-            from srunx.db.connection import open_connection
-            from srunx.db.repositories.sweep_runs import SweepRunRepository
+            from srunx.observability.storage.connection import open_connection
+            from srunx.observability.storage.repositories.sweep_runs import (
+                SweepRunRepository,
+            )
 
             conn = open_connection()
             try:
@@ -496,12 +502,14 @@ class TestDispatchSweepShellJobGuard:
             patch("srunx.web.routers.workflows.SweepOrchestrator") as orch_cls,
             patch("srunx.web.routers.workflows.SweepSpec") as spec_cls,
         ):
-            from srunx.sweep import SweepSpec as _RealSweepSpec
+            from srunx.runtime.sweep import SweepSpec as _RealSweepSpec
 
             spec_cls.side_effect = _RealSweepSpec
 
-            from srunx.db.connection import open_connection
-            from srunx.db.repositories.sweep_runs import SweepRunRepository
+            from srunx.observability.storage.connection import open_connection
+            from srunx.observability.storage.repositories.sweep_runs import (
+                SweepRunRepository,
+            )
 
             conn = open_connection()
             try:
@@ -546,8 +554,10 @@ class TestDispatchSweepShellJobGuard:
 class TestSweepRunsReadAPI:
     def _seed_sweep(self, *, name: str = "wf") -> int:
         """Create a minimal sweep_runs row directly in the DB for list tests."""
-        from srunx.db.connection import open_connection
-        from srunx.db.repositories.sweep_runs import SweepRunRepository
+        from srunx.observability.storage.connection import open_connection
+        from srunx.observability.storage.repositories.sweep_runs import (
+            SweepRunRepository,
+        )
 
         conn = open_connection()
         try:
@@ -565,8 +575,10 @@ class TestSweepRunsReadAPI:
         return sweep_id
 
     def _seed_cell(self, sweep_run_id: int, *, args: dict[str, Any]) -> int:
-        from srunx.db.connection import open_connection
-        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+        from srunx.observability.storage.connection import open_connection
+        from srunx.observability.storage.repositories.workflow_runs import (
+            WorkflowRunRepository,
+        )
 
         conn = open_connection()
         try:
@@ -642,7 +654,7 @@ class TestSweepRunsReadAPI:
         resp = client.post(f"/api/sweep_runs/{sweep_id}/cancel")
         assert resp.status_code == 202, resp.text
 
-        from srunx.db.connection import open_connection
+        from srunx.observability.storage.connection import open_connection
 
         conn = open_connection()
         try:

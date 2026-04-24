@@ -178,84 +178,80 @@ uv run srunx sinfo --partition gpu
 ## Architecture Overview
 
 ### Current Modular Structure
+6-layer architecture: `interfaces → runtime / slurm / observability / integrations → domain → common`.
+
 ```
 src/srunx/
-├── models.py          # Data models and validation
-├── client.py          # SLURM client for job operations
-├── client_protocol.py # SlurmClientProtocol (unified queue_by_ids) + JobStatusInfo
-├── runner.py          # Workflow execution engine
-├── callbacks.py       # Callback system for job notifications
-├── config.py          # Configuration management and defaults
-├── exceptions.py      # Custom exceptions
-├── formatters.py      # Output formatting helpers (tables, JSON, status icons)
-├── logging.py         # Centralized logging configuration
-├── template.py        # SLURM script template rendering (Jinja2)
-├── utils.py           # Utility functions
-├── containers/        # Container runtime adapters
-│   ├── base.py        # ContainerRuntime abstract base
-│   ├── pyxis.py       # Pyxis/SLURM srun --container-* integration
-│   └── apptainer.py   # Apptainer / Singularity integration
-├── db/                # DB-backed state persistence (SQLite, ~/.config/srunx/srunx.db)
-│   ├── connection.py  # XDG path resolution, open_connection, init_db, transaction
-│   ├── migrations.py  # SCHEMA_V1 DDL + apply_migrations + bootstrap_from_config
-│   ├── models.py      # Pydantic row models (Endpoint/Watch/.../Delivery, WorkflowRun, Job...)
-│   ├── cli_helpers.py # DB helpers used by CLI commands
-│   └── repositories/  # Thin CRUD per table (JobRepository, DeliveryRepository, ...)
-├── notifications/     # Notification domain
-│   ├── sanitize.py    # sanitize_slack_text (shared with callbacks.SlackCallback)
-│   ├── presets.py     # should_deliver(preset, event_kind, to_status) filter
-│   ├── service.py     # NotificationService.fan_out (events → deliveries)
-│   └── adapters/      # DeliveryAdapter + SlackWebhookDeliveryAdapter + registry
-├── pollers/           # Long-running lifespan tasks
-│   ├── reload_guard.py      # is_reload_mode, should_start_pollers (pure functions)
-│   ├── supervisor.py        # PollerSupervisor (anyio task group + crash/grace)
-│   ├── active_watch_poller.py  # producer: SLURM → events → deliveries
-│   ├── delivery_poller.py   # consumer: claim → send → mark_delivered/retry
-│   └── resource_snapshotter.py # periodic ResourceSnapshot writes
-├── cli/               # Command-line interfaces
-│   ├── main.py        # Main CLI commands (submit, status, list, cancel, resources)
-│   ├── monitor.py     # Monitor subcommands (jobs, resources, cluster)
-│   ├── workflow.py    # Workflow CLI
-│   └── notification_setup.py  # Interactive endpoint setup helpers
-├── mcp/               # MCP server for AI agent integration
-│   └── server.py      # FastMCP tool surface (submit_job, list_jobs, run_workflow, ...)
-├── monitor/           # Job and resource monitoring
-│   ├── base.py        # BaseMonitor abstract class
-│   ├── job_monitor.py # JobMonitor for job state tracking (also writes to job_state_transitions for SSOT)
-│   ├── resource_monitor.py  # ResourceMonitor for GPU availability
-│   ├── resource_source.py   # Adapter-backed resource query abstraction
-│   ├── scheduler.py   # Periodic report scheduler (APScheduler)
-│   ├── report_types.py # Report payload dataclasses
-│   └── types.py       # MonitorConfig, ResourceSnapshot, WatchMode
-├── ssh/               # SSH integration for remote SLURM
-│   ├── core/          # Core SSH + SLURM-over-SSH building blocks
-│   │   ├── client.py        # SSHSlurmClient (high-level facade)
-│   │   ├── slurm.py         # SLURM command wrappers
-│   │   ├── connection.py    # Paramiko connection management
-│   │   ├── proxy_client.py  # ProxyJump / multi-hop SSH
-│   │   ├── file_manager.py  # SFTP upload / workspace sync
-│   │   ├── log_reader.py    # Remote log streaming
-│   │   ├── config.py        # SSH profile configuration
-│   │   ├── ssh_config.py    # ~/.ssh/config parser
-│   │   ├── client_types.py  # Shared dataclasses
-│   │   └── utils.py         # Misc SSH helpers
-│   ├── cli/           # SSH CLI interfaces
-│   │   ├── commands.py      # Typer command wiring (submit/logs/test/sync + profile)
-│   │   └── profile_impl.py  # Profile management implementations
-│   └── helpers/       # SSH utility tools
-│       └── proxy_helper.py  # Proxy connection analysis
-├── sync/              # rsync-based project directory synchronization
-│   └── rsync.py       # RsyncClient (delta transfers, ProxyJump via -e)
-├── templates/         # SLURM script templates
-│   └── base.slurm.jinja
-└── web/               # Web UI (FastAPI + React)
-    ├── routers/       # API endpoints (jobs, workflows, resources, endpoints, deliveries, ...)
-    └── frontend/      # React SPA
-        └── src/
-            ├── components/  # Reusable components (KeyValueEditor, JobPropertyPanel, etc.)
-            ├── hooks/       # Custom hooks (use-workflow-builder, etc.)
-            ├── pages/       # Page components (WorkflowBuilder, etc.)
-            └── lib/         # Types, API client
+├── __init__.py, _version.py, py.typed
+├── callbacks.py       # Callback base class + NotificationWatchCallback (SlackCallback lives under observability)
+├── utils.py           # get_job_status + job_status_msg
+│
+├── common/            # Shared infrastructure
+│   ├── config.py      # SrunxConfig + load/save helpers
+│   ├── exceptions.py  # WorkflowError / TransportError / JobNotFoundError / ...
+│   ├── logging.py     # configure_{cli,workflow}_logging + get_logger
+│   └── _version.py    # hatch-vcs auto-generated
+│
+├── domain/            # Canonical models (Pydantic v2)
+│   ├── jobs.py        # BaseJob / Job / ShellJob / JobResource / JobEnvironment / JobStatus / JobType / RunnableJobType / ContainerResource / DependencyType / JobDependency
+│   └── workflow.py    # Workflow
+│
+├── runtime/           # Execution layer (no I/O primitives; sits above slurm/observability)
+│   ├── lifecycle.py   # JobLifecycleSink / CompositeSink / NoOpSink
+│   ├── rendering.py   # render_job_script + render_shell_job_script + SubmissionRenderContext + normalize_job_for_submission
+│   ├── submission_plan.py  # plan_sbatch_submission / collect_touched_mounts / translate_local_to_remote / resolve_mount_for_path
+│   ├── templates.py   # Template registry + get_template_path / list_templates / get_template_info
+│   ├── _jinja/        # base.slurm.jinja
+│   ├── security/      # mount_paths + python_args guards
+│   ├── sweep/         # SweepSpec / SweepOrchestrator / aggregator / reconciler / state_service / expand
+│   └── workflow/      # WorkflowRunner + loader / safe_eval / transitions
+│
+├── slurm/             # SLURM wrappers (local + SSH)
+│   ├── local.py       # LocalClient + Slurm wrapper + submit_job/retrieve_job/cancel_job
+│   ├── ssh.py         # SlurmSSHAdapter
+│   ├── ssh_executor.py # SlurmSSHExecutorPool
+│   ├── protocols.py   # Client / JobOperations / WorkflowJobExecutor / JobSnapshot / LogChunk
+│   ├── parsing.py     # GPU_TRES_RE, parse_slurm_datetime, parse_slurm_duration
+│   └── states.py      # SLURM state normalisation
+│
+├── transport/         # Transport resolver (local vs ssh:<profile>)
+│   └── registry.py    # TransportHandle / resolve_transport / _build_ssh_handle
+│
+├── observability/     # Monitoring + notifications + state persistence
+│   ├── recorder.py    # DBRecorderSink
+│   ├── callbacks.py   # CallbackSink (adapts Callback → JobLifecycleSink)
+│   ├── monitoring/    # Job/resource monitoring + pollers + scheduled reports
+│   │   ├── base.py, job_monitor.py, resource_monitor.py, resource_source.py, scheduler.py, types.py
+│   │   └── pollers/   # supervisor, active_watch_poller, delivery_poller, resource_snapshotter, reload_guard
+│   ├── notifications/ # Notification domain (Slack + future channels)
+│   │   ├── sanitize.py, presets.py, service.py, legacy_slack.py, formatting.py
+│   │   └── adapters/  # DeliveryAdapter + SlackWebhookDeliveryAdapter + registry
+│   └── storage/       # SQLite persistence at $XDG_CONFIG_HOME/srunx/srunx.db
+│       ├── connection.py, migrations.py, models.py, cli_helpers.py
+│       └── repositories/  # JobRepository, DeliveryRepository, EndpointRepository, ...
+│
+├── containers/        # Container runtime adapters (ContainerRuntime / PyxisRuntime / ApptainerRuntime / LaunchSpec)
+├── ssh/               # SSH profile management + SSHSlurmClient + ProxyJump
+│   ├── core/          # client.py, slurm.py, connection.py, proxy_client.py, file_manager.py, log_reader.py, config.py, ssh_config.py
+│   ├── cli/           # ssh_app: profile CRUD + sync + test
+│   └── helpers/       # proxy_helper
+├── sync/              # rsync client + per-mount lock + owner_marker + hash_verify
+│
+├── cli/               # Typer CLI surface
+│   ├── main.py        # Thin Typer root (app, flow_app, sub-app registration)
+│   ├── watch.py       # watch app (jobs / resources / cluster)
+│   ├── workflow.py    # flow run executor (_execute_workflow)
+│   ├── commands/      # Per-command-group modules: jobs (sbatch/squeue/scancel/sinfo/tail), reports (sacct/sreport), config, templates, ui
+│   └── _helpers/      # debug_callback, sbatch_helpers, notification_setup, transport_options
+│
+├── mcp/               # MCP server for AI agent integration (FastMCP tool surface)
+│
+└── web/               # FastAPI + React web UI
+    ├── app.py, config.py, deps.py, sync_utils.py, serializers.py
+    ├── routers/       # workflows, jobs, runs, resources, endpoints, deliveries, subscriptions, watches, templates, sweep_runs, files, config, history
+    ├── schemas/       # Pydantic request/response DTOs (workflows, ...)
+    ├── services/      # Business logic extracted from routers (workflow_{storage,validation,run_query,run_cancellation,submission}, sweep_submission, _submission_common)
+    └── frontend/      # React SPA (components, hooks, pages, lib)
 ```
 
 ### Core Components

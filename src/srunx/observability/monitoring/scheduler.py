@@ -12,8 +12,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from loguru import logger
 
 from srunx.callbacks import Callback
-from srunx.client import Slurm
-from srunx.models import JobStatus
+from srunx.domain import JobStatus
 from srunx.observability.monitoring.resource_monitor import ResourceMonitor
 from srunx.observability.monitoring.types import (
     JobStats,
@@ -22,6 +21,7 @@ from srunx.observability.monitoring.types import (
     ResourceStats,
     RunningJob,
 )
+from srunx.slurm.local import Slurm
 
 
 class ScheduledReporter:
@@ -38,7 +38,7 @@ class ScheduledReporter:
 
     Example:
         >>> from srunx import Slurm
-        >>> from srunx.callbacks import SlackCallback
+        >>> from srunx.observability.notifications.legacy_slack import SlackCallback
         >>> from srunx.observability.monitoring.scheduler import ScheduledReporter
         >>> from srunx.observability.monitoring.types import ReportConfig
         >>>
@@ -338,9 +338,9 @@ class ScheduledReporter:
         ``sacct`` without the DB outage surfacing as zero-counts.
         """
         try:
-            from srunx.db.connection import init_db, open_connection
-            from srunx.db.repositories.base import now_iso
-            from srunx.db.repositories.jobs import JobRepository
+            from srunx.observability.storage.connection import init_db, open_connection
+            from srunx.observability.storage.repositories.base import now_iso
+            from srunx.observability.storage.repositories.jobs import JobRepository
 
             delta = self._parse_timeframe_to_delta(self.config.timeframe)
             to_at = now_iso()

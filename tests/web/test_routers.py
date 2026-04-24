@@ -74,7 +74,7 @@ def client(  # type: ignore[misc]
     monkeypatch: pytest.MonkeyPatch,
 ) -> TestClient:
     import srunx.web.config as config_mod
-    from srunx.db.connection import init_db
+    from srunx.observability.storage.connection import init_db
     from srunx.web.config import get_web_config
 
     # Isolate the srunx DB to a tmp dir so workflow_runs don't leak
@@ -110,7 +110,8 @@ def client(  # type: ignore[misc]
     app.dependency_overrides[get_adapter] = lambda: mock_adapter
 
     with patch(
-        "srunx.web.routers.workflows._get_current_profile", return_value=fake_profile
+        "srunx.web.services._submission_common.get_current_profile",
+        return_value=fake_profile,
     ):
         yield TestClient(app, raise_server_exceptions=False)
 
@@ -699,8 +700,10 @@ class TestWorkflowsRouter:
 
     def test_get_run_returns_created_run(self, client: TestClient) -> None:
         """Create a run via the repo, then fetch it by ID."""
-        from srunx.db.connection import open_connection
-        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+        from srunx.observability.storage.connection import open_connection
+        from srunx.observability.storage.repositories.workflow_runs import (
+            WorkflowRunRepository,
+        )
 
         conn = open_connection()
         try:
@@ -794,16 +797,18 @@ class TestWorkflowsRouter:
         + job_state_transitions, and open a workflow_run watch, so
         ActiveWatchPoller can aggregate child statuses after we return.
         """
-        from srunx.db.connection import open_connection
-        from srunx.db.repositories.job_state_transitions import (
+        from srunx.observability.storage.connection import open_connection
+        from srunx.observability.storage.repositories.job_state_transitions import (
             JobStateTransitionRepository,
         )
-        from srunx.db.repositories.jobs import JobRepository
-        from srunx.db.repositories.watches import WatchRepository
-        from srunx.db.repositories.workflow_run_jobs import (
+        from srunx.observability.storage.repositories.jobs import JobRepository
+        from srunx.observability.storage.repositories.watches import WatchRepository
+        from srunx.observability.storage.repositories.workflow_run_jobs import (
             WorkflowRunJobRepository,
         )
-        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+        from srunx.observability.storage.repositories.workflow_runs import (
+            WorkflowRunRepository,
+        )
 
         create_payload = {
             "name": "integration-run",
@@ -895,10 +900,14 @@ class TestWorkflowsRouter:
         the delivery poller fans ``workflow_run.status_changed`` events
         out to Slack/etc.
         """
-        from srunx.db.connection import open_connection
-        from srunx.db.repositories.endpoints import EndpointRepository
-        from srunx.db.repositories.subscriptions import SubscriptionRepository
-        from srunx.db.repositories.watches import WatchRepository
+        from srunx.observability.storage.connection import open_connection
+        from srunx.observability.storage.repositories.endpoints import (
+            EndpointRepository,
+        )
+        from srunx.observability.storage.repositories.subscriptions import (
+            SubscriptionRepository,
+        )
+        from srunx.observability.storage.repositories.watches import WatchRepository
 
         # Seed an endpoint row — real FK target.
         conn = open_connection()
@@ -961,9 +970,11 @@ class TestWorkflowsRouter:
         self, client: TestClient, mock_adapter: MagicMock
     ) -> None:
         """Default path — watch is created, but no subscription."""
-        from srunx.db.connection import open_connection
-        from srunx.db.repositories.subscriptions import SubscriptionRepository
-        from srunx.db.repositories.watches import WatchRepository
+        from srunx.observability.storage.connection import open_connection
+        from srunx.observability.storage.repositories.subscriptions import (
+            SubscriptionRepository,
+        )
+        from srunx.observability.storage.repositories.watches import WatchRepository
 
         resp = client.post(
             "/api/workflows/create",
@@ -1043,8 +1054,10 @@ class TestWorkflowsRouter:
         # The early reject must short-circuit BEFORE phase 4: no sbatch
         # calls, and no ``workflow_runs`` row for the aborted run.
         mock_adapter.submit_job.assert_not_called()
-        from srunx.db.connection import open_connection
-        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+        from srunx.observability.storage.connection import open_connection
+        from srunx.observability.storage.repositories.workflow_runs import (
+            WorkflowRunRepository,
+        )
 
         conn = open_connection()
         try:
@@ -1094,11 +1107,13 @@ class TestWorkflowsRouter:
         persist the failed node as a membership row with
         ``job_id=None`` so GET /runs/{id} faithfully reflects the DAG.
         """
-        from srunx.db.connection import open_connection
-        from srunx.db.repositories.workflow_run_jobs import (
+        from srunx.observability.storage.connection import open_connection
+        from srunx.observability.storage.repositories.workflow_run_jobs import (
             WorkflowRunJobRepository,
         )
-        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+        from srunx.observability.storage.repositories.workflow_runs import (
+            WorkflowRunRepository,
+        )
 
         create_payload = {
             "name": "partial-fail",
@@ -1191,10 +1206,14 @@ class TestWorkflowsRouter:
 
     def test_cancel_run(self, client: TestClient, mock_adapter: MagicMock) -> None:
         """Create a run + memberships via repos, then cancel it."""
-        from srunx.db.connection import open_connection
-        from srunx.db.repositories.jobs import JobRepository
-        from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
-        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+        from srunx.observability.storage.connection import open_connection
+        from srunx.observability.storage.repositories.jobs import JobRepository
+        from srunx.observability.storage.repositories.workflow_run_jobs import (
+            WorkflowRunJobRepository,
+        )
+        from srunx.observability.storage.repositories.workflow_runs import (
+            WorkflowRunRepository,
+        )
 
         conn = open_connection()
         try:
@@ -1255,8 +1274,10 @@ class TestWorkflowsRouter:
         WorkflowRunStateService so a ``workflow_run.status_changed``
         event is emitted and subscribers receive a delivery.
         """
-        from srunx.db.connection import open_connection
-        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+        from srunx.observability.storage.connection import open_connection
+        from srunx.observability.storage.repositories.workflow_runs import (
+            WorkflowRunRepository,
+        )
 
         conn = open_connection()
         try:
@@ -1289,9 +1310,11 @@ class TestWorkflowsRouter:
         assert payload["from_status"] == "running"
 
     def test_cancel_run_already_terminal(self, client: TestClient) -> None:
-        from srunx.db.connection import open_connection
-        from srunx.db.repositories.base import now_iso
-        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+        from srunx.observability.storage.connection import open_connection
+        from srunx.observability.storage.repositories.base import now_iso
+        from srunx.observability.storage.repositories.workflow_runs import (
+            WorkflowRunRepository,
+        )
 
         conn = open_connection()
         try:
@@ -2112,7 +2135,7 @@ class TestWorkflowsRouterInPlace:
         with ExitStack() as stack:
             stack.enter_context(
                 patch(
-                    "srunx.web.routers.workflows._get_current_profile",
+                    "srunx.web.services._submission_common.get_current_profile",
                     return_value=profile,
                 )
             )
@@ -2482,7 +2505,7 @@ class TestWorkflowsRouterInPlace:
 
         with (
             patch(
-                "srunx.web.routers.workflows._get_current_profile",
+                "srunx.web.services._submission_common.get_current_profile",
                 return_value=real_profile,
             ),
             patch(

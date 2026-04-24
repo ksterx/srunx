@@ -6,17 +6,25 @@ import sqlite3
 import threading
 from collections.abc import Iterator
 
-from srunx.db.connection import open_connection
-from srunx.db.repositories.deliveries import DeliveryRepository
-from srunx.db.repositories.endpoints import EndpointRepository
-from srunx.db.repositories.events import EventRepository
-from srunx.db.repositories.job_state_transitions import JobStateTransitionRepository
-from srunx.db.repositories.jobs import JobRepository
-from srunx.db.repositories.resource_snapshots import ResourceSnapshotRepository
-from srunx.db.repositories.subscriptions import SubscriptionRepository
-from srunx.db.repositories.watches import WatchRepository
-from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
-from srunx.db.repositories.workflow_runs import WorkflowRunRepository
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.repositories.deliveries import DeliveryRepository
+from srunx.observability.storage.repositories.endpoints import EndpointRepository
+from srunx.observability.storage.repositories.events import EventRepository
+from srunx.observability.storage.repositories.job_state_transitions import (
+    JobStateTransitionRepository,
+)
+from srunx.observability.storage.repositories.jobs import JobRepository
+from srunx.observability.storage.repositories.resource_snapshots import (
+    ResourceSnapshotRepository,
+)
+from srunx.observability.storage.repositories.subscriptions import (
+    SubscriptionRepository,
+)
+from srunx.observability.storage.repositories.watches import WatchRepository
+from srunx.observability.storage.repositories.workflow_run_jobs import (
+    WorkflowRunJobRepository,
+)
+from srunx.observability.storage.repositories.workflow_runs import WorkflowRunRepository
 from srunx.slurm.ssh import SlurmSSHAdapter
 
 # Thread-safe singleton SSH adapter — connected at startup via lifespan

@@ -1,7 +1,7 @@
 """Workflow aggregate — a named DAG of jobs with dependency validation."""
 
+from srunx.common.exceptions import WorkflowValidationError
 from srunx.domain.jobs import Job, RunnableJobType, ShellJob
-from srunx.exceptions import WorkflowValidationError
 
 
 class Workflow:

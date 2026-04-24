@@ -15,14 +15,18 @@ from pathlib import Path
 import anyio
 import pytest
 
-from srunx.client_protocol import JobStatusInfo
-from srunx.db.repositories.deliveries import DeliveryRepository
-from srunx.db.repositories.endpoints import EndpointRepository
-from srunx.db.repositories.jobs import JobRepository
-from srunx.db.repositories.subscriptions import SubscriptionRepository
-from srunx.db.repositories.watches import WatchRepository
-from srunx.db.repositories.workflow_run_jobs import WorkflowRunJobRepository
-from srunx.pollers.active_watch_poller import ActiveWatchPoller
+from srunx.observability.monitoring.pollers.active_watch_poller import ActiveWatchPoller
+from srunx.observability.storage.repositories.deliveries import DeliveryRepository
+from srunx.observability.storage.repositories.endpoints import EndpointRepository
+from srunx.observability.storage.repositories.jobs import JobRepository
+from srunx.observability.storage.repositories.subscriptions import (
+    SubscriptionRepository,
+)
+from srunx.observability.storage.repositories.watches import WatchRepository
+from srunx.observability.storage.repositories.workflow_run_jobs import (
+    WorkflowRunJobRepository,
+)
+from srunx.slurm.protocols import JobSnapshot
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -30,12 +34,12 @@ from srunx.pollers.active_watch_poller import ActiveWatchPoller
 
 
 class StubSlurmClient:
-    """Minimal ``SlurmClientProtocol`` stub (no job watches in this test)."""
+    """Minimal ``Client`` stub (no job watches in this test)."""
 
     def __init__(self) -> None:
         self.calls: list[list[int]] = []
 
-    def queue_by_ids(self, job_ids: list[int]) -> dict[int, JobStatusInfo]:
+    def queue_by_ids(self, job_ids: list[int]) -> dict[int, JobSnapshot]:
         self.calls.append(list(job_ids))
         return {}
 

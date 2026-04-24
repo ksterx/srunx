@@ -1,4 +1,4 @@
-"""Phase 2: LSP alignment of Slurm and SlurmSSHAdapter with JobOperationsProtocol.
+"""Phase 2: LSP alignment of Slurm and SlurmSSHAdapter with JobOperations.
 
 These tests verify the new Protocol-conformant entry points added in
 ``src/srunx/client.py`` and ``src/srunx/web/ssh_adapter.py`` without
@@ -13,14 +13,14 @@ from unittest.mock import patch
 
 import pytest
 
-from srunx.client import Slurm
-from srunx.client_protocol import JobOperationsProtocol, LogChunk
+from srunx.slurm.local import Slurm
+from srunx.slurm.protocols import JobOperations, LogChunk
 
 
 class TestSlurmProtocolCompliance:
     def test_slurm_satisfies_protocol(self) -> None:
-        """``Slurm()`` must be a runtime-checkable JobOperationsProtocol."""
-        assert isinstance(Slurm(), JobOperationsProtocol)
+        """``Slurm()`` must be a runtime-checkable JobOperations."""
+        assert isinstance(Slurm(), JobOperations)
 
     def test_status_delegates_to_retrieve(self) -> None:
         """``status`` is a thin alias for ``retrieve`` on the happy path."""
@@ -31,7 +31,7 @@ class TestSlurmProtocolCompliance:
 
     def test_status_wraps_unknown_id_into_job_not_found(self) -> None:
         """``retrieve`` raises ValueError on missing jobs; status converts it."""
-        from srunx.exceptions import JobNotFoundError
+        from srunx.common.exceptions import JobNotFoundError
 
         s = Slurm()
         with patch.object(s, "retrieve", side_effect=ValueError("no such job")):
@@ -104,15 +104,15 @@ class TestSlurmSSHAdapterProtocolCompliance:
 
     def test_ssh_adapter_status_returns_base_job_shape(self) -> None:
         """``status`` returns a BaseJob whose ``status`` attribute is a JobStatus."""
-        from srunx.client_protocol import JobStatusInfo
-        from srunx.models import BaseJob, JobStatus
+        from srunx.domain import BaseJob, JobStatus
+        from srunx.slurm.protocols import JobSnapshot
         from srunx.slurm.ssh import SlurmSSHAdapter
 
         # Patch out ``queue_by_ids`` to avoid touching any SSH client.
         with patch.object(
             SlurmSSHAdapter,
             "queue_by_ids",
-            return_value={99: JobStatusInfo(status="RUNNING")},
+            return_value={99: JobSnapshot(status="RUNNING")},
         ):
             # Bypass __init__ entirely — we only test the status() path shape.
             adapter = SlurmSSHAdapter.__new__(SlurmSSHAdapter)
@@ -123,7 +123,7 @@ class TestSlurmSSHAdapterProtocolCompliance:
 
     def test_ssh_adapter_status_raises_job_not_found(self) -> None:
         """Missing job → JobNotFoundError, matching the Protocol contract."""
-        from srunx.exceptions import JobNotFoundError
+        from srunx.common.exceptions import JobNotFoundError
         from srunx.slurm.ssh import SlurmSSHAdapter
 
         with patch.object(SlurmSSHAdapter, "queue_by_ids", return_value={}):
@@ -133,7 +133,7 @@ class TestSlurmSSHAdapterProtocolCompliance:
 
     def test_ssh_adapter_queue_returns_list_base_job(self) -> None:
         """``queue`` adapts list_jobs dicts into Pydantic BaseJob instances."""
-        from srunx.models import BaseJob, JobStatus
+        from srunx.domain import BaseJob, JobStatus
         from srunx.slurm.ssh import SlurmSSHAdapter
 
         fake_rows = [
@@ -159,7 +159,7 @@ class TestSlurmSSHAdapterProtocolCompliance:
 
     def test_ssh_adapter_tail_log_incremental_returns_log_chunk(self) -> None:
         """``tail_log_incremental`` returns a Pydantic LogChunk."""
-        from srunx.client_protocol import LogChunk
+        from srunx.slurm.protocols import LogChunk
         from srunx.slurm.ssh import SlurmSSHAdapter
 
         with patch.object(

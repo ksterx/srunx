@@ -1,4 +1,4 @@
-"""Tests for ``srunx.db.migrations``."""
+"""Tests for ``srunx.observability.storage.migrations``."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from srunx.db.connection import open_connection
-from srunx.db.migrations import (
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.migrations import (
     apply_migrations,
     bootstrap_from_config,
 )
@@ -18,7 +18,7 @@ from srunx.db.migrations import (
 
 
 def test_apply_migrations_applies_v1_on_fresh_db(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         applied = apply_migrations(conn)
@@ -28,7 +28,7 @@ def test_apply_migrations_applies_v1_on_fresh_db(tmp_path: Path) -> None:
 
 
 def test_apply_migrations_is_idempotent(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         first = apply_migrations(conn)
@@ -61,7 +61,7 @@ def test_apply_migrations_concurrent_callers_do_not_duplicate(
     """
     import threading
 
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     errors: list[BaseException] = []
     barrier = threading.Barrier(2)
 
@@ -95,7 +95,7 @@ def test_apply_migrations_concurrent_callers_do_not_duplicate(
 
 
 def test_apply_migrations_creates_all_tables(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -126,7 +126,7 @@ def test_apply_migrations_creates_all_tables(tmp_path: Path) -> None:
 def test_resource_snapshots_gpu_utilization_is_null_when_total_zero(
     tmp_path: Path,
 ) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -178,7 +178,7 @@ def _open_migrated(db: Path):
 
 
 def test_bootstrap_no_webhook_records_guard_only(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = _open_migrated(db)
     try:
         inserted = bootstrap_from_config(
@@ -196,7 +196,7 @@ def test_bootstrap_no_webhook_records_guard_only(tmp_path: Path) -> None:
 
 
 def test_bootstrap_inserts_endpoint_and_guard(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = _open_migrated(db)
     try:
         inserted = bootstrap_from_config(
@@ -224,7 +224,7 @@ def test_bootstrap_inserts_endpoint_and_guard(tmp_path: Path) -> None:
 
 
 def test_bootstrap_is_idempotent(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = _open_migrated(db)
     try:
         cfg = _FakeConfig(
@@ -243,7 +243,7 @@ def test_bootstrap_is_idempotent(tmp_path: Path) -> None:
 
 
 def test_bootstrap_rolls_back_guard_on_insert_failure(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = _open_migrated(db)
     try:
         # Pre-create an endpoint with the name 'default' to force UNIQUE violation.

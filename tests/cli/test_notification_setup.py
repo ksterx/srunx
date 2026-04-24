@@ -19,7 +19,7 @@ from srunx.cli._helpers.notification_setup import attach_notification_watch
 def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Isolate XDG_CONFIG_HOME so the helper writes into a tmp DB."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    from srunx.db.connection import init_db
+    from srunx.observability.storage.connection import init_db
 
     return init_db(delete_legacy=False)
 
@@ -30,9 +30,9 @@ def _seed_endpoint_and_job(
     disabled: bool = False,
 ) -> tuple[int, int]:
     """Create an endpoint row + a corresponding job row. Returns (endpoint_id, job_id)."""
-    from srunx.db.connection import open_connection
-    from srunx.db.repositories.endpoints import EndpointRepository
-    from srunx.db.repositories.jobs import JobRepository
+    from srunx.observability.storage.connection import open_connection
+    from srunx.observability.storage.repositories.endpoints import EndpointRepository
+    from srunx.observability.storage.repositories.jobs import JobRepository
 
     conn = open_connection()
     try:
@@ -65,12 +65,14 @@ def test_attach_watch_happy_path(isolated_db: Path) -> None:
 
     assert subscription_id is not None
 
-    from srunx.db.connection import open_connection
-    from srunx.db.repositories.job_state_transitions import (
+    from srunx.observability.storage.connection import open_connection
+    from srunx.observability.storage.repositories.job_state_transitions import (
         JobStateTransitionRepository,
     )
-    from srunx.db.repositories.subscriptions import SubscriptionRepository
-    from srunx.db.repositories.watches import WatchRepository
+    from srunx.observability.storage.repositories.subscriptions import (
+        SubscriptionRepository,
+    )
+    from srunx.observability.storage.repositories.watches import WatchRepository
 
     conn = open_connection()
     try:
@@ -95,8 +97,8 @@ def test_attach_watch_happy_path(isolated_db: Path) -> None:
 def test_attach_watch_missing_endpoint_is_noop(isolated_db: Path) -> None:
     """Unknown endpoint name logs a warning and returns None."""
     # Seed only the job — no endpoint with the requested name.
-    from srunx.db.connection import open_connection
-    from srunx.db.repositories.jobs import JobRepository
+    from srunx.observability.storage.connection import open_connection
+    from srunx.observability.storage.repositories.jobs import JobRepository
 
     conn = open_connection()
     try:
@@ -144,11 +146,13 @@ def test_cli_sbatch_with_endpoint_creates_watch_and_subscription(
     from typer.testing import CliRunner
 
     from srunx.cli.main import app
-    from srunx.db.connection import init_db, open_connection
-    from srunx.db.repositories.endpoints import EndpointRepository
-    from srunx.db.repositories.subscriptions import SubscriptionRepository
-    from srunx.db.repositories.watches import WatchRepository
-    from srunx.models import BaseJob, Job, JobStatus
+    from srunx.domain import BaseJob, Job, JobStatus
+    from srunx.observability.storage.connection import init_db, open_connection
+    from srunx.observability.storage.repositories.endpoints import EndpointRepository
+    from srunx.observability.storage.repositories.subscriptions import (
+        SubscriptionRepository,
+    )
+    from srunx.observability.storage.repositories.watches import WatchRepository
 
     # Isolate the state DB
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
@@ -173,7 +177,7 @@ def test_cli_sbatch_with_endpoint_creates_watch_and_subscription(
             job._status = JobStatus.PENDING
         return job
 
-    monkeypatch.setattr("srunx.client.Slurm.submit", fake_submit)
+    monkeypatch.setattr("srunx.slurm.local.Slurm.submit", fake_submit)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -229,9 +233,9 @@ def test_cli_sbatch_with_unknown_endpoint_still_succeeds(
     from typer.testing import CliRunner
 
     from srunx.cli.main import app
-    from srunx.db.connection import init_db, open_connection
-    from srunx.db.repositories.watches import WatchRepository
-    from srunx.models import BaseJob, JobStatus
+    from srunx.domain import BaseJob, JobStatus
+    from srunx.observability.storage.connection import init_db, open_connection
+    from srunx.observability.storage.repositories.watches import WatchRepository
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     init_db(delete_legacy=False)
@@ -242,7 +246,7 @@ def test_cli_sbatch_with_unknown_endpoint_still_succeeds(
             job._status = JobStatus.PENDING
         return job
 
-    monkeypatch.setattr("srunx.client.Slurm.submit", fake_submit)
+    monkeypatch.setattr("srunx.slurm.local.Slurm.submit", fake_submit)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -283,8 +287,8 @@ def test_rejects_unimplemented_preset(isolated_db: Path) -> None:
 
     assert subscription_id is None
 
-    from srunx.db.connection import open_connection
-    from srunx.db.repositories.watches import WatchRepository
+    from srunx.observability.storage.connection import open_connection
+    from srunx.observability.storage.repositories.watches import WatchRepository
 
     conn = open_connection()
     try:
@@ -316,9 +320,11 @@ def test_dedups_existing_watch_subscription(isolated_db: Path) -> None:
     # creating a new one.
     assert second == first
 
-    from srunx.db.connection import open_connection
-    from srunx.db.repositories.subscriptions import SubscriptionRepository
-    from srunx.db.repositories.watches import WatchRepository
+    from srunx.observability.storage.connection import open_connection
+    from srunx.observability.storage.repositories.subscriptions import (
+        SubscriptionRepository,
+    )
+    from srunx.observability.storage.repositories.watches import WatchRepository
 
     conn = open_connection()
     try:

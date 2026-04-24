@@ -5,16 +5,16 @@ These were siblings of ``sbatch`` in the old monolithic ``main.py``; they live
 here so ``commands/jobs.py`` only holds Typer command functions.
 """
 
-import sys
 from pathlib import Path
 from typing import Any
 
 import typer
 from rich.console import Console
 
+import srunx.slurm.local as _slurm_local  # module-level so ``patch("srunx.slurm.local.Slurm")`` intercepts
 from srunx.callbacks import Callback
-from srunx.logging import get_logger
-from srunx.models import ContainerResource
+from srunx.common.logging import get_logger
+from srunx.domain import ContainerResource
 
 logger = get_logger(__name__)
 
@@ -63,8 +63,8 @@ def _submit_via_transport(
     sbatch's precedence. Closes Codex blocker #1: previously these
     flags silently no-op'd in ShellJob (positional-script) mode.
     """
-    from srunx.exceptions import TransportError
-    from srunx.models import ShellJob as _ShellJob
+    from srunx.common.exceptions import TransportError
+    from srunx.domain import ShellJob as _ShellJob
     from srunx.runtime.submission_plan import (
         SubmissionMode,
         plan_sbatch_submission,
@@ -73,11 +73,7 @@ def _submit_via_transport(
     from srunx.sync.service import SyncAbortedError, mount_sync_session
 
     if rt.transport_type == "local":
-        # Resolve ``Slurm`` via the ``srunx.cli.main`` module so
-        # ``patch("srunx.cli.main.Slurm")`` in tests continues to
-        # intercept the instantiation from this helper.
-        _main_module = sys.modules["srunx.cli.main"]
-        client = _main_module.Slurm(callbacks=callbacks)
+        client = _slurm_local.Slurm(callbacks=callbacks)
         return client.submit(job, template_path=template, verbose=verbose)
 
     # --- SSH transport ---

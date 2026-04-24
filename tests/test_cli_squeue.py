@@ -7,7 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from srunx.cli.main import app
-from srunx.models import Job, JobResource, JobStatus
+from srunx.domain import Job, JobResource, JobStatus
 
 
 @pytest.fixture
@@ -68,7 +68,7 @@ class TestListCommand:
 
     def test_list_table_format_default(self, runner, mock_jobs):
         """Test list command with default table format."""
-        with patch("srunx.cli.main.Slurm") as mock_slurm:
+        with patch("srunx.slurm.local.Slurm") as mock_slurm:
             mock_client = MagicMock()
             mock_client.queue.return_value = mock_jobs
             mock_slurm.return_value = mock_client
@@ -88,7 +88,7 @@ class TestListCommand:
 
     def test_list_table_format_with_gpus(self, runner, mock_jobs):
         """Test list command with --show-gpus flag."""
-        with patch("srunx.cli.main.Slurm") as mock_slurm:
+        with patch("srunx.slurm.local.Slurm") as mock_slurm:
             mock_client = MagicMock()
             mock_client.queue.return_value = mock_jobs
             mock_slurm.return_value = mock_client
@@ -104,7 +104,7 @@ class TestListCommand:
 
     def test_list_json_format_without_gpus(self, runner, mock_jobs):
         """Test list command with JSON format."""
-        with patch("srunx.cli.main.Slurm") as mock_slurm:
+        with patch("srunx.slurm.local.Slurm") as mock_slurm:
             mock_client = MagicMock()
             mock_client.queue.return_value = mock_jobs
             mock_slurm.return_value = mock_client
@@ -125,7 +125,7 @@ class TestListCommand:
 
     def test_list_json_format_with_gpus(self, runner, mock_jobs):
         """Test list command with JSON format and --show-gpus."""
-        with patch("srunx.cli.main.Slurm") as mock_slurm:
+        with patch("srunx.slurm.local.Slurm") as mock_slurm:
             mock_client = MagicMock()
             mock_client.queue.return_value = mock_jobs
             mock_slurm.return_value = mock_client
@@ -145,7 +145,7 @@ class TestListCommand:
 
     def test_list_empty_queue(self, runner):
         """Test list command with empty job queue."""
-        with patch("srunx.cli.main.Slurm") as mock_slurm:
+        with patch("srunx.slurm.local.Slurm") as mock_slurm:
             mock_client = MagicMock()
             mock_client.queue.return_value = []
             mock_slurm.return_value = mock_client
@@ -164,7 +164,7 @@ class TestListCommand:
         job.resources = JobResource(nodes=5, gpus_per_node=3)
         jobs.append(job)
 
-        with patch("srunx.cli.main.Slurm") as mock_slurm:
+        with patch("srunx.slurm.local.Slurm") as mock_slurm:
             mock_client = MagicMock()
             mock_client.queue.return_value = jobs
             mock_slurm.return_value = mock_client
@@ -181,7 +181,7 @@ class TestListCommand:
         job._status = JobStatus.RUNNING
         # No resources set
 
-        with patch("srunx.cli.main.Slurm") as mock_slurm:
+        with patch("srunx.slurm.local.Slurm") as mock_slurm:
             mock_client = MagicMock()
             mock_client.queue.return_value = [job]
             mock_slurm.return_value = mock_client
@@ -195,7 +195,7 @@ class TestListCommand:
 
     def test_list_error_handling(self, runner):
         """Test list command error handling."""
-        with patch("srunx.cli.main.Slurm") as mock_slurm:
+        with patch("srunx.slurm.local.Slurm") as mock_slurm:
             mock_client = MagicMock()
             mock_client.queue.side_effect = Exception("SLURM connection error")
             mock_slurm.return_value = mock_client

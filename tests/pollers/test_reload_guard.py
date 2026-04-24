@@ -1,8 +1,11 @@
-"""Unit tests for :mod:`srunx.pollers.reload_guard`."""
+"""Unit tests for :mod:`srunx.observability.monitoring.pollers.reload_guard`."""
 
 from __future__ import annotations
 
-from srunx.pollers.reload_guard import is_reload_mode, should_start_pollers
+from srunx.observability.monitoring.pollers.reload_guard import (
+    is_reload_mode,
+    should_start_pollers,
+)
 
 
 class TestIsReloadMode:

@@ -16,22 +16,22 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srunx.callbacks import Callback
-from srunx.client_protocol import (
-    JobStatusInfo,
+from srunx.common.logging import get_logger
+from srunx.slurm.parsing import GPU_TRES_RE  # noqa: E402
+from srunx.slurm.protocols import (
+    JobSnapshot,
     parse_slurm_datetime,
     parse_slurm_duration,
 )
-from srunx.logging import get_logger
 from srunx.slurm.states import SLURM_TERMINAL_JOB_STATES
 from srunx.ssh.core.client import SSHSlurmClient
 from srunx.ssh.core.config import ConfigManager, MountConfig
 from srunx.ssh.core.ssh_config import SSHConfigParser  # noqa: F811
-from srunx.utils import GPU_TRES_RE  # noqa: E402
 
 if TYPE_CHECKING:
-    from srunx.client_protocol import LogChunk
-    from srunx.models import BaseJob, JobStatus, RunnableJobType
-    from srunx.rendering import SubmissionRenderContext
+    from srunx.domain import BaseJob, JobStatus, RunnableJobType
+    from srunx.runtime.rendering import SubmissionRenderContext
+    from srunx.slurm.protocols import LogChunk
 
 logger = get_logger(__name__)
 
@@ -187,7 +187,7 @@ class SlurmSSHAdapter:
         )
 
         # Callbacks attached to this adapter; invoked by :meth:`run` on the
-        # sweep path. Mirrors ``Slurm.callbacks`` in ``srunx.client``.
+        # sweep path. Mirrors ``Slurm.callbacks`` in ``srunx.slurm.local``.
         self.callbacks: list[Callback] = list(callbacks) if callbacks else []
 
         if profile_name:
@@ -563,10 +563,10 @@ class SlurmSSHAdapter:
 
         return jobs
 
-    def queue_by_ids(self, job_ids: list[int]) -> dict[int, JobStatusInfo]:
-        """Return a mapping of ``job_id`` -> :class:`JobStatusInfo` for active jobs.
+    def queue_by_ids(self, job_ids: list[int]) -> dict[int, JobSnapshot]:
+        """Return a mapping of ``job_id`` -> :class:`JobSnapshot` for active jobs.
 
-        Implements :class:`SlurmClientProtocol`. Active jobs are queried via
+        Implements :class:`Client`. Active jobs are queried via
         ``squeue --jobs=...``; jobs no longer in the queue fall back to
         ``sacct``. Jobs found in neither source are omitted.
         """
@@ -578,7 +578,7 @@ class SlurmSSHAdapter:
                 raise ValueError(f"Invalid job_id: {jid}")
 
         id_arg = ",".join(str(i) for i in job_ids)
-        results: dict[int, JobStatusInfo] = {}
+        results: dict[int, JobSnapshot] = {}
 
         # --- squeue: active jobs ---
         try:
@@ -599,7 +599,7 @@ class SlurmSSHAdapter:
                 jid = int(parts[0].strip())
             except ValueError:
                 continue
-            results[jid] = JobStatusInfo(
+            results[jid] = JobSnapshot(
                 status=parts[1].strip(),
                 started_at=parse_slurm_datetime(parts[2]),
                 duration_secs=parse_slurm_duration(parts[3]),
@@ -635,7 +635,7 @@ class SlurmSSHAdapter:
                     continue
                 raw_state = parts[1].strip()
                 status = raw_state.split()[0] if raw_state else "UNKNOWN"
-                results[jid] = JobStatusInfo(
+                results[jid] = JobSnapshot(
                     status=status,
                     started_at=parse_slurm_datetime(parts[2]),
                     completed_at=parse_slurm_datetime(parts[3]),
@@ -663,7 +663,7 @@ class SlurmSSHAdapter:
             parsed = parse_scontrol_job_state(scontrol_out)
             if parsed is None:
                 continue
-            results[jid] = JobStatusInfo(status=parsed)
+            results[jid] = JobSnapshot(status=parsed)
 
         return results
 
@@ -717,7 +717,7 @@ class SlurmSSHAdapter:
         (``web.routers.jobs`` / ``web.routers.workflows``). New code
         should call :meth:`cancel` instead, which raises typed
         transport exceptions and aligns with
-        :class:`~srunx.client_protocol.JobOperationsProtocol`. This
+        :class:`~srunx.slurm.protocols.JobOperations`. This
         alias will remain until the remaining web router call sites
         are migrated.
         """
@@ -734,7 +734,7 @@ class SlurmSSHAdapter:
         Legacy alias retained for pre-Protocol callers
         (``web.routers.jobs`` / ``web.routers.workflows`` /
         ``web.routers.templates``). New code should call :meth:`submit`
-        with a :class:`~srunx.models.Job` instance. This alias will
+        with a :class:`~srunx.domain.Job` instance. This alias will
         remain until those routers migrate to the Protocol surface.
         """
         with self._io_lock:
@@ -786,7 +786,7 @@ class SlurmSSHAdapter:
         should pass the real instance so the DB row carries the
         full job metadata.
         """
-        from srunx.models import JobStatus, ShellJob
+        from srunx.domain import JobStatus, ShellJob
 
         with self._io_lock:
             self._ensure_connected()
@@ -880,7 +880,7 @@ class SlurmSSHAdapter:
         :meth:`_monitor_until_terminal` loop). New code should call
         :meth:`status` which returns a full :class:`BaseJob` snapshot
         conforming to
-        :class:`~srunx.client_protocol.JobOperationsProtocol`.
+        :class:`~srunx.slurm.protocols.JobOperations`.
         """
         with self._io_lock:
             self._ensure_connected()
@@ -894,9 +894,9 @@ class SlurmSSHAdapter:
     ) -> dict[str, str | list[str] | None]:
         """Return log-file metadata (and optionally content) for ``job_id``.
 
-        Signature + return shape match :meth:`srunx.client.Slurm.get_job_output_detailed`
+        Signature + return shape match :meth:`srunx.slurm.local.Slurm.get_job_output_detailed`
         so ``SSHWorkflowJobExecutor`` satisfies
-        :class:`WorkflowJobExecutorProtocol` transparently.
+        :class:`WorkflowJobExecutor` transparently.
 
         ``skip_content=True`` suppresses file content reads so callers that
         only want the primary-log path pay only the ``find`` round-trips.
@@ -910,10 +910,10 @@ class SlurmSSHAdapter:
             info["error"] = ""
         return info
 
-    # ── JobOperationsProtocol surface ────────────────
+    # ── JobOperations surface ────────────────
     #
     # These methods align SlurmSSHAdapter with
-    # :class:`srunx.client_protocol.JobOperationsProtocol` so the Web UI,
+    # :class:`srunx.slurm.protocols.JobOperations` so the Web UI,
     # MCP, and (future) top-level CLI can all drive a remote SLURM via
     # the same 5 entry points they use for the local ``Slurm`` client.
     # The existing ``submit_job`` / ``cancel_job`` / ``get_job_status`` /
@@ -952,21 +952,23 @@ class SlurmSSHAdapter:
 
         import paramiko
 
-        from srunx.exceptions import (
+        from srunx.common.exceptions import (
             SubmissionError,
             TransportAuthError,
             TransportConnectionError,
             TransportTimeoutError,
         )
-        from srunx.models import (
+        from srunx.domain import (
             Job,
             JobStatus,
             ShellJob,
+        )
+        from srunx.runtime.rendering import (
+            normalize_job_for_submission,
             render_job_script,
             render_shell_job_script,
         )
-        from srunx.rendering import normalize_job_for_submission
-        from srunx.template import get_template_path
+        from srunx.runtime.templates import get_template_path
 
         # Apply mount-aware path translation before we inspect the job's
         # type for template resolution. ``normalize_job_for_submission``
@@ -1015,7 +1017,7 @@ class SlurmSSHAdapter:
         # transport registry (``_build_ssh_handle``) — the Web path
         # leaves the default ``'web'``, the CLI wrapper passes
         # ``'cli'``, MCP passes ``'mcp'``. This avoids widening the
-        # JobOperationsProtocol signature with a kwarg that would
+        # JobOperations signature with a kwarg that would
         # break every existing Protocol implementor.
         if self._profile_name is not None:
             self._record_job_submission(
@@ -1033,7 +1035,7 @@ class SlurmSSHAdapter:
     def cancel(self, job_id: int) -> None:
         """Cancel *job_id* on the remote cluster.
 
-        Raises :class:`~srunx.exceptions.JobNotFoundError` when ``scancel``
+        Raises :class:`~srunx.common.exceptions.JobNotFoundError` when ``scancel``
         reports the job is missing, :class:`TransportError` subclasses
         for SSH-layer failures. The legacy :meth:`cancel_job` API is
         preserved below as a no-op alias for backwards compat.
@@ -1041,7 +1043,7 @@ class SlurmSSHAdapter:
 
         import paramiko
 
-        from srunx.exceptions import (
+        from srunx.common.exceptions import (
             JobNotFoundError,
             RemoteCommandError,
             TransportAuthError,
@@ -1075,11 +1077,11 @@ class SlurmSSHAdapter:
         Uses :meth:`queue_by_ids` (already Protocol-compliant) so both
         active and terminal jobs resolve through the same code path as
         the notification poller. Raises
-        :class:`~srunx.exceptions.JobNotFoundError` when SLURM has no record
+        :class:`~srunx.common.exceptions.JobNotFoundError` when SLURM has no record
         of ``job_id``.
 
         The returned :class:`BaseJob` is a static snapshot — per the
-        :class:`JobOperationsProtocol.status` contract it must NOT
+        :class:`JobOperations.status` contract it must NOT
         trigger a lazy ``sacct`` refresh on ``.status`` access (a local
         ``sacct`` probe against an SSH-only job id would either miss
         entirely or return a misleading result). ``_last_refresh`` is
@@ -1088,8 +1090,8 @@ class SlurmSSHAdapter:
         """
         import time as _time
 
-        from srunx.exceptions import JobNotFoundError
-        from srunx.models import BaseJob, JobStatus
+        from srunx.common.exceptions import JobNotFoundError
+        from srunx.domain import BaseJob, JobStatus
 
         info_map = self.queue_by_ids([int(job_id)])
         info = info_map.get(int(job_id))
@@ -1109,7 +1111,7 @@ class SlurmSSHAdapter:
         job.status = status_enum
         # Park the lazy-refresh clock far in the future so ``.status``
         # access never triggers a local ``sacct`` subprocess for an SSH
-        # job id. See :class:`JobOperationsProtocol.status` contract.
+        # job id. See :class:`JobOperations.status` contract.
         job._last_refresh = _time.time() + 10**9
         return job
 
@@ -1118,11 +1120,11 @@ class SlurmSSHAdapter:
 
         Adapts :meth:`list_jobs` (which yields dicts) into Pydantic
         :class:`BaseJob` objects so the return type matches
-        :class:`~srunx.client_protocol.JobOperationsProtocol.queue`.
+        :class:`~srunx.slurm.protocols.JobOperations.queue`.
         ``user=None`` uses the profile's configured username, matching
         the Protocol's "transport's current user" contract.
         """
-        from srunx.models import BaseJob, JobStatus
+        from srunx.domain import BaseJob, JobStatus
 
         effective_user = user if user is not None else self._username or None
 
@@ -1168,12 +1170,12 @@ class SlurmSSHAdapter:
 
         import paramiko
 
-        from srunx.client_protocol import LogChunk
-        from srunx.exceptions import (
+        from srunx.common.exceptions import (
             TransportAuthError,
             TransportConnectionError,
             TransportTimeoutError,
         )
+        from srunx.slurm.protocols import LogChunk
 
         try:
             stdout, stderr, new_stdout_offset, new_stderr_offset = self.get_job_output(
@@ -1207,7 +1209,7 @@ class SlurmSSHAdapter:
     ) -> RunnableJobType:
         """Submit *job* over SSH and block until it reaches a terminal status.
 
-        Mirrors :meth:`srunx.client.Slurm.run` on the sweep/web path:
+        Mirrors :meth:`srunx.slurm.local.Slurm.run` on the sweep/web path:
 
         1. If ``submission_context`` is provided, apply mount-aware
            :func:`normalize_job_for_submission` so absolute local
@@ -1247,16 +1249,18 @@ class SlurmSSHAdapter:
             else False
         )
         # Inline imports keep the module import cost flat and mirror the
-        # pattern used in ``srunx.client.Slurm`` (e.g. ``record_submission_from_job``).
-        from srunx.models import (
+        # pattern used in ``srunx.slurm.local.Slurm`` (e.g. ``record_submission_from_job``).
+        from srunx.domain import (
             Job,
             JobStatus,
             ShellJob,
+        )
+        from srunx.runtime.rendering import (
+            normalize_job_for_submission,
             render_job_script,
             render_shell_job_script,
         )
-        from srunx.rendering import normalize_job_for_submission
-        from srunx.template import get_template_path
+        from srunx.runtime.templates import get_template_path
 
         # --- 0. Mount-aware path normalization (no-op when context is None). ---
         # ``normalize_job_for_submission`` returns a ``model_copy`` when any
@@ -1549,7 +1553,9 @@ class SlurmSSHAdapter:
         want the SSH triple must pass them explicitly.
         """
         try:
-            from srunx.db.cli_helpers import record_submission_from_job
+            from srunx.observability.storage.cli_helpers import (
+                record_submission_from_job,
+            )
 
             if profile_name is None:
                 # Legacy callsite (pre-V5 style) — pass only the two
@@ -1590,7 +1596,7 @@ class SlurmSSHAdapter:
         pre-V5 behaviour.
         """
         try:
-            from srunx.db.cli_helpers import record_completion
+            from srunx.observability.storage.cli_helpers import record_completion
 
             record_completion(job_id, status, scheduler_key=self.scheduler_key)
         except Exception as exc:  # noqa: BLE001 — best-effort

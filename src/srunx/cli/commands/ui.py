@@ -7,7 +7,7 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
-from srunx.logging import configure_cli_logging, get_logger
+from srunx.common.logging import configure_cli_logging, get_logger
 
 logger = get_logger(__name__)
 

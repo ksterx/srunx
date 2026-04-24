@@ -21,7 +21,7 @@ from typing import Protocol, runtime_checkable
 import anyio
 from anyio.abc import TaskGroup
 
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
 
 logger = get_logger(__name__)
 

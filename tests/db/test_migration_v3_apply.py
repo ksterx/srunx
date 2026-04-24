@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from srunx.db.connection import open_connection
-from srunx.db.migrations import apply_migrations
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.migrations import apply_migrations
 
 
 def _fk_pragma(conn: object) -> int:
@@ -14,7 +14,7 @@ def _fk_pragma(conn: object) -> int:
 
 
 def test_apply_migrations_runs_v3_on_fresh_db(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         applied = apply_migrations(conn)
@@ -26,7 +26,7 @@ def test_apply_migrations_runs_v3_on_fresh_db(tmp_path: Path) -> None:
 
 
 def test_apply_migrations_is_idempotent_with_v3(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         first = apply_migrations(conn)
@@ -43,7 +43,7 @@ def test_apply_migrations_is_idempotent_with_v3(tmp_path: Path) -> None:
 
 def test_apply_migrations_restores_foreign_keys_pragma(tmp_path: Path) -> None:
     """After V3 toggles FK OFF/ON the pragma is restored on the connection."""
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -61,7 +61,7 @@ def test_apply_migrations_restores_foreign_keys_pragma(tmp_path: Path) -> None:
 
 
 def test_apply_migrations_creates_sweep_runs_table(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -74,7 +74,7 @@ def test_apply_migrations_creates_sweep_runs_table(tmp_path: Path) -> None:
 
 
 def test_workflow_runs_has_sweep_run_id_column(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         apply_migrations(conn)
@@ -99,9 +99,9 @@ def test_v3_migration_rolls_back_on_partial_failure(
     into autocommit — so a crash halfway through would leave the schema
     half-migrated.
     """
-    from srunx.db import migrations as mig
+    from srunx.observability.storage import migrations as mig
 
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         # Run only v1 + v2 first by slicing MIGRATIONS. This leaves v3

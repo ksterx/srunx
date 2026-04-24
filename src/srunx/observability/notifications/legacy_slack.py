@@ -2,7 +2,7 @@
 
 Predates the outbox-based notification pipeline (poller → delivery queue).
 Retained for backwards compatibility with CLI workflows that attach
-``callbacks=[SlackCallback(...)]`` directly to :class:`~srunx.client.Slurm`.
+``callbacks=[SlackCallback(...)]`` directly to :class:`~srunx.slurm.local.Slurm`.
 
 New code should use the notification endpoint / watch / subscription
 model (see :mod:`srunx.observability.notifications.service`) plus the
@@ -18,13 +18,12 @@ from typing import TYPE_CHECKING
 from slack_sdk import WebhookClient
 
 from srunx.callbacks import Callback
-from srunx.models import JobType, Workflow
+from srunx.domain import JobType, Workflow
 from srunx.observability.notifications.formatting import SlackNotificationFormatter
 from srunx.utils import job_status_msg
 
 if TYPE_CHECKING:
-    from srunx.monitor.report_types import Report
-    from srunx.monitor.types import ResourceSnapshot
+    from srunx.observability.monitoring.types import Report, ResourceSnapshot
 
 
 class SlackCallback(Callback):

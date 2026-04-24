@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from srunx.monitor.resource_monitor import ResourceMonitor
-from srunx.monitor.types import MonitorConfig, ResourceSnapshot
+from srunx.observability.monitoring.resource_monitor import ResourceMonitor
+from srunx.observability.monitoring.types import MonitorConfig, ResourceSnapshot
 
 
 class TestResourceMonitor:
@@ -279,7 +279,7 @@ class TestResourceMonitor:
         """Test watch_continuous notifies on resource availability changes."""
         import threading
 
-        from srunx.monitor.types import WatchMode
+        from srunx.observability.monitoring.types import WatchMode
 
         config = MonitorConfig(
             poll_interval=1,
@@ -340,7 +340,7 @@ class TestResourceMonitor:
         """Test watch_continuous prevents duplicate notifications."""
         import threading
 
-        from srunx.monitor.types import WatchMode
+        from srunx.observability.monitoring.types import WatchMode
 
         config = MonitorConfig(
             poll_interval=1,
@@ -390,7 +390,7 @@ class TestResourceMonitor:
         import threading
         import time
 
-        from srunx.monitor.types import WatchMode
+        from srunx.observability.monitoring.types import WatchMode
 
         config = MonitorConfig(
             poll_interval=1,
@@ -477,8 +477,8 @@ class TestResourceMonitorSourceInjection:
     def test_delegates_to_source(self):
         from unittest.mock import MagicMock
 
-        from srunx.monitor.resource_monitor import ResourceMonitor
-        from srunx.monitor.types import ResourceSnapshot
+        from srunx.observability.monitoring.resource_monitor import ResourceMonitor
+        from srunx.observability.monitoring.types import ResourceSnapshot
 
         expected = ResourceSnapshot(
             partition="gpu",
@@ -509,8 +509,8 @@ class TestResourceMonitorSourceInjection:
         import subprocess
         from unittest.mock import MagicMock
 
-        from srunx.monitor.resource_monitor import ResourceMonitor
-        from srunx.monitor.types import ResourceSnapshot
+        from srunx.observability.monitoring.resource_monitor import ResourceMonitor
+        from srunx.observability.monitoring.types import ResourceSnapshot
 
         def fail(*args, **kwargs):
             raise AssertionError("subprocess.run must not be called")
@@ -537,7 +537,7 @@ class TestResourceMonitorSourceInjection:
 
     def test_no_source_uses_subprocess_path(self, monkeypatch):
         """Backward compat: ``source=None`` keeps the old subprocess path."""
-        from srunx.monitor.resource_monitor import ResourceMonitor
+        from srunx.observability.monitoring.resource_monitor import ResourceMonitor
 
         stats_called = {"node": False, "gpu": False}
 

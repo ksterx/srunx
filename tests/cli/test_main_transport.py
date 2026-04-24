@@ -54,7 +54,7 @@ class TestSqueueJsonBannerIsolation:
 
     def test_json_quiet_stdout_is_pure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Mock queue so no SLURM call happens."""
-        from srunx.client import Slurm
+        from srunx.slurm.local import Slurm
 
         monkeypatch.setattr(Slurm, "queue", lambda self, user=None: [])
         runner = CliRunner()

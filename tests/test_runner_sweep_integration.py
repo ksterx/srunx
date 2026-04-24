@@ -15,8 +15,8 @@ from unittest.mock import Mock, patch
 
 import yaml  # type: ignore
 
-from srunx.models import Job, JobEnvironment, JobStatus, Workflow
-from srunx.runner import WorkflowRunner
+from srunx.domain import Job, JobEnvironment, JobStatus, Workflow
+from srunx.runtime.workflow.runner import WorkflowRunner
 
 
 def _write_yaml(path, data: dict) -> None:
@@ -138,7 +138,7 @@ class TestRunWorkflowRunIdInjection:
         return runner, job
 
     @patch("srunx.runtime.workflow.runner._transition_workflow_run")
-    @patch("srunx.db.cli_helpers.create_cli_workflow_run")
+    @patch("srunx.observability.storage.cli_helpers.create_cli_workflow_run")
     @patch("srunx.runtime.workflow.runner.Slurm")
     def test_injected_id_skips_create(
         self,
@@ -167,7 +167,7 @@ class TestRunWorkflowRunIdInjection:
         assert mock_transition.call_args_list[0].args[0] == injected_id
 
     @patch("srunx.runtime.workflow.runner._transition_workflow_run")
-    @patch("srunx.db.cli_helpers.create_cli_workflow_run")
+    @patch("srunx.observability.storage.cli_helpers.create_cli_workflow_run")
     @patch("srunx.runtime.workflow.runner.Slurm")
     def test_no_id_falls_back_to_create(
         self,
@@ -190,7 +190,7 @@ class TestRunWorkflowRunIdInjection:
         assert call_kwargs["workflow_run_id"] == 999
 
     @patch("srunx.runtime.workflow.runner._transition_workflow_run")
-    @patch("srunx.db.cli_helpers.create_cli_workflow_run")
+    @patch("srunx.observability.storage.cli_helpers.create_cli_workflow_run")
     @patch("srunx.runtime.workflow.runner.Slurm")
     def test_create_returning_none_does_not_call_state_service(
         self,

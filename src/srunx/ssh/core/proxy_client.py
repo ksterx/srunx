@@ -2,7 +2,7 @@ from typing import Any
 
 import paramiko
 
-from srunx.logging import get_logger
+from srunx.common.logging import get_logger
 
 from .ssh_config import SSHHost, get_ssh_config_host
 

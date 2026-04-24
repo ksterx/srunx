@@ -1,4 +1,4 @@
-"""Tests for ``srunx.db.connection``."""
+"""Tests for ``srunx.observability.storage.connection``."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from srunx.db import connection as conn_mod
-from srunx.db.connection import (
+from srunx.observability.storage import connection as conn_mod
+from srunx.observability.storage.connection import (
     get_config_dir,
     get_db_path,
     init_db,
@@ -44,14 +44,14 @@ def test_get_db_path_is_under_config_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    assert get_db_path() == tmp_path / "srunx" / "srunx.db"
+    assert get_db_path() == tmp_path / "srunx" / "srunx.observability.storage"
 
 
 # ---- open_connection ----
 
 
 def test_open_connection_applies_pragmas(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
@@ -66,7 +66,7 @@ def test_open_connection_applies_pragmas(tmp_path: Path) -> None:
 
 
 def test_open_connection_creates_file_with_mode_0600(tmp_path: Path) -> None:
-    db = tmp_path / "sub" / "srunx.db"
+    db = tmp_path / "sub" / "srunx.observability.storage"
     conn = open_connection(db)
     conn.close()
     assert db.exists()
@@ -76,7 +76,7 @@ def test_open_connection_creates_file_with_mode_0600(tmp_path: Path) -> None:
 
 
 def test_open_connection_sets_row_factory(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         conn.execute("CREATE TABLE t (id INTEGER, name TEXT)")
@@ -94,7 +94,7 @@ def test_open_connection_sets_row_factory(tmp_path: Path) -> None:
 
 
 def test_transaction_commits_on_success(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     conn.execute("CREATE TABLE t (id INTEGER)")
     with transaction(conn, "IMMEDIATE"):
@@ -105,7 +105,7 @@ def test_transaction_commits_on_success(tmp_path: Path) -> None:
 
 
 def test_transaction_rollback_on_exception(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     conn.execute("CREATE TABLE t (id INTEGER)")
     with pytest.raises(RuntimeError):
@@ -118,7 +118,7 @@ def test_transaction_rollback_on_exception(tmp_path: Path) -> None:
 
 
 def test_transaction_rejects_unknown_mode(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     with pytest.raises(ValueError):
         with transaction(conn, "BOGUS"):
@@ -142,7 +142,7 @@ def test_init_db_applies_schema_and_removes_legacy(
     monkeypatch.setattr(conn_mod, "LEGACY_HISTORY_DB_PATH", legacy_db)
 
     db_path = init_db()
-    assert db_path == tmp_path / "srunx" / "srunx.db"
+    assert db_path == tmp_path / "srunx" / "srunx.observability.storage"
     assert db_path.exists()
     assert not legacy_db.exists()
 
@@ -164,7 +164,7 @@ def test_init_db_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     init_db()
     init_db()  # must not raise
 
-    conn = sqlite3.connect(tmp_path / "srunx" / "srunx.db")
+    conn = sqlite3.connect(tmp_path / "srunx" / "srunx.observability.storage")
     try:
         rows = conn.execute(
             "SELECT COUNT(*) FROM schema_version WHERE name = 'v1_initial'"
@@ -188,7 +188,7 @@ def test_connection_usable_from_another_thread(tmp_path: Path) -> None:
     """
     import threading
 
-    db = tmp_path / "srunx.db"
+    db = tmp_path / "srunx.observability.storage"
     conn = open_connection(db)
     try:
         conn.execute("CREATE TABLE t (id INTEGER)")
@@ -242,7 +242,7 @@ def test_initialized_connection_is_idempotent_across_multiple_calls(
     with initialized_connection():
         pass
 
-    conn = sqlite3.connect(tmp_path / "srunx" / "srunx.db")
+    conn = sqlite3.connect(tmp_path / "srunx" / "srunx.observability.storage")
     try:
         count = conn.execute(
             "SELECT COUNT(*) FROM schema_version WHERE name = 'v1_initial'"

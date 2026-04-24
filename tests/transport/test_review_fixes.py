@@ -21,19 +21,19 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from srunx.callbacks import NotificationWatchCallback
-from srunx.client_protocol import JobStatusInfo
-from srunx.db.connection import open_connection
-from srunx.db.migrations import (
+from srunx.observability.monitoring.pollers.active_watch_poller import ActiveWatchPoller
+from srunx.observability.storage.connection import open_connection
+from srunx.observability.storage.migrations import (
     MIGRATIONS,
     _apply_fk_off_migration,
     _apply_tx_migration,
 )
-from srunx.db.repositories.job_state_transitions import (
+from srunx.observability.storage.repositories.job_state_transitions import (
     JobStateTransitionRepository,
 )
-from srunx.db.repositories.jobs import JobRepository
-from srunx.db.repositories.watches import WatchRepository
-from srunx.pollers.active_watch_poller import ActiveWatchPoller
+from srunx.observability.storage.repositories.jobs import JobRepository
+from srunx.observability.storage.repositories.watches import WatchRepository
+from srunx.slurm.protocols import JobSnapshot
 from srunx.transport import (
     TransportHandle,
     peek_scheduler_key,
@@ -46,13 +46,13 @@ from srunx.transport import (
 
 
 class _StubQueueClient:
-    """Minimal ``SlurmClientProtocol`` stub."""
+    """Minimal ``Client`` stub."""
 
-    def __init__(self, responses: dict[int, JobStatusInfo]) -> None:
+    def __init__(self, responses: dict[int, JobSnapshot]) -> None:
         self.responses = responses
         self.calls: list[list[int]] = []
 
-    def queue_by_ids(self, job_ids: list[int]) -> dict[int, JobStatusInfo]:
+    def queue_by_ids(self, job_ids: list[int]) -> dict[int, JobSnapshot]:
         self.calls.append(list(job_ids))
         return {jid: self.responses[jid] for jid in job_ids if jid in self.responses}
 
@@ -106,7 +106,7 @@ class TestPollerThreadsSchedulerKey:
         )
         WatchRepository(conn).create(kind="job", target_ref="job:ssh:dgx:500")
 
-        ssh = _StubQueueClient({500: JobStatusInfo(status="RUNNING")})
+        ssh = _StubQueueClient({500: JobSnapshot(status="RUNNING")})
         registry = _StubRegistry({"ssh:dgx": ssh})
 
         poller = ActiveWatchPoller(registry=registry, db_path=db_path)  # type: ignore[arg-type]
@@ -247,11 +247,15 @@ class TestWorkflowResponseResolvesSSHChildren:
     def test_ssh_workflow_child_status_is_populated(
         self, tmp_srunx_db: tuple[sqlite3.Connection, Path]
     ) -> None:
-        from srunx.db.repositories.workflow_run_jobs import (
+        from srunx.observability.storage.repositories.workflow_run_jobs import (
             WorkflowRunJobRepository,
         )
-        from srunx.db.repositories.workflow_runs import WorkflowRunRepository
-        from srunx.web.routers.workflows import _build_run_response
+        from srunx.observability.storage.repositories.workflow_runs import (
+            WorkflowRunRepository,
+        )
+        from srunx.web.services.workflow_run_query import (
+            build_run_response as _build_run_response,
+        )
 
         conn, _ = tmp_srunx_db
 
@@ -389,7 +393,7 @@ class TestStatusSnapshotDoesNotRefresh:
 
         # Stub queue_by_ids so status() gets a deterministic reply.
         def _stub_queue(job_ids):
-            return {job_ids[0]: JobStatusInfo(status="RUNNING")}
+            return {job_ids[0]: JobSnapshot(status="RUNNING")}
 
         adapter.queue_by_ids = _stub_queue  # type: ignore[method-assign]
 
@@ -612,40 +616,54 @@ class TestParseTargetRefHardening:
     """F3: ``_parse_target_ref`` rejects pathological inputs."""
 
     def test_rejects_zero_job_id(self) -> None:
-        from srunx.pollers.active_watch_poller import _parse_target_ref
+        from srunx.observability.monitoring.pollers.active_watch_poller import (
+            _parse_target_ref,
+        )
 
         assert _parse_target_ref("job:local:0", "job") is None
 
     def test_rejects_negative_job_id(self) -> None:
-        from srunx.pollers.active_watch_poller import _parse_target_ref
+        from srunx.observability.monitoring.pollers.active_watch_poller import (
+            _parse_target_ref,
+        )
 
         # Leading ``-`` fails the isdigit() check before int() is called.
         assert _parse_target_ref("job:local:-1", "job") is None
 
     def test_rejects_overflow_job_id(self) -> None:
-        from srunx.pollers.active_watch_poller import _parse_target_ref
+        from srunx.observability.monitoring.pollers.active_watch_poller import (
+            _parse_target_ref,
+        )
 
         # 13-digit tail exceeds _MAX_JOB_ID_DIGITS cap.
         assert _parse_target_ref("job:local:1234567890123", "job") is None
 
     def test_rejects_nul_byte_in_profile(self) -> None:
-        from srunx.pollers.active_watch_poller import _parse_target_ref
+        from srunx.observability.monitoring.pollers.active_watch_poller import (
+            _parse_target_ref,
+        )
 
         assert _parse_target_ref("job:ssh:pro\x00file:1", "job") is None
 
     def test_rejects_oversized_profile(self) -> None:
-        from srunx.pollers.active_watch_poller import _parse_target_ref
+        from srunx.observability.monitoring.pollers.active_watch_poller import (
+            _parse_target_ref,
+        )
 
         long_name = "a" * 65  # just past the 64-char cap
         assert _parse_target_ref(f"job:ssh:{long_name}:1", "job") is None
 
     def test_accepts_valid_local(self) -> None:
-        from srunx.pollers.active_watch_poller import _parse_target_ref
+        from srunx.observability.monitoring.pollers.active_watch_poller import (
+            _parse_target_ref,
+        )
 
         assert _parse_target_ref("job:local:42", "job") == ("local", 42)
 
     def test_accepts_valid_ssh(self) -> None:
-        from srunx.pollers.active_watch_poller import _parse_target_ref
+        from srunx.observability.monitoring.pollers.active_watch_poller import (
+            _parse_target_ref,
+        )
 
         assert _parse_target_ref("job:ssh:my-cluster_01:42", "job") == (
             "ssh:my-cluster_01",
@@ -795,7 +813,7 @@ class TestPoolOrphanProtection:
                 return_value=fake_pool,
             ),
             patch(
-                "srunx.rendering.SubmissionRenderContext",
+                "srunx.runtime.rendering.SubmissionRenderContext",
                 side_effect=RuntimeError("render setup blew up"),
             ),
             pytest.raises(RuntimeError, match="render setup blew up"),

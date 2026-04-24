@@ -1,9 +1,9 @@
 """NotificationService: event → delivery fan-out.
 
-Given an :class:`~srunx.db.models.Event`, look up every open
-:class:`~srunx.db.models.Watch` whose ``target_ref`` matches, walk each
+Given an :class:`~srunx.observability.storage.models.Event`, look up every open
+:class:`~srunx.observability.storage.models.Watch` whose ``target_ref`` matches, walk each
 watch's subscriptions, apply the preset filter, skip disabled
-endpoints, and insert one :class:`~srunx.db.models.Delivery` per
+endpoints, and insert one :class:`~srunx.observability.storage.models.Delivery` per
 match. The caller owns the transaction — this service never issues
 ``BEGIN`` / ``COMMIT`` internally.
 """
@@ -12,13 +12,15 @@ from __future__ import annotations
 
 import sqlite3
 
-from srunx.db.models import Event, Watch
-from srunx.db.repositories.deliveries import DeliveryRepository
-from srunx.db.repositories.endpoints import EndpointRepository
-from srunx.db.repositories.events import EventRepository
-from srunx.db.repositories.subscriptions import SubscriptionRepository
-from srunx.db.repositories.watches import WatchRepository
 from srunx.observability.notifications.presets import should_deliver
+from srunx.observability.storage.models import Event, Watch
+from srunx.observability.storage.repositories.deliveries import DeliveryRepository
+from srunx.observability.storage.repositories.endpoints import EndpointRepository
+from srunx.observability.storage.repositories.events import EventRepository
+from srunx.observability.storage.repositories.subscriptions import (
+    SubscriptionRepository,
+)
+from srunx.observability.storage.repositories.watches import WatchRepository
 
 
 class NotificationService:
