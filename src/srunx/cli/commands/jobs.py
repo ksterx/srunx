@@ -1174,8 +1174,27 @@ def tail(
         ),
     ] = 2.0,
     last: Annotated[
-        int | None, typer.Option("--last", "-n", help="Show only the last N lines")
-    ] = None,
+        int,
+        typer.Option(
+            "--last",
+            "-n",
+            help=(
+                "Show only the last N lines (default 10, matches native "
+                "``tail``). Use ``--all`` to dump the entire log."
+            ),
+        ),
+    ] = 10,
+    show_all: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help=(
+                "Dump the entire log instead of the last ``--last`` lines. "
+                "Skips the ``tail -n`` optimization and ``cat``s the whole "
+                "file — a multi-GB log will transfer across SSH as-is."
+            ),
+        ),
+    ] = False,
     job_name: Annotated[
         str | None,
         typer.Option("--name", help="Job name for better log file detection"),
@@ -1184,7 +1203,14 @@ def tail(
     local: LocalOpt = False,
     quiet: QuietOpt = False,
 ) -> None:
-    """Display job logs with optional real-time streaming."""
+    """Display job logs with optional real-time streaming.
+
+    Defaults to the last 10 lines of the log (native ``tail``
+    convention). Pass ``-n N`` for a different cap, or ``--all`` to
+    dump everything. With ``--follow`` / ``-f``, the default also
+    applies to the initial frame — subsequent ticks stream only the
+    delta regardless.
+    """
     if follow and interval <= 0:
         typer.secho(
             "--interval must be a positive number of seconds.",
@@ -1192,6 +1218,17 @@ def tail(
             fg=typer.colors.RED,
         )
         raise typer.Exit(code=2)
+    if last <= 0 and not show_all:
+        typer.secho(
+            "--last must be a positive integer (or use --all to dump everything).",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=2)
+
+    # ``--all`` wins over ``--last``: passing ``last_n=None`` to the
+    # adapter triggers the legacy ``cat`` full-read path.
+    effective_last: int | None = None if show_all else last
 
     try:
         with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
@@ -1204,18 +1241,23 @@ def tail(
                     job_id=job_id,
                     job_name=job_name,
                     follow=follow,
-                    last_n=last,
+                    last_n=effective_last,
                 )
             elif follow:
                 _run_tail_follow_ssh(
-                    rt.job_ops, job_id=job_id, last=last, interval=interval
+                    rt.job_ops,
+                    job_id=job_id,
+                    last=effective_last,
+                    interval=interval,
                 )
             else:
-                # One-shot SSH read. ``--last N`` flows through as
-                # ``last_n`` so the remote runs ``tail -n N`` and only
-                # the tail bytes traverse the SSH link, even for a
-                # multi-GB log.
-                chunk = rt.job_ops.tail_log_incremental(job_id, 0, 0, last_n=last)
+                # One-shot SSH read. ``last_n`` flows through so the
+                # remote runs ``tail -n N`` — only the tail bytes cross
+                # the SSH link. ``--all`` passes ``last_n=None`` which
+                # falls back to ``cat`` for a full dump.
+                chunk = rt.job_ops.tail_log_incremental(
+                    job_id, 0, 0, last_n=effective_last
+                )
                 if chunk.stdout:
                     sys.stdout.write(chunk.stdout)
                 if chunk.stderr and chunk.stderr != chunk.stdout:

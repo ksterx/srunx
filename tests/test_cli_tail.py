@@ -172,8 +172,8 @@ class TestTailFollowSsh:
         assert all(x is None for x in seen_last_n[1:])
 
     def test_non_follow_one_shot_forwards_last_n(self, runner: CliRunner) -> None:
-        """``srunx tail 123 --last 10 --profile X`` (no --follow) must
-        push ``last_n=10`` into the single SSH call so the remote
+        """``srunx tail 123 --last 50 --profile X`` (no --follow) must
+        push ``last_n=50`` into the single SSH call so the remote
         ships only the tail."""
         job_ops = MagicMock()
         job_ops.tail_log_incremental.return_value = _chunk(
@@ -185,10 +185,46 @@ class TestTailFollowSsh:
         ):
             result = runner.invoke(
                 app,
-                ["tail", "12345", "--profile", "dgx", "--last", "10"],
+                ["tail", "12345", "--profile", "dgx", "--last", "50"],
             )
         assert result.exit_code == 0
+        job_ops.tail_log_incremental.assert_called_once_with(12345, 0, 0, last_n=50)
+
+    def test_default_last_is_ten_not_full_log(self, runner: CliRunner) -> None:
+        """``srunx tail <id> --profile X`` with no ``--last`` and no
+        ``--all`` must default to 10 lines — matches native ``tail``
+        and prevents an accidental multi-GB SSH download.
+        """
+        job_ops = MagicMock()
+        job_ops.tail_log_incremental.return_value = _chunk("", "", out_off=0, err_off=0)
+        with patch(
+            "srunx.transport.registry._build_ssh_handle",
+            return_value=(self._fake_handle(job_ops), None),
+        ):
+            result = runner.invoke(app, ["tail", "12345", "--profile", "dgx"])
+        assert result.exit_code == 0
         job_ops.tail_log_incremental.assert_called_once_with(12345, 0, 0, last_n=10)
+
+    def test_all_flag_dumps_full_log(self, runner: CliRunner) -> None:
+        """``--all`` overrides ``--last`` and passes ``last_n=None`` to
+        the adapter, which falls through to the legacy ``cat`` path."""
+        job_ops = MagicMock()
+        job_ops.tail_log_incremental.return_value = _chunk(
+            "everything\n", "", out_off=11, err_off=0
+        )
+        with patch(
+            "srunx.transport.registry._build_ssh_handle",
+            return_value=(self._fake_handle(job_ops), None),
+        ):
+            result = runner.invoke(app, ["tail", "12345", "--profile", "dgx", "--all"])
+        assert result.exit_code == 0
+        job_ops.tail_log_incremental.assert_called_once_with(12345, 0, 0, last_n=None)
+
+    def test_zero_last_rejected_unless_all(self, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["tail", "12345", "--last", "0"])
+        assert result.exit_code != 0
+        combined = result.stdout + (result.stderr or "")
+        assert "positive" in combined.lower() or "--all" in combined
 
     def test_transient_poll_failure_does_not_kill_loop(self, runner: CliRunner) -> None:
         """An exception from ``tail_log_incremental`` mid-loop must
