@@ -723,7 +723,7 @@ export function NotificationsTab() {
                   marginTop: 4,
                 }}
               >
-                Use the ★ button on any enabled endpoint below to set it.
+                Use the ★ button on an active endpoint below to set it.
               </p>
             </div>
 

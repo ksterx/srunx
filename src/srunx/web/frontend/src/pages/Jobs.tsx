@@ -384,7 +384,7 @@ export function Jobs() {
                               to={`/jobs/${job.job_id}/logs`}
                               className="btn btn-ghost"
                               style={{ padding: "4px 8px" }}
-                              title="View logs"
+                              title="View Logs"
                             >
                               <FileText size={13} />
                             </Link>
