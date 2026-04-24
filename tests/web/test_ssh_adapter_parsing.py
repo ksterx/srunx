@@ -277,6 +277,29 @@ class TestListJobsParsing:
             assert "status" in job
             assert "depends_on" in job
 
+    def test_row_with_embedded_pipe_in_job_name_is_dropped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """SLURM lets users pick job names containing ``|`` (e.g.
+        ``#SBATCH --job-name=foo|bar``). Such a row splits into 12
+        fields; a lenient ``< 11`` check would pass and then every
+        column downstream of the name would silently shift. Guards
+        that we drop those rows instead of rendering misaligned data.
+        """
+        bogus = (
+            "18431|defq|qwen3-tts|ksterx|RUNNING|1-00:03:20|"
+            "UNLIMITED|1|8|dgx-node1|gpu:8\n"
+            "18432|defq|mal|icious|name|alice|RUNNING|"
+            "0:05|1:00:00|1|8|dgx-node2|gpu:8\n"  # 13 fields (bad)
+        )
+        monkeypatch.setattr(
+            "srunx.slurm.ssh._run_slurm_cmd",
+            lambda _a, _c: bogus,
+        )
+        adapter = object.__new__(SlurmSSHAdapter)
+        jobs = adapter.list_jobs()
+        assert [j["job_id"] for j in jobs] == [18431]
+
 
 # ── sacct Output Parsing ──────────────────────────
 

@@ -477,7 +477,13 @@ class SlurmSSHAdapter:
 
         for line in output.strip().splitlines():
             parts = line.split("|")
-            if len(parts) < 11:
+            # Strict equality check — SLURM allows ``|`` inside user-chosen
+            # fields like job name (``#SBATCH --job-name=foo|bar``). Such
+            # rows split into 12+ fields; ``< 11`` would pass and the
+            # subsequent indexing would silently misalign every column
+            # downstream of the embedded pipe. Better to drop the row
+            # than render corrupted data in an admin's queue listing.
+            if len(parts) != 11:
                 continue
 
             try:

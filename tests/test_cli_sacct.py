@@ -259,9 +259,11 @@ class TestSacctLocalCLI:
             partition="defq",
         )
 
-    def test_allusers_flag_overrides_user(
+    def test_allusers_and_user_both_forwarded(
         self, runner: CliRunner, sample_rows: list[SacctRow]
     ) -> None:
+        """Both flags flow through to the fetcher so sacct can combine
+        them (``-a`` scans everyone, ``-u`` narrows to one user)."""
         with patch(
             "srunx.slurm.accounting.fetch_sacct_rows_local",
             return_value=sample_rows,
@@ -271,8 +273,7 @@ class TestSacctLocalCLI:
         assert result.exit_code == 0
         kwargs = fetch.call_args.kwargs
         assert kwargs["all_users"] is True
-        # The data-layer respects the `-a` precedence — the CLI just
-        # forwards both. Verified in the unit test below.
+        assert kwargs["user"] == "alice"
 
 
 class TestSacctSshRouting:
@@ -324,12 +325,19 @@ class TestBuildFilterArgs:
     to which ``sacct`` argument.
     """
 
-    def test_allusers_beats_user(self) -> None:
+    def test_allusers_and_user_coexist(self) -> None:
+        """Native sacct accepts ``-a -u <name>`` (scan-all-then-filter).
+
+        Earlier srunx dropped ``-u`` when ``-a`` was set; this guards
+        the regression-fix that now forwards both flags to match real
+        sacct semantics.
+        """
         from srunx.slurm.accounting import build_sacct_filter_args
 
         args = build_sacct_filter_args(user="alice", all_users=True)
         assert "--allusers" in args
-        assert "--user" not in args
+        assert "--user" in args
+        assert "alice" in args
 
     def test_user_forwarded_when_no_allusers(self) -> None:
         from srunx.slurm.accounting import build_sacct_filter_args

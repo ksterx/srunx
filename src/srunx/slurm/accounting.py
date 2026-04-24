@@ -191,11 +191,14 @@ def build_sacct_filter_args(
     from srunx.slurm.ssh import _validate_identifier
 
     args: list[str] = []
+    # ``-a`` and ``-u`` are independent flags in native ``sacct`` — passing
+    # both is valid and means "scan all users but filter to <user>" (``-a``
+    # only overrides the implicit self-filter default). Emit both when the
+    # caller provides both so srunx matches real sacct's semantics instead
+    # of silently dropping the narrower filter.
     if all_users:
-        # ``-a`` / ``--allusers`` overrides the implicit "current user"
-        # default that sacct applies when no user filter is given.
         args.append("--allusers")
-    elif user:
+    if user:
         _validate_identifier(user, "user")
         args += ["--user", user]
     if job_ids:

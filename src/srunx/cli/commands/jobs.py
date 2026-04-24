@@ -865,7 +865,12 @@ def scancel(
         raise typer.Exit(code=1) from e
 
 
-_STATE_COLORS = {
+# Node state colours for ``srunx sinfo`` — disjoint from the job-state
+# colour map in :mod:`srunx.cli._helpers.state_colors`. SLURM uses
+# lowercase node states (idle/mixed/allocated/...) that have different
+# semantics from the uppercase job states (RUNNING/COMPLETED/...), so
+# the two maps intentionally live apart.
+_NODE_STATE_COLORS = {
     "idle": "green",
     "mixed": "yellow",
     "mix": "yellow",
@@ -970,7 +975,7 @@ def _render_sinfo_table(rows: list[Any]) -> None:
     for row in rows:
         partition_display = f"{row.partition}*" if row.is_default else row.partition
         avail_color = "green" if row.avail == "up" else "red"
-        state_color = _STATE_COLORS.get(row.state.lower(), "white")
+        state_color = _NODE_STATE_COLORS.get(row.state.lower(), "white")
         table.add_row(
             partition_display,
             f"[{avail_color}]{row.avail}[/{avail_color}]",
