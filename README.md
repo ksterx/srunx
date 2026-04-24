@@ -94,14 +94,15 @@ If you need full-featured scientific workflow tooling, Snakemake / Nextflow are 
 | `srunx squeue` | List jobs in queue (use `-j <id>` for a single job's state) |
 | `srunx scancel <id>` | Cancel a job |
 | `srunx tail <id>` | View / stream job logs |
-| `srunx sinfo` | Display GPU availability |
+| `srunx sinfo` | Partition / state / nodelist listing (native-sinfo parity) |
+| `srunx gpus` | GPU aggregate summary |
 | `srunx watch jobs\|resources\|cluster` | Watch for state changes / resource availability |
 | `srunx flow` | Run / validate YAML workflows |
 | `srunx flow run --arg KEY=VALUE` | Override workflow `args` from the CLI |
 | `srunx flow run --sweep KEY=V1,V2 --max-parallel N` | Ad-hoc matrix parameter sweep |
 | `srunx ssh` | Remote SLURM operations over SSH |
-| `srunx sacct` | Show job execution history |
-| `srunx sreport` | Generate job execution report |
+| `srunx history` | srunx's own submission history (SQLite-backed) |
+| `srunx sacct` | Real SLURM `sacct` wrapper (cluster accounting DB) |
 | `srunx config` | Manage configuration |
 | `srunx template` | Manage job templates |
 | `srunx ui` | Launch the web dashboard |

@@ -108,11 +108,13 @@ class TestUnavailableStates:
 class TestListJobsParsing:
     """Test the list_jobs parsing logic by mocking _run_slurm_cmd."""
 
+    # Pipe-delimited format: %i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%b
+    # (job_id|partition|name|user|state|elapsed|time_limit|nodes|cpus|nodelist_or_reason|TRES_PER_NODE)
     SAMPLE_SQUEUE = """\
-             18431     defq     qwen3-tts   ksterx  RUNNING 1-00:03:20  UNLIMITED        1 dgx-node1 gpu:8
-             18477     defq          cosy   ksterx  RUNNING   12:30:45  UNLIMITED        1 dgx-node2 gpu:NVIDIA-A100:8
-             18490     defq    gemma3-cpt   ksterx  RUNNING    5:15:00  UNLIMITED        2 dgx-node[3-4] gpu:4
-             18500     defq       pending   ksterx  PENDING       0:00  UNLIMITED        1 (Priority) (null)
+18431|defq|qwen3-tts|ksterx|RUNNING|1-00:03:20|UNLIMITED|1|16|dgx-node1|gpu:8
+18477|defq|cosy|ksterx|RUNNING|12:30:45|UNLIMITED|1|32|dgx-node2|gpu:NVIDIA-A100:8
+18490|defq|gemma3-cpt|alice|RUNNING|5:15:00|UNLIMITED|2|64|dgx-node[3-4]|gpu:4
+18500|defq|pending|bob|PENDING|0:00|UNLIMITED|1|8|(Priority)|(null)
 """
 
     def test_parse_running_jobs(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -214,6 +216,45 @@ class TestListJobsParsing:
         assert jobs[0]["resources"]["gpus_per_node"] == 8
         assert jobs[0]["nodes"] == 1
         assert jobs[0]["gpus"] == 8  # 8 * 1
+
+    def test_parse_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "srunx.slurm.ssh._run_slurm_cmd",
+            lambda _a, _c: self.SAMPLE_SQUEUE,
+        )
+        adapter = object.__new__(SlurmSSHAdapter)
+        jobs = adapter.list_jobs()
+
+        assert jobs[0]["user"] == "ksterx"
+        assert jobs[2]["user"] == "alice"
+        assert jobs[3]["user"] == "bob"
+
+    def test_parse_cpus(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """%C field surfaces as the total allocated CPU count."""
+        monkeypatch.setattr(
+            "srunx.slurm.ssh._run_slurm_cmd",
+            lambda _a, _c: self.SAMPLE_SQUEUE,
+        )
+        adapter = object.__new__(SlurmSSHAdapter)
+        jobs = adapter.list_jobs()
+
+        assert jobs[0]["cpus"] == 16
+        assert jobs[2]["cpus"] == 64
+
+    def test_parse_nodelist_running_vs_pending(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """%R is the nodelist for running jobs and the reason for pending ones."""
+        monkeypatch.setattr(
+            "srunx.slurm.ssh._run_slurm_cmd",
+            lambda _a, _c: self.SAMPLE_SQUEUE,
+        )
+        adapter = object.__new__(SlurmSSHAdapter)
+        jobs = adapter.list_jobs()
+
+        assert jobs[0]["nodelist"] == "dgx-node1"
+        assert jobs[2]["nodelist"] == "dgx-node[3-4]"
+        assert jobs[3]["nodelist"] == "(Priority)"
 
     def test_empty_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(

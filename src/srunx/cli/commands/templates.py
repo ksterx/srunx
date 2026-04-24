@@ -23,7 +23,7 @@ def template_list() -> None:
     templates = list_templates()
 
     console = Console()
-    table = Table(title="Available Job Templates")
+    table = Table()
     table.add_column("Name", style="cyan")
     table.add_column("Description", style="magenta")
     table.add_column("Use Case", style="green")

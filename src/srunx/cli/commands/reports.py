@@ -1,4 +1,17 @@
-"""DB-backed history / reporting commands: sacct, sreport."""
+"""Job-history commands.
+
+Two related-but-distinct surfaces live here:
+
+* :func:`history` — srunx's own SQLite history. Only shows jobs
+  submitted via srunx itself. Works even on clusters where SLURM
+  accounting is disabled.
+* :func:`sacct` — real-SLURM ``sacct`` wrapper. Queries the cluster
+  accounting DB and thus sees every job SLURM has seen (including
+  manual ``sbatch`` runs). Falls flat if the cluster has no
+  ``slurmdbd``.
+
+``sreport`` was dropped earlier; see commit history.
+"""
 
 import sys
 from typing import Annotated
@@ -7,13 +20,14 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from srunx.cli._helpers.state_colors import colorize_state
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.common.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def sacct(
+def history(
     job_filter: Annotated[
         list[int] | None,
         typer.Option(
@@ -21,8 +35,7 @@ def sacct(
             "--jobs",
             help=(
                 "Filter to one or more specific job IDs. Replaces the old "
-                "``srunx status <id>`` command for finished jobs — equivalent "
-                "to ``sacct -j ID``."
+                "``srunx status <id>`` command for finished jobs."
             ),
         ),
     ] = None,
@@ -33,7 +46,12 @@ def sacct(
     local: LocalOpt = False,
     quiet: QuietOpt = False,
 ) -> None:
-    """Show job execution history.
+    """Show srunx's own submission history.
+
+    Lists jobs that srunx itself submitted (from the local SQLite at
+    ``$XDG_CONFIG_HOME/srunx/srunx.db``). Jobs submitted outside srunx
+    — e.g. from a manual ``sbatch`` on the cluster — are **not**
+    listed. Use the cluster's own ``sacct`` for that.
 
     With ``--profile <name>`` (or ``$SRUNX_SSH_PROFILE`` / current
     profile), results are filtered to jobs that ran against that
@@ -48,7 +66,7 @@ def sacct(
             resolve_transport_source,
         )
 
-        # sacct is a pure DB query — no SSH connection needed even
+        # history is a pure DB query — no SSH connection needed even
         # for SSH profiles. ``peek_scheduler_key`` gives us the WHERE
         # filter without paying the round-trip cost of opening an
         # SSH adapter just to read the local SQLite history.
@@ -69,7 +87,7 @@ def sacct(
             return
 
         console = Console()
-        table = Table(title=f"Job History (Last {len(jobs)} jobs)")
+        table = Table()
         table.add_column("Job ID", style="cyan")
         table.add_column("Name", style="magenta")
         table.add_column("Status", style="green")
@@ -113,105 +131,198 @@ def sacct(
         sys.exit(1)
 
 
-def sreport(
-    from_date: Annotated[
-        str | None, typer.Option("--from", help="Start date (YYYY-MM-DD)")
+def sacct(
+    job_filter: Annotated[
+        list[int] | None,
+        typer.Option(
+            "-j",
+            "--jobs",
+            help="Filter to one or more specific job IDs (sacct -j).",
+        ),
     ] = None,
-    to_date: Annotated[
-        str | None, typer.Option("--to", help="End date (YYYY-MM-DD)")
+    user: Annotated[
+        str | None,
+        typer.Option(
+            "-u",
+            "--user",
+            help=(
+                "Filter to a single username. Omit (and omit -a) to use "
+                "sacct's implicit current-user default."
+            ),
+        ),
     ] = None,
-    workflow: Annotated[
-        str | None, typer.Option("--workflow", help="Workflow name")
+    all_users: Annotated[
+        bool,
+        typer.Option(
+            "-a",
+            "--allusers",
+            help="Show every user's jobs (overrides -u).",
+        ),
+    ] = False,
+    start_time: Annotated[
+        str | None,
+        typer.Option(
+            "-S",
+            "--starttime",
+            help="sacct --starttime (e.g. '2026-04-20', 'now-1day').",
+        ),
     ] = None,
+    end_time: Annotated[
+        str | None,
+        typer.Option("-E", "--endtime", help="sacct --endtime."),
+    ] = None,
+    state: Annotated[
+        str | None,
+        typer.Option(
+            "-s",
+            "--state",
+            help="Comma-separated states (e.g. 'FAILED,TIMEOUT').",
+        ),
+    ] = None,
+    partition: Annotated[
+        str | None,
+        typer.Option("-p", "--partition", help="Filter to a single partition."),
+    ] = None,
+    show_steps: Annotated[
+        bool,
+        typer.Option(
+            "--show-steps",
+            help=(
+                "Include job-step rows (.batch / .extern / .N). Hidden by "
+                "default because the parent row already summarises them."
+            ),
+        ),
+    ] = False,
+    show_account: Annotated[
+        bool,
+        typer.Option("--show-account", help="Add the Account column."),
+    ] = False,
+    show_start_end: Annotated[
+        bool,
+        typer.Option(
+            "--show-times",
+            help="Add the Submit / Start / End time columns.",
+        ),
+    ] = False,
+    format: Annotated[
+        str,
+        typer.Option("--format", "-f", help="Output format: table or json."),
+    ] = "table",
     profile: ProfileOpt = None,
     local: LocalOpt = False,
     quiet: QuietOpt = False,
 ) -> None:
-    """Generate job execution report.
+    """Query SLURM accounting via the real ``sacct`` binary.
 
-    With ``--profile <name>`` (or ``$SRUNX_SSH_PROFILE`` / current
-    profile), aggregates are scoped to jobs that ran on that
-    cluster. Without a transport selector, every transport is
-    aggregated together — matching legacy behaviour.
+    Unlike :func:`history` (which reads srunx's own SQLite), this
+    shells out to ``sacct`` on the cluster, so it sees **every** job
+    SLURM has accounted for — including manual ``sbatch`` runs done
+    outside srunx. Requires a cluster with ``slurmdbd`` accounting
+    enabled; otherwise the output will be empty.
+
+    Default columns: Job ID, User, Name, Partition, State, ExitCode,
+    Elapsed. Use ``--show-account`` / ``--show-times`` to add more.
+    ``--format json`` always emits every field.
+
+    Examples:
+        srunx sacct
+        srunx sacct -j 12345
+        srunx sacct -u alice -s FAILED
+        srunx sacct -a -S now-1day
+        srunx sacct --show-steps
+        srunx sacct --profile dgx -j 9876 --format json
     """
+    import json
+    from typing import cast
+
+    from srunx.slurm.accounting import (
+        SacctRow,
+        fetch_sacct_rows_local,
+        fetch_sacct_rows_ssh,
+        filter_out_steps,
+    )
+    from srunx.transport import resolve_transport
+
     try:
-        from srunx.observability.storage.cli_helpers import (
-            compute_job_stats,
-            compute_workflow_stats,
-        )
-        from srunx.transport import (
-            emit_transport_banner,
-            peek_scheduler_key,
-            resolve_transport_source,
-        )
+        job_ids = [int(j) for j in job_filter] if job_filter else None
+        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+            rows: list[SacctRow]
+            if rt.transport_type == "ssh":
+                from srunx.slurm.ssh import SlurmSSHAdapter
 
-        # sreport is a pure DB query — see ``sacct`` for the rationale
-        # behind the ``peek_scheduler_key`` shortcut.
-        source = resolve_transport_source(profile=profile, local=local)
-        scheduler_key = peek_scheduler_key(profile=profile, local=local)
-        emit_transport_banner(label=scheduler_key, source=source, quiet=quiet)
+                adapter = cast(SlurmSSHAdapter, rt.job_ops)
+                rows = fetch_sacct_rows_ssh(
+                    adapter,
+                    job_ids=job_ids,
+                    user=user,
+                    all_users=all_users,
+                    start_time=start_time,
+                    end_time=end_time,
+                    state=state,
+                    partition=partition,
+                )
+            else:
+                rows = fetch_sacct_rows_local(
+                    job_ids=job_ids,
+                    user=user,
+                    all_users=all_users,
+                    start_time=start_time,
+                    end_time=end_time,
+                    state=state,
+                    partition=partition,
+                )
 
-        if workflow:
-            stats = compute_workflow_stats(workflow, scheduler_key=scheduler_key)
+        if not show_steps:
+            rows = filter_out_steps(rows)
 
-            console = Console()
-            console.print(f"\n[bold cyan]Workflow Report: {workflow}[/bold cyan]")
-            console.print(f"Total Jobs: {stats['total_jobs']}")
-            if stats["avg_duration_seconds"]:
-                mins = int(stats["avg_duration_seconds"] / 60)
-                console.print(f"Average Duration: {mins} minutes")
-            console.print(f"First Submitted: {stats['first_submitted']}")
-            console.print(f"Last Submitted: {stats['last_submitted']}\n")
+        if format == "json":
+            Console().print(json.dumps([row.to_dict() for row in rows], indent=2))
+            return
 
-        else:
-            stats = compute_job_stats(
-                from_date=from_date,
-                to_date=to_date,
-                scheduler_key=scheduler_key,
-            )
+        if not rows:
+            Console().print("[yellow]No accounting records[/yellow]")
+            return
 
-            console = Console()
-            console.print("\n[bold cyan]Job Execution Report[/bold cyan]")
+        table = Table()
+        table.add_column("Job ID", style="cyan")
+        table.add_column("User")
+        table.add_column("Name", style="magenta", overflow="fold")
+        table.add_column("Partition")
+        if show_account:
+            table.add_column("Account")
+        table.add_column("State")
+        table.add_column("ExitCode", justify="right")
+        table.add_column("Elapsed", justify="right")
+        if show_start_end:
+            table.add_column("Submit")
+            table.add_column("Start")
+            table.add_column("End")
 
-            if from_date or to_date:
-                date_range = []
-                if from_date:
-                    date_range.append(f"From: {from_date}")
-                if to_date:
-                    date_range.append(f"To: {to_date}")
-                console.print(f"[yellow]{' | '.join(date_range)}[/yellow]\n")
+        for row in rows:
+            cells: list[str] = [
+                row.job_id,
+                row.user or "-",
+                row.job_name,
+                row.partition or "-",
+            ]
+            if show_account:
+                cells.append(row.account or "-")
+            cells += [
+                colorize_state(row.state or "UNKNOWN"),
+                row.exit_code or "-",
+                row.elapsed or "-",
+            ]
+            if show_start_end:
+                cells += [
+                    row.submit or "-",
+                    row.start or "-",
+                    row.end or "-",
+                ]
+            table.add_row(*cells)
 
-            # Summary table
-            summary_table = Table(title="Summary")
-            summary_table.add_column("Metric", style="cyan")
-            summary_table.add_column("Value", style="green", justify="right")
-
-            summary_table.add_row("Total Jobs", str(stats["total_jobs"]))
-
-            if stats["avg_duration_seconds"]:
-                mins = int(stats["avg_duration_seconds"] / 60)
-                summary_table.add_row("Average Duration", f"{mins} minutes")
-
-            summary_table.add_row(
-                "Total GPU Hours", f"{stats['total_gpu_hours']:.1f} hours"
-            )
-
-            console.print(summary_table)
-
-            # Status breakdown
-            if stats["jobs_by_status"]:
-                console.print()
-                status_table = Table(title="Jobs by Status")
-                status_table.add_column("Status", style="cyan")
-                status_table.add_column("Count", style="green", justify="right")
-
-                for status, count in stats["jobs_by_status"].items():
-                    status_table.add_row(status, str(count))
-
-                console.print(status_table)
-
-            console.print()
+        Console().print(table)
 
     except Exception as e:
-        logger.error(f"Error generating report: {e}")
+        logger.error(f"Error running sacct: {e}")
+        Console().print(f"[red]Error: {e}[/red]")
         sys.exit(1)

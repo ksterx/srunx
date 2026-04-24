@@ -144,7 +144,7 @@ srunx squeue -j 12345
 For finished jobs (srunx state DB):
 
 ``` bash
-srunx sacct -j 12345
+srunx history -j 12345
 ```
 
 List all jobs:
@@ -153,10 +153,10 @@ List all jobs:
 srunx squeue
 ```
 
-List with GPU allocation info:
+Filter to a single user (default is all users):
 
 ``` bash
-srunx squeue --show-gpus
+srunx squeue --user alice
 ```
 
 List in JSON format:

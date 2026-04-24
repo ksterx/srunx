@@ -33,7 +33,7 @@ srunx squeue -j <job_id>
 Check historical status (finished jobs too, via the srunx state DB):
 
 ``` bash
-srunx sacct -j <job_id>
+srunx history -j <job_id>
 ```
 
 List your jobs:

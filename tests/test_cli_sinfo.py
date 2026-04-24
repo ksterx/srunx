@@ -1,4 +1,13 @@
-"""Tests for resources command CLI."""
+"""Tests for ``srunx sinfo`` (partition / state / nodelist listing).
+
+The GPU-aggregate snapshot previously rendered by ``srunx sinfo``
+moved to ``srunx gpus`` — see ``test_cli_gpus.py``. This file
+exercises the new ``sinfo`` behaviour, which mirrors native SLURM
+``sinfo`` output columns (PARTITION / AVAIL / TIMELIMIT / NODES /
+STATE / NODELIST).
+"""
+
+from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock, patch
@@ -7,331 +16,146 @@ import pytest
 from typer.testing import CliRunner
 
 from srunx.cli.main import app
-from srunx.observability.monitoring.types import ResourceSnapshot
+from srunx.slurm.partitions import (
+    PartitionRow,
+    parse_sinfo_partition_rows,
+)
+
+_SAMPLE_STDOUT = (
+    "defq*|up|infinite|2|mixed|indus,sagittarius\n"
+    "defq*|up|infinite|2|allocated|lynx,orion\n"
+    "gpu|up|1-00:00:00|1|idle|node01\n"
+)
 
 
 @pytest.fixture
-def runner():
-    """Create CLI test runner."""
+def runner() -> CliRunner:
     return CliRunner()
 
 
 @pytest.fixture
-def mock_snapshot():
-    """Create mock resource snapshot."""
-    return ResourceSnapshot(
-        partition="gpu",
-        total_gpus=16,
-        gpus_in_use=10,
-        gpus_available=6,
-        jobs_running=3,
-        nodes_total=4,
-        nodes_idle=1,
-        nodes_down=0,
-    )
+def sample_rows() -> list[PartitionRow]:
+    return parse_sinfo_partition_rows(_SAMPLE_STDOUT)
 
 
-@pytest.fixture
-def mock_snapshot_all_partitions():
-    """Create mock resource snapshot for all partitions."""
-    return ResourceSnapshot(
-        partition=None,
-        total_gpus=32,
-        gpus_in_use=20,
-        gpus_available=12,
-        jobs_running=5,
-        nodes_total=8,
-        nodes_idle=2,
-        nodes_down=1,
-    )
+class TestSinfoParsing:
+    def test_parses_default_marker_and_fields(self) -> None:
+        rows = parse_sinfo_partition_rows(_SAMPLE_STDOUT)
+        assert len(rows) == 3
+        r0, r1, r2 = rows
+        assert r0.partition == "defq"
+        assert r0.is_default is True
+        assert r0.avail == "up"
+        assert r0.timelimit == "infinite"
+        assert r0.nodes == 2
+        assert r0.state == "mixed"
+        assert r0.nodelist == "indus,sagittarius"
 
+        assert r1.partition == "defq"
+        assert r1.state == "allocated"
+        assert r1.nodelist == "lynx,orion"
 
-class TestResourcesCommand:
-    """Test suite for resources command."""
+        assert r2.partition == "gpu"
+        assert r2.is_default is False
+        assert r2.timelimit == "1-00:00:00"
+        assert r2.nodelist == "node01"
 
-    def test_resources_table_format_default(self, runner, mock_snapshot_all_partitions):
-        """Test resources command with default table format."""
-        with patch(
-            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
-        ) as mock_monitor_class:
-            mock_monitor = MagicMock()
-            mock_monitor.get_partition_resources.return_value = (
-                mock_snapshot_all_partitions
-            )
-            mock_monitor_class.return_value = mock_monitor
-
-            result = runner.invoke(app, ["sinfo"])
-
-            assert result.exit_code == 0
-            assert "GPU Resources" in result.stdout
-            assert "all" in result.stdout  # "all partitions" in title
-            assert "Total GPUs" in result.stdout
-            assert "32" in result.stdout  # total_gpus
-            assert "20" in result.stdout  # gpus_in_use
-            assert "12" in result.stdout  # gpus_available
-            assert "Running Jobs" in result.stdout
-            assert "5" in result.stdout  # jobs_running
-            assert "Total Nodes" in result.stdout
-            assert "8" in result.stdout  # nodes_total
-            assert "Idle Nodes" in result.stdout
-            assert "2" in result.stdout  # nodes_idle
-            assert "Down Nodes" in result.stdout
-            assert "1" in result.stdout  # nodes_down
-
-    def test_resources_table_format_with_partition(self, runner, mock_snapshot):
-        """Test resources command with specific partition."""
-        with patch(
-            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
-        ) as mock_monitor_class:
-            mock_monitor = MagicMock()
-            mock_monitor.get_partition_resources.return_value = mock_snapshot
-            mock_monitor_class.return_value = mock_monitor
-
-            result = runner.invoke(app, ["sinfo", "--partition", "gpu"])
-
-            assert result.exit_code == 0
-            assert "GPU Resources - gpu" in result.stdout
-            assert "16" in result.stdout  # total_gpus
-            assert "10" in result.stdout  # gpus_in_use
-            assert "6" in result.stdout  # gpus_available
-            assert "3" in result.stdout  # jobs_running
-            assert "4" in result.stdout  # nodes_total
-            assert "1" in result.stdout  # nodes_idle
-            assert "0" in result.stdout  # nodes_down
-
-            # Verify ResourceMonitor was created with correct partition
-            mock_monitor_class.assert_called_once_with(
-                min_gpus=0, partition="gpu", source=None
-            )
-
-    def test_resources_json_format_default(self, runner, mock_snapshot_all_partitions):
-        """Test resources command with JSON format."""
-        with patch(
-            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
-        ) as mock_monitor_class:
-            mock_monitor = MagicMock()
-            mock_monitor.get_partition_resources.return_value = (
-                mock_snapshot_all_partitions
-            )
-            mock_monitor_class.return_value = mock_monitor
-
-            result = runner.invoke(app, ["sinfo", "--format", "json"])
-
-            assert result.exit_code == 0
-            data = json.loads(result.stdout)
-
-            assert data["partition"] is None
-            assert data["gpus_total"] == 32
-            assert data["gpus_in_use"] == 20
-            assert data["gpus_available"] == 12
-            assert data["jobs_running"] == 5
-            assert data["nodes_total"] == 8
-            assert data["nodes_idle"] == 2
-            assert data["nodes_down"] == 1
-
-    def test_resources_json_format_with_partition(self, runner, mock_snapshot):
-        """Test resources command with JSON format and partition."""
-        with patch(
-            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
-        ) as mock_monitor_class:
-            mock_monitor = MagicMock()
-            mock_monitor.get_partition_resources.return_value = mock_snapshot
-            mock_monitor_class.return_value = mock_monitor
-
-            result = runner.invoke(app, ["sinfo", "-p", "gpu", "-f", "json"])
-
-            assert result.exit_code == 0
-            data = json.loads(result.stdout)
-
-            assert data["partition"] == "gpu"
-            assert data["gpus_total"] == 16
-            assert data["gpus_in_use"] == 10
-            assert data["gpus_available"] == 6
-            assert data["jobs_running"] == 3
-            assert data["nodes_total"] == 4
-            assert data["nodes_idle"] == 1
-            assert data["nodes_down"] == 0
-
-            # Verify ResourceMonitor was created with correct partition
-            mock_monitor_class.assert_called_once_with(
-                min_gpus=0, partition="gpu", source=None
-            )
-
-    def test_resources_zero_gpus_available(self, runner):
-        """Test resources command when no GPUs available."""
-        snapshot = ResourceSnapshot(
-            partition="gpu",
-            total_gpus=16,
-            gpus_in_use=16,
-            gpus_available=0,
-            jobs_running=8,
-            nodes_total=4,
-            nodes_idle=0,
-            nodes_down=0,
+    def test_skips_malformed_lines(self) -> None:
+        stdout = (
+            "defq*|up|infinite|2|mixed|indus\n"
+            "bogus line without delimiters\n"
+            "gpu|up|1:00:00|notanumber|idle|node01\n"
+            "\n"
+            "ok|up|infinite|1|idle|n1\n"
         )
+        rows = parse_sinfo_partition_rows(stdout)
+        assert [r.partition for r in rows] == ["defq", "ok"]
 
+
+class TestSinfoLocalPath:
+    def test_renders_partition_rows(
+        self, runner: CliRunner, sample_rows: list[PartitionRow]
+    ) -> None:
         with patch(
-            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
-        ) as mock_monitor_class:
-            mock_monitor = MagicMock()
-            mock_monitor.get_partition_resources.return_value = snapshot
-            mock_monitor_class.return_value = mock_monitor
+            "srunx.slurm.partitions.fetch_sinfo_rows_local",
+            return_value=sample_rows,
+        ):
+            result = runner.invoke(app, ["sinfo", "--local"])
 
-            result = runner.invoke(app, ["sinfo", "--format", "json"])
+        assert result.exit_code == 0, result.stdout + (result.stderr or "")
+        # Native-sinfo columns must all be present in the rendered table.
+        for column in (
+            "PARTITION",
+            "AVAIL",
+            "TIMELIMIT",
+            "NODES",
+            "STATE",
+            "NODELIST",
+        ):
+            assert column in result.stdout
+        # Row values: default marker, nodelist, state all surface.
+        assert "defq*" in result.stdout
+        assert "infinite" in result.stdout
+        assert "mixed" in result.stdout
+        assert "allocated" in result.stdout
+        assert "lynx,orion" in result.stdout
+        assert "gpu" in result.stdout
+        assert "node01" in result.stdout
 
-            assert result.exit_code == 0
-            data = json.loads(result.stdout)
-            assert data["gpus_available"] == 0
-            assert data["gpus_total"] == data["gpus_in_use"]
-
-    def test_resources_with_down_nodes(self, runner):
-        """Test resources command with some nodes down."""
-        snapshot = ResourceSnapshot(
-            partition="gpu",
-            total_gpus=8,  # Only from available nodes
-            gpus_in_use=4,
-            gpus_available=4,
-            jobs_running=2,
-            nodes_total=4,
-            nodes_idle=1,
-            nodes_down=2,  # 2 nodes down
-        )
-
+    def test_json_format_emits_row_list(
+        self, runner: CliRunner, sample_rows: list[PartitionRow]
+    ) -> None:
         with patch(
-            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
-        ) as mock_monitor_class:
-            mock_monitor = MagicMock()
-            mock_monitor.get_partition_resources.return_value = snapshot
-            mock_monitor_class.return_value = mock_monitor
+            "srunx.slurm.partitions.fetch_sinfo_rows_local",
+            return_value=sample_rows,
+        ):
+            result = runner.invoke(app, ["sinfo", "--local", "--format", "json"])
 
-            result = runner.invoke(app, ["sinfo", "--format", "json"])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert isinstance(data, list)
+        assert len(data) == 3
+        first = data[0]
+        # Same keys as PartitionRow.to_dict
+        assert first["partition"] == "defq"
+        assert first["is_default"] is True
+        assert first["avail"] == "up"
+        assert first["state"] == "mixed"
+        assert first["nodelist"] == "indus,sagittarius"
+        # Nodes must be an int, not a string
+        assert isinstance(first["nodes"], int)
 
-            assert result.exit_code == 0
-            data = json.loads(result.stdout)
-            assert data["nodes_total"] == 4
-            assert data["nodes_down"] == 2
-            # Total GPUs should only count available nodes
-            assert data["gpus_total"] == 8
-
-    def test_resources_error_handling(self, runner):
-        """Test resources command error handling."""
+    def test_partition_filter_forwarded_to_fetcher(
+        self, runner: CliRunner, sample_rows: list[PartitionRow]
+    ) -> None:
         with patch(
-            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
-        ) as mock_monitor_class:
-            mock_monitor = MagicMock()
-            mock_monitor.get_partition_resources.side_effect = Exception(
-                "SLURM connection error"
-            )
-            mock_monitor_class.return_value = mock_monitor
+            "srunx.slurm.partitions.fetch_sinfo_rows_local",
+            return_value=sample_rows,
+        ) as fetch:
+            result = runner.invoke(app, ["sinfo", "--local", "--partition", "gpu"])
 
-            result = runner.invoke(app, ["sinfo"])
+        assert result.exit_code == 0
+        fetch.assert_called_once_with("gpu")
 
-            assert result.exit_code == 1
-            assert "Error" in result.stdout
-
-    def test_resources_partition_not_found(self, runner):
-        """Test resources command with non-existent partition."""
-        # ResourceMonitor will return zeros for non-existent partition
-        snapshot = ResourceSnapshot(
-            partition="nonexistent",
-            total_gpus=0,
-            gpus_in_use=0,
-            gpus_available=0,
-            jobs_running=0,
-            nodes_total=0,
-            nodes_idle=0,
-            nodes_down=0,
-        )
-
+    def test_error_exits_nonzero(self, runner: CliRunner) -> None:
         with patch(
-            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
-        ) as mock_monitor_class:
-            mock_monitor = MagicMock()
-            mock_monitor.get_partition_resources.return_value = snapshot
-            mock_monitor_class.return_value = mock_monitor
-
-            result = runner.invoke(app, ["sinfo", "-p", "nonexistent", "-f", "json"])
-
-            assert result.exit_code == 0
-            data = json.loads(result.stdout)
-            # Should return zeros for non-existent partition
-            assert data["gpus_total"] == 0
-            assert data["nodes_total"] == 0
-
-    def test_resources_short_flags(self, runner, mock_snapshot):
-        """Test resources command with short flag variants."""
-        with patch(
-            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
-        ) as mock_monitor_class:
-            mock_monitor = MagicMock()
-            mock_monitor.get_partition_resources.return_value = mock_snapshot
-            mock_monitor_class.return_value = mock_monitor
-
-            # Test -p and -f short flags
-            result = runner.invoke(app, ["sinfo", "-p", "gpu", "-f", "json"])
-
-            assert result.exit_code == 0
-            data = json.loads(result.stdout)
-            assert data["partition"] == "gpu"
-
-            # Verify ResourceMonitor was created correctly
-            mock_monitor_class.assert_called_once_with(
-                min_gpus=0, partition="gpu", source=None
-            )
-
-    def test_resources_high_utilization(self, runner):
-        """Test resources command with high GPU utilization."""
-        snapshot = ResourceSnapshot(
-            partition="gpu",
-            total_gpus=100,
-            gpus_in_use=95,
-            gpus_available=5,
-            jobs_running=20,
-            nodes_total=25,
-            nodes_idle=1,
-            nodes_down=0,
-        )
-
-        with patch(
-            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
-        ) as mock_monitor_class:
-            mock_monitor = MagicMock()
-            mock_monitor.get_partition_resources.return_value = snapshot
-            mock_monitor_class.return_value = mock_monitor
-
-            result = runner.invoke(app, ["sinfo", "--format", "json"])
-
-            assert result.exit_code == 0
-            data = json.loads(result.stdout)
-            # 95% utilization
-            assert data["gpus_in_use"] / data["gpus_total"] == 0.95
-            assert data["gpus_available"] == 5
+            "srunx.slurm.partitions.fetch_sinfo_rows_local",
+            side_effect=RuntimeError("sinfo not on PATH"),
+        ):
+            result = runner.invoke(app, ["sinfo", "--local"])
+        assert result.exit_code == 1
+        assert "Error" in result.stdout
 
 
-class TestSinfoSshParity:
-    """#139: ``--profile`` routes ``sinfo`` through the SSH adapter.
+class TestSinfoSshPath:
+    """``--profile`` must route through the SSH adapter, not local sinfo."""
 
-    SSH path uses :class:`SSHAdapterResourceSource` (the same backend
-    the resource snapshotter / Web ``/api/resources`` already use), so
-    these tests mock the SSH transport handle and assert the cluster
-    snapshot path runs against the adapter — never the local
-    ``subprocess.run('sinfo')`` fallback.
-    """
-
-    def test_profile_routes_through_ssh_adapter_cluster_snapshot(self, runner):
+    def test_profile_calls_ssh_fetcher(
+        self, runner: CliRunner, sample_rows: list[PartitionRow]
+    ) -> None:
         from srunx.transport.registry import TransportHandle
 
         fake_adapter = MagicMock()
-        fake_adapter.get_cluster_snapshot.return_value = {
-            "partition": None,
-            "total_gpus": 64,
-            "gpus_in_use": 16,
-            "gpus_available": 48,
-            "jobs_running": 4,
-            "nodes_total": 8,
-            "nodes_idle": 4,
-            "nodes_down": 0,
-        }
         fake_handle = TransportHandle(
             scheduler_key="ssh:dgx",
             profile_name="dgx",
@@ -342,38 +166,40 @@ class TestSinfoSshParity:
             submission_context=None,
         )
 
-        with patch(
-            "srunx.transport.registry._build_ssh_handle",
-            return_value=(fake_handle, None),
+        with (
+            patch(
+                "srunx.transport.registry._build_ssh_handle",
+                return_value=(fake_handle, None),
+            ),
+            patch(
+                "srunx.slurm.partitions.fetch_sinfo_rows_ssh",
+                return_value=sample_rows,
+            ) as ssh_fetch,
+            patch("srunx.slurm.partitions.fetch_sinfo_rows_local") as local_fetch,
         ):
             result = runner.invoke(
-                app, ["sinfo", "--profile", "dgx", "--format", "json"]
+                app,
+                ["sinfo", "--profile", "dgx", "--format", "json"],
             )
 
         assert result.exit_code == 0, result.stdout + (result.stderr or "")
-        data = json.loads(result.stdout)
-        assert data["gpus_total"] == 64
-        assert data["gpus_available"] == 48
-        # The whole point of #139 — local sinfo must NOT have run.
-        fake_adapter.get_cluster_snapshot.assert_called_once()
-        fake_adapter.get_resources.assert_not_called()
+        # SSH branch must run; local subprocess must not.
+        ssh_fetch.assert_called_once()
+        called_adapter, called_partition = ssh_fetch.call_args.args
+        assert called_adapter is fake_adapter
+        assert called_partition is None
+        local_fetch.assert_not_called()
 
-    def test_profile_with_partition_uses_per_partition_query(self, runner):
+        data = json.loads(result.stdout)
+        assert len(data) == 3
+        assert {r["partition"] for r in data} == {"defq", "gpu"}
+
+    def test_profile_with_partition_flag_forwards_filter(
+        self, runner: CliRunner, sample_rows: list[PartitionRow]
+    ) -> None:
         from srunx.transport.registry import TransportHandle
 
         fake_adapter = MagicMock()
-        fake_adapter.get_resources.return_value = [
-            {
-                "partition": "gpu",
-                "total_gpus": 32,
-                "gpus_in_use": 8,
-                "gpus_available": 24,
-                "jobs_running": 2,
-                "nodes_total": 4,
-                "nodes_idle": 2,
-                "nodes_down": 0,
-            }
-        ]
         fake_handle = TransportHandle(
             scheduler_key="ssh:dgx",
             profile_name="dgx",
@@ -384,9 +210,15 @@ class TestSinfoSshParity:
             submission_context=None,
         )
 
-        with patch(
-            "srunx.transport.registry._build_ssh_handle",
-            return_value=(fake_handle, None),
+        with (
+            patch(
+                "srunx.transport.registry._build_ssh_handle",
+                return_value=(fake_handle, None),
+            ),
+            patch(
+                "srunx.slurm.partitions.fetch_sinfo_rows_ssh",
+                return_value=[sample_rows[2]],
+            ) as ssh_fetch,
         ):
             result = runner.invoke(
                 app,
@@ -401,40 +233,5 @@ class TestSinfoSshParity:
                 ],
             )
 
-        assert result.exit_code == 0, result.stdout + (result.stderr or "")
-        data = json.loads(result.stdout)
-        assert data["partition"] == "gpu"
-        assert data["gpus_total"] == 32
-        # Per-partition path: get_resources('gpu') called, NOT
-        # get_cluster_snapshot.
-        fake_adapter.get_resources.assert_called_once_with("gpu")
-        fake_adapter.get_cluster_snapshot.assert_not_called()
-
-    def test_local_path_unchanged_when_no_profile(
-        self, runner, mock_snapshot_all_partitions
-    ):
-        """Regression guard: local default still uses ResourceMonitor subprocess.
-
-        Without ``--profile``/``$SRUNX_SSH_PROFILE`` the SSH branch
-        must NOT activate — the existing
-        :class:`TestResourcesCommand` tests already cover the table
-        path, this one explicitly asserts ``source=None`` so the
-        subprocess fallback stays the default.
-        """
-        with patch(
-            "srunx.observability.monitoring.resource_monitor.ResourceMonitor"
-        ) as mock_monitor_class:
-            mock_monitor = MagicMock()
-            mock_monitor.get_partition_resources.return_value = (
-                mock_snapshot_all_partitions
-            )
-            mock_monitor_class.return_value = mock_monitor
-
-            result = runner.invoke(app, ["sinfo", "--local", "--format", "json"])
-
         assert result.exit_code == 0
-        # ``source=None`` means the local subprocess path runs — see
-        # the docstring on ``ResourceMonitor.get_partition_resources``.
-        mock_monitor_class.assert_called_once_with(
-            min_gpus=0, partition=None, source=None
-        )
+        ssh_fetch.assert_called_once_with(fake_adapter, "gpu")

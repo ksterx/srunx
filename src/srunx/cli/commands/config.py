@@ -21,7 +21,7 @@ def config_show() -> None:
     config = get_config()
 
     console = Console()
-    table = Table(title="srunx Configuration")
+    table = Table()
     table.add_column("Section", style="cyan")
     table.add_column("Key", style="magenta")
     table.add_column("Value", style="green")

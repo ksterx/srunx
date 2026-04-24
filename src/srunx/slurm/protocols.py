@@ -129,10 +129,11 @@ class JobOperations(Protocol):
         ...
 
     def queue(self, user: str | None = None) -> list[BaseJob]:
-        """List jobs for *user* (defaults to the transport's current user).
+        """List active jobs.
 
-        Local: ``$USER``. SSH: the profile's username. Empty list if
-        none, never raises.
+        ``user=None`` means "all users", matching native SLURM
+        ``squeue`` semantics. Pass a username to filter. Empty list
+        if there are no active jobs; never raises.
         """
         ...
 

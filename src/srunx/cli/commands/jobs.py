@@ -1,4 +1,4 @@
-"""Job-oriented CLI commands: sbatch, squeue, scancel, sinfo, tail."""
+"""Job-oriented CLI commands: sbatch, squeue, scancel, sinfo, gpus, tail."""
 
 import os
 import sys
@@ -23,6 +23,7 @@ from srunx.cli._helpers.sbatch_helpers import (
     _print_in_place_sync_preview,
     _submit_via_transport,
 )
+from srunx.cli._helpers.state_colors import colorize_state
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.common.config import get_config
 from srunx.common.exceptions import JobNotFoundError, TransportError
@@ -549,9 +550,40 @@ def squeue(
             ),
         ),
     ] = None,
-    show_gpus: Annotated[
+    user: Annotated[
+        str | None,
+        typer.Option(
+            "-u",
+            "--user",
+            help=(
+                "Filter to a single username (like ``squeue --user <name>``). "
+                "Default is all users."
+            ),
+        ),
+    ] = None,
+    show_partition: Annotated[
         bool,
-        typer.Option("--show-gpus", "-g", help="Show GPU allocation for each job"),
+        typer.Option("--show-partition", help="Add the Partition column."),
+    ] = False,
+    show_cpus: Annotated[
+        bool,
+        typer.Option("--show-cpus", help="Add the CPUs column."),
+    ] = False,
+    show_limit: Annotated[
+        bool,
+        typer.Option("--show-limit", help="Add the time-limit column."),
+    ] = False,
+    show_nodes: Annotated[
+        bool,
+        typer.Option("--show-nodes", help="Add the Nodes count column."),
+    ] = False,
+    show_all: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            "-a",
+            help="Shortcut for --show-partition --show-cpus --show-limit --show-nodes.",
+        ),
     ] = False,
     format: Annotated[
         str,
@@ -561,14 +593,26 @@ def squeue(
     local: LocalOpt = False,
     quiet: QuietOpt = False,
 ) -> None:
-    """List user's jobs in the queue.
+    """List active jobs on the cluster.
+
+    Shows all users' jobs by default (matching native ``squeue``).
+
+    Default columns: Job ID, User, Name, Status, GPUs, Elapsed,
+    NodeList. Use ``--show-partition`` / ``--show-cpus`` /
+    ``--show-limit`` / ``--show-nodes`` (or ``-a`` / ``--all``) to
+    surface the remaining SLURM fields. ``--format json`` always
+    emits every field regardless of these flags — scripts can pick
+    what they need.
+
+    For finished jobs, see ``srunx history``.
 
     Examples:
         srunx squeue
         srunx squeue -j 12345
-        srunx squeue --show-gpus
+        srunx squeue --user alice
+        srunx squeue -a
+        srunx squeue --show-partition --show-cpus
         srunx squeue --format json
-        srunx squeue --show-gpus --format json
     """
     import json
 
@@ -576,9 +620,9 @@ def squeue(
         with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
             if rt.transport_type == "local":
                 client = _slurm_local.Slurm()
-                jobs = client.queue()
+                jobs = client.queue(user=user)
             else:
-                jobs = rt.job_ops.queue()
+                jobs = rt.job_ops.queue(user=user)
 
         # Filter to user-specified job IDs after the queue() call so
         # the dispatch path stays simple; SLURM's own ``squeue -j`` does
@@ -587,79 +631,86 @@ def squeue(
             wanted = {int(j) for j in job_filter}
             jobs = [j for j in jobs if j.job_id in wanted]
 
-        # JSON format output (emit before the "empty queue" banner so
-        # --format json stdout stays pure JSON — AC-7.1 / AC-7.2).
+        # JSON format always emits every field (scripts pick what
+        # they consume — column-hiding would just force callers to
+        # reconstruct the full shape from multiple calls).
         if format == "json":
-            job_data = []
-            for job in jobs:
-                data = {
+            job_data = [
+                {
                     "job_id": job.job_id,
+                    "user": getattr(job, "user", None),
                     "name": job.name,
-                    "status": job.status.name if hasattr(job, "status") else "UNKNOWN",
-                    "nodes": getattr(getattr(job, "resources", None), "nodes", None),
-                    "time_limit": getattr(
-                        getattr(job, "resources", None), "time_limit", None
+                    "partition": getattr(job, "partition", None),
+                    "status": (
+                        job.status.name if hasattr(job, "status") else "UNKNOWN"
                     ),
+                    "nodes": getattr(job, "nodes", None),
+                    "cpus": getattr(job, "cpus", None),
+                    "gpus": getattr(job, "gpus", None),
+                    "nodelist": getattr(job, "nodelist", None),
+                    "elapsed_time": getattr(job, "elapsed_time", None),
+                    "time_limit": getattr(job, "time_limit", None),
                 }
-                if show_gpus:
-                    resources = getattr(job, "resources", None)
-                    if resources:
-                        total_gpus = resources.nodes * resources.gpus_per_node
-                        data["gpus"] = total_gpus
-                    else:
-                        data["gpus"] = 0
-                job_data.append(data)
-
-            console = Console()
-            console.print(json.dumps(job_data, indent=2))
+                for job in jobs
+            ]
+            Console().print(json.dumps(job_data, indent=2))
             return
 
         # Empty-queue sentinel only for human-facing table format.
-        # Moved past the json branch to fix the pre-existing bug where
-        # ``srunx squeue --format json`` on an empty queue emitted the
-        # human-readable line instead of ``[]`` (AC-7.1 prerequisite).
         if not jobs:
-            console = Console()
-            console.print("No jobs in queue")
+            Console().print("No jobs in queue")
             return
 
-        # Table format output.
-        #
-        # Columns read from ``BaseJob`` top-level fields populated by
-        # both the local and SSH ``queue()`` implementations (squeue
-        # ``%.6D`` / ``%.10M`` / ``%.9l``). Pre-Phase-2 code reached for
-        # ``job.resources.nodes`` etc. but ``BaseJob`` has no
-        # ``resources`` attribute, so every row came back as ``N/A`` —
-        # regardless of transport. Two distinct time columns are shown
-        # because users care about both "how long has this been running"
-        # (Elapsed) and "when will SLURM kill it" (Limit).
-        table = Table(title="Job Queue")
+        # Column visibility. The four SLURM fields the user flagged as
+        # "information density, not always needed" are hidden by
+        # default; flags (or ``-a``) surface them. Keeping GPUs /
+        # NodeList / User in the default set because those are what
+        # disambiguate jobs in a multi-user queue — the original
+        # complaint that triggered this redesign.
+        show_partition_col = show_partition or show_all
+        show_cpus_col = show_cpus or show_all
+        show_limit_col = show_limit or show_all
+        show_nodes_col = show_nodes or show_all
+
+        table = Table()
         table.add_column("Job ID", style="cyan")
-        table.add_column("Name", style="magenta")
-        table.add_column("Status", style="green")
-        table.add_column("Nodes", justify="right")
-        if show_gpus:
-            table.add_column("GPUs", justify="right", style="yellow")
+        table.add_column("User")
+        table.add_column("Name", style="magenta", overflow="fold")
+        if show_partition_col:
+            table.add_column("Partition")
+        table.add_column("Status")
+        if show_nodes_col:
+            table.add_column("Nodes", justify="right")
+        if show_cpus_col:
+            table.add_column("CPUs", justify="right")
+        table.add_column("GPUs", justify="right", style="yellow")
         table.add_column("Elapsed", justify="right")
-        table.add_column("Limit", justify="right")
+        if show_limit_col:
+            table.add_column("Limit", justify="right")
+        table.add_column("NodeList", overflow="fold")
 
         for job in jobs:
-            row = [
+            status_name = job.status.name if hasattr(job, "status") else "UNKNOWN"
+            row: list[str] = [
                 str(job.job_id) if job.job_id else "N/A",
+                getattr(job, "user", None) or "N/A",
                 job.name,
-                job.status.name if hasattr(job, "status") else "UNKNOWN",
-                str(getattr(job, "nodes", None) or "N/A"),
             ]
-
-            if show_gpus:
-                row.append(str(getattr(job, "gpus", 0) or 0))
-
+            if show_partition_col:
+                row.append(getattr(job, "partition", None) or "N/A")
+            row.append(colorize_state(status_name))
+            if show_nodes_col:
+                row.append(str(getattr(job, "nodes", None) or "N/A"))
+            if show_cpus_col:
+                row.append(str(getattr(job, "cpus", None) or 0))
+            row.append(str(getattr(job, "gpus", None) or 0))
             row.append(getattr(job, "elapsed_time", None) or "N/A")
-            row.append(getattr(job, "time_limit", None) or "N/A")
+            if show_limit_col:
+                row.append(getattr(job, "time_limit", None) or "N/A")
+            row.append(getattr(job, "nodelist", None) or "N/A")
             table.add_row(*row)
 
-        console = Console()
-        console.print(table)
+        Console().print(table)
 
     except TransportError as exc:
         typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
@@ -704,6 +755,26 @@ def scancel(
         raise typer.Exit(code=1) from e
 
 
+_STATE_COLORS = {
+    "idle": "green",
+    "mixed": "yellow",
+    "mix": "yellow",
+    "allocated": "red",
+    "alloc": "red",
+    "completing": "cyan",
+    "drained": "magenta",
+    "drain": "magenta",
+    "draining": "magenta",
+    "down": "bright_red",
+    "fail": "bright_red",
+    "failing": "bright_red",
+    "maint": "bright_black",
+    "reserved": "blue",
+    "future": "bright_black",
+    "unknown": "bright_black",
+}
+
+
 def sinfo(
     partition: Annotated[
         str | None,
@@ -717,19 +788,120 @@ def sinfo(
     local: LocalOpt = False,
     quiet: QuietOpt = False,
 ) -> None:
-    """Display current GPU resource availability.
+    """Display partition / node state — same information as native ``sinfo``.
+
+    Columns mirror the default ``sinfo`` layout: ``PARTITION`` (with
+    ``*`` on the default partition), ``AVAIL`` (up/down), ``TIMELIMIT``,
+    ``NODES``, ``STATE``, ``NODELIST``. For the GPU-aggregate summary
+    that used to live here, see ``srunx gpus``.
 
     With ``--profile <name>`` (or ``$SRUNX_SSH_PROFILE`` / current
     profile) the query runs against the remote cluster via the SSH
-    adapter. Local mode keeps the legacy ``sinfo`` / ``squeue``
-    subprocess path so a head-node user sees no behaviour change.
+    adapter. Local mode shells out to the head-node ``sinfo`` binary.
 
     Examples:
         srunx sinfo
         srunx sinfo --partition gpu
         srunx sinfo --format json
-        srunx sinfo --partition gpu --format json
         srunx sinfo --profile dgx-server --partition gpu
+    """
+    import json
+    from typing import cast
+
+    from srunx.slurm.partitions import (
+        PartitionRow,
+        fetch_sinfo_rows_local,
+        fetch_sinfo_rows_ssh,
+    )
+    from srunx.transport import resolve_transport
+
+    try:
+        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+            rows: list[PartitionRow]
+            if rt.transport_type == "ssh":
+                # Cast Protocol → concrete ``SlurmSSHAdapter`` so we
+                # can reuse the adapter-scoped ``_run_slurm_cmd`` path
+                # (login-shell env, SLURM PATH, I/O lock). The
+                # Protocol deliberately doesn't expose SSH primitives.
+                from srunx.slurm.ssh import SlurmSSHAdapter
+
+                adapter = cast(SlurmSSHAdapter, rt.job_ops)
+                rows = fetch_sinfo_rows_ssh(adapter, partition)
+            else:
+                rows = fetch_sinfo_rows_local(partition)
+
+        if format == "json":
+            Console().print(json.dumps([row.to_dict() for row in rows], indent=2))
+            return
+
+        _render_sinfo_table(rows)
+
+    except Exception as e:
+        logger.error(f"Error querying partition info: {e}")
+        Console().print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
+
+
+def _render_sinfo_table(rows: list[Any]) -> None:
+    """Render :class:`PartitionRow` list as a Rich table.
+
+    The shape matches native ``sinfo`` (same columns, same order) so a
+    SLURM user sees familiar output. Styling uses colour on ``STATE``
+    to make node health scan-able; no column is dropped or re-ordered.
+    """
+    table = Table()
+    table.add_column("PARTITION", style="cyan")
+    table.add_column("AVAIL")
+    table.add_column("TIMELIMIT")
+    table.add_column("NODES", justify="right")
+    table.add_column("STATE")
+    table.add_column("NODELIST", overflow="fold")
+
+    for row in rows:
+        partition_display = f"{row.partition}*" if row.is_default else row.partition
+        avail_color = "green" if row.avail == "up" else "red"
+        state_color = _STATE_COLORS.get(row.state.lower(), "white")
+        table.add_row(
+            partition_display,
+            f"[{avail_color}]{row.avail}[/{avail_color}]",
+            row.timelimit,
+            str(row.nodes),
+            f"[{state_color}]{row.state}[/{state_color}]",
+            row.nodelist,
+        )
+
+    Console().print(table)
+
+
+def gpus(
+    partition: Annotated[
+        str | None,
+        typer.Option("--partition", "-p", help="SLURM partition to query"),
+    ] = None,
+    format: Annotated[
+        str,
+        typer.Option("--format", "-f", help="Output format: table or json"),
+    ] = "table",
+    profile: ProfileOpt = None,
+    local: LocalOpt = False,
+    quiet: QuietOpt = False,
+) -> None:
+    """Display current GPU resource availability (aggregate snapshot).
+
+    Produces the GPU-focused summary that used to live under
+    ``srunx sinfo``. For the native-``sinfo`` partition / state /
+    nodelist listing, see ``srunx sinfo``.
+
+    With ``--profile <name>`` (or ``$SRUNX_SSH_PROFILE`` / current
+    profile) the query runs against the remote cluster via the SSH
+    adapter. Local mode keeps the subprocess ``sinfo`` / ``squeue``
+    path.
+
+    Examples:
+        srunx gpus
+        srunx gpus --partition gpu
+        srunx gpus --format json
+        srunx gpus --profile dgx-server --partition gpu
     """
     import json
     from typing import cast
@@ -743,22 +915,8 @@ def sinfo(
 
     try:
         with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
-            # SSH path delegates to the existing
-            # ``SSHAdapterResourceSource`` so cluster-wide vs
-            # per-partition dedup, error propagation, and dict→snapshot
-            # coercion all match what the resource snapshotter / Web
-            # ``/api/resources`` already use. Local stays on the
-            # subprocess fallback (source=None) — head-node behaviour
-            # is byte-for-byte identical to pre-#139.
             source: ResourceSource | None = None
             if rt.transport_type == "ssh":
-                # ``rt.job_ops`` is the live ``SlurmSSHAdapter`` for
-                # this profile (see ``_build_ssh_handle``). Cast away
-                # the Protocol → concrete narrowing — the Protocol
-                # doesn't expose ``get_resources`` /
-                # ``get_cluster_snapshot`` because those are SSH-only,
-                # and bouncing through a fresh Protocol adds no value
-                # over the existing ``SSHAdapterResourceSource``.
                 from srunx.slurm.ssh import SlurmSSHAdapter
 
                 adapter = cast(SlurmSSHAdapter, rt.job_ops)
@@ -778,13 +936,10 @@ def sinfo(
                 "nodes_idle": snapshot.nodes_idle,
                 "nodes_down": snapshot.nodes_down,
             }
-            console = Console()
-            console.print(json.dumps(data, indent=2))
+            Console().print(json.dumps(data, indent=2))
             return
 
-        partition_name = snapshot.partition or "all partitions"
-        table = Table(title=f"GPU Resources - {partition_name}")
-
+        table = Table()
         table.add_column("Metric", style="cyan")
         table.add_column("Value", justify="right", style="green")
 
@@ -798,13 +953,11 @@ def sinfo(
         table.add_row("Idle Nodes", str(snapshot.nodes_idle))
         table.add_row("Down Nodes", str(snapshot.nodes_down))
 
-        console = Console()
-        console.print(table)
+        Console().print(table)
 
     except Exception as e:
-        logger.error(f"Error querying resources: {e}")
-        console = Console()
-        console.print(f"[red]Error: {e}[/red]")
+        logger.error(f"Error querying GPU resources: {e}")
+        Console().print(f"[red]Error: {e}[/red]")
         sys.exit(1)
 
 

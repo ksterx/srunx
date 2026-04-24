@@ -1,4 +1,13 @@
-"""Tests for list command CLI."""
+"""Tests for ``srunx squeue`` (active-jobs listing).
+
+The command now mirrors native ``squeue`` semantics: all users' jobs by
+default, User/Partition/CPUs/GPUs/NodeList columns, ``-u/--user`` to
+filter. The previous ``--show-gpus`` flag is gone — GPUs are always
+shown because the user explicitly asked for a combined CPU + GPU +
+NODELIST view.
+"""
+
+from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock, patch
@@ -7,199 +16,257 @@ import pytest
 from typer.testing import CliRunner
 
 from srunx.cli.main import app
-from srunx.domain import Job, JobResource, JobStatus
+from srunx.domain import BaseJob, JobStatus
 
 
 @pytest.fixture
-def runner():
-    """Create CLI test runner."""
+def runner() -> CliRunner:
     return CliRunner()
 
 
+def _make_job(
+    *,
+    job_id: int,
+    name: str,
+    user: str,
+    partition: str,
+    status: JobStatus,
+    nodes: int,
+    cpus: int,
+    gpus: int,
+    nodelist: str,
+    elapsed: str = "0:05",
+    time_limit: str = "UNLIMITED",
+) -> BaseJob:
+    job = BaseJob(
+        name=name,
+        job_id=job_id,
+        user=user,
+        partition=partition,
+        nodes=nodes,
+        cpus=cpus,
+        gpus=gpus,
+        nodelist=nodelist,
+        elapsed_time=elapsed,
+        time_limit=time_limit,
+    )
+    job.status = status
+    return job
+
+
 @pytest.fixture
-def mock_jobs():
-    """Create mock job list for testing."""
-    jobs = []
-
-    # Job 1: With GPUs
-    job1 = Job(
-        name="gpu_job",
-        job_id=12345,
-        command=["python", "train.py"],
-        nodes=2,
-        gpus=8,
-        time_limit="4:00:00",
-    )
-    job1._status = JobStatus.RUNNING
-    job1.resources = JobResource(nodes=2, gpus_per_node=4, time_limit="4:00:00")
-    jobs.append(job1)
-
-    # Job 2: No GPUs
-    job2 = Job(
-        name="cpu_job",
-        job_id=12346,
-        command=["python", "process.py"],
-        nodes=1,
-        gpus=0,
-        time_limit="1:00:00",
-    )
-    job2._status = JobStatus.PENDING
-    job2.resources = JobResource(nodes=1, gpus_per_node=0, time_limit="1:00:00")
-    jobs.append(job2)
-
-    # Job 3: Multiple GPUs per node
-    job3 = Job(
-        name="multi_gpu",
-        job_id=12347,
-        command=["python", "parallel.py"],
-        nodes=4,
-        gpus=8,
-        time_limit="2:00:00",
-    )
-    job3._status = JobStatus.COMPLETED
-    job3.resources = JobResource(nodes=4, gpus_per_node=2, time_limit="2:00:00")
-    jobs.append(job3)
-
-    return jobs
+def mock_jobs() -> list[BaseJob]:
+    return [
+        _make_job(
+            job_id=12345,
+            name="gpu_job",
+            user="alice",
+            partition="gpu",
+            status=JobStatus.RUNNING,
+            nodes=2,
+            cpus=32,
+            gpus=8,
+            nodelist="dgx-node[1-2]",
+        ),
+        _make_job(
+            job_id=12346,
+            name="cpu_job",
+            user="bob",
+            partition="defq",
+            status=JobStatus.PENDING,
+            nodes=1,
+            cpus=4,
+            gpus=0,
+            nodelist="(Priority)",
+        ),
+        _make_job(
+            job_id=12347,
+            name="multi_gpu",
+            user="ksterx",
+            partition="gpu",
+            status=JobStatus.RUNNING,
+            nodes=4,
+            cpus=128,
+            gpus=16,
+            nodelist="dgx-node[3-6]",
+        ),
+    ]
 
 
-class TestListCommand:
-    """Test suite for list command."""
-
-    def test_list_table_format_default(self, runner, mock_jobs):
-        """Test list command with default table format."""
+class TestSqueueTable:
+    def test_default_columns(self, runner: CliRunner, mock_jobs) -> None:
+        """Default view: Job ID / User / Name / Status / GPUs / Elapsed /
+        NodeList. Partition / CPUs / Limit / Nodes are opt-in."""
         with patch("srunx.slurm.local.Slurm") as mock_slurm:
-            mock_client = MagicMock()
-            mock_client.queue.return_value = mock_jobs
-            mock_slurm.return_value = mock_client
+            client = MagicMock()
+            client.queue.return_value = mock_jobs
+            mock_slurm.return_value = client
+            # Rich auto-shrinks column headers when the (captured) terminal
+            # is narrower than the table needs — set COLUMNS so header text
+            # doesn't truncate to single characters.
+            result = runner.invoke(app, ["squeue", "--local"], env={"COLUMNS": "200"})
 
-            result = runner.invoke(app, ["squeue"])
+        assert result.exit_code == 0
+        for shown in (
+            "Job ID",
+            "User",
+            "Name",
+            "Status",
+            "GPUs",
+            "Elapsed",
+            "NodeList",
+        ):
+            assert shown in result.stdout, f"default column missing: {shown}"
+        # Opt-in columns must not appear by default.
+        for hidden in ("Partition", "CPUs", "Limit", "Nodes"):
+            assert hidden not in result.stdout, f"opt-in column leaked: {hidden}"
+        # Default-set values still surface.
+        assert "alice" in result.stdout
+        assert "dgx-node[1-2]" in result.stdout
+        assert "RUNNING" in result.stdout
 
-            assert result.exit_code == 0
-            assert "Job Queue" in result.stdout
-            assert "12345" in result.stdout
-            assert "gpu_job" in result.stdout
-            assert "RUNNING" in result.stdout
-            assert "12346" in result.stdout
-            assert "cpu_job" in result.stdout
-            assert "PENDING" in result.stdout
-            # Should NOT show GPUs column by default
-            assert "GPUs" not in result.stdout
-
-    def test_list_table_format_with_gpus(self, runner, mock_jobs):
-        """Test list command with --show-gpus flag."""
+    def test_show_all_flag_reveals_every_column(
+        self, runner: CliRunner, mock_jobs
+    ) -> None:
         with patch("srunx.slurm.local.Slurm") as mock_slurm:
-            mock_client = MagicMock()
-            mock_client.queue.return_value = mock_jobs
-            mock_slurm.return_value = mock_client
+            client = MagicMock()
+            client.queue.return_value = mock_jobs
+            mock_slurm.return_value = client
+            result = runner.invoke(
+                app, ["squeue", "--local", "-a"], env={"COLUMNS": "200"}
+            )
 
-            result = runner.invoke(app, ["squeue", "--show-gpus"])
+        assert result.exit_code == 0
+        for header in (
+            "Job ID",
+            "User",
+            "Name",
+            "Partition",
+            "Status",
+            "Nodes",
+            "CPUs",
+            "GPUs",
+            "Elapsed",
+            "Limit",
+            "NodeList",
+        ):
+            assert header in result.stdout, f"column missing under -a: {header}"
 
-            assert result.exit_code == 0
-            assert "Job Queue" in result.stdout
-            assert "GPUs" in result.stdout
-            # GPU counts: job1 = 2*4=8, job2 = 1*0=0, job3 = 4*2=8
-            assert "8" in result.stdout  # job1 and job3 GPUs
-            assert "0" in result.stdout  # job2 GPUs
-
-    def test_list_json_format_without_gpus(self, runner, mock_jobs):
-        """Test list command with JSON format."""
+    def test_individual_show_flags(self, runner: CliRunner, mock_jobs) -> None:
+        """Each --show-X flag adds exactly one of the opt-in columns."""
         with patch("srunx.slurm.local.Slurm") as mock_slurm:
-            mock_client = MagicMock()
-            mock_client.queue.return_value = mock_jobs
-            mock_slurm.return_value = mock_client
+            client = MagicMock()
+            client.queue.return_value = mock_jobs
+            mock_slurm.return_value = client
+            result = runner.invoke(
+                app,
+                ["squeue", "--local", "--show-partition", "--show-cpus"],
+                env={"COLUMNS": "200"},
+            )
 
-            result = runner.invoke(app, ["squeue", "--format", "json"])
+        assert result.exit_code == 0
+        assert "Partition" in result.stdout
+        assert "CPUs" in result.stdout
+        # The two NOT requested remain hidden.
+        assert "Limit" not in result.stdout
+        assert "Nodes" not in result.stdout
 
-            assert result.exit_code == 0
-            data = json.loads(result.stdout)
-
-            assert len(data) == 3
-            assert data[0]["job_id"] == 12345
-            assert data[0]["name"] == "gpu_job"
-            assert data[0]["status"] == "RUNNING"
-            assert data[0]["nodes"] == 2
-            assert data[0]["time_limit"] == "4:00:00"
-            # Should NOT have gpus field without --show-gpus
-            assert "gpus" not in data[0]
-
-    def test_list_json_format_with_gpus(self, runner, mock_jobs):
-        """Test list command with JSON format and --show-gpus."""
+    def test_empty_queue(self, runner: CliRunner) -> None:
         with patch("srunx.slurm.local.Slurm") as mock_slurm:
-            mock_client = MagicMock()
-            mock_client.queue.return_value = mock_jobs
-            mock_slurm.return_value = mock_client
+            client = MagicMock()
+            client.queue.return_value = []
+            mock_slurm.return_value = client
+            result = runner.invoke(app, ["squeue", "--local"])
+        assert result.exit_code == 0
+        assert "No jobs in queue" in result.stdout
 
-            result = runner.invoke(app, ["squeue", "--show-gpus", "--format", "json"])
-
-            assert result.exit_code == 0
-            data = json.loads(result.stdout)
-
-            assert len(data) == 3
-            # Job 1: 2 nodes * 4 GPUs/node = 8
-            assert data[0]["gpus"] == 8
-            # Job 2: 1 node * 0 GPUs/node = 0
-            assert data[1]["gpus"] == 0
-            # Job 3: 4 nodes * 2 GPUs/node = 8
-            assert data[2]["gpus"] == 8
-
-    def test_list_empty_queue(self, runner):
-        """Test list command with empty job queue."""
+    def test_error_exit_code(self, runner: CliRunner) -> None:
         with patch("srunx.slurm.local.Slurm") as mock_slurm:
-            mock_client = MagicMock()
-            mock_client.queue.return_value = []
-            mock_slurm.return_value = mock_client
+            client = MagicMock()
+            client.queue.side_effect = RuntimeError("SLURM connection error")
+            mock_slurm.return_value = client
+            result = runner.invoke(app, ["squeue", "--local"])
+        assert result.exit_code == 1
 
-            result = runner.invoke(app, ["squeue"])
 
-            assert result.exit_code == 0
-            assert "No jobs in queue" in result.stdout
-
-    def test_list_gpu_calculation(self, runner):
-        """Test GPU calculation: nodes * gpus_per_node."""
-        jobs = []
-        job = Job(name="test", job_id=99999, command=["test"])
-        job._status = JobStatus.RUNNING
-        # 5 nodes * 3 GPUs/node = 15 total GPUs
-        job.resources = JobResource(nodes=5, gpus_per_node=3)
-        jobs.append(job)
-
+class TestSqueueJson:
+    def test_json_schema_includes_new_fields(
+        self, runner: CliRunner, mock_jobs
+    ) -> None:
         with patch("srunx.slurm.local.Slurm") as mock_slurm:
-            mock_client = MagicMock()
-            mock_client.queue.return_value = jobs
-            mock_slurm.return_value = mock_client
+            client = MagicMock()
+            client.queue.return_value = mock_jobs
+            mock_slurm.return_value = client
+            result = runner.invoke(app, ["squeue", "--local", "--format", "json"])
 
-            result = runner.invoke(app, ["squeue", "--show-gpus", "--format", "json"])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert len(data) == 3
+        first = data[0]
+        # Every field a srunx user should see for a job — surfaced in
+        # the JSON too so scripts don't have to round-trip through the
+        # table renderer.
+        assert first["job_id"] == 12345
+        assert first["user"] == "alice"
+        assert first["name"] == "gpu_job"
+        assert first["partition"] == "gpu"
+        assert first["status"] == "RUNNING"
+        assert first["nodes"] == 2
+        assert first["cpus"] == 32
+        assert first["gpus"] == 8
+        assert first["nodelist"] == "dgx-node[1-2]"
 
-            assert result.exit_code == 0
-            data = json.loads(result.stdout)
-            assert data[0]["gpus"] == 15
-
-    def test_list_job_without_resources(self, runner):
-        """Test list command with job that has no resources."""
-        job = Job(name="no_resources", job_id=88888, command=["test"])
-        job._status = JobStatus.RUNNING
-        # No resources set
-
+    def test_empty_queue_emits_empty_list(self, runner: CliRunner) -> None:
+        """Pre-existing regression — ``--format json`` on empty queue
+        must emit ``[]`` (valid JSON), not the human string."""
         with patch("srunx.slurm.local.Slurm") as mock_slurm:
-            mock_client = MagicMock()
-            mock_client.queue.return_value = [job]
-            mock_slurm.return_value = mock_client
+            client = MagicMock()
+            client.queue.return_value = []
+            mock_slurm.return_value = client
+            result = runner.invoke(app, ["squeue", "--local", "--format", "json"])
+        assert result.exit_code == 0
+        assert json.loads(result.stdout) == []
 
-            result = runner.invoke(app, ["squeue", "--show-gpus", "--format", "json"])
 
-            assert result.exit_code == 0
-            data = json.loads(result.stdout)
-            # Should handle missing resources gracefully
-            assert data[0]["gpus"] == 0
-
-    def test_list_error_handling(self, runner):
-        """Test list command error handling."""
+class TestSqueueUserFilter:
+    def test_user_flag_forwarded_to_client(self, runner: CliRunner, mock_jobs) -> None:
+        """``--user`` must reach the ``queue()`` call so SLURM filters
+        server-side — client-side filtering would miss jobs that
+        squeue's own ``--user`` flag would include in edge cases."""
         with patch("srunx.slurm.local.Slurm") as mock_slurm:
-            mock_client = MagicMock()
-            mock_client.queue.side_effect = Exception("SLURM connection error")
-            mock_slurm.return_value = mock_client
+            client = MagicMock()
+            client.queue.return_value = mock_jobs
+            mock_slurm.return_value = client
+            result = runner.invoke(
+                app, ["squeue", "--local", "--user", "alice", "--format", "json"]
+            )
 
-            result = runner.invoke(app, ["squeue"])
+        assert result.exit_code == 0
+        client.queue.assert_called_once_with(user="alice")
 
-            assert result.exit_code == 1
+    def test_default_shows_all_users(self, runner: CliRunner, mock_jobs) -> None:
+        """Without ``--user``, pass ``user=None`` — matches native
+        ``squeue`` (all users) and local ``Slurm.queue`` semantics."""
+        with patch("srunx.slurm.local.Slurm") as mock_slurm:
+            client = MagicMock()
+            client.queue.return_value = mock_jobs
+            mock_slurm.return_value = client
+            result = runner.invoke(app, ["squeue", "--local", "--format", "json"])
+
+        assert result.exit_code == 0
+        client.queue.assert_called_once_with(user=None)
+
+
+class TestSqueueJobIdFilter:
+    def test_job_id_filter_narrows_result(self, runner: CliRunner, mock_jobs) -> None:
+        with patch("srunx.slurm.local.Slurm") as mock_slurm:
+            client = MagicMock()
+            client.queue.return_value = mock_jobs
+            mock_slurm.return_value = client
+            result = runner.invoke(
+                app, ["squeue", "--local", "-j", "12346", "--format", "json"]
+            )
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert len(data) == 1
+        assert data[0]["job_id"] == 12346

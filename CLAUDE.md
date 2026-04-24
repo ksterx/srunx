@@ -12,34 +12,45 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### CLI Usage
 
 #### Job Management (SLURM-aligned commands)
-Command names mirror SLURM's CLI (`sbatch` / `squeue` / `scancel` / `sinfo` /
-`sacct` / `sreport`) so a SLURM user can map their muscle memory directly.
-`tail` and `watch` are srunx-specific wrappers that have no direct SLURM
-counterpart.
+Command names mirror SLURM's CLI where it makes sense (`sbatch` / `squeue` /
+`scancel` / `sinfo`) so a SLURM user can map their muscle memory directly.
+srunx-specific commands that don't map to a SLURM binary:
+
+- `history` — srunx's own submission history (SQLite-backed). Named
+  `history` rather than `sacct` because it shares no backend with real
+  `sacct`; only jobs submitted via srunx are listed.
+- `gpus` — GPU aggregate summary across partitions.
+- `tail` / `watch` — log tailing and cluster watching.
 
 - `uv run srunx sbatch <script>` - Submit a sbatch script (positional, like real sbatch)
 - `uv run srunx sbatch --wrap "cmd ..."` - Wrap a command into a SLURM job (mutually exclusive with the positional script)
 - `uv run srunx sbatch --profile <name> ...` - Submit over SSH to a configured profile
-- `uv run srunx squeue` - List user's jobs in the queue
+- `uv run srunx squeue` - List active jobs (all users by default — matches native `squeue`). Default columns: Job ID, User, Name, Status, GPUs, Elapsed, NodeList
 - `uv run srunx squeue -j <job_id>` - Filter to a specific job (replaces the old `srunx status` for active jobs)
-- `uv run srunx squeue --show-gpus` - Include GPU allocation column
-- `uv run srunx squeue --format json` - Emit JSON instead of a table
+- `uv run srunx squeue -u <user>` - Filter to a single user
+- `uv run srunx squeue --show-partition --show-cpus --show-limit --show-nodes` - Opt-in columns (each flag adds one)
+- `uv run srunx squeue -a` - Shortcut for all opt-in columns at once
+- `uv run srunx squeue --format json` - JSON always includes every field regardless of show flags
 - `uv run srunx scancel <job_id>` - Cancel a job
-- `uv run srunx sinfo` - Display current GPU/node resource availability
+- `uv run srunx sinfo` - Partition / state / nodelist listing (same columns as native SLURM `sinfo`)
 - `uv run srunx sinfo --profile <name>` - Query a remote cluster via SSH adapter (#139)
-- `uv run srunx sinfo --partition gpu --format json` - Partition resources as JSON
-- `uv run srunx sacct` - DB-backed job execution history (uses srunx.db, not real sacct)
-- `uv run srunx sacct -j <job_id>` - Filter history to a specific job (replaces `srunx status` for finished jobs)
-- `uv run srunx sacct --profile <name>` - Scope history to a single cluster's jobs (`scheduler_key` filter)
-- `uv run srunx sreport` - Aggregated execution report from srunx.db
-- `uv run srunx sreport --profile <name>` - Aggregate only jobs that ran on the given cluster
+- `uv run srunx sinfo --partition gpu --format json` - Partition rows as JSON
+- `uv run srunx gpus` - GPU aggregate summary (what the old `srunx sinfo` showed)
+- `uv run srunx gpus --profile <name> --partition gpu` - GPU summary scoped to one partition on a remote cluster
+- `uv run srunx history` - DB-backed submission history (srunx's own SQLite). Only jobs submitted via srunx are listed
+- `uv run srunx history -j <job_id>` - Filter history to a specific job (replaces `srunx status` for finished jobs)
+- `uv run srunx history --profile <name>` - Scope history to a single cluster's jobs (`scheduler_key` filter)
+- `uv run srunx sacct` - Real SLURM `sacct` wrapper (cluster accounting DB — includes manual sbatch jobs, needs slurmdbd). Default columns: Job ID, User, Name, Partition, State, ExitCode, Elapsed
+- `uv run srunx sacct -a -S now-1day` - All users over the last day (like native `sacct -a -S now-1day`)
+- `uv run srunx sacct -j <job_id>` / `-u <user>` / `-s FAILED,TIMEOUT` / `-p <partition>` - Standard sacct filters
+- `uv run srunx sacct --show-steps` - Include `.batch` / `.extern` sub-step rows
 - `uv run srunx tail <job_id> --follow` - Stream job logs (use `--profile` for SSH)
 
 `sbatch` accepts the standard SLURM short flags (`-J` / `-N` / `-n` / `-c` /
 `-t` / `-p` / `-w` / `-D`) and `--gres=gpu:N`. srunx-specific extensions
 (`--profile` / `--conda` / `--venv` / `--container` / `--template` / etc.)
-layer on top. `status` was intentionally dropped — use `squeue -j <id>` or
-`sacct -j <id>` depending on whether the job is active or historical.
+layer on top. `status` was intentionally dropped — use `squeue -j <id>` for
+active jobs or `history -j <id>` for finished jobs.
 
 ##### Auto-sync + in-place execution
 
@@ -165,6 +176,9 @@ uv run srunx watch jobs --all --continuous --interval 30
 uv run srunx watch cluster --schedule 1h --notify $SLACK_WEBHOOK
 
 # Check current resource availability
+uv run srunx gpus --partition gpu
+
+# Inspect partition / state / nodelist (native-sinfo parity)
 uv run srunx sinfo --partition gpu
 ```
 
@@ -241,7 +255,7 @@ src/srunx/
 │   ├── main.py        # Thin Typer root (app, flow_app, sub-app registration)
 │   ├── watch.py       # watch app (jobs / resources / cluster)
 │   ├── workflow.py    # flow run executor (_execute_workflow)
-│   ├── commands/      # Per-command-group modules: jobs (sbatch/squeue/scancel/sinfo/tail), reports (sacct/sreport), config, templates, ui
+│   ├── commands/      # Per-command-group modules: jobs (sbatch/squeue/scancel/sinfo/gpus/tail), reports (history), config, templates, ui
 │   └── _helpers/      # debug_callback, sbatch_helpers, notification_setup, transport_options
 │
 ├── mcp/               # MCP server for AI agent integration (FastMCP tool surface)
