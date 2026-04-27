@@ -36,8 +36,13 @@ async function settle(page: Page) {
 }
 
 test.describe("UI screenshots", () => {
-  test("dashboard, jobs, resources @ 1920x1200", async ({ page }) => {
-    await page.setViewportSize({ width: 1920, height: 1200 });
+  // Viewport sizing rationale: the docs render images at ~800px wide
+  // (e.g. README's `<img width="800">`). Capturing at 1280x800 means the
+  // README downscales by ~1.6×, leaving body text legible (~10-11px on
+  // screen). 1920x1200 was unreadable when downscaled by 2.4×.
+
+  test("dashboard, jobs, resources @ 1280x800", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
     await setupMockRoutes(page);
 
     await page.goto("/");
@@ -53,8 +58,8 @@ test.describe("UI screenshots", () => {
     await save(page, "ui-resources.png");
   });
 
-  test("workflow DAG @ 1920x1200", async ({ page }) => {
-    await page.setViewportSize({ width: 1920, height: 1200 });
+  test("workflow DAG @ 1280x800", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
     await setupMockRoutes(page);
 
     await page.goto("/workflows/ml-pipeline?mount=ml-project");
