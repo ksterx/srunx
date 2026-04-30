@@ -12,7 +12,12 @@ import typer
 
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.cli.commands.config import config_app
-from srunx.cli.commands.jobs import gpus, sbatch, scancel, sinfo, squeue, tail
+from srunx.cli.commands.jobs.gpus import gpus
+from srunx.cli.commands.jobs.sbatch import sbatch
+from srunx.cli.commands.jobs.scancel import scancel
+from srunx.cli.commands.jobs.sinfo import sinfo
+from srunx.cli.commands.jobs.squeue import squeue
+from srunx.cli.commands.jobs.tail import tail
 from srunx.cli.commands.reports import history, sacct
 from srunx.cli.commands.templates import template_app
 from srunx.cli.commands.ui import ui

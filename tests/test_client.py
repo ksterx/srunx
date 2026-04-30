@@ -51,7 +51,7 @@ class TestSlurm:
 
     @patch("time.sleep")  # Mock sleep to speed up tests
     @patch("subprocess.run")
-    @patch("srunx.slurm.local.render_job_script")
+    @patch("srunx.slurm.clients.local.render_job_script")
     def test_submit_job_success(self, mock_render, mock_run, mock_sleep, sample_job):
         """Test successful job submission."""
         # Mock render_job_script
@@ -85,7 +85,7 @@ class TestSlurm:
 
     @patch("time.sleep")
     @patch("subprocess.run")
-    @patch("srunx.slurm.local.render_job_script")
+    @patch("srunx.slurm.clients.local.render_job_script")
     def test_submit_job_with_callbacks(
         self, mock_render, mock_run, mock_sleep, sample_job
     ):
@@ -115,7 +115,7 @@ class TestSlurm:
 
     @patch("time.sleep")
     @patch("subprocess.run")
-    @patch("srunx.slurm.local.render_shell_job_script")
+    @patch("srunx.slurm.clients.local.render_shell_job_script")
     def test_submit_shell_job(self, mock_render_shell, mock_run, mock_sleep):
         """Test shell job submission."""
         mock_render_shell.return_value = "/tmp/shell_job.slurm"
@@ -151,7 +151,7 @@ class TestSlurm:
 
     @patch("time.sleep")
     @patch("subprocess.run")
-    @patch("srunx.slurm.local.render_job_script")
+    @patch("srunx.slurm.clients.local.render_job_script")
     def test_submit_job_with_container(
         self, mock_render, mock_run, mock_sleep, sample_job
     ):
@@ -194,7 +194,7 @@ class TestSlurm:
 
     @patch("time.sleep")
     @patch("subprocess.run")
-    @patch("srunx.slurm.local.render_job_script")
+    @patch("srunx.slurm.clients.local.render_job_script")
     def test_submit_job_failure(self, mock_render, mock_run, mock_sleep, sample_job):
         """Test job submission failure."""
         mock_render.return_value = "/tmp/test_job.slurm"
@@ -208,7 +208,7 @@ class TestSlurm:
         with pytest.raises(subprocess.CalledProcessError):
             client.submit(sample_job)
 
-    @patch("srunx.slurm.local.get_job_status")
+    @patch("srunx.slurm.clients.local.get_job_status")
     def test_retrieve_job(self, mock_get_status):
         """Test job retrieval."""
         mock_job = BaseJob(name="test", job_id=12345)

@@ -146,7 +146,7 @@ class TestTyperCLI:
         assert "init" in result.stdout
 
     @patch("srunx.slurm.local.Slurm")
-    @patch("srunx.cli.commands.jobs.get_config")
+    @patch("srunx.cli.commands.jobs.sbatch.get_config")
     def test_sbatch_wrap_basic(self, mock_get_config, mock_slurm_class):
         """``srunx sbatch --wrap "cmd"`` submits a Job that runs cmd via bash -c.
 
@@ -184,7 +184,7 @@ class TestTyperCLI:
         assert submitted_job.command == ["bash", "-c", "python script.py"]
 
     @patch("srunx.slurm.local.Slurm")
-    @patch("srunx.cli.commands.jobs.get_config")
+    @patch("srunx.cli.commands.jobs.sbatch.get_config")
     def test_sbatch_wrap_preserves_shell_operators(
         self, mock_get_config, mock_slurm_class
     ):
@@ -262,7 +262,7 @@ class TestTyperCLI:
         )
 
     @patch("srunx.slurm.local.Slurm")
-    @patch("srunx.cli.commands.jobs.get_config")
+    @patch("srunx.cli.commands.jobs.sbatch.get_config")
     def test_sbatch_positional_script(
         self, mock_get_config, mock_slurm_class, tmp_path
     ):
@@ -308,7 +308,7 @@ class TestTyperCLI:
         assert "mutually exclusive" in combined.lower()
 
     @patch("srunx.slurm.local.Slurm")
-    @patch("srunx.cli.commands.jobs.get_config")
+    @patch("srunx.cli.commands.jobs.sbatch.get_config")
     def test_sbatch_gres_sets_gpus_per_node(self, mock_get_config, mock_slurm_class):
         """``--gres=gpu:4`` overrides ``--gpus-per-node`` (sbatch parity)."""
         mock_config = Mock()
@@ -548,7 +548,7 @@ class TestNoContainerFlag:
         self.runner = CliRunner()
 
     @patch("srunx.slurm.local.Slurm")
-    @patch("srunx.cli.commands.jobs.get_config")
+    @patch("srunx.cli.commands.jobs.sbatch.get_config")
     def test_no_container_suppresses_config_default_on_sbatch(
         self, mock_get_config, mock_slurm_class
     ):
@@ -585,7 +585,7 @@ class TestNoContainerFlag:
         assert submitted_job.environment.container is None
 
     @patch("srunx.slurm.local.Slurm")
-    @patch("srunx.cli.commands.jobs.get_config")
+    @patch("srunx.cli.commands.jobs.sbatch.get_config")
     def test_container_runtime_override_on_sbatch(
         self, mock_get_config, mock_slurm_class
     ):
