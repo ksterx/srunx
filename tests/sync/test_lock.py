@@ -113,7 +113,13 @@ def _hold_lock(profile: str, mount: str, hold_for: float) -> None:
         time.sleep(hold_for)
 
 
+@pytest.mark.flaky(reruns=3, reruns_delay=1)
 def test_contended_acquire_times_out(tmp_path: Path) -> None:
+    # Tracked in #196 — under full-suite CPU contention the parent's
+    # timeout sometimes fires before the contended state is reached, so
+    # the "should not have acquired" assertion fails for the wrong
+    # reason. Always passes in isolation; reruns absorb the rare CI hit
+    # until #196's deterministic rewrite lands.
     """A second acquirer waits up to ``timeout`` then raises with the path.
 
     Spawn a child that holds the lock for longer than the parent's
