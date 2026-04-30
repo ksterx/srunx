@@ -46,6 +46,22 @@ def _isolate_xdg_config_home(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _stable_terminal_width(monkeypatch):
+    """Pin ``COLUMNS`` to a wide value so Typer/Rich help output doesn't
+    wrap mid-phrase under different host terminal sizes.
+
+    CLI help-text tests rely on substring assertions like
+    ``assert "Start execution from this job" in result.stdout``. When
+    ``COLUMNS`` is small (CI runners default to ~75), Rich wraps the
+    help description across multiple table lines with ``│`` separators,
+    so the contiguous substring no longer appears in the rendered
+    output. Pinning to 200 cols leaves room for any single-line
+    description to render verbatim, regardless of host terminal.
+    """
+    monkeypatch.setenv("COLUMNS", "200")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_legacy_history_db(tmp_path_factory, monkeypatch):
     """Make sure no test can delete the user's real ``~/.srunx/history.db``.
 
