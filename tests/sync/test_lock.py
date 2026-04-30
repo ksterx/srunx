@@ -14,7 +14,9 @@ We need to verify three behaviours:
 
 from __future__ import annotations
 
+import fcntl
 import multiprocessing
+import os
 import time
 from pathlib import Path
 
@@ -116,22 +118,22 @@ def _hold_lock(profile: str, mount: str, hold_for: float) -> None:
 def test_contended_acquire_times_out(tmp_path: Path) -> None:
     """A second acquirer waits up to ``timeout`` then raises with the path.
 
-    Spawn a child that holds the lock for longer than the parent's
-    timeout, then assert the parent gets a timely
-    :class:`SyncLockTimeoutError` carrying the exact lock file.
+    Hold the same lock file through a separate descriptor in this
+    process so the contention is established before the assertion begins.
+    This preserves the contract without relying on subprocess startup
+    timing or a sleep-based handoff.
     """
-    # multiprocessing on macOS defaults to spawn; ensure children pick
-    # up the same XDG_CONFIG_HOME we set in the autouse fixture.
-    ctx = multiprocessing.get_context("spawn")
-    holder = ctx.Process(target=_hold_lock, args=("alice", "ml", 2.0))
-    holder.start()
+    path = lock_path_for("alice", "ml")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)
     try:
-        # Give the holder a beat to actually take the lock.
-        time.sleep(0.3)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
         start = time.monotonic()
         with pytest.raises(SyncLockTimeoutError) as exc_info:
-            with acquire_sync_lock("alice", "ml", timeout=0.5):
+            with acquire_sync_lock(
+                "alice", "ml", timeout=0.5, poll_interval=0.05
+            ):
                 pytest.fail("should not have acquired contended lock")
         elapsed = time.monotonic() - start
 
@@ -141,12 +143,12 @@ def test_contended_acquire_times_out(tmp_path: Path) -> None:
 
         err = exc_info.value
         assert err.timeout == pytest.approx(0.5)
-        assert err.lock_path == lock_path_for("alice", "ml")
+        assert err.lock_path == path
     finally:
-        holder.join(timeout=5)
-        if holder.is_alive():
-            holder.terminate()
-            holder.join()
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def test_acquire_after_holder_exits(tmp_path: Path) -> None:

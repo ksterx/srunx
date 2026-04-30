@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -18,6 +19,12 @@ from typing import Any
 from srunx.common.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Test-only seam: invoked immediately before acquiring the migration
+# write lock so tests can deterministically exercise the race where a
+# peer applies the same migration between the pre-check and BEGIN
+# IMMEDIATE. Production binding is a no-op.
+_TEST_BEFORE_BEGIN_HOOK: Callable[[], None] = lambda: None
 
 
 def _now_iso() -> str:
@@ -606,24 +613,26 @@ def apply_migrations(conn: sqlite3.Connection) -> list[str]:
             continue
         logger.info("Applying migration %s (v%d)", mig.name, mig.version)
         if mig.requires_fk_off:
-            _apply_fk_off_migration(conn, mig)
+            applied = _apply_fk_off_migration(conn, mig)
         else:
-            _apply_tx_migration(conn, mig)
-        newly_applied.append(mig.name)
+            applied = _apply_tx_migration(conn, mig)
+        if applied:
+            newly_applied.append(mig.name)
 
     return newly_applied
 
 
-def _apply_tx_migration(conn: sqlite3.Connection, mig: Migration) -> None:
+def _apply_tx_migration(conn: sqlite3.Connection, mig: Migration) -> bool:
     """Apply a migration inside a single BEGIN IMMEDIATE transaction."""
     try:
+        _TEST_BEFORE_BEGIN_HOOK()
         conn.execute("BEGIN IMMEDIATE")
         # Re-check inside the write lock. If a peer has applied the
         # same migration between our initial check and the BEGIN we
         # just acquired, skip the DDL to avoid duplicate CREATE TABLE.
         if mig.name in _applied_names(conn):
             conn.rollback()
-            return
+            return False
         conn.executescript(mig.sql)
         # v1_initial creates schema_version itself; the IF NOT EXISTS
         # guard earlier ensures the insert below always succeeds.
@@ -632,6 +641,7 @@ def _apply_tx_migration(conn: sqlite3.Connection, mig: Migration) -> None:
             (mig.version, mig.name, _now_iso()),
         )
         conn.commit()
+        return True
     except Exception:
         conn.rollback()
         logger.error("Migration %s failed; rolled back", mig.name)
@@ -677,7 +687,7 @@ def _split_sql_statements(sql: str) -> list[str]:
     return statements
 
 
-def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> None:
+def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> bool:
     """Apply a table-rebuild migration atomically with foreign_keys OFF.
 
     ``PRAGMA foreign_keys`` is a no-op inside an active transaction in
@@ -701,11 +711,12 @@ def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> None:
     # Re-check right before the pragma toggle; if a concurrent caller
     # applied this migration between our original check and here, skip.
     if mig.name in _applied_names(conn):
-        return
+        return False
 
     try:
         conn.execute("PRAGMA foreign_keys = OFF")
         try:
+            _TEST_BEFORE_BEGIN_HOOK()
             conn.execute("BEGIN IMMEDIATE")
             try:
                 # Re-check under the write lock in case a concurrent
@@ -713,7 +724,7 @@ def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> None:
                 # and the BEGIN we just acquired.
                 if mig.name in _applied_names(conn):
                     conn.rollback()
-                    return
+                    return False
                 for statement in _split_sql_statements(mig.sql):
                     conn.execute(statement)
                 conn.execute(
@@ -722,6 +733,7 @@ def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> None:
                     (mig.version, mig.name, _now_iso()),
                 )
                 conn.commit()
+                return True
             except BaseException:
                 conn.rollback()
                 raise
@@ -737,7 +749,7 @@ def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> None:
                 "Migration %s already applied by concurrent caller; skipping",
                 mig.name,
             )
-            return
+            return False
         logger.error("Migration %s failed", mig.name)
         raise
     except Exception:

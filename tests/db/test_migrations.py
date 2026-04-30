@@ -45,52 +45,41 @@ def test_apply_migrations_is_idempotent(tmp_path: Path) -> None:
 
 def test_apply_migrations_concurrent_callers_do_not_duplicate(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression: two threads racing on a cold DB.
+    """The in-transaction re-check skips a peer-applied migration.
 
-    Before the fix, `applied_names` was read outside the IMMEDIATE
-    lock; both racers saw an empty set, one created the tables, the
-    other then tried `CREATE TABLE` on tables that already existed
-    (SCHEMA_V1 uses bare CREATE TABLE for most of the domain tables).
-
-    The fix re-reads `applied_names` *inside* the transaction; the
-    loser's re-check sees `v1_initial` already applied and skips the
-    DDL. This test runs two real threads against the same DB file —
-    each with its own connection — and asserts neither raises AND
-    `schema_version` has exactly one `v1_initial` row.
+    Force the worst-case ordering deterministically: caller A passes the
+    outer pre-check, then a peer applies all migrations before A reaches
+    ``BEGIN IMMEDIATE``. A's write-locked re-check must see the peer's
+    ``schema_version`` row and skip without replaying bare ``CREATE
+    TABLE`` statements.
     """
-    import threading
+    from srunx.observability.storage import migrations as m
 
     db = tmp_path / "srunx.observability.storage"
-    errors: list[BaseException] = []
-    barrier = threading.Barrier(2)
+    conn_a = open_connection(db)
+    conn_b = open_connection(db)
+    fired = False
 
-    def apply_once() -> None:
-        try:
-            barrier.wait(timeout=5)
-            conn = open_connection(db)
-            try:
-                apply_migrations(conn)
-            finally:
-                conn.close()
-        except BaseException as exc:  # noqa: BLE001
-            errors.append(exc)
+    def hook() -> None:
+        nonlocal fired
+        if fired:
+            return
+        fired = True
+        apply_migrations(conn_b)
 
-    threads = [threading.Thread(target=apply_once) for _ in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=10)
-
-    assert not errors, f"concurrent migration raised: {[repr(e) for e in errors]}"
-
-    verify = open_connection(db)
+    monkeypatch.setattr(m, "_TEST_BEFORE_BEGIN_HOOK", hook)
     try:
-        count = verify.execute(
+        applied = apply_migrations(conn_a)
+        count = conn_a.execute(
             "SELECT COUNT(*) FROM schema_version WHERE name = 'v1_initial'"
         ).fetchone()[0]
     finally:
-        verify.close()
+        conn_a.close()
+        conn_b.close()
+
+    assert applied == []
     assert count == 1
 
 
