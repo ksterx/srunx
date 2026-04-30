@@ -467,7 +467,7 @@ def test_config_workdir_does_not_inject_chdir(
     # Inject a config-default work_dir that differs from the script's
     # explicit value. Without the fix the planner forwards the config
     # default and clobbers the script's choice.
-    import srunx.cli.commands.jobs as jobs_module
+    import srunx.cli.commands.jobs.sbatch as jobs_module
     from srunx.common.config import SrunxConfig
 
     monkeypatch.setattr(

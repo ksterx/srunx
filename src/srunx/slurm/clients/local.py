@@ -1,0 +1,971 @@
+"""LocalClient: in-process sbatch/squeue/scancel implementation."""
+
+from __future__ import annotations
+
+import glob
+import os
+import re
+import subprocess
+import tempfile
+import time
+from importlib.resources import files
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from srunx.common.logging import get_logger
+from srunx.domain import (
+    BaseJob,
+    Job,
+    JobStatus,
+    JobType,
+    RunnableJobType,
+    ShellJob,
+)
+from srunx.runtime.lifecycle import JobLifecycleSink, NoOpSink
+from srunx.runtime.rendering import render_job_script, render_shell_job_script
+from srunx.slurm.parsing import GPU_TRES_RE
+from srunx.utils import get_job_status, job_status_msg
+
+if TYPE_CHECKING:
+    from srunx.runtime.rendering import SubmissionRenderContext
+    from srunx.slurm.protocols import JobSnapshot, LogChunk
+
+logger = get_logger(__name__)
+
+
+class LocalClient:
+    """Client for interacting with the local SLURM workload manager."""
+
+    def __init__(
+        self,
+        default_template: str | None = None,
+        sink: JobLifecycleSink | None = None,
+    ):
+        """Initialize the local SLURM client.
+
+        Args:
+            default_template: Path to default job template.
+            sink: Receives submit / terminal lifecycle events. ``None``
+                means no observability side effects are performed — DB
+                recording and callback dispatch live behind concrete
+                sinks in :mod:`srunx.observability`. The backward-compat
+                :class:`~srunx.slurm.local.Slurm` shim wires the default
+                ``CallbackSink`` + ``DBRecorderSink`` chain from its
+                own ``callbacks=`` parameter.
+        """
+        self.default_template = default_template or self._get_default_template()
+        self._sink: JobLifecycleSink = sink if sink is not None else NoOpSink()
+
+    def submit(
+        self,
+        job: RunnableJobType,
+        template_path: str | None = None,
+        sink: JobLifecycleSink | None = None,
+        verbose: bool = False,
+        record_history: bool = True,
+        workflow_name: str | None = None,
+        workflow_run_id: int | None = None,
+        *,
+        submission_context: SubmissionRenderContext | None = None,
+    ) -> RunnableJobType:
+        """Submit a job to SLURM.
+
+        Args:
+            job: Job configuration.
+            template_path: Optional template path (uses default if not provided).
+            sink: Optional per-call lifecycle sink; when given its
+                ``on_submit`` fires *in addition* to the instance sink
+                configured at construction. Use to attach a one-off
+                listener without mutating the client's default chain.
+            verbose: Whether to print the rendered content.
+            record_history: Whether to record job in history database
+                (passed through to the sink — the default
+                :class:`~srunx.observability.DBRecorderSink` respects it).
+            workflow_name: Name of the workflow if part of a workflow.
+            workflow_run_id: ``workflow_runs.id`` when the job was
+                submitted from a workflow; persisted on the ``jobs`` row
+                so reports (``srunx report --workflow``, the Web history
+                JOIN) actually pick up CLI-launched workflow jobs.
+            submission_context: Accepted for
+                :class:`~srunx.slurm.protocols.JobOperations`
+                conformance and ignored — local submission performs no
+                mount translation.
+
+        Returns:
+            Job instance with updated job_id and status.
+
+        Raises:
+            subprocess.CalledProcessError: If job submission fails.
+        """
+        del submission_context  # unused on the local path (see docstring)
+        result = None
+
+        if isinstance(job, Job):
+            template = template_path or self.default_template
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                script_path = render_job_script(
+                    template,
+                    job,
+                    temp_dir,
+                    verbose,
+                )
+                logger.debug(f"Generated SLURM script at: {script_path}")
+
+                # Submit job with sbatch --parsable for reliable job ID extraction
+                sbatch_cmd = ["sbatch", "--parsable", script_path]
+                if job.environment.container:
+                    logger.debug(f"Using container: {job.environment.container}")
+
+                logger.debug(f"Executing command: {' '.join(sbatch_cmd)}")
+
+                try:
+                    result = subprocess.run(
+                        sbatch_cmd,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"Failed to submit job '{job.name}': {e}")
+                    logger.error(f"Command: {' '.join(e.cmd)}")
+                    logger.error(f"Return code: {e.returncode}")
+                    logger.error(f"Stdout: {e.stdout}")
+                    logger.error(f"Stderr: {e.stderr}")
+                    raise
+
+        elif isinstance(job, ShellJob):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                script_path = render_shell_job_script(
+                    job.script_path, job, temp_dir, verbose
+                )
+                try:
+                    result = subprocess.run(
+                        ["sbatch", "--parsable", script_path],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"Failed to submit job '{job.script_path}': {e}")
+                    logger.error(f"Command: {' '.join(e.cmd)}")
+                    logger.error(f"Return code: {e.returncode}")
+                    logger.error(f"Stdout: {e.stdout}")
+                    logger.error(f"Stderr: {e.stderr}")
+                    raise
+
+        else:
+            raise ValueError("Either 'command' or 'path' must be set")
+
+        if result is None:
+            render_job_script(template, job, output_dir=None, verbose=verbose)
+            raise RuntimeError(
+                f"Failed to submit job '{job.name}': No result from subprocess"
+            )
+
+        # --parsable outputs "job_id" or "job_id;cluster_name"
+        job_id = int(result.stdout.strip().split(";")[0])
+        job.job_id = job_id
+        job.status = JobStatus.PENDING
+
+        logger.debug(f"Successfully submitted job '{job.name}' with ID {job_id}")
+
+        # Lifecycle events fan out through the instance sink (+ optional
+        # per-call sink). The default :class:`DBRecorderSink` persists the
+        # local-transport triple; SSH submissions take the
+        # ``SlurmSSHAdapter.submit`` path which builds its own sink chain
+        # with ``(transport_type='ssh', profile_name=...,
+        # scheduler_key='ssh:<profile>')``.
+        self._sink.on_submit(
+            job,
+            workflow_name=workflow_name,
+            workflow_run_id=workflow_run_id,
+            transport_type="local",
+            profile_name=None,
+            scheduler_key="local",
+            record_history=record_history,
+        )
+        if sink is not None:
+            sink.on_submit(
+                job,
+                workflow_name=workflow_name,
+                workflow_run_id=workflow_run_id,
+                transport_type="local",
+                profile_name=None,
+                scheduler_key="local",
+                record_history=record_history,
+            )
+
+        return job
+
+    @staticmethod
+    def retrieve(job_id: int) -> BaseJob:
+        """Retrieve job information from SLURM.
+
+        Args:
+            job_id: SLURM job ID.
+
+        Returns:
+            Job object with current status.
+        """
+        return get_job_status(job_id)
+
+    def status(self, job_id: int) -> BaseJob:
+        """Return a :class:`BaseJob` snapshot of ``job_id``'s state.
+
+        Thin alias for :meth:`retrieve` that satisfies
+        :class:`~srunx.slurm.protocols.JobOperations`. Raises
+        :class:`~srunx.common.exceptions.JobNotFoundError` when ``sacct`` has no row
+        for ``job_id`` (the underlying ``get_job_status`` uses
+        ``ValueError`` for that condition, which we rewrap here to match
+        the Protocol contract).
+
+        Note: raw ``subprocess.FileNotFoundError`` / ``CalledProcessError``
+        from the ``sacct`` invocation are intentionally *not* wrapped
+        into transport-level exceptions here. The existing CLI test
+        suite asserts on the subprocess error types, and rewrapping
+        them would force a much larger behavioural change than this
+        Protocol-alignment method needs. A future unification pass
+        (with the CLI tests migrated in lockstep) can tighten this
+        contract.
+        """
+        from srunx.common.exceptions import JobNotFoundError
+
+        try:
+            return self.retrieve(job_id)
+        except ValueError as exc:  # get_job_status raises ValueError on miss
+            raise JobNotFoundError(f"Job {job_id} not found") from exc
+
+    def tail_log_incremental(
+        self,
+        job_id: int,
+        stdout_offset: int = 0,
+        stderr_offset: int = 0,
+        last_n: int | None = None,
+    ) -> LogChunk:
+        """Return new log content since the given byte offsets.
+
+        Reads local log files using ``open`` + ``seek`` instead of a
+        subprocess ``tail``, so the Protocol contract (pure, no side
+        effects, no stdout writes) is honoured. If the log file does not
+        yet exist (e.g. the job is still PENDING), returns an empty chunk
+        with the offsets unchanged — callers should treat a missing file
+        as "no new data" rather than a hard error.
+
+        ``last_n`` is honoured on the initial read (both offsets 0):
+        we still read the full file from disk (it's local, no network
+        cost), then slice to the last N lines and set the offset to
+        file size. This keeps the Protocol symmetric with the SSH
+        implementation's optimization.
+        """
+        from srunx.slurm.protocols import LogChunk
+
+        stdout_path, stderr_path = self._find_log_paths(job_id)
+        stdout_content, new_stdout_offset = self._read_file_from_offset(
+            stdout_path, stdout_offset, last_n=last_n
+        )
+        if stderr_path is not None and stderr_path != stdout_path:
+            stderr_content, new_stderr_offset = self._read_file_from_offset(
+                stderr_path, stderr_offset, last_n=last_n
+            )
+        else:
+            stderr_content, new_stderr_offset = "", stderr_offset
+        return LogChunk(
+            stdout=stdout_content,
+            stderr=stderr_content,
+            stdout_offset=new_stdout_offset,
+            stderr_offset=new_stderr_offset,
+        )
+
+    @staticmethod
+    def _find_log_paths(
+        job_id: int, job_name: str | None = None
+    ) -> tuple[str | None, str | None]:
+        """Locate (stdout_path, stderr_path) for *job_id*.
+
+        Reuses :meth:`_find_log_files` discovery. When SLURM is configured
+        with a single combined log (the srunx default), both returned
+        paths will be the same — callers must deduplicate to avoid
+        double-counting byte offsets. Returns ``(None, None)`` when no
+        log file has appeared yet (common for PENDING jobs).
+        """
+        found_files, _ = LocalClient._find_log_files(job_id, job_name)
+        if not found_files:
+            return None, None
+        stdout_path: str | None = found_files[0]
+        stderr_path: str | None = None
+        for candidate in found_files:
+            if "err" in Path(candidate).name.lower():
+                stderr_path = candidate
+                break
+        if stderr_path is None:
+            # srunx's default template routes stderr into the primary log.
+            stderr_path = stdout_path
+        return stdout_path, stderr_path
+
+    @staticmethod
+    def _read_file_from_offset(
+        path: str | None, offset: int, *, last_n: int | None = None
+    ) -> tuple[str, int]:
+        """Read log content from *offset* (or last N lines on initial read).
+
+        Missing file → ``("", offset)``. When ``offset == 0`` and
+        ``last_n`` is set, returns only the last N lines with the new
+        offset at end-of-file — matches the SSH implementation's
+        semantic so callers see consistent behaviour across transports.
+        """
+        if not path:
+            return "", offset
+        try:
+            with open(path, "rb") as f:
+                if offset:
+                    f.seek(offset)
+                data = f.read()
+        except FileNotFoundError:
+            return "", offset
+        except OSError as exc:
+            logger.warning(f"Failed to read log file {path}: {exc}")
+            return "", offset
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = data.decode("utf-8", errors="replace")
+
+        if offset == 0 and last_n is not None and last_n > 0:
+            # Slice to last N lines; new offset stays at file size so
+            # the follow loop picks up future writes from EOF.
+            lines = text.splitlines(keepends=True)
+            text = "".join(lines[-last_n:]) if lines else ""
+        return text, offset + len(data)
+
+    def submit_remote_sbatch(
+        self,
+        remote_path: str,
+        *,
+        submit_cwd: str | None = None,
+        job_name: str | None = None,
+        dependency: str | None = None,
+        extra_sbatch_args: list[str] | None = None,
+        callbacks_job: Any = None,
+    ) -> Any:
+        """Conformance stub for :class:`JobOperations`.
+
+        Local SLURM has no concept of "mount-resident path" — the
+        whole point of in-place execution is that the script lives on
+        a synced remote mount. The CLI's ``_submit_via_transport``
+        only routes to this method on the SSH transport (the planner
+        always returns ``TEMP_UPLOAD`` for local), so calling this
+        here is a programmer error worth raising loudly.
+        """
+        raise NotImplementedError(
+            "submit_remote_sbatch is SSH-only; local SLURM has no "
+            "mount concept. Use submit() with a Job/ShellJob instead."
+        )
+
+    def cancel(self, job_id: int) -> None:
+        """Cancel a SLURM job.
+
+        Args:
+            job_id: SLURM job ID to cancel.
+
+        Raises:
+            subprocess.CalledProcessError: If job cancellation fails.
+        """
+        logger.info(f"Cancelling job {job_id}")
+
+        try:
+            subprocess.run(
+                ["scancel", str(job_id)],
+                check=True,
+            )
+            logger.info(f"Successfully cancelled job {job_id}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to cancel job {job_id}: {e}")
+            raise
+
+    def queue(self, user: str | None = None) -> list[BaseJob]:
+        """List active jobs.
+
+        ``user=None`` shows all users' jobs (matches native ``squeue``).
+        Pass a username to filter.
+
+        Returns: list of :class:`BaseJob` populated with the same
+        field set as the SSH adapter's :meth:`~srunx.slurm.ssh.SlurmSSHAdapter.queue`
+        so CLI callers see a consistent shape regardless of transport.
+        """
+        # Pipe-delimited format — nodelist/reason (%R) can contain
+        # whitespace + parens, so space-splitting is fragile.
+        # Fields: %i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%b
+        # (job_id, partition, name, user, state, elapsed, limit, nodes,
+        # total_cpus, nodelist_or_reason, TRES_PER_NODE)
+        cmd = [
+            "squeue",
+            "--format",
+            "%i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%b",
+            "--noheader",
+        ]
+        if user:
+            cmd.extend(["--user", user])
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+        jobs = []
+        for line in result.stdout.strip().split("\n"):
+            if not line.strip():
+                continue
+
+            parts = line.split("|")
+            if len(parts) < 11:
+                continue
+
+            try:
+                job_id = int(parts[0].strip())
+            except ValueError:
+                continue
+
+            partition = parts[1].strip() or None
+            job_name = parts[2].strip()
+            user_name = parts[3].strip() or None
+            status_str = parts[4].strip()
+            elapsed_time = parts[5].strip() or None
+            time_limit = parts[6].strip() or None
+            nodes_str = parts[7].strip()
+            cpus_str = parts[8].strip()
+            nodelist = parts[9].strip() or None
+            tres = parts[10].strip()
+
+            try:
+                status = JobStatus(status_str)
+            except ValueError:
+                status = JobStatus.PENDING  # Default for unknown status
+
+            try:
+                nodes = int(nodes_str)
+            except (ValueError, AttributeError):
+                nodes = 1
+
+            try:
+                cpus = int(cpus_str) if cpus_str else 0
+            except ValueError:
+                cpus = 0
+
+            # Parse GPU count from TRES (e.g., "gpu:8" or
+            # "billing=8,cpu=8,gres/gpu=8,mem=100G,node=1"). Total
+            # across all nodes so the column matches what a SLURM user
+            # reading ``sinfo`` / ``scontrol show job`` expects.
+            gpus_per_node = 0
+            if tres and "gpu" in tres.lower():
+                gpu_match = GPU_TRES_RE.search(tres)
+                if gpu_match:
+                    gpus_per_node = int(gpu_match.group(1))
+
+            job = BaseJob(
+                name=job_name,
+                job_id=job_id,
+                user=user_name,
+                partition=partition,
+                elapsed_time=elapsed_time,
+                time_limit=time_limit,
+                nodes=nodes,
+                cpus=cpus,
+                gpus=gpus_per_node * nodes,
+                nodelist=nodelist,
+            )
+            job.status = status
+            jobs.append(job)
+
+        return jobs
+
+    def queue_by_ids(self, job_ids: list[int]) -> dict[int, JobSnapshot]:
+        """Return a mapping of ``job_id`` -> :class:`JobSnapshot` for active jobs.
+
+        Active jobs are read from ``squeue``. Jobs that have already left
+        the queue are looked up via ``sacct``. Jobs found in neither source
+        are omitted from the returned dict.
+
+        Args:
+            job_ids: SLURM job IDs to query. An empty list yields ``{}``.
+
+        Returns:
+            Dict keyed by job_id. Missing jobs are absent from the dict.
+        """
+        from srunx.slurm.protocols import (
+            JobSnapshot,
+            parse_slurm_datetime,
+            parse_slurm_duration,
+        )
+
+        if not job_ids:
+            return {}
+
+        results: dict[int, JobSnapshot] = {}
+        id_arg = ",".join(str(i) for i in job_ids)
+
+        # --- squeue: active (PENDING / RUNNING / etc.) ---
+        squeue_cmd = [
+            "squeue",
+            "--jobs",
+            id_arg,
+            "--format",
+            "%i|%T|%S|%M|%N",
+            "--noheader",
+        ]
+        try:
+            squeue_res = subprocess.run(
+                squeue_cmd, capture_output=True, text=True, check=False
+            )
+        except FileNotFoundError:
+            squeue_res = None
+
+        if squeue_res and squeue_res.returncode == 0:
+            for line in squeue_res.stdout.strip().splitlines():
+                parts = line.split("|")
+                if len(parts) < 5:
+                    continue
+                try:
+                    jid = int(parts[0].strip())
+                except ValueError:
+                    continue
+                results[jid] = JobSnapshot(
+                    status=parts[1].strip(),
+                    started_at=parse_slurm_datetime(parts[2]),
+                    duration_secs=parse_slurm_duration(parts[3]),
+                    nodelist=(parts[4].strip() or None),
+                )
+
+        # --- sacct fallback: terminal jobs ---
+        missing = [j for j in job_ids if j not in results]
+        if missing:
+            sacct_cmd = [
+                "sacct",
+                "--jobs",
+                ",".join(str(i) for i in missing),
+                "--format=JobID,State,Start,End,Elapsed,NodeList",
+                "--noheader",
+                "--parsable2",
+            ]
+            try:
+                sacct_res = subprocess.run(
+                    sacct_cmd, capture_output=True, text=True, check=False
+                )
+            except FileNotFoundError:
+                sacct_res = None
+
+            if sacct_res and sacct_res.returncode == 0:
+                for line in sacct_res.stdout.strip().splitlines():
+                    parts = line.split("|")
+                    if len(parts) < 6:
+                        continue
+                    # Skip sub-steps like "12345.batch"
+                    raw_id = parts[0].strip()
+                    if "." in raw_id:
+                        continue
+                    try:
+                        jid = int(raw_id)
+                    except ValueError:
+                        continue
+                    if jid in results:
+                        continue
+                    raw_state = parts[1].strip()
+                    status = raw_state.split()[0] if raw_state else "UNKNOWN"
+                    results[jid] = JobSnapshot(
+                        status=status,
+                        started_at=parse_slurm_datetime(parts[2]),
+                        completed_at=parse_slurm_datetime(parts[3]),
+                        duration_secs=parse_slurm_duration(parts[4]),
+                        nodelist=(parts[5].strip() or None),
+                    )
+
+        return results
+
+    def monitor(
+        self,
+        job_obj_or_id: JobType | int,
+        poll_interval: int = 5,
+        sink: JobLifecycleSink | None = None,
+    ) -> JobType:
+        """Wait for a job to complete.
+
+        Args:
+            job_obj_or_id: Job object or job ID.
+            poll_interval: Polling interval in seconds.
+            sink: Optional per-call sink for a one-off listener in
+                addition to the instance sink.
+
+        Returns:
+            Completed job object.
+
+        Raises:
+            RuntimeError: If job fails.
+        """
+        if isinstance(job_obj_or_id, int):
+            job = self.retrieve(job_obj_or_id)
+        else:
+            job = job_obj_or_id
+
+        msg = f"👀 {'MONITORING':<12} Job {job.name:<12} (ID: {job.job_id})"
+        logger.info(msg)
+
+        previous_status = None
+
+        while True:
+            job.refresh()
+
+            # Log status changes
+            if job.status != previous_status:
+                status_str = job.status.value if job.status else "Unknown"
+                logger.debug(f"Job(name={job.name}, id={job.job_id}) is {status_str}")
+                previous_status = job.status
+
+            match job.status:
+                case JobStatus.COMPLETED:
+                    logger.info(job_status_msg(job))
+                    self._emit_terminal(job, sink)
+                    return job
+                case JobStatus.FAILED:
+                    self._emit_terminal(job, sink)
+                    raise RuntimeError(self._build_error_msg(job))
+                case JobStatus.CANCELLED | JobStatus.TIMEOUT:
+                    self._emit_terminal(job, sink)
+                    raise RuntimeError(self._build_error_msg(job))
+            time.sleep(poll_interval)
+
+    def _emit_terminal(self, job: BaseJob, extra_sink: JobLifecycleSink | None) -> None:
+        """Fire on_terminal on the instance sink (+ optional per-call sink)."""
+        self._sink.on_terminal(job)
+        if extra_sink is not None:
+            extra_sink.on_terminal(job)
+
+    @staticmethod
+    def _build_error_msg(job: BaseJob) -> str:
+        """Build error message with log contents for a failed/cancelled job."""
+        err_msg = job_status_msg(job) + "\n"
+        if isinstance(job, Job):
+            log_file = Path(job.log_dir) / f"{job.name}_{job.job_id}.log"
+            if log_file.exists():
+                with open(log_file) as f:
+                    err_msg += f.read()
+                    err_msg += f"\nLog file: {log_file}"
+            else:
+                err_msg += f"Log file not found: {log_file}"
+        return err_msg
+
+    def run(
+        self,
+        job: RunnableJobType,
+        template_path: str | None = None,
+        sink: JobLifecycleSink | None = None,
+        poll_interval: int = 5,
+        verbose: bool = False,
+        workflow_name: str | None = None,
+        workflow_run_id: int | None = None,
+        *,
+        submission_context: SubmissionRenderContext | None = None,
+    ) -> RunnableJobType:
+        """Submit a job and wait for completion.
+
+        ``submission_context`` is accepted for
+        :class:`~srunx.slurm.protocols.WorkflowJobExecutor`
+        conformance but intentionally ignored: local SLURM submission
+        does not need mount-path translation, so the job is rendered
+        verbatim from its own ``work_dir`` / ``log_dir`` fields. SSH-backed
+        executors consume the context to rewrite local paths before render.
+        """
+        del submission_context  # unused — local path has no mount translation
+        submitted_job = self.submit(
+            job,
+            template_path=template_path,
+            sink=sink,
+            verbose=verbose,
+            workflow_name=workflow_name,
+            workflow_run_id=workflow_run_id,
+        )
+        monitored_job = self.monitor(
+            submitted_job, poll_interval=poll_interval, sink=sink
+        )
+
+        # Ensure the return type matches the expected type
+        if isinstance(monitored_job, Job | ShellJob):
+            return monitored_job
+        else:
+            # This should not happen in practice, but needed for type safety
+            return submitted_job
+
+    @staticmethod
+    def _find_log_files(
+        job_id: int | str, job_name: str | None = None
+    ) -> tuple[list[str], list[str]]:
+        """Find SLURM log files for a job.
+
+        Returns:
+            Tuple of (found_files, searched_dirs)
+        """
+        job_id_str = str(job_id)
+        potential_log_patterns: list[str | None] = [
+            f"{job_name}_{job_id_str}.log" if job_name else None,
+            f"{job_name}_{job_id_str}.out" if job_name else None,
+            f"*_{job_id_str}.log",
+            f"*_{job_id_str}.out",
+            f"slurm-{job_id_str}.out",
+            f"slurm-{job_id_str}.err",
+            f"job_{job_id_str}.log",
+            f"{job_id_str}.log",
+        ]
+        patterns = [p for p in potential_log_patterns if p is not None]
+        log_dirs = [
+            os.environ.get("SLURM_LOG_DIR", ""),
+            "./",
+            "/tmp",
+        ]
+
+        found_files: list[str] = []
+        for log_dir in log_dirs:
+            if not log_dir:
+                continue
+            log_dir_path = Path(log_dir)
+            if not log_dir_path.exists():
+                continue
+            for pattern in patterns:
+                found_files.extend(glob.glob(str(log_dir_path / pattern)))
+
+        return found_files, [d for d in log_dirs if d]
+
+    @staticmethod
+    def _read_log_contents(found_files: list[str]) -> tuple[str, str]:
+        """Read output and error content from found log files.
+
+        Returns:
+            Tuple of (output_content, error_content)
+        """
+        output_content = ""
+        error_content = ""
+        if not found_files:
+            return output_content, error_content
+
+        primary_log = found_files[0]
+        try:
+            with open(primary_log, encoding="utf-8") as f:
+                output_content = f.read()
+        except (OSError, UnicodeDecodeError) as e:
+            logger.warning(f"Failed to read log file {primary_log}: {e}")
+            output_content = f"Could not read log file {primary_log}: {e}"
+
+        for log_file in found_files:
+            if "err" in Path(log_file).name.lower():
+                try:
+                    with open(log_file, encoding="utf-8") as f:
+                        error_content += f.read()
+                except (OSError, UnicodeDecodeError) as e:
+                    logger.warning(f"Failed to read error file {log_file}: {e}")
+
+        return output_content, error_content
+
+    def get_job_output(
+        self, job_id: int | str, job_name: str | None = None
+    ) -> tuple[str, str]:
+        """Get job output from SLURM log files.
+
+        Args:
+            job_id: SLURM job ID
+            job_name: Job name for better log file detection
+
+        Returns:
+            Tuple of (output_content, error_content)
+        """
+        found_files, _ = self._find_log_files(job_id, job_name)
+        if not found_files:
+            logger.warning(f"No log files found for job {job_id}")
+        return self._read_log_contents(found_files)
+
+    def get_job_output_detailed(
+        self, job_id: int | str, job_name: str | None = None, skip_content: bool = False
+    ) -> dict[str, str | list[str] | None]:
+        """Get detailed job output information including found log files.
+
+        Args:
+            job_id: SLURM job ID
+            job_name: Job name for better log file detection
+            skip_content: If True, only find log files without reading content
+
+        Returns:
+            Dictionary with detailed log information
+        """
+        found_files, searched_dirs = self._find_log_files(job_id, job_name)
+        primary_log = found_files[0] if found_files else None
+
+        if skip_content:
+            output_content, error_content = "", ""
+        else:
+            output_content, error_content = self._read_log_contents(found_files)
+
+        return {
+            "found_files": found_files,
+            "primary_log": primary_log,
+            "output": output_content,
+            "error": error_content,
+            "slurm_log_dir": os.environ.get("SLURM_LOG_DIR"),
+            "searched_dirs": searched_dirs,
+        }
+
+    def tail_log(
+        self,
+        job_id: int | str,
+        job_name: str | None = None,
+        follow: bool = False,
+        last_n: int | None = None,
+        poll_interval: float = 1.0,
+    ) -> None:
+        """Display job logs with optional real-time streaming.
+
+        Args:
+            job_id: SLURM job ID
+            job_name: Job name for better log file detection
+            follow: If True, continuously stream new log lines (like tail -f)
+            last_n: Show only the last N lines
+            poll_interval: Polling interval in seconds for follow mode
+        """
+        from collections import deque
+
+        from rich.console import Console
+
+        console = Console()
+        job_id_str = str(job_id)
+
+        # Skip reading full content when we only need file paths
+        skip_content = follow or (last_n is not None)
+        log_info = self.get_job_output_detailed(
+            job_id, job_name, skip_content=skip_content
+        )
+        primary_log = log_info.get("primary_log")
+        found_files = log_info.get("found_files", [])
+
+        if not found_files:
+            console.print(f"[red]❌ No log files found for job {job_id_str}[/red]")
+            searched_dirs = log_info.get("searched_dirs", [])
+            if searched_dirs:
+                console.print(
+                    f"[yellow]📁 Searched in: {', '.join(searched_dirs)}[/yellow]"
+                )
+            slurm_log_dir = log_info.get("slurm_log_dir")
+            if slurm_log_dir:
+                console.print(f"[yellow]💡 SLURM_LOG_DIR: {slurm_log_dir}[/yellow]")
+            return
+
+        if not primary_log:
+            console.print("[red]❌ Could not find primary log file[/red]")
+            return
+
+        log_file = Path(str(primary_log))
+        console.print(f"[cyan]📄 Log file: {log_file}[/cyan]")
+
+        try:
+            if follow:
+                # Real-time streaming mode (like tail -f)
+                console.print(
+                    "[yellow]📡 Streaming logs (Ctrl+C to stop)...[/yellow]\n"
+                )
+
+                # If last_n is specified, show last N lines first
+                if last_n:
+                    with open(log_file, encoding="utf-8") as f:
+                        tail_lines = deque(f, maxlen=last_n)
+                        for line in tail_lines:
+                            console.print(line, end="")
+
+                # Start streaming from current position
+                with open(log_file, encoding="utf-8") as f:
+                    # Always seek to end to avoid duplicating already-printed lines
+                    f.seek(0, os.SEEK_END)
+
+                    while True:
+                        line = f.readline()
+                        if line:
+                            console.print(line, end="")
+                        else:
+                            # Check if job is still running
+                            job = self.retrieve(int(job_id))
+                            if job.status.value in [
+                                "COMPLETED",
+                                "FAILED",
+                                "CANCELLED",
+                                "TIMEOUT",
+                            ]:
+                                console.print(
+                                    f"\n[yellow]Job {job_id} finished with status: {job.status.value}[/yellow]"
+                                )
+                                break
+                            time.sleep(poll_interval)
+            else:
+                # Static display mode
+                if last_n:
+                    # Read only last N lines efficiently using deque
+                    with open(log_file, encoding="utf-8") as f:
+                        tail_lines = deque(f, maxlen=last_n)
+                    output = "".join(tail_lines)
+                else:
+                    output = str(log_info.get("output", ""))
+
+                if output:
+                    console.print(output)
+                else:
+                    console.print("[yellow]Log file is empty[/yellow]")
+
+        except FileNotFoundError:
+            console.print(f"[red]❌ Log file not found: {log_file}[/red]")
+        except PermissionError:
+            console.print(f"[red]❌ Permission denied: {log_file}[/red]")
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Streaming stopped by user[/yellow]")
+        except Exception as e:
+            console.print(f"[red]❌ Error reading log file: {e}[/red]")
+
+    def _get_job_gpu_count(self, job_id: int) -> int | None:
+        """
+        Get GPU count for a job by parsing scontrol output.
+
+        Tries TRES field first, then falls back to Gres field for compatibility.
+
+        Args:
+            job_id: SLURM job ID
+
+        Returns:
+            GPU count if found, None otherwise
+
+        Raises:
+            subprocess.CalledProcessError: If scontrol command fails
+        """
+
+        try:
+            result = subprocess.run(
+                ["scontrol", "show", "job", str(job_id)],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=10,
+            )
+
+            # Try TRES field first (most reliable)
+            # Pattern: TRES=...gres/gpu=N
+            match = re.search(r"TRES=.*?gres/gpu=(\d+)", result.stdout)
+            if match:
+                return int(match.group(1))
+
+            # Fallback to Gres or TresPerNode field
+            # Pattern: Gres=gpu:N or TresPerNode=...gpu:N
+            match = re.search(r"(?:TresPerNode|Gres)=.*?gpu[:/](\d+)", result.stdout)
+            if match:
+                return int(match.group(1))
+
+            # No GPU information found
+            return None
+
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Timeout querying GPU count for job {job_id}")
+            return None
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to query GPU count for job {job_id}: {e}")
+            return None
+
+    def _get_default_template(self) -> str:
+        """Get the default job template path."""
+        return str(files("srunx.runtime").joinpath("_jinja", "base.slurm.jinja"))
