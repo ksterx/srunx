@@ -28,6 +28,24 @@ def _disable_current_profile_fallback(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_xdg_config_home(tmp_path_factory, monkeypatch):
+    """Block the developer's ``~/.config/srunx/config.json`` from leaking
+    into tests.
+
+    ``srunx.common.config`` resolves the user-wide config file under
+    ``$XDG_CONFIG_HOME/srunx/config.json``, falling back to
+    ``~/.config/srunx/config.json``. A developer who has set custom
+    defaults there (e.g. ``nodes=2`` / ``log_dir='custom_logs'`` /
+    ``partition='gpu'``) would see those values bleed into tests that
+    exercise :class:`SrunxConfig` or :func:`get_config`. Redirecting
+    ``XDG_CONFIG_HOME`` to a session-tmp dir guarantees a pristine
+    config tree for every test, regardless of host machine.
+    """
+    fake_xdg = tmp_path_factory.mktemp("xdg")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_xdg))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_legacy_history_db(tmp_path_factory, monkeypatch):
     """Make sure no test can delete the user's real ``~/.srunx/history.db``.
 

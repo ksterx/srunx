@@ -1,6 +1,6 @@
 """Tests for JobMonitor class."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -439,3 +439,87 @@ class TestJobMonitor:
             + callback.on_job_cancelled.call_count
         )
         assert total_notifications >= 2  # At least some state changes detected
+
+
+# ──────────────────────────────────────────────────────────────────────
+# History integration (moved from tests/test_logs.py during the
+# tests/ reorganisation). Asserts that JobMonitor mirrors terminal
+# states into the state DB via record_completion.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestJobMonitorHistoryIntegration:
+    """Test that JobMonitor mirrors terminal states into the state DB.
+
+    Post-cutover (P2-4 #A), the mock target is
+    ``srunx.observability.storage.cli_helpers.record_completion`` (was
+    ``srunx.history.get_history`` before the history module was
+    removed). Invariants under test are unchanged:
+
+    - terminal states trigger one record_completion call with the
+      (job_id, status) the monitor observed
+    - non-terminal states (RUNNING) do NOT call record_completion
+    - a DB-level failure in record_completion never breaks the
+      callback notifications
+    """
+
+    def test_notify_transition_updates_history_on_completion(self):
+        monitor = JobMonitor(job_ids=[123])
+        monitor.callbacks = []
+
+        job = Job(name="hist_test", job_id=123, command=["test"])
+        job._status = JobStatus.COMPLETED
+
+        with patch("srunx.observability.storage.cli_helpers.record_completion") as rec:
+            monitor._notify_transition(job, JobStatus.COMPLETED)
+            rec.assert_called_once_with(123, JobStatus.COMPLETED, scheduler_key="local")
+
+    def test_notify_transition_updates_history_on_failure(self):
+        monitor = JobMonitor(job_ids=[456])
+        monitor.callbacks = []
+
+        job = Job(name="fail_test", job_id=456, command=["test"])
+        job._status = JobStatus.FAILED
+
+        with patch("srunx.observability.storage.cli_helpers.record_completion") as rec:
+            monitor._notify_transition(job, JobStatus.FAILED)
+            rec.assert_called_once_with(456, JobStatus.FAILED, scheduler_key="local")
+
+    def test_notify_transition_skips_history_for_running(self):
+        monitor = JobMonitor(job_ids=[789])
+        callback = MagicMock()
+        monitor.callbacks = [callback]
+
+        job = Job(name="run_test", job_id=789, command=["test"])
+        job._status = JobStatus.RUNNING
+
+        with patch("srunx.observability.storage.cli_helpers.record_completion") as rec:
+            monitor._notify_transition(job, JobStatus.RUNNING)
+            rec.assert_not_called()
+
+        callback.on_job_running.assert_called_once_with(job)
+
+    def test_notify_transition_handles_history_error(self):
+        monitor = JobMonitor(job_ids=[101])
+        callback = MagicMock()
+        monitor.callbacks = [callback]
+
+        job = Job(name="err_test", job_id=101, command=["test"])
+        job._status = JobStatus.COMPLETED
+
+        with patch("srunx.observability.storage.cli_helpers.record_completion") as rec:
+            rec.side_effect = Exception("DB error")
+            # record_completion is already best-effort (swallows
+            # internally); monitor also wraps + must not propagate.
+            # This test asserts the contract explicitly at the monitor
+            # level by raising from inside the mock.
+            try:
+                monitor._notify_transition(job, JobStatus.COMPLETED)
+            except Exception as exc:
+                # If the monitor ever propagates, the whole callback
+                # chain breaks. That's the regression this guards.
+                raise AssertionError(
+                    "_notify_transition must swallow record_completion failures"
+                ) from exc
+
+        callback.on_job_completed.assert_called_once_with(job)
