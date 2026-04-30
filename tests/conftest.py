@@ -46,19 +46,26 @@ def _isolate_xdg_config_home(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _stable_terminal_width(monkeypatch):
-    """Pin ``COLUMNS`` to a wide value so Typer/Rich help output doesn't
-    wrap mid-phrase under different host terminal sizes.
+def _stable_terminal_output(monkeypatch):
+    """Stabilise Typer/Rich CLI output so substring assertions in
+    help-text tests are deterministic regardless of host environment.
 
-    CLI help-text tests rely on substring assertions like
-    ``assert "Start execution from this job" in result.stdout``. When
-    ``COLUMNS`` is small (CI runners default to ~75), Rich wraps the
-    help description across multiple table lines with ``│`` separators,
-    so the contiguous substring no longer appears in the rendered
-    output. Pinning to 200 cols leaves room for any single-line
-    description to render verbatim, regardless of host terminal.
+    Two coordinated env vars:
+
+    - ``COLUMNS=200`` — wide enough that Rich does not wrap any
+      single-line option description across multiple ``│``-separated
+      table rows. Without this, CI runners (default ~75 cols) split
+      ``"Start execution from this job"`` across lines and break a
+      contiguous substring match.
+    - ``NO_COLOR=1`` — disables Rich's syntax highlighting on option
+      flags. Without this, Rich emits ``\\x1b[1;36m-\\x1b[0m\\x1b[1;36m-from\\x1b[0m``
+      for ``--from``, splitting the token across reset+cyan ANSI
+      sequences so even ``"--from" in result.stdout`` fails. The
+      ``NO_COLOR`` convention (https://no-color.org) is honoured by
+      Rich and Click.
     """
     monkeypatch.setenv("COLUMNS", "200")
+    monkeypatch.setenv("NO_COLOR", "1")
 
 
 @pytest.fixture(autouse=True)
