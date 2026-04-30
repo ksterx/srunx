@@ -1,5 +1,6 @@
 """Tests for srunx workflow CLI execution control features."""
 
+import re
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -8,6 +9,20 @@ import yaml  # type: ignore
 from typer.testing import CliRunner
 
 from srunx.cli.main import app as main_app
+
+# Rich-emitted ANSI styling (bold/dim/colour) splits CLI tokens like
+# ``--from`` into separate ``\x1b[1m-\x1b[0m\x1b[1m-from\x1b[0m`` sequences,
+# so substring assertions on raw ``result.stdout`` are unreliable across
+# environments (CI sets CI=true / FORCE_COLOR which Rich treats as "force
+# terminal" even when stdout is captured). Conftest pins ``COLUMNS`` and
+# ``NO_COLOR`` for stability, but Rich still emits style-only escapes
+# (bold / dim) that NO_COLOR doesn't suppress. Strip ANSI before
+# substring checks instead of fighting Rich's defaults.
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE.sub("", text)
 
 
 class TestWorkflowExecutionControl:
@@ -52,13 +67,17 @@ class TestWorkflowExecutionControl:
         result = self.runner.invoke(main_app, ["flow", "run", "--help"])
         assert result.exit_code == 0
 
+        # Strip ANSI escapes — Rich-emitted bold/dim sequences split tokens
+        # mid-string (see module-level note on _strip_ansi).
+        stdout = _strip_ansi(result.stdout)
+
         # Check for new options in help
-        assert "--from" in result.stdout
-        assert "--to" in result.stdout
-        assert "--job" in result.stdout
-        assert "Start execution from this job" in result.stdout
-        assert "Stop execution at this job" in result.stdout
-        assert "Execute only this specific job" in result.stdout
+        assert "--from" in stdout
+        assert "--to" in stdout
+        assert "--job" in stdout
+        assert "Start execution from this job" in stdout
+        assert "Stop execution at this job" in stdout
+        assert "Execute only this specific job" in stdout
 
     @patch("srunx.cli.workflow.WorkflowRunner")
     def test_workflow_run_with_from_option(self, mock_runner_class):
