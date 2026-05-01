@@ -20,8 +20,9 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
-from srunx.domain import Job
+from srunx.domain import BaseJob, ContainerResource, Job, JobEnvironment
 from srunx.runtime.rendering import (
     RenderedJob,
     RenderedWorkflow,
@@ -707,3 +708,311 @@ def test_smoke_multi_job_sweep_style_render(tmp_path: Path) -> None:
     assert len(rw.workflow.jobs) == 2
     assert rw.workflow.jobs[0] is prep.job
     assert rw.workflow.jobs[1] is train.job
+
+
+# ──────────────────────────────────────────────────────
+# Moved from tests/test_models.py during the tests/ reorg.
+# These classes exercise srunx.runtime.rendering directly
+# and were misplaced in the old monolithic test_models.py.
+# ──────────────────────────────────────────────────────
+
+
+class TestRenderJobScript:
+    """Test render_job_script function."""
+
+    def test_render_job_script(self, sample_job, temp_dir):
+        """Test job script rendering."""
+        # Create a simple template
+        template_path = temp_dir / "test.jinja"
+        template_content = """#!/bin/bash
+#SBATCH --job-name={{ job_name }}
+#SBATCH --nodes={{ nodes }}
+#SBATCH --ntasks-per-node={{ ntasks_per_node }}
+#SBATCH --cpus-per-task={{ cpus_per_task }}
+#SBATCH --output={{ log_dir }}/{{ job_name }}_%j.out
+#SBATCH --error={{ log_dir }}/{{ job_name }}_%j.err
+#SBATCH --chdir={{ work_dir }}
+{% if gpus_per_node > 0 %}
+#SBATCH --gpus-per-node={{ gpus_per_node }}
+{% endif %}
+{% if memory_per_node %}
+#SBATCH --mem={{ memory_per_node }}
+{% endif %}
+{% if time_limit %}
+#SBATCH --time={{ time_limit }}
+{% endif %}
+
+{{ environment_setup }}
+
+{{ command }}
+"""
+
+        with open(template_path, "w") as f:
+            f.write(template_content)
+
+        # Render the script
+        script_path = render_job_script(template_path, sample_job, temp_dir)
+
+        assert Path(script_path).exists()
+
+        with open(script_path) as f:
+            content = f.read()
+
+        assert "#SBATCH --job-name=test_job" in content
+        assert "#SBATCH --nodes=1" in content
+        assert "python test.py" in content
+        assert "conda activate 'test_env'" in content
+
+    def test_render_base_template_empty_log_dir(self, temp_dir):
+        """Empty log_dir should produce relative paths, not /%x_%j.log."""
+        template_path = get_template_path("base")
+        job = Job(
+            name="test_job",
+            command=["python", "train.py"],
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        # Should NOT start with / (root directory)
+        for line in content.splitlines():
+            if "--output=" in line:
+                path_part = line.split("--output=")[1]
+                assert not path_part.startswith("/"), (
+                    f"Empty log_dir produced absolute path: {path_part}"
+                )
+                break
+        else:
+            pytest.fail("No --output line found in rendered script")
+
+    def test_render_base_template_with_log_dir(self, temp_dir):
+        """Non-empty log_dir should be used as prefix."""
+        template_path = get_template_path("base")
+        job = Job(
+            name="test_job",
+            command=["python", "train.py"],
+            log_dir="/data/logs",
+            work_dir="",
+        )
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        assert "#SBATCH --output=/data/logs/%x_%j.log" in content
+
+    def test_render_job_script_nonexistent_template(self, sample_job, temp_dir):
+        """Test render_job_script with nonexistent template."""
+        with pytest.raises(FileNotFoundError):
+            render_job_script("/nonexistent/template.jinja", sample_job, temp_dir)
+
+    def test_render_job_script_verbose(self, sample_job, temp_dir, capsys):
+        """Test render_job_script with verbose output."""
+        template_path = temp_dir / "test.jinja"
+        with open(template_path, "w") as f:
+            f.write("Test template: {{ job_name }}")
+
+        render_job_script(template_path, sample_job, temp_dir, verbose=True)
+
+        captured = capsys.readouterr()
+        assert "Test template: test_job" in captured.out
+
+
+class TestExportsValidation:
+    """Test exports field validation on BaseJob."""
+
+    def test_valid_export_keys(self):
+        """Valid shell identifiers should pass."""
+        job = BaseJob(
+            name="test",
+            exports={
+                "model_path": "/data/model.pt",
+                "BATCH_SIZE": "32",
+                "_private": "x",
+            },
+        )
+        assert len(job.exports) == 3
+
+    def test_invalid_export_key_with_spaces(self):
+        """Keys with spaces should fail."""
+        with pytest.raises(ValidationError, match="Invalid export name"):
+            BaseJob(name="test", exports={"bad key": "value"})
+
+    def test_invalid_export_key_with_semicolon(self):
+        """Keys with shell metacharacters should fail."""
+        with pytest.raises(ValidationError, match="Invalid export name"):
+            BaseJob(name="test", exports={"foo;rm -rf /": "value"})
+
+    def test_invalid_export_key_starts_with_number(self):
+        """Keys starting with a number should fail."""
+        with pytest.raises(ValidationError, match="Invalid export name"):
+            BaseJob(name="test", exports={"1var": "value"})
+
+    def test_empty_exports(self):
+        """Empty exports dict should be fine."""
+        job = BaseJob(name="test", exports={})
+        assert job.exports == {}
+
+
+class TestRenderJobScriptExtraArgs:
+    """Test render_job_script with extra_srun_args and extra_launch_prefix."""
+
+    def test_extra_srun_args_appended(self, temp_dir):
+        """User-specified srun_args should appear in the rendered script."""
+        template_path = temp_dir / "test.jinja"
+        template_path.write_text(
+            "#!/bin/bash\n"
+            "{% if srun_args %}srun {{ srun_args }} {{ command }}{% else %}"
+            "srun {{ command }}{% endif %}\n"
+        )
+        job = Job(
+            name="test_extra",
+            command=["python", "train.py"],
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(
+            template_path, job, temp_dir, extra_srun_args="--mpi=pmix"
+        )
+        content = Path(script_path).read_text()
+        assert "--mpi=pmix" in content
+
+    def test_extra_launch_prefix_appended(self, temp_dir):
+        """User-specified launch_prefix should appear in the rendered script."""
+        template_path = temp_dir / "test.jinja"
+        template_path.write_text(
+            "#!/bin/bash\n"
+            "{% if launch_prefix %}{{ launch_prefix }} {{ command }}{% else %}"
+            "{{ command }}{% endif %}\n"
+        )
+        job = Job(
+            name="test_prefix",
+            command=["python", "train.py"],
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(
+            template_path,
+            job,
+            temp_dir,
+            extra_launch_prefix="torchrun --nproc_per_node=4",
+        )
+        content = Path(script_path).read_text()
+        assert "torchrun --nproc_per_node=4" in content
+
+    def test_extra_args_merge_with_container(self, temp_dir):
+        """Extra srun_args should be appended after container-generated args."""
+        template_path = temp_dir / "test.jinja"
+        template_path.write_text("srun_args={{ srun_args }}\n")
+        job = Job(
+            name="test_merge",
+            command=["python", "train.py"],
+            environment=JobEnvironment(
+                container=ContainerResource(
+                    runtime="pyxis", image="nvcr.io/nvidia/pytorch:latest"
+                )
+            ),
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(
+            template_path, job, temp_dir, extra_srun_args="--cpu-bind=cores"
+        )
+        content = Path(script_path).read_text()
+        # Should contain both the container ARGS and user extra
+        assert "CONTAINER_ARGS" in content
+        assert "--cpu-bind=cores" in content
+
+    def test_no_extra_args_unchanged(self, temp_dir):
+        """Without extra args, behavior should be unchanged."""
+        template_path = temp_dir / "test.jinja"
+        template_path.write_text("srun {{ srun_args }} {{ command }}\n")
+        job = Job(
+            name="test_no_extra",
+            command=["echo", "hello"],
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        assert "echo hello" in content
+
+
+class TestPerJobTemplate:
+    """Test that the base template produces expected script content."""
+
+    def test_base_template_has_world_size(self, temp_dir):
+        """Base template should set WORLD_SIZE."""
+        template_path = get_template_path("base")
+        job = Job(name="adv", command=["python", "train.py"], log_dir="", work_dir="")
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        assert "WORLD_SIZE" in content
+
+
+class TestShellInjectionPrevention:
+    """Test that shell injection is prevented in rendered scripts."""
+
+    def test_env_vars_semicolon_injection(self, temp_dir):
+        """Semicolons in env var values must not break out of the export statement."""
+        template_path = get_template_path("base")
+        job = Job(
+            name="injection_test",
+            command=["echo", "hello"],
+            environment=JobEnvironment(
+                env_vars={"EVIL": "foo; rm -rf /"},
+            ),
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        # The value must be single-quoted, preventing the semicolon from executing
+        assert "export EVIL='foo; rm -rf /'" in content
+        # Must NOT contain unquoted export
+        assert "export EVIL=foo;" not in content
+
+    def test_env_vars_command_substitution_injection(self, temp_dir):
+        """Command substitution in env var values must be quoted."""
+        template_path = get_template_path("base")
+        job = Job(
+            name="subst_test",
+            command=["echo", "hello"],
+            environment=JobEnvironment(
+                env_vars={"CMD": "$(whoami)"},
+            ),
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        assert "export CMD='$(whoami)'" in content
+
+    def test_env_vars_single_quote_escaping(self, temp_dir):
+        """Single quotes within values must be properly escaped."""
+        template_path = get_template_path("base")
+        job = Job(
+            name="quote_test",
+            command=["echo", "hello"],
+            environment=JobEnvironment(
+                env_vars={"MSG": "it's working"},
+            ),
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        # Single quote must be escaped as '\'' within single-quoted string
+        assert "export MSG='it'\\''s working'" in content
+
+    def test_conda_name_injection(self, temp_dir):
+        """Conda env name with special chars must be quoted."""
+        template_path = get_template_path("base")
+        job = Job(
+            name="conda_test",
+            command=["echo", "hello"],
+            environment=JobEnvironment(conda="my_env; echo pwned"),
+            log_dir="",
+            work_dir="",
+        )
+        script_path = render_job_script(template_path, job, temp_dir)
+        content = Path(script_path).read_text()
+        assert "conda activate 'my_env; echo pwned'" in content
+        assert "conda activate my_env;" not in content

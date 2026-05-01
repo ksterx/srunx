@@ -151,8 +151,41 @@ When a non-default transport is selected, a 1-line banner is emitted on stderr
 ### Testing
 - `uv run pytest` - Run all tests
 - `uv run pytest --cov=srunx` - Run tests with coverage
-- `uv run pytest tests/test_models.py` - Run specific test file
+- `uv run pytest tests/domain/test_jobs.py` - Run specific test file
 - `uv run pytest -v` - Run tests with verbose output
+
+### Test layout rules (KEEP THESE TO AVOID FUTURE TECH DEBT)
+
+The `tests/` tree mirrors `src/srunx/`. New tests must follow this 1:1
+correspondence so the test for any source module is mechanically findable
+without grep:
+
+1. **`tests/X/test_Y.py` tests `src/srunx/X/Y.py`.** No exceptions inside
+   subpackages. If `src/srunx/observability/monitoring/job_monitor.py`
+   exists, its tests live in `tests/observability/monitoring/test_job_monitor.py`.
+2. **Only top-level srunx modules go to `tests/` root.** Currently that's
+   `tests/test_callbacks.py` (covers `srunx.callbacks`) and
+   `tests/test_utils.py` (covers `srunx.utils`). Don't add new files at
+   `tests/` root unless `src/srunx/<name>.py` is also at the top level.
+3. **Cross-cutting tests get their own dir, NOT the root.**
+   - `tests/integration/` — end-to-end / multi-module scenarios.
+   - `tests/architecture/` — codebase-wide invariants (import-layer lint
+     etc.).
+4. **Every test subpackage has an `__init__.py`.** This prevents pytest
+   collection-name collisions when two unrelated subpackages happen to
+   share a test filename (e.g. multiple `test_protocols.py`).
+5. **No path tricks like `Path(__file__).parent.parent / "src" / ...`.**
+   They tie tests to a specific filesystem layout and break the moment
+   the test file moves. Use the public API for resource discovery —
+   e.g. `from srunx.runtime.templates import get_template_path` for
+   built-in templates, `importlib.resources` for package data.
+6. **Test isolation in `tests/conftest.py`:** the autouse fixtures
+   `_isolate_xdg_config_home`, `_isolate_legacy_history_db`, and
+   `reset_config` neutralise developer-machine state (XDG config,
+   legacy history DB, SRUNX_* env vars). When adding a new env-driven
+   surface, extend these fixtures rather than relying on
+   `@patch.dict(os.environ, {}, clear=True)` (which over-clears and
+   clobbers the XDG isolation set by the autouse fixtures).
 
 ### Direct Usage Examples
 

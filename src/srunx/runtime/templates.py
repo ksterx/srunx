@@ -1,7 +1,6 @@
 """Job template management for common use cases."""
 
 import json
-import os
 import re
 from importlib.resources import files
 from pathlib import Path
@@ -22,12 +21,16 @@ _VALID_NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 def _user_templates_dir() -> Path:
-    """Return the user templates directory (~/.config/srunx/templates/)."""
-    if os.name == "posix":
-        base = Path.home() / ".config" / "srunx"
-    else:
-        base = Path.home() / "AppData" / "Roaming" / "srunx"
-    return base / "templates"
+    """Return the user templates directory under the srunx config dir.
+
+    Delegates to :func:`srunx.common.config._user_config_dir` so that the
+    JSON config file, the state DB, and user templates all share the same
+    XDG_CONFIG_HOME-honouring root — flipping ``XDG_CONFIG_HOME`` isolates
+    every user-state surface in one go (tests rely on this).
+    """
+    from srunx.common.config import _user_config_dir
+
+    return _user_config_dir() / "templates"
 
 
 def _user_meta_path() -> Path:

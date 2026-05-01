@@ -18,15 +18,9 @@ from pathlib import Path
 
 from srunx.domain import Job
 from srunx.runtime.rendering import render_job_script
+from srunx.runtime.templates import get_template_path
 
-BASE_TEMPLATE_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "src"
-    / "srunx"
-    / "runtime"
-    / "_jinja"
-    / "base.slurm.jinja"
-)
+BASE_TEMPLATE_PATH = get_template_path("base")
 
 
 class TestJobRenderMetadataFields:
