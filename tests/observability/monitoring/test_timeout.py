@@ -1,6 +1,20 @@
-"""Tests for monitoring timeout validation."""
+"""Tests for monitoring timeout validation.
 
-import time
+All timing assertions in this module run against a virtual clock
+provided by the ``fake_monitor_clock`` fixture, not wall-clock time.
+:class:`BaseMonitor` reads the current time and yields between polls
+via the ``time`` module imported into ``srunx.observability.monitoring.base``;
+swapping that module reference for a stub means every ``time.time()``
+inside ``watch_until`` / ``watch_continuous`` returns the virtual now,
+and every ``time.sleep(seconds)`` advances it by exactly ``seconds``.
+
+Result: poll counts and elapsed time become exact values rather than
+"approximately N seconds, allow some tolerance for CI scheduling
+jitter". Pre-fix this file relied on real ``time.sleep`` and
+``time.time`` and was load-fragile (a CI runner with 0.5ms of jitter
+could overshoot a tight upper bound and fail).
+"""
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -15,10 +29,35 @@ from srunx.observability.monitoring.types import (
 )
 
 
+@pytest.fixture
+def fake_monitor_clock(monkeypatch):
+    """Replace the ``time`` module reference in
+    :mod:`srunx.observability.monitoring.base` with a virtual clock.
+
+    Returned object exposes ``.now`` (current virtual time) so tests
+    can read elapsed virtual time without a real wall-clock sample.
+    """
+    import srunx.observability.monitoring.base as _mon
+
+    class _FakeTime:
+        now: float = 0.0
+
+        @classmethod
+        def time(cls) -> float:
+            return cls.now
+
+        @classmethod
+        def sleep(cls, seconds: float) -> None:
+            cls.now += seconds
+
+    monkeypatch.setattr(_mon, "time", _FakeTime)
+    return _FakeTime
+
+
 class TestJobMonitorTimeout:
     """Test JobMonitor timeout behavior."""
 
-    def test_watch_until_respects_timeout(self):
+    def test_watch_until_respects_timeout(self, fake_monitor_clock):
         """Test that watch_until raises TimeoutError after timeout expires."""
         config = MonitorConfig(poll_interval=1, timeout=2)
         monitor = JobMonitor(job_ids=[123], config=config)
@@ -29,15 +68,15 @@ class TestJobMonitorTimeout:
         monitor.client = MagicMock()
         monitor.client.status = MagicMock(return_value=job)
 
-        start_time = time.time()
         with pytest.raises(TimeoutError):
             monitor.watch_until()
-        elapsed = time.time() - start_time
 
-        # Should timeout after ~2 seconds
-        assert 1.5 < elapsed < 3.5  # Allow some tolerance
+        # Sequence: t=0 check_condition false, sleep(1) → t=1; check
+        # false, sleep(1) → t=2; check false, elapsed (2) >= timeout (2),
+        # raise. So virtual now lands exactly at the timeout.
+        assert fake_monitor_clock.now == pytest.approx(2.0)
 
-    def test_watch_until_exits_before_timeout_on_completion(self):
+    def test_watch_until_exits_before_timeout_on_completion(self, fake_monitor_clock):
         """Test that watch_until exits immediately when condition met."""
         config = MonitorConfig(poll_interval=1, timeout=10)
         monitor = JobMonitor(job_ids=[123], config=config)
@@ -48,14 +87,13 @@ class TestJobMonitorTimeout:
         monitor.client = MagicMock()
         monitor.client.status = MagicMock(return_value=job)
 
-        start_time = time.time()
         monitor.watch_until()
-        elapsed = time.time() - start_time
 
-        # Should exit quickly, not wait for timeout
-        assert elapsed < 2.0
+        # Condition met on first check_condition call → no sleep, no
+        # timeout check, virtual clock untouched.
+        assert fake_monitor_clock.now == pytest.approx(0.0)
 
-    def test_watch_until_no_timeout_waits_indefinitely(self):
+    def test_watch_until_no_timeout_waits_indefinitely(self, fake_monitor_clock):
         """Test that watch_until with no timeout can be stopped by signal."""
         config = MonitorConfig(poll_interval=1, timeout=None)
         monitor = JobMonitor(job_ids=[123], config=config)
@@ -77,15 +115,15 @@ class TestJobMonitorTimeout:
 
         monitor.client.status = mock_status
 
-        start_time = time.time()
         monitor.watch_until()
-        elapsed = time.time() - start_time
 
-        # Should have polled 3 times with 1s interval
-        assert 2.0 < elapsed < 4.0
+        # Loop body order: check_condition → (timeout check) → sleep.
+        # Stop is set inside the 3rd check; the loop still falls through
+        # to sleep before the guard re-evaluates. So 3 polls + 3 sleeps.
         assert call_count == 3
+        assert fake_monitor_clock.now == pytest.approx(3.0)
 
-    def test_timeout_one_second_exits_quickly(self):
+    def test_timeout_one_second_exits_quickly(self, fake_monitor_clock):
         """Test that timeout=1 causes quick exit."""
         config = MonitorConfig(poll_interval=1, timeout=1)
         monitor = JobMonitor(job_ids=[123], config=config)
@@ -95,19 +133,18 @@ class TestJobMonitorTimeout:
         monitor.client = MagicMock()
         monitor.client.status = MagicMock(return_value=job)
 
-        start_time = time.time()
         with pytest.raises(TimeoutError):
             monitor.watch_until()
-        elapsed = time.time() - start_time
 
-        # Should timeout after ~1 second
-        assert 0.5 < elapsed < 2.0
+        # t=0 check false, sleep(1) → t=1; check false, elapsed (1) >=
+        # timeout (1), raise. Virtual now = 1.0 exactly.
+        assert fake_monitor_clock.now == pytest.approx(1.0)
 
 
 class TestResourceMonitorTimeout:
     """Test ResourceMonitor timeout behavior."""
 
-    def test_watch_until_respects_timeout(self):
+    def test_watch_until_respects_timeout(self, fake_monitor_clock):
         """Test that watch_until raises TimeoutError after timeout expires."""
         config = MonitorConfig(poll_interval=1, timeout=2)
         monitor = ResourceMonitor(min_gpus=4, config=config)
@@ -125,15 +162,12 @@ class TestResourceMonitorTimeout:
         )
         monitor.get_partition_resources = MagicMock(return_value=snapshot)
 
-        start_time = time.time()
         with pytest.raises(TimeoutError):
             monitor.watch_until()
-        elapsed = time.time() - start_time
 
-        # Should timeout after ~2 seconds
-        assert 1.5 < elapsed < 3.5
+        assert fake_monitor_clock.now == pytest.approx(2.0)
 
-    def test_watch_until_exits_before_timeout_on_availability(self):
+    def test_watch_until_exits_before_timeout_on_availability(self, fake_monitor_clock):
         """Test that watch_until exits when GPUs become available."""
         config = MonitorConfig(poll_interval=1, timeout=10)
         monitor = ResourceMonitor(min_gpus=4, config=config)
@@ -151,14 +185,12 @@ class TestResourceMonitorTimeout:
         )
         monitor.get_partition_resources = MagicMock(return_value=snapshot)
 
-        start_time = time.time()
         monitor.watch_until()
-        elapsed = time.time() - start_time
 
-        # Should exit quickly
-        assert elapsed < 2.0
+        # Condition met on first poll → no sleep advance.
+        assert fake_monitor_clock.now == pytest.approx(0.0)
 
-    def test_watch_until_no_timeout_waits_indefinitely(self):
+    def test_watch_until_no_timeout_waits_indefinitely(self, fake_monitor_clock):
         """Test that watch_until with no timeout can be stopped by signal."""
         config = MonitorConfig(poll_interval=1, timeout=None)
         monitor = ResourceMonitor(min_gpus=4, config=config)
@@ -183,19 +215,18 @@ class TestResourceMonitorTimeout:
 
         monitor.get_partition_resources = mock_get_resources
 
-        start_time = time.time()
         monitor.watch_until()
-        elapsed = time.time() - start_time
 
-        # Should have polled 3 times
-        assert 2.0 < elapsed < 4.0
         assert call_count == 3
+        # 3 polls + 3 sleeps (sleep fires after the stop-setting poll
+        # before the loop guard re-evaluates).
+        assert fake_monitor_clock.now == pytest.approx(3.0)
 
 
 class TestContinuousModeTimeout:
     """Test timeout behavior in continuous monitoring mode."""
 
-    def test_continuous_mode_ignores_timeout(self):
+    def test_continuous_mode_ignores_timeout(self, fake_monitor_clock):
         """Test that continuous mode doesn't use timeout parameter."""
         # Continuous mode should run indefinitely until stopped
         config = MonitorConfig(
@@ -221,19 +252,19 @@ class TestContinuousModeTimeout:
 
         monitor.client.status = mock_status
 
-        start_time = time.time()
         monitor.watch_continuous()
-        elapsed = time.time() - start_time
 
-        # Should poll 5 times (>2s timeout), proving timeout is ignored
-        assert elapsed > 3.0
+        # 5 polls completed despite the 2s "timeout" — proves timeout
+        # is ignored in CONTINUOUS mode. 5 sleeps (sleep fires after
+        # the stop-setting poll before the loop guard re-evaluates).
         assert call_count == 5
+        assert fake_monitor_clock.now == pytest.approx(5.0)
 
 
 class TestPollIntervalTiming:
     """Test that poll_interval is respected."""
 
-    def test_poll_interval_timing(self):
+    def test_poll_interval_timing(self, fake_monitor_clock):
         """Test that monitor waits poll_interval between checks."""
         config = MonitorConfig(poll_interval=2, timeout=None)
         monitor = JobMonitor(job_ids=[123], config=config)
@@ -242,10 +273,10 @@ class TestPollIntervalTiming:
         job._status = JobStatus.RUNNING
         monitor.client = MagicMock()
 
-        poll_times = []
+        poll_times: list[float] = []
 
         def mock_status(job_id):
-            poll_times.append(time.time())
+            poll_times.append(fake_monitor_clock.now)
             if len(poll_times) >= 3:
                 monitor._stop_requested = True
             return job
@@ -254,16 +285,14 @@ class TestPollIntervalTiming:
 
         monitor.watch_until()
 
-        # Check intervals between polls
-        assert len(poll_times) == 3
-        interval1 = poll_times[1] - poll_times[0]
-        interval2 = poll_times[2] - poll_times[1]
+        # 3 polls separated by exactly poll_interval=2 seconds.
+        assert poll_times == [
+            pytest.approx(0.0),
+            pytest.approx(2.0),
+            pytest.approx(4.0),
+        ]
 
-        # Intervals should be ~2 seconds (allow some tolerance)
-        assert 1.8 < interval1 < 2.5
-        assert 1.8 < interval2 < 2.5
-
-    def test_fast_poll_interval(self):
+    def test_fast_poll_interval(self, fake_monitor_clock):
         """Test monitoring with fast poll interval."""
         config = MonitorConfig(poll_interval=1, timeout=None)
         monitor = ResourceMonitor(min_gpus=2, config=config)
@@ -288,10 +317,9 @@ class TestPollIntervalTiming:
 
         monitor.get_partition_resources = mock_get_resources
 
-        start_time = time.time()
         monitor.watch_until()
-        elapsed = time.time() - start_time
 
-        # Should poll 4 times in ~3 seconds
-        assert 2.5 < elapsed < 4.5
+        # 4 polls + 4 sleeps (sleep fires after the stop-setting poll
+        # before the loop guard re-evaluates).
         assert call_count == 4
+        assert fake_monitor_clock.now == pytest.approx(4.0)

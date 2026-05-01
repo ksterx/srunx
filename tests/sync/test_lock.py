@@ -14,8 +14,8 @@ We need to verify three behaviours:
 
 from __future__ import annotations
 
+import errno
 import multiprocessing
-import os
 import time
 from pathlib import Path
 
@@ -114,54 +114,68 @@ def _hold_lock(profile: str, mount: str, hold_for: float) -> None:
         time.sleep(hold_for)
 
 
-@pytest.mark.skipif(
-    bool(os.getenv("CI")),
-    reason=(
-        "Tracked in #196. Under GitHub Actions CPU contention the child "
-        "subprocess hasn't yet acquired the lock when the parent races to "
-        "acquire — so the parent succeeds (contradicting the contended "
-        "assumption) and the test's pytest.fail fires for the wrong reason. "
-        "3-rerun absorption was tried (4dc7d94) and didn't help: the failure "
-        "is deterministic on CI runners, not flaky. Skipping in CI keeps the "
-        "real bug visible (it surfaces locally and on contention-stable "
-        "machines) until #196's deterministic rewrite drives the contended "
-        "state via threading events instead of wall-clock timing."
-    ),
-)
-def test_contended_acquire_times_out(tmp_path: Path) -> None:
-    """A second acquirer waits up to ``timeout`` then raises with the path.
+def test_contended_acquire_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A contended acquire polls until the deadline, then raises.
 
-    Spawn a child that holds the lock for longer than the parent's
-    timeout, then assert the parent gets a timely
-    :class:`SyncLockTimeoutError` carrying the exact lock file.
+    Pure unit test: real OS lock acquisition is exercised by
+    :func:`test_acquire_release_basic` and
+    :func:`test_acquire_after_holder_exits`. Here we stub
+    :mod:`fcntl.flock` to permanently signal contention
+    (``EWOULDBLOCK``) and stub the clock so the polling loop
+    deterministically advances past the deadline. That isolates the
+    contract under test — "after ``timeout`` seconds with no successful
+    flock, raise :class:`SyncLockTimeoutError` carrying the lock path
+    and the timeout value" — from any wall-clock or OS-scheduling
+    jitter.
+
+    A previous version of this test spawned a real ``multiprocessing``
+    child to hold the lock and ``time.sleep(0.3)`` to "wait for the
+    child to acquire". Under CI CPU contention the child hadn't yet
+    taken the lock when the parent raced ahead, so the parent acquired
+    it and the test's ``pytest.fail("should not have acquired
+    contended lock")`` fired for the wrong reason. Tracked in #196.
     """
-    # multiprocessing on macOS defaults to spawn; ensure children pick
-    # up the same XDG_CONFIG_HOME we set in the autouse fixture.
-    ctx = multiprocessing.get_context("spawn")
-    holder = ctx.Process(target=_hold_lock, args=("alice", "ml", 2.0))
-    holder.start()
-    try:
-        # Give the holder a beat to actually take the lock.
-        time.sleep(0.3)
+    import srunx.sync.lock as _lock_mod
 
-        start = time.monotonic()
-        with pytest.raises(SyncLockTimeoutError) as exc_info:
-            with acquire_sync_lock("alice", "ml", timeout=0.5):
-                pytest.fail("should not have acquired contended lock")
-        elapsed = time.monotonic() - start
+    # Fake clock: every ``time.sleep`` call inside the polling loop
+    # advances ``fake_now`` by the requested amount. ``time.monotonic``
+    # reads the current value, so the polling loop crosses its
+    # deadline after exactly ``timeout / poll_interval`` polls.
+    fake_now = [0.0]
 
-        # We honoured the timeout (within a generous slack for CI
-        # scheduling jitter).
-        assert 0.4 < elapsed < 1.5
+    def fake_monotonic() -> float:
+        return fake_now[0]
 
-        err = exc_info.value
-        assert err.timeout == pytest.approx(0.5)
-        assert err.lock_path == lock_path_for("alice", "ml")
-    finally:
-        holder.join(timeout=5)
-        if holder.is_alive():
-            holder.terminate()
-            holder.join()
+    def fake_sleep(seconds: float) -> None:
+        fake_now[0] += seconds
+
+    monkeypatch.setattr(_lock_mod.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(_lock_mod.time, "sleep", fake_sleep)
+
+    # Force every flock attempt to claim contention so the polling loop
+    # always falls through to the deadline check.
+    def always_busy(_fd: int, _op: int) -> None:
+        raise OSError(errno.EWOULDBLOCK, "Resource temporarily unavailable")
+
+    monkeypatch.setattr(_lock_mod.fcntl, "flock", always_busy)
+
+    timeout = 0.5
+    poll_interval = 0.1
+
+    with pytest.raises(SyncLockTimeoutError) as exc_info:
+        with acquire_sync_lock(
+            "alice", "ml", timeout=timeout, poll_interval=poll_interval
+        ):
+            pytest.fail("should not have acquired contended lock")
+
+    err = exc_info.value
+    assert err.timeout == pytest.approx(timeout)
+    assert err.lock_path == lock_path_for("alice", "ml")
+    # Polled until the deadline crossed: at least ``timeout`` worth of
+    # virtual time elapsed before SyncLockTimeoutError fired.
+    assert fake_now[0] >= timeout
 
 
 def test_acquire_after_holder_exits(tmp_path: Path) -> None:

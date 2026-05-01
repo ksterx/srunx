@@ -587,7 +587,12 @@ def apply_migrations(conn: sqlite3.Connection) -> list[str]:
     from sibling tables. The pragma is always restored in a ``finally``
     block.
 
-    Returns the list of migration names that were applied in this call.
+    Returns the list of migration names that were **actually applied by
+    this call**. If a peer beat us inside the IMMEDIATE write lock, the
+    helper signals that via ``False`` and the name is omitted from the
+    return value — so the return matches reality (cf. the
+    ``test_apply_migrations_no_double_apply_under_pre_check_race``
+    regression test).
 
     Concurrency safety: the ``applied`` set is re-read **after**
     acquiring the IMMEDIATE write lock (for TX-wrapped migrations) or
@@ -606,16 +611,32 @@ def apply_migrations(conn: sqlite3.Connection) -> list[str]:
             continue
         logger.info("Applying migration %s (v%d)", mig.name, mig.version)
         if mig.requires_fk_off:
-            _apply_fk_off_migration(conn, mig)
+            applied = _apply_fk_off_migration(conn, mig)
         else:
-            _apply_tx_migration(conn, mig)
-        newly_applied.append(mig.name)
+            applied = _apply_tx_migration(conn, mig)
+        if applied:
+            newly_applied.append(mig.name)
 
     return newly_applied
 
 
-def _apply_tx_migration(conn: sqlite3.Connection, mig: Migration) -> None:
-    """Apply a migration inside a single BEGIN IMMEDIATE transaction."""
+def _apply_tx_migration(conn: sqlite3.Connection, mig: Migration) -> bool:
+    """Apply a migration inside a single BEGIN IMMEDIATE transaction.
+
+    Returns ``True`` if this call applied the migration, ``False`` if a
+    peer applied it first (the recheck inside the IMMEDIATE write lock
+    saw the migration was already done).
+
+    DDL statements are issued one-by-one via
+    :func:`_split_sql_statements` rather than
+    :meth:`sqlite3.Connection.executescript` because ``executescript``
+    issues an implicit ``COMMIT`` at the start of its run, which would
+    release our ``BEGIN IMMEDIATE`` and create a race window where a
+    peer waiting on the lock can enter and re-attempt the same DDL
+    before we ``INSERT`` into ``schema_version``. Holding the IMMEDIATE
+    continuously until the schema-version row is committed closes that
+    window.
+    """
     try:
         conn.execute("BEGIN IMMEDIATE")
         # Re-check inside the write lock. If a peer has applied the
@@ -623,8 +644,9 @@ def _apply_tx_migration(conn: sqlite3.Connection, mig: Migration) -> None:
         # just acquired, skip the DDL to avoid duplicate CREATE TABLE.
         if mig.name in _applied_names(conn):
             conn.rollback()
-            return
-        conn.executescript(mig.sql)
+            return False
+        for statement in _split_sql_statements(mig.sql):
+            conn.execute(statement)
         # v1_initial creates schema_version itself; the IF NOT EXISTS
         # guard earlier ensures the insert below always succeeds.
         conn.execute(
@@ -632,6 +654,7 @@ def _apply_tx_migration(conn: sqlite3.Connection, mig: Migration) -> None:
             (mig.version, mig.name, _now_iso()),
         )
         conn.commit()
+        return True
     except Exception:
         conn.rollback()
         logger.error("Migration %s failed; rolled back", mig.name)
@@ -677,8 +700,11 @@ def _split_sql_statements(sql: str) -> list[str]:
     return statements
 
 
-def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> None:
+def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> bool:
     """Apply a table-rebuild migration atomically with foreign_keys OFF.
+
+    Returns ``True`` if this call applied the migration, ``False`` if a
+    peer applied it first.
 
     ``PRAGMA foreign_keys`` is a no-op inside an active transaction in
     SQLite, so the pragma is toggled in autocommit mode *outside* the
@@ -701,7 +727,7 @@ def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> None:
     # Re-check right before the pragma toggle; if a concurrent caller
     # applied this migration between our original check and here, skip.
     if mig.name in _applied_names(conn):
-        return
+        return False
 
     try:
         conn.execute("PRAGMA foreign_keys = OFF")
@@ -713,7 +739,7 @@ def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> None:
                 # and the BEGIN we just acquired.
                 if mig.name in _applied_names(conn):
                     conn.rollback()
-                    return
+                    return False
                 for statement in _split_sql_statements(mig.sql):
                     conn.execute(statement)
                 conn.execute(
@@ -722,6 +748,7 @@ def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> None:
                     (mig.version, mig.name, _now_iso()),
                 )
                 conn.commit()
+                return True
             except BaseException:
                 conn.rollback()
                 raise
@@ -737,7 +764,7 @@ def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> None:
                 "Migration %s already applied by concurrent caller; skipping",
                 mig.name,
             )
-            return
+            return False
         logger.error("Migration %s failed", mig.name)
         raise
     except Exception:

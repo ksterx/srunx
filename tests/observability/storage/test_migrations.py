@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -43,54 +44,89 @@ def test_apply_migrations_is_idempotent(tmp_path: Path) -> None:
     assert count == 1
 
 
-@pytest.mark.flaky(reruns=3, reruns_delay=1)
-def test_apply_migrations_concurrent_callers_do_not_duplicate(
+def test_apply_migrations_no_double_apply_under_pre_check_race(
     tmp_path: Path,
 ) -> None:
-    # Tracked in #196 — under full-suite CPU contention the schema-version
-    # check race occasionally surfaces "table workflow_runs already exists"
-    # before the IMMEDIATE-transaction guard kicks in. Always passes in
-    # isolation; reruns absorb the rare CI hit until #196's deterministic
-    # rewrite lands.
-    """Regression: two threads racing on a cold DB.
+    """Regression: two callers passing the pre-check before either holds
+    the IMMEDIATE write lock must not both apply the same migration.
 
-    Before the fix, `applied_names` was read outside the IMMEDIATE
-    lock; both racers saw an empty set, one created the tables, the
-    other then tried `CREATE TABLE` on tables that already existed
-    (SCHEMA_V1 uses bare CREATE TABLE for most of the domain tables).
+    The race we care about: caller A passes the outside-lock pre-check
+    in :func:`apply_migrations` (``if mig.name in _applied_names(conn):
+    continue``), then before A reaches its ``BEGIN IMMEDIATE``, peer B
+    runs ``apply_migrations`` to completion on its own connection. A's
+    ``BEGIN IMMEDIATE`` then serialises *after* B's commit, and A's
+    recheck inside the lock must see ``v1_initial`` already in
+    ``schema_version`` and roll back without re-running any DDL.
 
-    The fix re-reads `applied_names` *inside* the transaction; the
-    loser's re-check sees `v1_initial` already applied and skips the
-    DDL. This test runs two real threads against the same DB file —
-    each with its own connection — and asserts neither raises AND
-    `schema_version` has exactly one `v1_initial` row.
+    Forcing this race deterministically: we drive A from a custom
+    :class:`sqlite3.Connection` subclass that intercepts the first
+    ``BEGIN IMMEDIATE`` on A's connection, runs B's
+    ``apply_migrations`` to completion at that exact point, and then
+    lets A continue. No threads, no barriers, no ``time.sleep`` — the
+    interleaving is structurally enforced.
+
+    Production-side, the closing of the race window depends on
+    :func:`_apply_tx_migration` running its DDL via
+    :func:`_split_sql_statements` rather than
+    :meth:`sqlite3.Connection.executescript`. The latter issues an
+    implicit ``COMMIT`` that would release the IMMEDIATE before the
+    ``schema_version`` row is INSERTed, re-opening the very window
+    this test guards. If ``_apply_tx_migration`` ever switches back to
+    ``executescript``, this test fails with a duplicate ``CREATE TABLE``
+    error.
     """
-    import threading
+    import sqlite3
 
-    db = tmp_path / "srunx.observability.storage"
-    errors: list[BaseException] = []
-    barrier = threading.Barrier(2)
+    db = tmp_path / "srunx.db"
 
-    def apply_once() -> None:
-        try:
-            barrier.wait(timeout=5)
-            conn = open_connection(db)
-            try:
-                apply_migrations(conn)
-            finally:
-                conn.close()
-        except BaseException as exc:  # noqa: BLE001
-            errors.append(exc)
+    # Connection B: vanilla connection that B will use to race ahead.
+    conn_b = sqlite3.connect(str(db), isolation_level=None, check_same_thread=False)
 
-    threads = [threading.Thread(target=apply_once) for _ in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=10)
+    # Connection A factory: trigger conn_b's apply_migrations inside the
+    # very first BEGIN IMMEDIATE that A issues.
+    class _RaceTriggerConnection(sqlite3.Connection):
+        _peer_already_ran = False
 
-    assert not errors, f"concurrent migration raised: {[repr(e) for e in errors]}"
+        def execute(self, sql: str, parameters: Any = ()) -> sqlite3.Cursor:
+            if (
+                not _RaceTriggerConnection._peer_already_ran
+                and sql.lstrip().upper().startswith("BEGIN IMMEDIATE")
+            ):
+                # First time A is about to take the write lock: let B
+                # finish first. A's actual BEGIN IMMEDIATE below
+                # serialises naturally (sqlite blocks the second
+                # BEGIN IMMEDIATE until the first COMMIT releases it).
+                _RaceTriggerConnection._peer_already_ran = True
+                apply_migrations(conn_b)
+            return super().execute(sql, parameters)
 
-    verify = open_connection(db)
+    conn_a = sqlite3.connect(
+        str(db),
+        isolation_level=None,
+        check_same_thread=False,
+        factory=_RaceTriggerConnection,
+    )
+
+    try:
+        applied_by_a = apply_migrations(conn_a)
+    finally:
+        conn_a.close()
+        conn_b.close()
+
+    # A's pre-check passed (cold DB), B raced ahead and committed
+    # v1_initial, then A's BEGIN IMMEDIATE acquired the lock and the
+    # recheck inside the lock saw v1_initial already applied →
+    # rollback, no DDL replay, no duplicate row. ``apply_migrations``
+    # now reports "what was actually applied by this call" (the
+    # outer-loop append is gated on the helper's bool return), so A's
+    # return value is empty.
+    assert applied_by_a == [], (
+        f"A reported applying migrations ({applied_by_a!r}) but B raced "
+        "ahead — A's recheck inside BEGIN IMMEDIATE should have rolled "
+        "back."
+    )
+
+    verify = sqlite3.connect(str(db))
     try:
         count = verify.execute(
             "SELECT COUNT(*) FROM schema_version WHERE name = 'v1_initial'"
