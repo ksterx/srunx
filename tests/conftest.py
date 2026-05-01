@@ -28,6 +28,47 @@ def _disable_current_profile_fallback(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_xdg_config_home(tmp_path_factory, monkeypatch):
+    """Block the developer's ``~/.config/srunx/config.json`` from leaking
+    into tests.
+
+    ``srunx.common.config`` resolves the user-wide config file under
+    ``$XDG_CONFIG_HOME/srunx/config.json``, falling back to
+    ``~/.config/srunx/config.json``. A developer who has set custom
+    defaults there (e.g. ``nodes=2`` / ``log_dir='custom_logs'`` /
+    ``partition='gpu'``) would see those values bleed into tests that
+    exercise :class:`SrunxConfig` or :func:`get_config`. Redirecting
+    ``XDG_CONFIG_HOME`` to a session-tmp dir guarantees a pristine
+    config tree for every test, regardless of host machine.
+    """
+    fake_xdg = tmp_path_factory.mktemp("xdg")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_xdg))
+
+
+@pytest.fixture(autouse=True)
+def _stable_terminal_output(monkeypatch):
+    """Stabilise Typer/Rich CLI output so substring assertions in
+    help-text tests are deterministic regardless of host environment.
+
+    Two coordinated env vars:
+
+    - ``COLUMNS=200`` — wide enough that Rich does not wrap any
+      single-line option description across multiple ``│``-separated
+      table rows. Without this, CI runners (default ~75 cols) split
+      ``"Start execution from this job"`` across lines and break a
+      contiguous substring match.
+    - ``NO_COLOR=1`` — disables Rich's syntax highlighting on option
+      flags. Without this, Rich emits ``\\x1b[1;36m-\\x1b[0m\\x1b[1;36m-from\\x1b[0m``
+      for ``--from``, splitting the token across reset+cyan ANSI
+      sequences so even ``"--from" in result.stdout`` fails. The
+      ``NO_COLOR`` convention (https://no-color.org) is honoured by
+      Rich and Click.
+    """
+    monkeypatch.setenv("COLUMNS", "200")
+    monkeypatch.setenv("NO_COLOR", "1")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_legacy_history_db(tmp_path_factory, monkeypatch):
     """Make sure no test can delete the user's real ``~/.srunx/history.db``.
 
