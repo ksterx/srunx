@@ -1,10 +1,8 @@
-"""MCP integration tests for the sweep wiring.
+"""Tests for srunx.mcp.tools.workflows.
 
-Covers:
-- ``run_workflow(yaml_path, args={...})`` merges args_override.
-- ``run_workflow(yaml_path, sweep={...})`` routes to the orchestrator.
-- ``python:`` rejection in both args and sweep.matrix.
-- Existing kwarg-less calls stay compatible.
+Covers all five workflow tools (``create_workflow`` / ``validate_workflow``
+/ ``run_workflow`` / ``list_workflows`` / ``get_workflow``) plus the
+sweep + mount-routing integration paths through ``run_workflow``.
 """
 
 from __future__ import annotations
@@ -14,9 +12,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-import yaml  # type: ignore
+import yaml
 
-from srunx.mcp.server import run_workflow
+from srunx.mcp.tools.workflows import (
+    create_workflow,
+    list_workflows,
+    run_workflow,
+    validate_workflow,
+)
 
 
 @pytest.fixture
@@ -54,7 +57,203 @@ class _FakeSweepRun:
     cells_cancelled = 0
 
 
-class TestMCPArgsOverride:
+class TestValidateWorkflow:
+    """Test validate_workflow tool."""
+
+    def test_valid_workflow(self, tmp_path):
+        workflow = {
+            "name": "test_pipeline",
+            "jobs": [
+                {"name": "preprocess", "command": ["python", "preprocess.py"]},
+                {
+                    "name": "train",
+                    "command": ["python", "train.py"],
+                    "depends_on": ["preprocess"],
+                },
+            ],
+        }
+        yaml_file = tmp_path / "workflow.yaml"
+        with open(yaml_file, "w") as f:
+            yaml.dump(workflow, f)
+
+        result = validate_workflow(str(yaml_file))
+        assert result["success"] is True
+        assert result["valid"] is True
+        assert result["name"] == "test_pipeline"
+        assert result["job_count"] == 2
+
+    def test_nonexistent_file(self):
+        result = validate_workflow("/nonexistent/path/workflow.yaml")
+        assert result["success"] is False
+
+    def test_invalid_yaml_structure(self, tmp_path):
+        yaml_file = tmp_path / "bad.yaml"
+        yaml_file.write_text("not: a: valid: workflow\n")
+
+        result = validate_workflow(str(yaml_file))
+        assert result["success"] is False
+
+    def test_circular_dependency(self, tmp_path):
+        workflow = {
+            "name": "circular",
+            "jobs": [
+                {
+                    "name": "a",
+                    "command": ["echo", "a"],
+                    "depends_on": ["b"],
+                },
+                {
+                    "name": "b",
+                    "command": ["echo", "b"],
+                    "depends_on": ["a"],
+                },
+            ],
+        }
+        yaml_file = tmp_path / "circular.yaml"
+        with open(yaml_file, "w") as f:
+            yaml.dump(workflow, f)
+
+        result = validate_workflow(str(yaml_file))
+        assert result["success"] is False
+
+
+class TestCreateWorkflow:
+    """Test create_workflow tool."""
+
+    def test_create_basic_workflow(self, tmp_path):
+        output = str(tmp_path / "out.yaml")
+        result = create_workflow(
+            name="my_flow",
+            jobs=[
+                {"name": "step1", "command": ["echo", "hello"]},
+                {
+                    "name": "step2",
+                    "command": ["echo", "world"],
+                    "depends_on": ["step1"],
+                },
+            ],
+            output_path=output,
+        )
+        assert result["success"] is True
+        assert result["name"] == "my_flow"
+        assert result["job_count"] == 2
+
+        with open(output) as f:
+            data = yaml.safe_load(f)
+        assert data["name"] == "my_flow"
+        assert len(data["jobs"]) == 2
+
+    def test_python_arg_rejected(self, tmp_path):
+        output = str(tmp_path / "out.yaml")
+        result = create_workflow(
+            name="my_flow",
+            jobs=[{"name": "step1", "command": ["echo", "hello"]}],
+            output_path=output,
+            args={"bad_var": "python: import os; os.system('rm -rf /')"},
+        )
+        assert result["success"] is False
+        assert "python:" in result["error"].lower()
+
+    def test_python_arg_rejected_case_insensitive(self, tmp_path):
+        output = str(tmp_path / "out.yaml")
+        result = create_workflow(
+            name="my_flow",
+            jobs=[{"name": "step1", "command": ["echo", "hello"]}],
+            output_path=output,
+            args={"bad_var": "Python: some expression"},
+        )
+        assert result["success"] is False
+        assert "python:" in result["error"].lower()
+
+    def test_missing_name_in_job(self, tmp_path):
+        output = str(tmp_path / "out.yaml")
+        result = create_workflow(
+            name="my_flow",
+            jobs=[{"command": ["echo", "hello"]}],
+            output_path=output,
+            args={"some_var": "value"},
+        )
+        assert result["success"] is False
+        assert "name" in result["error"].lower()
+
+    def test_missing_command_in_job(self, tmp_path):
+        output = str(tmp_path / "out.yaml")
+        result = create_workflow(
+            name="my_flow",
+            jobs=[{"name": "step1"}],
+            output_path=output,
+            args={"some_var": "value"},
+        )
+        assert result["success"] is False
+        assert (
+            "command" in result["error"].lower()
+            or "script_path" in result["error"].lower()
+        )
+
+    def test_with_args_and_default_project(self, tmp_path):
+        output = str(tmp_path / "out.yaml")
+        result = create_workflow(
+            name="templated_flow",
+            jobs=[
+                {"name": "step1", "command": ["echo", "{{ base_dir }}"]},
+            ],
+            output_path=output,
+            args={"base_dir": "/data/exp"},
+            default_project="myproject",
+        )
+        assert result["success"] is True
+
+        with open(output) as f:
+            data = yaml.safe_load(f)
+        assert data["args"]["base_dir"] == "/data/exp"
+        assert data["default_project"] == "myproject"
+
+
+class TestListWorkflows:
+    """Test list_workflows tool."""
+
+    def test_finds_workflows(self, tmp_path):
+        workflow = {"name": "my_flow", "jobs": [{"name": "step1", "command": ["echo"]}]}
+        wf_file = tmp_path / "flow.yaml"
+        with open(wf_file, "w") as f:
+            yaml.dump(workflow, f)
+
+        other_file = tmp_path / "config.yaml"
+        with open(other_file, "w") as f:
+            yaml.dump({"key": "value"}, f)
+
+        result = list_workflows(directory=str(tmp_path))
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["workflows"][0]["name"] == "my_flow"
+
+    def test_skips_hidden_dirs(self, tmp_path):
+        hidden = tmp_path / ".hidden"
+        hidden.mkdir()
+        wf_file = hidden / "flow.yaml"
+        with open(wf_file, "w") as f:
+            yaml.dump(
+                {"name": "hidden", "jobs": [{"name": "a", "command": ["echo"]}]}, f
+            )
+
+        result = list_workflows(directory=str(tmp_path))
+        assert result["success"] is True
+        assert result["count"] == 0
+
+    def test_empty_directory(self, tmp_path):
+        result = list_workflows(directory=str(tmp_path))
+        assert result["success"] is True
+        assert result["count"] == 0
+
+    def test_nonexistent_directory(self):
+        result = list_workflows(directory="/nonexistent/dir/abc123")
+        assert result["success"] is True
+        assert result["count"] == 0
+
+
+class TestRunWorkflowArgsOverride:
+    """Test run_workflow args=... merge behaviour."""
+
     def test_args_override_reaches_runner(
         self, tmp_path: Path, isolated_db: Path
     ) -> None:
@@ -108,7 +307,9 @@ class TestMCPArgsOverride:
         assert "python:" in result["error"]
 
 
-class TestMCPSweep:
+class TestRunWorkflowSweep:
+    """Test run_workflow sweep dispatch."""
+
     def test_sweep_dispatch_returns_sweep_run_id(
         self, tmp_path: Path, isolated_db: Path
     ) -> None:
@@ -151,7 +352,7 @@ class TestMCPSweep:
         assert "python:" in result["error"]
 
 
-class TestMCPBackwardCompat:
+class TestRunWorkflowBackwardCompat:
     def test_positional_only_call_still_works(
         self, tmp_path: Path, isolated_db: Path
     ) -> None:
@@ -168,7 +369,7 @@ class TestMCPBackwardCompat:
         assert result["success"] is True
 
 
-class TestMCPMountRouting:
+class TestRunWorkflowMountRouting:
     """Phase 5a: ``mount=...`` threads MCP runs through the SSH adapter."""
 
     def test_mount_without_profile_returns_error(
@@ -255,16 +456,14 @@ class TestMCPMountRouting:
 
         assert result["success"] is True, result
         assert result["sweep_run_id"] == 77
-        adapter_init.assert_called_once()  # adapter built from the profile
-        pool_cls.assert_called_once()  # pool built once
-        # Orchestrator received the pool's lease + a populated render context.
+        adapter_init.assert_called_once()
+        pool_cls.assert_called_once()
         orch_kwargs = orch_cls.call_args.kwargs
         assert orch_kwargs["executor_factory"] is mock_pool.lease
         ctx = orch_kwargs["submission_context"]
         assert ctx is not None
         assert ctx.mount_name == "cookbook2"
         assert ctx.default_work_dir == "/home/remote/cookbook2"
-        # Pool is closed after the orchestrator returns (or raises).
         mock_pool.close.assert_called_once()
 
     def test_mount_routes_non_sweep_through_pool(
@@ -304,14 +503,12 @@ class TestMCPMountRouting:
             mock_runner = MagicMock()
             mock_runner.workflow.name = "mcp_wf"
             mock_runner.run.return_value = {}
-            # Two from_yaml calls: ShellJob guard (bare) + run (with factory).
             from_yaml.return_value = mock_runner
 
             result = run_workflow(str(yaml_path), mount="cookbook2")
 
         assert result["success"] is True, result
         pool_cls.assert_called_once()
-        # Second from_yaml call receives the executor_factory + context.
         run_call_kwargs = from_yaml.call_args_list[-1].kwargs
         assert run_call_kwargs["executor_factory"] is mock_pool.lease
         assert run_call_kwargs["submission_context"].mount_name == "cookbook2"
@@ -321,10 +518,9 @@ class TestMCPMountRouting:
         self, tmp_path: Path, isolated_db: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """ShellJob ``script_path`` outside mount local root → error."""
-        # Write a ShellJob workflow whose script_path is ../escape.sh
         mount_root = tmp_path / "proj"
         mount_root.mkdir()
-        escape = tmp_path / "escape.sh"  # NOT under mount_root
+        escape = tmp_path / "escape.sh"
         escape.write_text("#!/bin/bash\necho hi\n")
         wf = {
             "name": "shell_wf",
