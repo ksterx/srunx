@@ -6,7 +6,7 @@ aggregated those rows into a GPU-only summary (now moved to
 ``srunx gpus``). This module provides the raw row model so the CLI
 can render the same information a SLURM user expects.
 
-Data flow mirrors :mod:`srunx.slurm.ssh._run_slurm_cmd` vs
+Data flow mirrors :mod:`srunx.slurm.clients.ssh._run_slurm_cmd` vs
 :mod:`subprocess.run` dispatch: the parser is transport-agnostic, and
 the two fetchers wrap whichever command runner fits the transport.
 """
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from srunx.slurm.ssh import SlurmSSHAdapter
+    from srunx.slurm.clients.ssh import SlurmSSHClient
 
 
 # ``|`` delimiter: sinfo field values never contain it, and it avoids
@@ -119,17 +119,20 @@ def fetch_sinfo_rows_local(
 
 
 def fetch_sinfo_rows_ssh(
-    adapter: SlurmSSHAdapter, partition: str | None = None
+    adapter: SlurmSSHClient, partition: str | None = None
 ) -> list[PartitionRow]:
     """Run ``sinfo`` on the remote cluster via the SSH adapter.
 
     Delegates to the same ``_run_slurm_cmd`` path the rest of
-    :mod:`srunx.slurm.ssh` uses so login-shell env, SLURM PATH
-    resolution, and the adapter's I/O lock all apply uniformly.
+    :mod:`srunx.slurm.clients.ssh` uses so login-shell env, SLURM PATH
+    resolution, and the client's I/O lock all apply uniformly.
     """
     # Import locally so the CLI doesn't pay the paramiko import cost
     # on the local subprocess path.
-    from srunx.slurm.ssh import _run_slurm_cmd, _validate_identifier
+    from srunx.slurm.clients._ssh_helpers import (
+        _run_slurm_cmd,
+        _validate_identifier,
+    )
 
     cmd = f"sinfo -o '{_SINFO_FORMAT}' --noheader"
     if partition:

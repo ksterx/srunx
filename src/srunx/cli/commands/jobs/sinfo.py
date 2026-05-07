@@ -82,13 +82,13 @@ def sinfo(
         with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
             rows: list[PartitionRow]
             if rt.transport_type == "ssh":
-                # Cast Protocol → concrete ``SlurmSSHAdapter`` so we
+                # Cast Protocol → concrete ``SlurmSSHClient`` so we
                 # can reuse the adapter-scoped ``_run_slurm_cmd`` path
                 # (login-shell env, SLURM PATH, I/O lock). The
                 # Protocol deliberately doesn't expose SSH primitives.
-                from srunx.slurm.ssh import SlurmSSHAdapter
+                from srunx.slurm.clients.ssh import SlurmSSHClient
 
-                adapter = cast(SlurmSSHAdapter, rt.job_ops)
+                adapter = cast(SlurmSSHClient, rt.job_ops)
                 rows = fetch_sinfo_rows_ssh(adapter, partition)
             else:
                 rows = fetch_sinfo_rows_local(partition)

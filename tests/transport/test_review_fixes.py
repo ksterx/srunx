@@ -364,7 +364,7 @@ class TestV5MigrationPreservesNonJobWatches:
 
 
 # ---------------------------------------------------------------------------
-# Fix #6: SlurmSSHAdapter.status() returns a non-refreshing BaseJob
+# Fix #6: SlurmSSHClient.status() returns a non-refreshing BaseJob
 # ---------------------------------------------------------------------------
 
 
@@ -374,10 +374,10 @@ class TestStatusSnapshotDoesNotRefresh:
     def test_status_returns_parked_refresh_clock(self) -> None:
         from unittest.mock import patch as _patch
 
-        from srunx.slurm.ssh import SlurmSSHAdapter
+        from srunx.slurm.clients.ssh import SlurmSSHClient
 
         # Build an adapter bypassing __init__ so we don't need real SSH.
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         adapter._io_lock = __import__("threading").RLock()
         adapter._client = MagicMock()
         adapter.callbacks = []
@@ -805,7 +805,7 @@ class TestPoolOrphanProtection:
         with (
             patch("srunx.ssh.core.config.ConfigManager", return_value=fake_cm),
             patch(
-                "srunx.slurm.ssh.SlurmSSHAdapter",
+                "srunx.slurm.clients.ssh.SlurmSSHClient",
                 return_value=MagicMock(connection_spec=MagicMock()),
             ),
             patch(

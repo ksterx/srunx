@@ -57,9 +57,9 @@ def gpus(
         with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
             source: ResourceSource | None = None
             if rt.transport_type == "ssh":
-                from srunx.slurm.ssh import SlurmSSHAdapter
+                from srunx.slurm.clients.ssh import SlurmSSHClient
 
-                adapter = cast(SlurmSSHAdapter, rt.job_ops)
+                adapter = cast(SlurmSSHClient, rt.job_ops)
                 source = SSHAdapterResourceSource(lambda: adapter)
 
             monitor = ResourceMonitor(min_gpus=0, partition=partition, source=source)

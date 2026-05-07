@@ -28,7 +28,7 @@ from srunx.observability.notifications.attach import (
     UnsupportedPresetError,
     attach_job_notification,
 )
-from srunx.slurm.ssh import SlurmSSHAdapter
+from srunx.slurm.clients.ssh import SlurmSSHClient
 
 from ..deps import get_adapter, get_db_conn, get_watch_repo
 
@@ -97,7 +97,7 @@ async def get_watch(
 async def create_job_watch(
     body: CreateJobWatchRequest,
     conn: sqlite3.Connection = Depends(get_db_conn),
-    adapter: SlurmSSHAdapter = Depends(get_adapter),
+    adapter: SlurmSSHClient = Depends(get_adapter),
 ) -> dict[str, Any]:
     """Attach a notification watch + subscription to an existing job.
 

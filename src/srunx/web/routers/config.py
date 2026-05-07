@@ -201,7 +201,7 @@ async def connect_ssh_profile(name: str) -> SSHConnectResponse:
     """Switch the live SSH connection to a different profile."""
     import anyio
 
-    from srunx.slurm.ssh import SlurmSSHAdapter
+    from srunx.slurm.clients.ssh import SlurmSSHClient
 
     from ..deps import swap_adapter
 
@@ -211,7 +211,7 @@ async def connect_ssh_profile(name: str) -> SSHConnectResponse:
         raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
 
     try:
-        new_adapter = SlurmSSHAdapter(profile_name=name)
+        new_adapter = SlurmSSHClient(profile_name=name)
         connected = await anyio.to_thread.run_sync(new_adapter.connect)
     except Exception as e:
         return SSHConnectResponse(
@@ -268,16 +268,16 @@ async def test_ssh_profile(name: str) -> SSHTestResult:
     """Test SSH connectivity and SLURM availability for a profile without switching."""
     import anyio
 
-    from srunx.slurm.ssh import SlurmSSHAdapter
+    from srunx.slurm.clients.ssh import SlurmSSHClient
 
     cm = _get_config_manager()
     profile = cm.get_profile(name)
     if not profile:
         raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
 
-    temp_adapter: SlurmSSHAdapter | None = None
+    temp_adapter: SlurmSSHClient | None = None
     try:
-        temp_adapter = SlurmSSHAdapter(profile_name=name)
+        temp_adapter = SlurmSSHClient(profile_name=name)
         result = await anyio.to_thread.run_sync(temp_adapter._client.test_connection)
     except Exception as e:
         return SSHTestResult(

@@ -189,7 +189,7 @@ def watch_jobs(
         # explicitly so JobMonitor doesn't fall back to ``Slurm()`` when
         # --profile selects an SSH transport. ``JobMonitor.client`` is
         # typed ``Slurm | None`` for historical reasons, but both
-        # ``Slurm`` and ``SlurmSSHAdapter`` satisfy the subset of methods
+        # ``Slurm`` and ``SlurmSSHClient`` satisfy the subset of methods
         # (``retrieve``) the monitor actually uses; the cast keeps mypy
         # happy without forcing a JobMonitor refactor that belongs to a
         # later phase.
@@ -429,7 +429,7 @@ def watch_cluster(
             # (see _get_job_stats / _get_user_stats), which is part of
             # JobOperations. ``rt.job_ops`` is the CLI-facing
             # handle and is either a local ``Slurm`` or an
-            # ``SlurmSSHAdapter``; the ``cast`` narrows the static type
+            # ``SlurmSSHClient``; the ``cast`` narrows the static type
             # to match ScheduledReporter's concrete-``Slurm`` signature
             # without changing that class (its refactor belongs to a
             # later transport phase).

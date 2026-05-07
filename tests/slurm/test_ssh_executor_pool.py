@@ -23,7 +23,7 @@ import pytest
 from srunx.domain import Job, JobStatus
 from srunx.runtime.rendering import render_job_script
 from srunx.runtime.templates import get_template_path
-from srunx.slurm.ssh import SlurmSSHAdapter, SlurmSSHAdapterSpec
+from srunx.slurm.clients.ssh import SlurmSSHClient, SlurmSSHClientSpec
 from srunx.slurm.ssh_executor import (
     SlurmSSHExecutorPool,
     SSHWorkflowJobExecutor,
@@ -32,8 +32,8 @@ from srunx.slurm.ssh_executor import (
 # --- Helpers ---------------------------------------------------------
 
 
-def _make_spec() -> SlurmSSHAdapterSpec:
-    return SlurmSSHAdapterSpec(
+def _make_spec() -> SlurmSSHClientSpec:
+    return SlurmSSHClientSpec(
         profile_name=None,
         hostname="testhost.example.com",
         username="tester",
@@ -45,9 +45,9 @@ def _make_spec() -> SlurmSSHAdapterSpec:
     )
 
 
-def _bare_adapter(*, connected: bool = True) -> SlurmSSHAdapter:
+def _bare_adapter(*, connected: bool = True) -> SlurmSSHClient:
     """Build a minimal adapter bypassing ``__init__``, safe for unit tests."""
-    adapter = object.__new__(SlurmSSHAdapter)
+    adapter = object.__new__(SlurmSSHClient)
     adapter._io_lock = threading.RLock()
     adapter._client = MagicMock()
     adapter.callbacks = []
@@ -81,9 +81,9 @@ class TestPoolBasicLifecycle:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Sequential leases reuse the same adapter (no session thrash)."""
-        built: list[SlurmSSHAdapter] = []
+        built: list[SlurmSSHClient] = []
 
-        def fake_build(self: SlurmSSHExecutorPool) -> SlurmSSHAdapter:
+        def fake_build(self: SlurmSSHExecutorPool) -> SlurmSSHClient:
             a = _bare_adapter()
             built.append(a)
             return a
@@ -109,7 +109,7 @@ class TestPoolBasicLifecycle:
         """After ``close``, the next pool must build fresh adapters."""
         build_count = [0]
 
-        def fake_build(self: SlurmSSHExecutorPool) -> SlurmSSHAdapter:
+        def fake_build(self: SlurmSSHExecutorPool) -> SlurmSSHClient:
             build_count[0] += 1
             return _bare_adapter()
 
@@ -202,9 +202,9 @@ class TestPoolConcurrency:
         check fails, then asserts the next lease mints a fresh adapter
         and ``_created`` bookkeeping stays within the pool's cap.
         """
-        built: list[SlurmSSHAdapter] = []
+        built: list[SlurmSSHClient] = []
 
-        def builder(self: SlurmSSHExecutorPool) -> SlurmSSHAdapter:
+        def builder(self: SlurmSSHExecutorPool) -> SlurmSSHClient:
             a = _bare_adapter(connected=True)
             built.append(a)
             return a
@@ -256,7 +256,7 @@ class TestPoolConcurrency:
             workflow_run_id: int | None = None,
             submission_context: object = None,
         ) -> Job:
-            # Simulate the real ``SlurmSSHAdapter.run`` wrapping the work
+            # Simulate the real ``SlurmSSHClient.run`` wrapping the work
             # inside ``self._io_lock``.
             with shared._io_lock:
                 with lock_probe:
@@ -318,7 +318,7 @@ class TestRenderParity:
         )
         expected = Path(local_script).read_text()
 
-        # SSH render: mock out every SSH I/O call in ``SlurmSSHAdapter.run``
+        # SSH render: mock out every SSH I/O call in ``SlurmSSHClient.run``
         # and capture the script_content passed to submit_sbatch_job.
         adapter = _bare_adapter()
 
@@ -338,11 +338,11 @@ class TestRenderParity:
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
         )
         monkeypatch.setattr(
-            "srunx.slurm.ssh.SlurmSSHAdapter._record_job_submission",
+            "srunx.slurm.clients.ssh.SlurmSSHClient._record_job_submission",
             staticmethod(lambda *a, **k: None),
         )
         monkeypatch.setattr(
-            "srunx.slurm.ssh.SlurmSSHAdapter._record_completion_safe",
+            "srunx.slurm.clients.ssh.SlurmSSHClient._record_completion_safe",
             staticmethod(lambda *a, **k: None),
         )
 

@@ -274,7 +274,7 @@ class TestMountConfigImmutability:
     """Verify frozen=True + tuple exclude_patterns cannot be mutated.
 
     A frozen MountConfig is required so the SSH adapter's frozen
-    SlurmSSHAdapterSpec genuinely has deep immutability (and stays
+    SlurmSSHClientSpec genuinely has deep immutability (and stays
     hashable end-to-end).
     """
 
@@ -324,7 +324,7 @@ class TestMountConfigImmutability:
             remote="/remote/proj",
             exclude_patterns=["a/", "b/"],
         )
-        # A hashable MountConfig lets SlurmSSHAdapterSpec (frozen dataclass
+        # A hashable MountConfig lets SlurmSSHClientSpec (frozen dataclass
         # containing tuple[MountConfig, ...]) be used as a dict key / set
         # member, which is the whole point of deep immutability.
         assert hash(mount) == hash(mount)

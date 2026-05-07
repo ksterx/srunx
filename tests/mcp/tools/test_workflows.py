@@ -433,10 +433,10 @@ class TestRunWorkflowMountRouting:
         )
         with (
             patch(
-                "srunx.slurm.ssh.SlurmSSHAdapter.__init__", return_value=None
+                "srunx.slurm.clients.ssh.SlurmSSHClient.__init__", return_value=None
             ) as adapter_init,
             patch(
-                "srunx.slurm.ssh.SlurmSSHAdapter.connection_spec",
+                "srunx.slurm.clients.ssh.SlurmSSHClient.connection_spec",
                 new=MagicMock(),
             ),
             patch("srunx.slurm.ssh_executor.SlurmSSHExecutorPool") as pool_cls,
@@ -488,9 +488,9 @@ class TestRunWorkflowMountRouting:
             lambda self: "pyxis",
         )
         with (
-            patch("srunx.slurm.ssh.SlurmSSHAdapter.__init__", return_value=None),
+            patch("srunx.slurm.clients.ssh.SlurmSSHClient.__init__", return_value=None),
             patch(
-                "srunx.slurm.ssh.SlurmSSHAdapter.connection_spec",
+                "srunx.slurm.clients.ssh.SlurmSSHClient.connection_spec",
                 new=MagicMock(),
             ),
             patch("srunx.slurm.ssh_executor.SlurmSSHExecutorPool") as pool_cls,
@@ -550,7 +550,9 @@ class TestRunWorkflowMountRouting:
             "srunx.ssh.core.config.ConfigManager.get_current_profile_name",
             lambda self: "pyxis",
         )
-        with patch("srunx.slurm.ssh.SlurmSSHAdapter.__init__", return_value=None):
+        with patch(
+            "srunx.slurm.clients.ssh.SlurmSSHClient.__init__", return_value=None
+        ):
             result = run_workflow(str(yaml_path), mount="cookbook2")
 
         assert result["success"] is False

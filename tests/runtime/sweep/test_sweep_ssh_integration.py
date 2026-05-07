@@ -421,11 +421,11 @@ class TestWebDispatchPoolLifecycle:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from srunx.slurm.ssh import SlurmSSHAdapterSpec
+        from srunx.slurm.clients.ssh import SlurmSSHClientSpec
         from srunx.web.routers import workflows as wf_mod
 
         yaml_path = _write_wf(tmp_path)
-        spec = SlurmSSHAdapterSpec(
+        spec = SlurmSSHClientSpec(
             profile_name=None,
             hostname="fake.example.com",
             username="tester",
@@ -582,11 +582,11 @@ class TestWebDispatchPoolLifecycle:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``max_parallel=20`` → pool size clamped to 8."""
-        from srunx.slurm.ssh import SlurmSSHAdapterSpec
+        from srunx.slurm.clients.ssh import SlurmSSHClientSpec
         from srunx.web.routers import workflows as wf_mod
 
         yaml_path = _write_wf(tmp_path)
-        spec = SlurmSSHAdapterSpec(
+        spec = SlurmSSHClientSpec(
             profile_name=None,
             hostname="fake.example.com",
             username="tester",

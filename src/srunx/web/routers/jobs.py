@@ -22,7 +22,7 @@ from srunx.observability.storage.repositories.subscriptions import (
     SubscriptionRepository,
 )
 from srunx.observability.storage.repositories.watches import WatchRepository
-from srunx.slurm.ssh import SlurmSSHAdapter
+from srunx.slurm.clients.ssh import SlurmSSHClient
 
 from ..deps import get_adapter, get_db_conn
 
@@ -170,7 +170,7 @@ def _record_and_watch(
     job_id: int,
     job_name: str,
     req: JobSubmitRequest,
-    adapter: SlurmSSHAdapter,
+    adapter: SlurmSSHClient,
 ) -> None:
     """Persist the submission record and (optionally) create a notification watch.
 
@@ -306,7 +306,7 @@ def _resolve_in_place_plan(
 
 def _submit_in_place(
     req: JobSubmitRequest,
-    adapter: SlurmSSHAdapter,
+    adapter: SlurmSSHClient,
 ) -> dict[str, Any]:
     """Run script_path mode end-to-end on a worker thread.
 
@@ -384,7 +384,7 @@ def _submit_in_place(
 
 def _submit_via_tmp_upload(
     req: JobSubmitRequest,
-    adapter: SlurmSSHAdapter,
+    adapter: SlurmSSHClient,
 ) -> dict[str, Any]:
     """Legacy script_content path — uploads bytes to ``/tmp/srunx/``.
 
@@ -421,7 +421,7 @@ def _submit_via_tmp_upload(
 @router.post("", status_code=201)
 async def submit_job(
     req: JobSubmitRequest,
-    adapter: SlurmSSHAdapter = Depends(get_adapter),
+    adapter: SlurmSSHClient = Depends(get_adapter),
     conn: sqlite3.Connection = Depends(get_db_conn),
 ) -> dict[str, Any]:
     """Submit a new job to SLURM via SSH.
@@ -491,7 +491,7 @@ async def submit_job(
 
 @router.get("")
 async def list_jobs(
-    adapter: SlurmSSHAdapter = Depends(get_adapter),
+    adapter: SlurmSSHClient = Depends(get_adapter),
 ) -> list[dict[str, Any]]:
     """List all user jobs from SLURM queue via SSH."""
     try:
@@ -503,7 +503,7 @@ async def list_jobs(
 @router.get("/{job_id}")
 async def get_job(
     job_id: int,
-    adapter: SlurmSSHAdapter = Depends(get_adapter),
+    adapter: SlurmSSHClient = Depends(get_adapter),
 ) -> dict[str, Any]:
     """Get a single job's status via SSH."""
     if job_id <= 0:
@@ -519,7 +519,7 @@ async def get_job(
 @router.delete("/{job_id}", status_code=204)
 async def cancel_job(
     job_id: int,
-    adapter: SlurmSSHAdapter = Depends(get_adapter),
+    adapter: SlurmSSHClient = Depends(get_adapter),
 ) -> Response:
     """Cancel a SLURM job via SSH."""
     if job_id <= 0:
@@ -536,7 +536,7 @@ async def get_job_logs(
     job_id: int,
     stdout_offset: int = 0,
     stderr_offset: int = 0,
-    adapter: SlurmSSHAdapter = Depends(get_adapter),
+    adapter: SlurmSSHClient = Depends(get_adapter),
 ) -> dict[str, str | int]:
     """Get stdout/stderr log contents for a job via SSH.
 

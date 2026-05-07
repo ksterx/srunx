@@ -173,7 +173,7 @@ class LocalClient:
         # Lifecycle events fan out through the instance sink (+ optional
         # per-call sink). The default :class:`DBRecorderSink` persists the
         # local-transport triple; SSH submissions take the
-        # ``SlurmSSHAdapter.submit`` path which builds its own sink chain
+        # ``SlurmSSHClient.submit`` path which builds its own sink chain
         # with ``(transport_type='ssh', profile_name=...,
         # scheduler_key='ssh:<profile>')``.
         self._sink.on_submit(
@@ -390,7 +390,7 @@ class LocalClient:
         Pass a username to filter.
 
         Returns: list of :class:`BaseJob` populated with the same
-        field set as the SSH adapter's :meth:`~srunx.slurm.ssh.SlurmSSHAdapter.queue`
+        field set as the SSH adapter's :meth:`~srunx.slurm.clients.ssh.SlurmSSHClient.queue`
         so CLI callers see a consistent shape regardless of transport.
         """
         # Pipe-delimited format — nodelist/reason (%R) can contain

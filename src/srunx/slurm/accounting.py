@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from srunx.slurm.ssh import SlurmSSHAdapter
+    from srunx.slurm.clients.ssh import SlurmSSHClient
 
 
 # The column set is deliberately wider than the default ``sacct``
@@ -188,7 +188,7 @@ def build_sacct_filter_args(
     is bogus, ``sacct`` exits non-zero and the CLI surfaces the
     error as-is.
     """
-    from srunx.slurm.ssh import _validate_identifier
+    from srunx.slurm.clients._ssh_helpers import _validate_identifier
 
     args: list[str] = []
     # ``-a`` and ``-u`` are independent flags in native ``sacct`` — passing
@@ -258,7 +258,7 @@ def fetch_sacct_rows_local(
 
 
 def fetch_sacct_rows_ssh(
-    adapter: SlurmSSHAdapter,
+    adapter: SlurmSSHClient,
     *,
     job_ids: Sequence[int] | None = None,
     user: str | None = None,
@@ -274,7 +274,7 @@ def fetch_sacct_rows_ssh(
     :mod:`srunx.slurm.partitions` so login-shell env + SLURM PATH
     resolution + the adapter's I/O lock all apply uniformly.
     """
-    from srunx.slurm.ssh import _run_slurm_cmd
+    from srunx.slurm.clients._ssh_helpers import _run_slurm_cmd
 
     parts: list[str] = ["sacct", *_SACCT_BASE_FLAGS]
     parts += build_sacct_filter_args(

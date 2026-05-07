@@ -51,7 +51,7 @@ from srunx.runtime.rendering import (
 )
 from srunx.runtime.sweep.state_service import WorkflowRunStateService
 from srunx.runtime.workflow.runner import WorkflowRunner
-from srunx.slurm.ssh import SlurmSSHAdapter
+from srunx.slurm.clients.ssh import SlurmSSHClient
 
 from ..schemas.workflows import WorkflowRunRequest
 from ._submission_common import (
@@ -187,7 +187,7 @@ async def submit_jobs_bfs(
     workflow: Workflow,
     scripts: dict[str, str],
     run_opts: WorkflowRunRequest,
-    adapter: SlurmSSHAdapter,
+    adapter: SlurmSSHClient,
     *,
     conn: sqlite3.Connection,
     run_id: int,
@@ -441,7 +441,7 @@ class WorkflowSubmissionService:
         yaml_path: Path,
         run_opts: WorkflowRunRequest,
         request: Request,
-        adapter: SlurmSSHAdapter,
+        adapter: SlurmSSHClient,
         conn: sqlite3.Connection,
     ) -> dict[str, Any]:
         """Handle the non-sweep branch of ``POST /{name}/run``.

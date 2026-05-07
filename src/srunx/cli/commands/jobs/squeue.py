@@ -238,7 +238,7 @@ def _squeue_json(jobs: list[Any]) -> list[dict[str, Any]]:
     """Serialise a squeue result set to JSON-ready dicts.
 
     Fields match what the Pydantic BaseJob surfaces via
-    ``local.Slurm.queue`` / ``SlurmSSHAdapter.queue`` after the S1
+    ``local.Slurm.queue`` / ``SlurmSSHClient.queue`` after the S1
     refactor — kept separate from the Table builder so ``--format
     json`` isn't affected by column-visibility flags.
     """

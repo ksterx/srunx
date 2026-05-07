@@ -42,7 +42,7 @@ def record_submission_from_job(
     ``transport_type`` / ``profile_name`` / ``scheduler_key`` describe
     where the job was submitted to. Defaults are the local-SLURM triple
     so existing callers (CLI ``srunx submit``, local ``Slurm.submit``)
-    record exactly what they did before. SSH callers (``SlurmSSHAdapter``
+    record exactly what they did before. SSH callers (``SlurmSSHClient``
     on the Web / MCP / future CLI paths) must pass the matching triple;
     :func:`srunx.observability.storage.repositories.jobs._validate_transport_triple` rejects
     mismatches before they reach the DB.

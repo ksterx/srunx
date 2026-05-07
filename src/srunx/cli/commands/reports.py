@@ -248,9 +248,9 @@ def sacct(
         with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
             rows: list[SacctRow]
             if rt.transport_type == "ssh":
-                from srunx.slurm.ssh import SlurmSSHAdapter
+                from srunx.slurm.clients.ssh import SlurmSSHClient
 
-                adapter = cast(SlurmSSHAdapter, rt.job_ops)
+                adapter = cast(SlurmSSHClient, rt.job_ops)
                 rows = fetch_sacct_rows_ssh(
                     adapter,
                     job_ids=job_ids,

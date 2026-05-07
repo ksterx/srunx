@@ -25,15 +25,15 @@ from srunx.observability.storage.repositories.workflow_run_jobs import (
     WorkflowRunJobRepository,
 )
 from srunx.observability.storage.repositories.workflow_runs import WorkflowRunRepository
-from srunx.slurm.ssh import SlurmSSHAdapter
+from srunx.slurm.clients.ssh import SlurmSSHClient
 
 # Thread-safe singleton SSH adapter — connected at startup via lifespan
-_adapter: SlurmSSHAdapter | None = None
+_adapter: SlurmSSHClient | None = None
 _adapter_lock = threading.Lock()
 _active_profile_name: str | None = None
 
 
-def set_adapter(adapter: SlurmSSHAdapter, profile_name: str | None = None) -> None:
+def set_adapter(adapter: SlurmSSHClient, profile_name: str | None = None) -> None:
     global _adapter, _active_profile_name
     with _adapter_lock:
         _adapter = adapter
@@ -41,8 +41,8 @@ def set_adapter(adapter: SlurmSSHAdapter, profile_name: str | None = None) -> No
 
 
 def swap_adapter(
-    new_adapter: SlurmSSHAdapter, profile_name: str | None = None
-) -> SlurmSSHAdapter | None:
+    new_adapter: SlurmSSHClient, profile_name: str | None = None
+) -> SlurmSSHClient | None:
     """Atomically replace the current adapter. Returns the old adapter (caller must disconnect)."""
     global _adapter, _active_profile_name
     with _adapter_lock:
@@ -52,7 +52,7 @@ def swap_adapter(
     return old
 
 
-def get_adapter() -> SlurmSSHAdapter:
+def get_adapter() -> SlurmSSHClient:
     with _adapter_lock:
         adapter = _adapter
     if adapter is None:
@@ -65,7 +65,7 @@ def get_adapter() -> SlurmSSHAdapter:
     return adapter
 
 
-def get_adapter_or_none() -> SlurmSSHAdapter | None:
+def get_adapter_or_none() -> SlurmSSHClient | None:
     """Return the current adapter without raising."""
     with _adapter_lock:
         return _adapter

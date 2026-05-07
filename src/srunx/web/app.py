@@ -19,7 +19,7 @@ from srunx.runtime.sweep.reconciler import (
     ExecutorFactoryBundle,
     ExecutorFactoryProvider,
 )
-from srunx.slurm.ssh import SlurmSSHAdapter
+from srunx.slurm.clients.ssh import SlurmSSHClient
 from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
 from srunx.ssh.core.config import MountConfig
 
@@ -152,14 +152,14 @@ def _print_ui_banner(
 
 
 def _build_web_executor_factory_provider(
-    adapter: SlurmSSHAdapter | None,
+    adapter: SlurmSSHClient | None,
 ) -> ExecutorFactoryProvider | None:
     """Return a :data:`ExecutorFactoryProvider` for Web-originated sweeps.
 
     The reconciler calls this provider once per resumed sweep. For
     ``submission_source in {'web','mcp'}`` it constructs a per-sweep
     :class:`SlurmSSHExecutorPool` clone (from the startup adapter's
-    :class:`SlurmSSHAdapterSpec`) plus the active profile's mounts as a
+    :class:`SlurmSSHClientSpec`) plus the active profile's mounts as a
     :class:`SubmissionRenderContext`, so the resumed orchestrator routes
     cells through the same SSH adapter + mount translation the original
     dispatcher used. Pool cleanup runs when the sweep's resume completes.
@@ -251,7 +251,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
 
     config = get_web_config()
-    adapter: SlurmSSHAdapter | None = None
+    adapter: SlurmSSHClient | None = None
     connection_status: str  # "connected" | "failed" | "none"
 
     # Resolve SSH profile: explicit config > current profile > none
@@ -269,7 +269,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     if has_ssh_config:
         try:
-            adapter = SlurmSSHAdapter(
+            adapter = SlurmSSHClient(
                 profile_name=profile_name,
                 hostname=config.ssh_hostname,
                 username=config.ssh_username,
@@ -503,7 +503,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Disconnect the *current* adapter (may differ from startup adapter after profile switch)
         from .deps import get_active_profile_name
 
-        current_adapter: SlurmSSHAdapter | None = None
+        current_adapter: SlurmSSHClient | None = None
         try:
             from .deps import get_adapter as _get
 

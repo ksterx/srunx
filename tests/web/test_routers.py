@@ -212,7 +212,7 @@ class TestJobsRouterScriptPath:
 
     The dispatch tests stub :func:`mount_sync_session` so the lock
     acquisition + rsync no-op out, then assert that
-    :meth:`SlurmSSHAdapter.submit_remote_sbatch` was called with the
+    :meth:`SlurmSSHClient.submit_remote_sbatch` was called with the
     correctly translated remote path.
     """
 
@@ -1463,7 +1463,7 @@ class TestConfigSSHConnect:
         with (
             patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
             patch(
-                "srunx.slurm.ssh.SlurmSSHAdapter",
+                "srunx.slurm.clients.ssh.SlurmSSHClient",
                 return_value=mock_new_adapter,
             ),
             patch("srunx.web.deps.swap_adapter", return_value=None),
@@ -1497,7 +1497,7 @@ class TestConfigSSHConnect:
         with (
             patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
             patch(
-                "srunx.slurm.ssh.SlurmSSHAdapter",
+                "srunx.slurm.clients.ssh.SlurmSSHClient",
                 return_value=mock_new_adapter,
             ),
         ):
@@ -1525,7 +1525,7 @@ class TestConfigSSHConnect:
         with (
             patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
             patch(
-                "srunx.slurm.ssh.SlurmSSHAdapter",
+                "srunx.slurm.clients.ssh.SlurmSSHClient",
                 side_effect=ConnectionError("Host unreachable"),
             ),
         ):
@@ -1575,7 +1575,7 @@ class TestConfigSSHConnect:
         with (
             patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
             patch(
-                "srunx.slurm.ssh.SlurmSSHAdapter",
+                "srunx.slurm.clients.ssh.SlurmSSHClient",
                 return_value=mock_adapter,
             ),
         ):
@@ -1616,7 +1616,7 @@ class TestConfigSSHConnect:
         with (
             patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
             patch(
-                "srunx.slurm.ssh.SlurmSSHAdapter",
+                "srunx.slurm.clients.ssh.SlurmSSHClient",
                 return_value=mock_adapter,
             ),
         ):
@@ -1645,7 +1645,7 @@ class TestConfigSSHConnect:
         with (
             patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
             patch(
-                "srunx.slurm.ssh.SlurmSSHAdapter",
+                "srunx.slurm.clients.ssh.SlurmSSHClient",
                 side_effect=OSError("Connection refused"),
             ),
         ):
@@ -2104,10 +2104,10 @@ class TestWorkflowsRouterInPlace:
     file lock + rsync no-op out, then assert per-job dispatch:
 
     * ShellJob whose source bytes match the rendered bytes AND lives
-      under a profile mount → :meth:`SlurmSSHAdapter.submit_remote_sbatch`
+      under a profile mount → :meth:`SlurmSSHClient.submit_remote_sbatch`
       called against the translated remote path.
     * ShellJob whose Jinja substitution diverged → legacy
-      :meth:`SlurmSSHAdapter.submit_job` (temp upload) path.
+      :meth:`SlurmSSHClient.submit_job` (temp upload) path.
     * ``Job`` (command) jobs always take the legacy path.
     * Multiple ShellJobs under the same mount → one rsync call total.
     * Sync failure surfaces as 502 with "Mount sync failed".

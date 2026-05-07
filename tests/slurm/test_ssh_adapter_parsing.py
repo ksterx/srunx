@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from srunx.slurm.parsing import GPU_TRES_RE
-from srunx.slurm.ssh import (
+from srunx.slurm.clients._ssh_helpers import (
     _UNAVAILABLE_STATES,
-    SlurmSSHAdapter,
     _validate_identifier,
 )
+from srunx.slurm.clients.ssh import SlurmSSHClient
+from srunx.slurm.parsing import GPU_TRES_RE
 
 # ── Input Validation ──────────────────────────────
 
@@ -119,20 +119,20 @@ class TestListJobsParsing:
 
     def test_parse_running_jobs(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _adapter, _cmd: self.SAMPLE_SQUEUE,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         jobs = adapter.list_jobs()
 
         assert len(jobs) == 4
 
     def test_parse_job_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SQUEUE,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         jobs = adapter.list_jobs()
 
         assert jobs[0]["job_id"] == 18431
@@ -140,40 +140,40 @@ class TestListJobsParsing:
 
     def test_parse_gpu_count_simple(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SQUEUE,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         jobs = adapter.list_jobs()
 
         assert jobs[0]["gpus"] == 8  # gpu:8
 
     def test_parse_gpu_count_with_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SQUEUE,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         jobs = adapter.list_jobs()
 
         assert jobs[1]["gpus"] == 8  # gpu:NVIDIA-A100:8
 
     def test_parse_null_gres(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SQUEUE,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         jobs = adapter.list_jobs()
 
         assert jobs[3]["gpus"] == 0  # (null)
 
     def test_parse_status(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SQUEUE,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         jobs = adapter.list_jobs()
 
         assert jobs[0]["status"] == "RUNNING"
@@ -181,10 +181,10 @@ class TestListJobsParsing:
 
     def test_parse_partition(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SQUEUE,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         jobs = adapter.list_jobs()
 
         assert jobs[0]["partition"] == "defq"
@@ -192,10 +192,10 @@ class TestListJobsParsing:
     def test_multinode_gpu_total(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Multi-node job: gpus = gpus_per_node * nodes."""
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SQUEUE,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         jobs = adapter.list_jobs()
 
         # Job 18490: 2 nodes, gpu:4 per node → total 8 GPUs
@@ -206,10 +206,10 @@ class TestListJobsParsing:
     def test_single_node_gpu_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Single-node job: gpus = gpus_per_node."""
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SQUEUE,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         jobs = adapter.list_jobs()
 
         # Job 18431: 1 node, gpu:8 → total 8 GPUs
@@ -219,10 +219,10 @@ class TestListJobsParsing:
 
     def test_parse_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SQUEUE,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         jobs = adapter.list_jobs()
 
         assert jobs[0]["user"] == "ksterx"
@@ -232,10 +232,10 @@ class TestListJobsParsing:
     def test_parse_cpus(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """%C field surfaces as the total allocated CPU count."""
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SQUEUE,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         jobs = adapter.list_jobs()
 
         assert jobs[0]["cpus"] == 16
@@ -246,10 +246,10 @@ class TestListJobsParsing:
     ) -> None:
         """%R is the nodelist for running jobs and the reason for pending ones."""
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SQUEUE,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         jobs = adapter.list_jobs()
 
         assert jobs[0]["nodelist"] == "dgx-node1"
@@ -258,19 +258,19 @@ class TestListJobsParsing:
 
     def test_empty_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: "",
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         assert adapter.list_jobs() == []
 
     def test_required_frontend_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Every job dict must have command and resources for frontend type."""
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SQUEUE,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         for job in adapter.list_jobs():
             assert "command" in job
             assert "resources" in job
@@ -293,10 +293,10 @@ class TestListJobsParsing:
             "0:05|1:00:00|1|8|dgx-node2|gpu:8\n"  # 13 fields (bad)
         )
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: bogus,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         jobs = adapter.list_jobs()
         assert [j["job_id"] for j in jobs] == [18431]
 
@@ -313,10 +313,10 @@ class TestGetJobParsing:
 
     def test_parse_job_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SACCT,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         job = adapter.get_job(18431)
 
         assert job["job_id"] == 18431
@@ -324,10 +324,10 @@ class TestGetJobParsing:
 
     def test_skips_substeps(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SACCT,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         job = adapter.get_job(18431)
 
         # Should return parent job, not .batch or .0
@@ -335,20 +335,20 @@ class TestGetJobParsing:
 
     def test_parse_gpu_from_tres(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SACCT,
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
         job = adapter.get_job(18431)
 
         assert job["gpus"] == 8
 
     def test_not_found_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "srunx.slurm.ssh._run_slurm_cmd",
+            "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: "",
         )
-        adapter = object.__new__(SlurmSSHAdapter)
+        adapter = object.__new__(SlurmSSHClient)
 
         with pytest.raises(ValueError, match="No job information found"):
             adapter.get_job(99999)
@@ -382,9 +382,13 @@ dgx-node5 gpu:NVIDIA-A100:8 maint
                 return self.SAMPLE_SINFO
             return self.SAMPLE_SQUEUE_RESOURCES
 
-        monkeypatch.setattr("srunx.slurm.ssh._run_slurm_cmd", mock_cmd)
-        monkeypatch.setattr("srunx.slurm.ssh._validate_identifier", lambda *a: None)
-        adapter = object.__new__(SlurmSSHAdapter)
+        monkeypatch.setattr(
+            "srunx.slurm.clients._ssh_resources._run_slurm_cmd", mock_cmd
+        )
+        monkeypatch.setattr(
+            "srunx.slurm.clients._ssh_resources._validate_identifier", lambda *a: None
+        )
+        adapter = object.__new__(SlurmSSHClient)
         result = adapter._get_partition_resources("gpu")
 
         assert result["nodes_total"] == 5
@@ -399,9 +403,13 @@ dgx-node5 gpu:NVIDIA-A100:8 maint
                 return self.SAMPLE_SINFO
             return ""
 
-        monkeypatch.setattr("srunx.slurm.ssh._run_slurm_cmd", mock_cmd)
-        monkeypatch.setattr("srunx.slurm.ssh._validate_identifier", lambda *a: None)
-        adapter = object.__new__(SlurmSSHAdapter)
+        monkeypatch.setattr(
+            "srunx.slurm.clients._ssh_resources._run_slurm_cmd", mock_cmd
+        )
+        monkeypatch.setattr(
+            "srunx.slurm.clients._ssh_resources._validate_identifier", lambda *a: None
+        )
+        adapter = object.__new__(SlurmSSHClient)
         result = adapter._get_partition_resources("gpu")
 
         # down + maint = 2 unavailable
@@ -420,9 +428,13 @@ dgx-node5 gpu:NVIDIA-A100:8 maint
                 return self.SAMPLE_SINFO
             return ""
 
-        monkeypatch.setattr("srunx.slurm.ssh._run_slurm_cmd", mock_cmd)
-        monkeypatch.setattr("srunx.slurm.ssh._validate_identifier", lambda *a: None)
-        adapter = object.__new__(SlurmSSHAdapter)
+        monkeypatch.setattr(
+            "srunx.slurm.clients._ssh_resources._run_slurm_cmd", mock_cmd
+        )
+        monkeypatch.setattr(
+            "srunx.slurm.clients._ssh_resources._validate_identifier", lambda *a: None
+        )
+        adapter = object.__new__(SlurmSSHClient)
         result = adapter._get_partition_resources("gpu")
 
         # 3 available nodes * 8 GPUs = 24 (down + maint nodes excluded)
@@ -438,9 +450,13 @@ dgx-node5 gpu:NVIDIA-A100:8 maint
                 return self.SAMPLE_SINFO
             return self.SAMPLE_SQUEUE_RESOURCES
 
-        monkeypatch.setattr("srunx.slurm.ssh._run_slurm_cmd", mock_cmd)
-        monkeypatch.setattr("srunx.slurm.ssh._validate_identifier", lambda *a: None)
-        adapter = object.__new__(SlurmSSHAdapter)
+        monkeypatch.setattr(
+            "srunx.slurm.clients._ssh_resources._run_slurm_cmd", mock_cmd
+        )
+        monkeypatch.setattr(
+            "srunx.slurm.clients._ssh_resources._validate_identifier", lambda *a: None
+        )
+        adapter = object.__new__(SlurmSSHClient)
         result = adapter._get_partition_resources("gpu")
 
         # RUNNING jobs: 8*1 + 4*2 = 16 GPUs (PENDING ignored, multi-node accounted)
@@ -457,9 +473,13 @@ dgx-node5 gpu:NVIDIA-A100:8 maint
                 return self.SAMPLE_SINFO
             return self.SAMPLE_SQUEUE_RESOURCES
 
-        monkeypatch.setattr("srunx.slurm.ssh._run_slurm_cmd", mock_cmd)
-        monkeypatch.setattr("srunx.slurm.ssh._validate_identifier", lambda *a: None)
-        adapter = object.__new__(SlurmSSHAdapter)
+        monkeypatch.setattr(
+            "srunx.slurm.clients._ssh_resources._run_slurm_cmd", mock_cmd
+        )
+        monkeypatch.setattr(
+            "srunx.slurm.clients._ssh_resources._validate_identifier", lambda *a: None
+        )
+        adapter = object.__new__(SlurmSSHClient)
         result = adapter._get_partition_resources("gpu")
 
         assert result["gpu_utilization"] == 16 / 24
@@ -475,9 +495,13 @@ dgx-node5 gpu:NVIDIA-A100:8 maint
                 return self.SAMPLE_SINFO
             return ""
 
-        monkeypatch.setattr("srunx.slurm.ssh._run_slurm_cmd", mock_cmd)
-        monkeypatch.setattr("srunx.slurm.ssh._validate_identifier", lambda *a: None)
-        adapter = object.__new__(SlurmSSHAdapter)
+        monkeypatch.setattr(
+            "srunx.slurm.clients._ssh_resources._run_slurm_cmd", mock_cmd
+        )
+        monkeypatch.setattr(
+            "srunx.slurm.clients._ssh_resources._validate_identifier", lambda *a: None
+        )
+        adapter = object.__new__(SlurmSSHClient)
         result = adapter._get_partition_resources("gpu")
 
         required = [
@@ -521,8 +545,10 @@ class TestClusterSnapshot:
         def fake_run(_adapter, cmd: str) -> str:
             return sinfo_out if cmd.startswith("sinfo") else squeue_out
 
-        monkeypatch.setattr("srunx.slurm.ssh._run_slurm_cmd", fake_run)
-        adapter = object.__new__(SlurmSSHAdapter)
+        monkeypatch.setattr(
+            "srunx.slurm.clients._ssh_resources._run_slurm_cmd", fake_run
+        )
+        adapter = object.__new__(SlurmSSHClient)
 
         snap = adapter.get_cluster_snapshot()
 
@@ -540,8 +566,10 @@ class TestClusterSnapshot:
         def fake_run(_adapter, cmd: str) -> str:
             return sinfo_out if cmd.startswith("sinfo") else squeue_out
 
-        monkeypatch.setattr("srunx.slurm.ssh._run_slurm_cmd", fake_run)
-        adapter = object.__new__(SlurmSSHAdapter)
+        monkeypatch.setattr(
+            "srunx.slurm.clients._ssh_resources._run_slurm_cmd", fake_run
+        )
+        adapter = object.__new__(SlurmSSHClient)
 
         snap = adapter.get_cluster_snapshot()
 
@@ -564,8 +592,10 @@ class TestClusterSnapshot:
         def fake_run(_adapter, cmd: str) -> str:
             return sinfo_out if cmd.startswith("sinfo") else squeue_out
 
-        monkeypatch.setattr("srunx.slurm.ssh._run_slurm_cmd", fake_run)
-        adapter = object.__new__(SlurmSSHAdapter)
+        monkeypatch.setattr(
+            "srunx.slurm.clients._ssh_resources._run_slurm_cmd", fake_run
+        )
+        adapter = object.__new__(SlurmSSHClient)
 
         snap = adapter.get_cluster_snapshot()
 
@@ -586,8 +616,8 @@ class TestClusterSnapshot:
         def boom(_adapter, _cmd: str) -> str:
             raise RuntimeError("ssh dropped")
 
-        monkeypatch.setattr("srunx.slurm.ssh._run_slurm_cmd", boom)
-        adapter = object.__new__(SlurmSSHAdapter)
+        monkeypatch.setattr("srunx.slurm.clients._ssh_resources._run_slurm_cmd", boom)
+        adapter = object.__new__(SlurmSSHClient)
 
         with pytest.raises(RuntimeError, match="ssh dropped"):
             adapter.get_cluster_snapshot()
@@ -619,8 +649,8 @@ class TestQueueByIdsScontrolFallback:
                 return scontrol_out
             return ""
 
-        monkeypatch.setattr("srunx.slurm.ssh._run_slurm_cmd", fake_run)
-        adapter = object.__new__(SlurmSSHAdapter)
+        monkeypatch.setattr("srunx.slurm.clients._ssh_queries._run_slurm_cmd", fake_run)
+        adapter = object.__new__(SlurmSSHClient)
 
         result = adapter.queue_by_ids([555])
 
@@ -637,8 +667,8 @@ class TestQueueByIdsScontrolFallback:
                 return scontrol_out
             return ""
 
-        monkeypatch.setattr("srunx.slurm.ssh._run_slurm_cmd", fake_run)
-        adapter = object.__new__(SlurmSSHAdapter)
+        monkeypatch.setattr("srunx.slurm.clients._ssh_queries._run_slurm_cmd", fake_run)
+        adapter = object.__new__(SlurmSSHClient)
 
         result = adapter.queue_by_ids([556])
 
@@ -656,8 +686,8 @@ class TestQueueByIdsScontrolFallback:
         def fake_run(_adapter, _cmd: str) -> str:
             return ""
 
-        monkeypatch.setattr("srunx.slurm.ssh._run_slurm_cmd", fake_run)
-        adapter = object.__new__(SlurmSSHAdapter)
+        monkeypatch.setattr("srunx.slurm.clients._ssh_queries._run_slurm_cmd", fake_run)
+        adapter = object.__new__(SlurmSSHClient)
 
         result = adapter.queue_by_ids([999])
 

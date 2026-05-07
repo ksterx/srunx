@@ -644,7 +644,7 @@ def test_smoke_multi_job_sweep_style_render(tmp_path: Path) -> None:
     Mirrors the shape of a sweep cell (same workflow rendered N times
     with different ``args_override``) so the Batch 2 migration can
     verify this helper is a drop-in replacement for the sweep render
-    path in ``SlurmSSHAdapter.run``.
+    path in ``SlurmSSHClient.run``.
     """
     local_root = tmp_path / "projects" / "sweep"
     local_root.mkdir(parents=True)

@@ -1,148 +1,91 @@
-"""SSH-based SLURM adapter for the Web UI.
+"""SSH-based SLURM client for the Web UI / CLI / MCP transport surface.
 
-Wraps SSHSlurmClient to provide all operations needed by the REST API,
-including list_jobs, cancel_job, and get_resources which SSHSlurmClient
-does not natively support.
+Wraps :class:`srunx.ssh.core.client.SSHSlurmClient` to provide all
+operations the web / CLI / MCP layers need (``list_jobs``, ``cancel``,
+``get_resources``, ``run`` for the workflow executor surface). Sibling
+of :class:`srunx.slurm.clients.local.LocalClient` — both implement the
+same :class:`~srunx.slurm.protocols.JobOperations` /
+:class:`~srunx.slurm.protocols.WorkflowJobExecutor` Protocols, just
+against different transports.
+
+Cohesive helper clusters live alongside in private modules:
+
+* :mod:`._ssh_helpers` — shared free helpers (``_run_slurm_cmd``,
+  ``_validate_identifier``, ``_MountsOnly``, regexes).
+* :mod:`._ssh_types` — :class:`SlurmSSHClientSpec`,
+  :class:`SSHMonitorTimeoutError`, ``_resolve_monitor_timeout_default``.
+* :mod:`._ssh_resources` — sinfo / squeue resource queries.
+* :mod:`._ssh_queries` — squeue / sacct job listing + parsing.
+* :mod:`._ssh_recording` — best-effort DB recording wrappers.
+
+The class methods (``get_resources`` / ``list_jobs`` / etc.) are 1-line
+forwards into those modules so the parsing / resource logic is
+independently reviewable and testable, while the class still owns the
+connection lock + lifecycle.
 """
 
 from __future__ import annotations
 
-import re
 import threading
 from collections.abc import Sequence
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srunx.callbacks import Callback
 from srunx.common.logging import get_logger
-from srunx.slurm.parsing import GPU_TRES_RE  # noqa: E402
-from srunx.slurm.protocols import (
-    JobSnapshot,
-    parse_slurm_datetime,
-    parse_slurm_duration,
+
+# Imported at runtime (not under TYPE_CHECKING) because the literal types
+# are referenced in default-value position on ``_record_job_submission``,
+# which ``from __future__ import annotations`` does not defer.
+from srunx.slurm.clients._ssh_helpers import _MountsOnly, _run_slurm_cmd
+from srunx.slurm.clients._ssh_queries import (
+    get_job as _get_job,
 )
-from srunx.slurm.states import SLURM_TERMINAL_JOB_STATES
+from srunx.slurm.clients._ssh_queries import (
+    list_active_jobs as _list_active_jobs_impl,
+)
+from srunx.slurm.clients._ssh_queries import (
+    list_jobs as _list_jobs_impl,
+)
+from srunx.slurm.clients._ssh_queries import (
+    queue_by_ids as _queue_by_ids_impl,
+)
+from srunx.slurm.clients._ssh_recording import (
+    record_completion_safe as _record_completion_safe_impl,
+)
+from srunx.slurm.clients._ssh_recording import (
+    record_job_submission as _record_job_submission_impl,
+)
+from srunx.slurm.clients._ssh_resources import (
+    cluster_snapshot as _cluster_snapshot_impl,
+)
+from srunx.slurm.clients._ssh_resources import (
+    list_partition_resources as _list_partition_resources_impl,
+)
+from srunx.slurm.clients._ssh_types import (
+    SlurmSSHClientSpec,
+    SSHMonitorTimeoutError,
+    _resolve_monitor_timeout_default,
+)
 from srunx.ssh.core.client import SSHSlurmClient
 from srunx.ssh.core.config import ConfigManager, MountConfig
-from srunx.ssh.core.ssh_config import SSHConfigParser  # noqa: F811
+from srunx.ssh.core.ssh_config import SSHConfigParser
 
 if TYPE_CHECKING:
     from srunx.domain import BaseJob, JobStatus, RunnableJobType
     from srunx.runtime.rendering import SubmissionRenderContext
-    from srunx.slurm.protocols import LogChunk
+    from srunx.slurm.protocols import JobSnapshot, LogChunk
+
+# Re-exports so ``from srunx.slurm.clients.ssh import X`` keeps working
+# for the spec / exception types — both used by importers that don't
+# need the client itself (executor pool, transport registry, tests).
+__all__ = ["SlurmSSHClient", "SlurmSSHClientSpec", "SSHMonitorTimeoutError"]
 
 logger = get_logger(__name__)
 
-# Strict pattern for SLURM identifiers (user, partition) to prevent injection
-_SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 
-# Node states that should be excluded from available counts
-_UNAVAILABLE_STATES = {"down", "drain", "maint", "reserved"}
-
-
-class SSHMonitorTimeoutError(RuntimeError):
-    """Raised when ``_monitor_until_terminal`` exceeds its timeout.
-
-    Subclass of ``RuntimeError`` so the sweep orchestrator's existing
-    broad-except cell-failure handler still catches it — the typed
-    subclass just lets targeted callers (e.g. tests, future UI status
-    reporting) distinguish timeout from a genuine SLURM-state-derived
-    failure without widening the exception surface.
-    """
-
-
-def _resolve_monitor_timeout_default() -> float | None:
-    """Return the default per-job monitor timeout from the environment.
-
-    ``SRUNX_SSH_MONITOR_TIMEOUT`` accepts a non-negative float (seconds).
-    An unset / empty / ``"0"`` / non-numeric value means "no timeout",
-    preserving the pre-Phase-3 behaviour for users who haven't opted in.
-    """
-    import os
-
-    raw = os.getenv("SRUNX_SSH_MONITOR_TIMEOUT")
-    if not raw:
-        return None
-    try:
-        value = float(raw)
-    except ValueError:
-        logger.warning(
-            f"Ignoring invalid SRUNX_SSH_MONITOR_TIMEOUT={raw!r} "
-            "(expected non-negative seconds)"
-        )
-        return None
-    if value <= 0:
-        return None
-    return value
-
-
-@dataclass(frozen=True)
-class SlurmSSHAdapterSpec:
-    """Connection spec used to clone a :class:`SlurmSSHAdapter` for pooling.
-
-    Intentionally captures only the configuration needed to re-create an
-    adapter with an equivalent SSH session -- no paramiko clients, SFTP
-    channels, or in-flight state. Used by Step 4's pool factory to mint
-    per-cell adapter clones off a shared singleton template.
-
-    ``mounts`` is a tuple of frozen :class:`MountConfig` instances so the
-    spec is deeply immutable and hashable end-to-end.
-    """
-
-    profile_name: str | None
-    hostname: str
-    username: str
-    key_filename: str | None
-    port: int
-    proxy_jump: str | None = None
-    env_vars: tuple[tuple[str, str], ...] = ()
-    mounts: tuple[MountConfig, ...] = field(default_factory=tuple)
-
-
-def _validate_identifier(value: str, name: str) -> None:
-    """Validate a SLURM identifier to prevent shell injection."""
-    if not _SAFE_IDENTIFIER.match(value):
-        raise ValueError(f"Invalid {name}: {value!r}")
-
-
-def _run_slurm_cmd(adapter: SlurmSSHAdapter, cmd: str) -> str:
-    """Execute a SLURM command on the remote host.
-
-    Ensures SSH connection is alive, then uses SSHSlurmClient._execute_slurm_command()
-    which handles SLURM path resolution, environment setup, and login shell wrapping.
-
-    Raises RuntimeError if the command fails.
-
-    Runs under the adapter's ``_io_lock`` so concurrent workflow / sweep
-    threads cannot interleave SSH I/O on the shared paramiko session.
-    """
-    with adapter._io_lock:  # noqa: SLF001
-        adapter._ensure_connected()
-        stdout, stderr, exit_code = adapter._client.slurm.execute_slurm_command(cmd)  # noqa: SLF001
-    if exit_code != 0:
-        raise RuntimeError(f"Remote command failed ({exit_code}): {stderr.strip()}")
-    return stdout
-
-
-@dataclass(frozen=True)
-class _MountsOnly:
-    """Duck-typed shim that exposes just ``.mounts`` to the planner.
-
-    ``submission_plan.resolve_mount_for_path`` is duck-typed on the
-    profile's ``.mounts`` attribute, but the adapter only carries the
-    mounts tuple — not a full :class:`ServerProfile`. Wrapping in this
-    one-field dataclass avoids reaching back into ``ConfigManager``
-    just to satisfy the planner's type signature, and keeps the in-place
-    decision local to ``run()``.
-    """
-
-    mounts: tuple[MountConfig, ...]
-
-
-class SlurmSSHAdapter:
-    """Adapter providing a unified API for the Web UI over SSH."""
+class SlurmSSHClient:
+    """SSH-transport SLURM client. Sibling of :class:`LocalClient`."""
 
     def __init__(
         self,
@@ -173,8 +116,8 @@ class SlurmSSHAdapter:
         self.submission_source: str = submission_source
 
         # Resolved connection params — persisted so connection_spec() can
-        # reproduce this adapter in Step 4's pool factory. Populated below
-        # in both the profile_name and direct-hostname branches.
+        # reproduce this client in the pool factory. Populated below in
+        # both the profile_name and direct-hostname branches.
         self._profile_name: str | None = profile_name
         self._hostname: str = ""
         self._username: str = ""
@@ -186,7 +129,7 @@ class SlurmSSHAdapter:
             tuple(mounts) if mounts is not None else ()
         )
 
-        # Callbacks attached to this adapter; invoked by :meth:`run` on the
+        # Callbacks attached to this client; invoked by :meth:`run` on the
         # sweep path. Mirrors ``Slurm.callbacks`` in ``srunx.slurm.local``.
         self.callbacks: list[Callback] = list(callbacks) if callbacks else []
 
@@ -200,7 +143,7 @@ class SlurmSSHAdapter:
             if profile.env_vars:
                 self._env_vars = dict(profile.env_vars)
 
-            # Resolve connection: ssh_host (from ~/.ssh/config) or direct fields
+            # Resolve connection: ssh_host (from ~/.ssh/config) or direct fields.
             if profile.ssh_host:
                 parser = SSHConfigParser()
                 ssh_host = parser.get_host(profile.ssh_host)
@@ -222,7 +165,7 @@ class SlurmSSHAdapter:
                     env_vars=self._env_vars or None,
                 )
             else:
-                # Resolve hostname via ~/.ssh/config if it's an alias
+                # Resolve hostname via ~/.ssh/config if it's an alias.
                 resolved_hostname = profile.hostname
                 resolved_key = profile.key_filename
                 resolved_port = profile.port
@@ -273,7 +216,7 @@ class SlurmSSHAdapter:
 
     @property
     def scheduler_key(self) -> str:
-        """Return the V5 transport axis for this adapter.
+        """Return the V5 transport axis for this client.
 
         ``"local"`` when no profile is bound (legacy direct-hostname
         tests) or ``f"ssh:{profile_name}"`` otherwise. Exposed publicly
@@ -284,18 +227,18 @@ class SlurmSSHAdapter:
             return "local"
         return f"ssh:{self._profile_name}"
 
-    # ── Connection spec (for Step 4 pool factory) ─────
+    # ── Connection spec (for the pool factory) ────
 
     @property
-    def connection_spec(self) -> SlurmSSHAdapterSpec:
-        """Return the immutable connection spec for cloning this adapter.
+    def connection_spec(self) -> SlurmSSHClientSpec:
+        """Return the immutable connection spec for cloning this client.
 
-        Step 4's sweep pool uses this spec to mint per-cell adapter clones
-        off the shared singleton template without copying any live
-        paramiko / SFTP state. Reading the spec does NOT touch the wire,
-        so it is safe to call without holding ``_io_lock``.
+        The sweep pool uses this spec to mint per-cell client clones off
+        the shared singleton template without copying any live paramiko
+        / SFTP state. Reading the spec does NOT touch the wire, so it is
+        safe to call without holding ``_io_lock``.
         """
-        return SlurmSSHAdapterSpec(
+        return SlurmSSHClientSpec(
             profile_name=self._profile_name,
             hostname=self._hostname,
             username=self._username,
@@ -309,20 +252,20 @@ class SlurmSSHAdapter:
     @classmethod
     def from_spec(
         cls,
-        spec: SlurmSSHAdapterSpec,
+        spec: SlurmSSHClientSpec,
         *,
         callbacks: Sequence[Callback] | None = None,
         submission_source: str = "web",
-    ) -> SlurmSSHAdapter:
-        """Create a fresh adapter from a connection spec.
+    ) -> SlurmSSHClient:
+        """Create a fresh client from a connection spec.
 
-        The returned adapter is NOT connected; it connects lazily on first
-        SSH I/O (via ``_ensure_connected``). Used by the Step 4 pool
-        factory to mint per-lease adapter clones off the singleton template
-        without copying any live paramiko / SFTP state.
+        The returned client is NOT connected; it connects lazily on first
+        SSH I/O (via ``_ensure_connected``). Used by the pool factory to
+        mint per-lease client clones off the singleton template without
+        copying any live paramiko / SFTP state.
 
         ``callbacks`` are attached on construction so the pool's chosen
-        callback list propagates into each cloned adapter's ``run`` path.
+        callback list propagates into each cloned client's ``run`` path.
 
         ``submission_source`` is carried through from the pool's origin
         tag so per-cell sweep jobs record the correct transport origin
@@ -337,7 +280,7 @@ class SlurmSSHAdapter:
         # so we use the direct-hostname branch and then manually bind
         # ``_profile_name`` so ``scheduler_key`` / completion recording
         # target the correct SSH axis.
-        adapter = cls(
+        client = cls(
             hostname=spec.hostname,
             username=spec.username,
             key_filename=spec.key_filename,
@@ -348,14 +291,14 @@ class SlurmSSHAdapter:
             callbacks=callbacks,
             submission_source=submission_source,
         )
-        adapter._profile_name = spec.profile_name
-        return adapter
+        client._profile_name = spec.profile_name
+        return client
 
     @property
     def is_connected(self) -> bool:
         """Return True when the underlying paramiko session is live.
 
-        Used by the Step 4 pool to decide whether a released adapter is
+        Used by the sweep pool to decide whether a released client is
         safe to return to the free queue or should be discarded. Never
         raises — any transport-level error is treated as "not connected".
         """
@@ -365,7 +308,8 @@ class SlurmSSHAdapter:
                 return False
             transport = ssh.get_transport()
             return bool(transport is not None and transport.is_active())
-        except Exception:  # noqa: BLE001 — diagnostic only
+        except Exception:  # noqa: BLE001
+            # Connection-state probe: any failure is observably "down".
             return False
 
     def _set_keepalive(self) -> None:
@@ -391,8 +335,8 @@ class SlurmSSHAdapter:
 
         Three states:
 
-        1. ``ssh_client is None`` — adapter was never connected. Happens
-           for every adapter built by
+        1. ``ssh_client is None`` — client was never connected. Happens
+           for every client built by
            :func:`srunx.transport.registry._build_ssh_handle` (CLI
            scope, MCP tool handlers, tests). Log as "connecting" —
            calling this a "reconnect" would be misleading.
@@ -410,7 +354,7 @@ class SlurmSSHAdapter:
         with self._io_lock:
             ssh = self._client.connection.ssh_client
             if ssh is None:
-                logger.debug("SSH adapter connecting for the first time")
+                logger.debug("SSH client connecting for the first time")
                 if not self._client.connect():
                     raise RuntimeError("SSH connection failed")
                 self._set_keepalive()
@@ -427,349 +371,30 @@ class SlurmSSHAdapter:
             self._set_keepalive()
             logger.info("SSH reconnection successful")
 
-    def __enter__(self) -> SlurmSSHAdapter:
+    def __enter__(self) -> SlurmSSHClient:
         self.connect()
         return self
 
     def __exit__(self, *args: object) -> None:
         self.disconnect()
 
-    # ── Job Operations ────────────────────────────
+    # ── Job query surface (delegated to _ssh_queries) ─────
 
     def _list_active_jobs(
         self, user: str | None = None
     ) -> tuple[list[dict[str, Any]], set[int]]:
-        """Return active (PENDING / RUNNING / ...) jobs from ``squeue`` only.
-
-        Split out from :meth:`list_jobs` so :meth:`queue` (the CLI
-        ``srunx squeue`` path) can call this without triggering the
-        ``sacct -S now-6hours`` merge that would otherwise inject
-        terminal-state rows from the past 6 hours — that asymmetry
-        with the local ``Slurm.queue()`` broke user expectations
-        (native ``squeue`` never shows finished jobs).
-
-        ``user=None`` shows all users' jobs (matches native ``squeue``
-        and local :meth:`~srunx.slurm.local.Slurm.queue`). Pass a
-        username to filter.
-
-        Format fields (all surfaced by :meth:`queue`):
-        ``%i`` job_id | ``%P`` partition | ``%j`` name | ``%u`` user |
-        ``%T`` state (long) | ``%M`` elapsed | ``%l`` time_limit |
-        ``%D`` nodes | ``%C`` total CPUs | ``%R`` nodelist-or-reason |
-        ``%b`` TRES_PER_NODE (for GPU extraction).
-
-        Returns ``(entries, seen_ids)`` so the merging caller can
-        dedup sacct rows against active IDs without re-scanning.
-        """
-        # ``|`` delimiter: nodelist reasons can contain whitespace and
-        # parens (e.g. "(Resources, Priority)"), so splitting on
-        # whitespace with maxsplit is fragile. Pipe is the safe
-        # separator — SLURM fields never contain it.
-        fmt = "%i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%b"
-        cmd = f'squeue --format "{fmt}" --noheader'
-        if user:
-            _validate_identifier(user, "user")
-            cmd += f" --user {user}"
-
-        output = _run_slurm_cmd(self, cmd)
-        jobs: list[dict[str, Any]] = []
-        seen_ids: set[int] = set()
-
-        for line in output.strip().splitlines():
-            parts = line.split("|")
-            # Strict equality check — SLURM allows ``|`` inside user-chosen
-            # fields like job name (``#SBATCH --job-name=foo|bar``). Such
-            # rows split into 12+ fields; ``< 11`` would pass and the
-            # subsequent indexing would silently misalign every column
-            # downstream of the embedded pipe. Better to drop the row
-            # than render corrupted data in an admin's queue listing.
-            if len(parts) != 11:
-                continue
-
-            try:
-                job_id = int(parts[0].strip())
-            except ValueError:
-                continue
-
-            partition = parts[1].strip()
-            name = parts[2].strip()
-            owner = parts[3].strip() or None
-            state = parts[4].strip()
-            elapsed = parts[5].strip()
-            time_limit = parts[6].strip()
-            nodes_str = parts[7].strip()
-            cpus_str = parts[8].strip()
-            nodelist = parts[9].strip()
-            tres = parts[10].strip()
-
-            num_nodes = int(nodes_str) if nodes_str.isdigit() else 1
-            try:
-                cpus_total = int(cpus_str) if cpus_str else 0
-            except ValueError:
-                cpus_total = 0
-            gpus_per_node = 0
-            gpu_match = GPU_TRES_RE.search(tres)
-            if gpu_match:
-                gpus_per_node = int(gpu_match.group(1))
-
-            seen_ids.add(job_id)
-            jobs.append(
-                {
-                    "name": name,
-                    "job_id": job_id,
-                    "status": state,
-                    "depends_on": [],
-                    "command": [],
-                    "resources": {
-                        "nodes": num_nodes,
-                        "gpus_per_node": gpus_per_node,
-                        "partition": partition,
-                        "time_limit": time_limit,
-                    },
-                    "partition": partition,
-                    "user": owner,
-                    "nodes": num_nodes,
-                    "cpus": cpus_total,
-                    "gpus": gpus_per_node * num_nodes,
-                    "nodelist": nodelist,
-                    "elapsed_time": elapsed,
-                    "time_limit": time_limit,
-                }
-            )
-
-        return jobs, seen_ids
+        return _list_active_jobs_impl(self, user)
 
     def list_jobs(self, user: str | None = None) -> list[dict[str, Any]]:
-        """List SLURM jobs via squeue + recent completed/failed jobs via sacct.
-
-        Used by the Web UI and MCP ``list_jobs`` tool. The CLI
-        ``srunx squeue`` path goes through :meth:`queue` instead,
-        which uses :meth:`_list_active_jobs` directly so it matches
-        native ``squeue`` semantics (active jobs only).
-        """
-        jobs, seen_ids = self._list_active_jobs(user)
-
-        # --- Recently finished jobs from sacct (last 6 hours) ---
-        # NOTE: --state filter is omitted because some SLURM versions
-        # return empty output when --state is combined with --parsable2.
-        # We filter by status in Python instead.
-        try:
-            sacct_cmd = (
-                "sacct -S now-6hours "
-                "--format=JobID,JobName,State,Partition,NNodes,Elapsed,TimelimitRaw,AllocTRES,User "
-                "--noheader --parsable2"
-            )
-            if user:
-                sacct_cmd += f" --user {user}"
-
-            sacct_output = _run_slurm_cmd(self, sacct_cmd)
-
-            for line in sacct_output.strip().splitlines():
-                parts = line.split("|")
-                if len(parts) < 6:
-                    continue
-                # Skip sub-steps (e.g., "12345.batch", "12345.extern")
-                if "." in parts[0]:
-                    continue
-
-                try:
-                    job_id = int(parts[0].strip())
-                except ValueError:
-                    continue
-
-                if job_id in seen_ids:
-                    continue
-
-                # sacct may return e.g. "CANCELLED by 1000" — take first word only
-                # Skip non-terminal states (already covered by squeue)
-                raw_state = parts[2].strip()
-                status = raw_state.split()[0] if raw_state else "UNKNOWN"
-                if status not in SLURM_TERMINAL_JOB_STATES:
-                    continue
-
-                gpus = 0
-                if len(parts) >= 8:
-                    gpu_match = GPU_TRES_RE.search(parts[7])
-                    if gpu_match:
-                        gpus = int(gpu_match.group(1))
-
-                num_nodes = int(parts[4]) if parts[4].strip().isdigit() else 1
-
-                owner = parts[8].strip() if len(parts) > 8 else ""
-                seen_ids.add(job_id)
-                jobs.append(
-                    {
-                        "name": parts[1].strip(),
-                        "job_id": job_id,
-                        "status": status,
-                        "depends_on": [],
-                        "command": [],
-                        "resources": {
-                            "nodes": num_nodes,
-                            "gpus_per_node": gpus,
-                            "partition": parts[3].strip(),
-                            "time_limit": parts[6].strip() if len(parts) > 6 else None,
-                        },
-                        "partition": parts[3].strip(),
-                        "user": owner or None,
-                        "nodes": num_nodes,
-                        "gpus": gpus * num_nodes,
-                        "elapsed_time": parts[5].strip(),
-                    }
-                )
-        except Exception:
-            logger.warning(
-                "sacct query failed; returning squeue results only", exc_info=True
-            )
-
-        return jobs
+        return _list_jobs_impl(self, user)
 
     def queue_by_ids(self, job_ids: list[int]) -> dict[int, JobSnapshot]:
-        """Return a mapping of ``job_id`` -> :class:`JobSnapshot` for active jobs.
-
-        Implements :class:`Client`. Active jobs are queried via
-        ``squeue --jobs=...``; jobs no longer in the queue fall back to
-        ``sacct``. Jobs found in neither source are omitted.
-        """
-        if not job_ids:
-            return {}
-
-        for jid in job_ids:
-            if jid <= 0:
-                raise ValueError(f"Invalid job_id: {jid}")
-
-        id_arg = ",".join(str(i) for i in job_ids)
-        results: dict[int, JobSnapshot] = {}
-
-        # --- squeue: active jobs ---
-        try:
-            squeue_out = _run_slurm_cmd(
-                self,
-                f'squeue --jobs {id_arg} --format "%i|%T|%S|%M|%N" --noheader',
-            )
-        except RuntimeError:
-            # squeue may fail if NO job IDs are currently in the queue;
-            # this is normal when all queried jobs have already completed.
-            squeue_out = ""
-
-        for line in squeue_out.strip().splitlines():
-            parts = line.split("|")
-            if len(parts) < 5:
-                continue
-            try:
-                jid = int(parts[0].strip())
-            except ValueError:
-                continue
-            results[jid] = JobSnapshot(
-                status=parts[1].strip(),
-                started_at=parse_slurm_datetime(parts[2]),
-                duration_secs=parse_slurm_duration(parts[3]),
-                nodelist=(parts[4].strip() or None),
-            )
-
-        # --- sacct fallback: terminal jobs ---
-        missing = [j for j in job_ids if j not in results]
-        if missing:
-            missing_arg = ",".join(str(i) for i in missing)
-            try:
-                sacct_out = _run_slurm_cmd(
-                    self,
-                    f"sacct --jobs {missing_arg} "
-                    f"--format=JobID,State,Start,End,Elapsed,NodeList "
-                    f"--noheader --parsable2",
-                )
-            except RuntimeError:
-                sacct_out = ""
-
-            for line in sacct_out.strip().splitlines():
-                parts = line.split("|")
-                if len(parts) < 6:
-                    continue
-                raw_id = parts[0].strip()
-                if "." in raw_id:
-                    continue
-                try:
-                    jid = int(raw_id)
-                except ValueError:
-                    continue
-                if jid in results:
-                    continue
-                raw_state = parts[1].strip()
-                status = raw_state.split()[0] if raw_state else "UNKNOWN"
-                results[jid] = JobSnapshot(
-                    status=status,
-                    started_at=parse_slurm_datetime(parts[2]),
-                    completed_at=parse_slurm_datetime(parts[3]),
-                    duration_secs=parse_slurm_duration(parts[4]),
-                    nodelist=(parts[5].strip() or None),
-                )
-
-        # --- scontrol fallback: pyxis clusters where sacct is unreachable ---
-        # slurmdbd outages leave sacct returning empty for just-finished
-        # jobs. scontrol keeps the record in memory for ~5 minutes
-        # (MinJobAge) without needing the accounting DB, so we probe it
-        # per-missing-id. Per-id cost is acceptable because the poller
-        # runs every 15s and the missing set is only the final-transition
-        # tail, not the full active set.
-        from srunx.ssh.core.utils import parse_scontrol_job_state
-
-        still_missing = [j for j in job_ids if j not in results]
-        for jid in still_missing:
-            try:
-                scontrol_out = _run_slurm_cmd(
-                    self, f"scontrol show job {jid} 2>/dev/null"
-                )
-            except RuntimeError:
-                continue
-            parsed = parse_scontrol_job_state(scontrol_out)
-            if parsed is None:
-                continue
-            results[jid] = JobSnapshot(status=parsed)
-
-        return results
+        return _queue_by_ids_impl(self, job_ids)
 
     def get_job(self, job_id: int) -> dict[str, Any]:
-        """Get detailed job info via sacct."""
-        cmd = (
-            f"sacct -j {job_id} "
-            "--format=JobID,JobName,State,Partition,NNodes,NCPUS,Elapsed,TimelimitRaw,AllocTRES "
-            "--noheader --parsable2"
-        )
-        output = _run_slurm_cmd(self, cmd)
+        return _get_job(self, job_id)
 
-        for line in output.strip().splitlines():
-            parts = line.split("|")
-            if len(parts) < 5:
-                continue
-            # Skip sub-steps (e.g., "12345.batch")
-            if "." in parts[0]:
-                continue
-
-            gpus = 0
-            if len(parts) >= 9:
-                tres = parts[8]
-                gpu_match = GPU_TRES_RE.search(tres)
-                if gpu_match:
-                    gpus = int(gpu_match.group(1))
-
-            return {
-                "name": parts[1].strip(),
-                "job_id": job_id,
-                "status": parts[2].strip(),
-                "depends_on": [],
-                "command": [],
-                "resources": {
-                    "nodes": int(parts[4]) if parts[4].strip().isdigit() else 1,
-                    "gpus_per_node": gpus,
-                    "partition": parts[3].strip(),
-                },
-                "partition": parts[3].strip(),
-                "nodes": int(parts[4]) if parts[4].strip().isdigit() else None,
-                "gpus": gpus,
-                "elapsed_time": parts[6].strip() if len(parts) > 6 else None,
-            }
-
-        raise ValueError(f"No job information found for job {job_id}")
+    # ── Legacy aliases retained for pre-Protocol callers ──
 
     def cancel_job(self, job_id: int) -> None:
         """Cancel a SLURM job via scancel.
@@ -899,6 +524,8 @@ class SlurmSSHAdapter:
             try:
                 callback.on_job_submitted(callbacks_job)
             except Exception as exc:  # noqa: BLE001
+                # Callback failures must not abort submission — the
+                # job is already in SLURM. Mirror :meth:`run` policy.
                 logger.warning(
                     f"on_job_submitted callback failed for job "
                     f"{callbacks_job.name}: {exc}"
@@ -925,8 +552,8 @@ class SlurmSSHAdapter:
         log across SSH when the user only wants the tail.
 
         Ensures the SSH connection is live before reading — callers that
-        reach this method via a fresh :class:`SlurmSSHAdapter` (e.g. CLI
-        ``srunx logs --profile foo``, which builds the adapter via
+        reach this method via a fresh :class:`SlurmSSHClient` (e.g. CLI
+        ``srunx logs --profile foo``, which builds the client via
         :func:`srunx.transport.registry._build_ssh_handle` without the
         Web app's startup connect) would otherwise hit
         ``SSH client is not connected`` on the first call.
@@ -945,7 +572,7 @@ class SlurmSSHAdapter:
         """Get job status string.
 
         Legacy alias retained for callers that want just the raw SLURM
-        state string (``mcp.server`` and the adapter's own
+        state string (``mcp`` and the client's own
         :meth:`_monitor_until_terminal` loop). New code should call
         :meth:`status` which returns a full :class:`BaseJob` snapshot
         conforming to
@@ -983,7 +610,7 @@ class SlurmSSHAdapter:
 
     # ── JobOperations surface ────────────────
     #
-    # These methods align SlurmSSHAdapter with
+    # These methods align SlurmSSHClient with
     # :class:`srunx.slurm.protocols.JobOperations` so the Web UI,
     # MCP, and (future) top-level CLI can all drive a remote SLURM via
     # the same 5 entry points they use for the local ``Slurm`` client.
@@ -1014,7 +641,7 @@ class SlurmSSHAdapter:
         pre-Bug-6 behaviour of rendering the job verbatim.
 
         Records the submission in the state DB with the
-        (``transport_type='ssh'``, ``profile_name=<this adapter's
+        (``transport_type='ssh'``, ``profile_name=<this client's
         profile>``, ``scheduler_key='ssh:<profile>'``) triple so the
         poller can look the job up under the right transport. DB writes
         are best-effort and never mask an sbatch success.
@@ -1083,7 +710,7 @@ class SlurmSSHAdapter:
         job.job_id = int(result.job_id)
         job.status = JobStatus.PENDING
 
-        # Record submission with SSH transport metadata. The adapter
+        # Record submission with SSH transport metadata. The client
         # carries its ``submission_source`` as mutable state set by the
         # transport registry (``_build_ssh_handle``) — the Web path
         # leaves the default ``'web'``, the CLI wrapper passes
@@ -1280,7 +907,7 @@ class SlurmSSHAdapter:
             stderr_offset=new_stderr_offset,
         )
 
-    # ── Workflow executor surface (Step 4) ───────────
+    # ── Workflow executor surface ────────────────
 
     def run(
         self,
@@ -1408,10 +1035,11 @@ class SlurmSSHAdapter:
                     # cluster's sbatch read. Codex blocker #3 on
                     # PR #141.
                     if allow_in_place and self._mounts:
+                        source_path: Path | None
                         try:
                             source_path = Path(job.script_path)
                         except (OSError, ValueError):
-                            source_path = None  # type: ignore[assignment]
+                            source_path = None
                         if source_path is not None and source_path.exists():
                             # Build a duck-typed "profile" carrying just
                             # the mounts; ``resolve_mount_for_path`` only
@@ -1482,7 +1110,7 @@ class SlurmSSHAdapter:
         logger.debug(f"Submitted job '{job.name}' via SSH with ID {job_id}")
 
         # --- 3. Record submission in state DB (best-effort) ---
-        # When the adapter knows which SSH profile it represents, record
+        # When the client knows which SSH profile it represents, record
         # the true (ssh, profile, scheduler_key) triple so the poller
         # looks the job up under the right transport. When no profile
         # is bound (direct hostname constructor, legacy sweep tests),
@@ -1510,6 +1138,8 @@ class SlurmSSHAdapter:
             try:
                 callback.on_job_submitted(job)
             except Exception as exc:  # noqa: BLE001
+                # Callback failures are observability-side only; the
+                # job is in SLURM. Mirror :meth:`Slurm.run` behaviour.
                 logger.warning(
                     f"on_job_submitted callback failed for job {job.name}: {exc}"
                 )
@@ -1550,6 +1180,7 @@ class SlurmSSHAdapter:
                 elif job.status in {JobStatus.CANCELLED, JobStatus.TIMEOUT}:
                     callback.on_job_cancelled(job)
             except Exception as exc:  # noqa: BLE001
+                # Same callback-failure policy as the on_job_submitted hook.
                 logger.warning(f"Terminal callback failed for job {job.name}: {exc}")
 
         # Propagate terminal status + job_id back to the caller's
@@ -1575,12 +1206,12 @@ class SlurmSSHAdapter:
 
         Returns the raw SLURM state string (e.g. ``"COMPLETED"``). Uses
         :meth:`get_job_status` so the lock + reconnection discipline is
-        uniform with the rest of the adapter.
+        uniform with the rest of the client.
 
         ``timeout`` caps the total wait (wall-clock seconds); on expiry
         raises :class:`SSHMonitorTimeoutError` so the sweep orchestrator's
         cell-failure path records the cell as failed without tearing down
-        the pooled adapter's SSH session. ``None`` waits indefinitely.
+        the pooled client's SSH session. ``None`` waits indefinitely.
         The ``-1.0`` default is a sentinel meaning "unspecified" — in that
         case we fall back to ``SRUNX_SSH_MONITOR_TIMEOUT`` (seconds,
         ``""`` or unset means no timeout) so ops can bound hung jobs
@@ -1614,6 +1245,8 @@ class SlurmSSHAdapter:
                 )
             _time.sleep(poll_interval)
 
+    # ── DB recording helpers (delegated to _ssh_recording) ──
+
     @staticmethod
     def _record_job_submission(
         job: RunnableJobType,
@@ -1625,265 +1258,35 @@ class SlurmSSHAdapter:
         scheduler_key: str | None = None,
         submission_source: str | None = None,
     ) -> None:
-        """Insert a ``jobs`` row for the SSH-submitted job.
-
-        Thin wrapper around :func:`record_submission_from_job` — same
-        best-effort contract as the local :class:`Slurm` executor. For
-        backward compatibility with the :meth:`run` callsite that only
-        passes ``workflow_name`` / ``workflow_run_id``, when
-        ``profile_name`` / ``scheduler_key`` are not provided we record
-        the row as local (the original pre-V5 behaviour); callsites that
-        want the SSH triple must pass them explicitly.
-        """
-        try:
-            from srunx.observability.storage.cli_helpers import (
-                record_submission_from_job,
-            )
-
-            if profile_name is None:
-                # Legacy callsite (pre-V5 style) — pass only the two
-                # original kwargs so tests that mock
-                # ``record_submission_from_job`` with the original
-                # signature (``(job, *, workflow_name, workflow_run_id)``)
-                # keep working. The DB default is local anyway.
-                record_submission_from_job(
-                    job,
-                    workflow_name=workflow_name,
-                    workflow_run_id=workflow_run_id,
-                )
-            else:
-                resolved_scheduler_key = (
-                    scheduler_key
-                    if scheduler_key is not None
-                    else f"ssh:{profile_name}"
-                )
-                record_submission_from_job(
-                    job,
-                    workflow_name=workflow_name,
-                    workflow_run_id=workflow_run_id,
-                    transport_type=transport_type,  # type: ignore[arg-type]
-                    profile_name=profile_name,
-                    scheduler_key=resolved_scheduler_key,
-                    submission_source=submission_source,  # type: ignore[arg-type]
-                )
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            logger.debug(f"_record_job_submission failed: {exc}")
+        # ``transport_type`` / ``submission_source`` are typed plain ``str``
+        # here even though the underlying recorder expects ``Literal``s
+        # because callers thread in ``self.submission_source`` (also plain
+        # ``str``), which can carry values outside the ``SubmissionSource``
+        # Literal (notably ``"mcp"`` from the MCP transport registry).
+        # Casting at this single boundary keeps the static type clean
+        # without lying to the recorder.
+        _record_job_submission_impl(
+            job,
+            workflow_name=workflow_name,
+            workflow_run_id=workflow_run_id,
+            transport_type=transport_type,  # type: ignore[arg-type]
+            profile_name=profile_name,
+            scheduler_key=scheduler_key,
+            submission_source=submission_source,  # type: ignore[arg-type]
+        )
 
     def _record_completion_safe(self, job_id: int, status: JobStatus) -> None:
-        """Record terminal status in ``jobs`` / ``job_state_transitions``.
+        _record_completion_safe_impl(job_id, status, scheduler_key=self.scheduler_key)
 
-        Targets the adapter's own ``scheduler_key`` so SSH-backed jobs
-        update the remote-cluster row rather than a (possibly
-        nonexistent) local row. When no profile is bound (legacy
-        direct-hostname tests), falls back to ``'local'`` to preserve
-        pre-V5 behaviour.
-        """
-        try:
-            from srunx.observability.storage.cli_helpers import record_completion
-
-            record_completion(job_id, status, scheduler_key=self.scheduler_key)
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            logger.debug(f"_record_completion_safe failed: {exc}")
-
-    # ── Resource Operations ───────────────────────
+    # ── Resource Operations (delegated to _ssh_resources) ───
 
     def get_resources(self, partition: str | None = None) -> list[dict[str, Any]]:
-        """Get cluster resource information via sinfo + squeue.
-
-        The ``partition=None`` case is the per-partition listing used
-        by ``/api/resources`` — errors are caught per-partition so a
-        single broken partition doesn't sink the whole dashboard call.
-        Callers that need a single aggregated cluster-wide snapshot
-        (e.g. the resource snapshotter) should use
-        :meth:`get_cluster_snapshot` instead — that path fails closed
-        and dedups nodes across partitions, which summing this list
-        does not.
-        """
-        if partition:
-            _validate_identifier(partition, "partition")
-            return [self._get_partition_resources(partition)]
-
-        # List all partitions
-        output = _run_slurm_cmd(self, "sinfo -o '%P' --noheader")
-        partitions = {
-            line.strip().rstrip("*")
-            for line in output.strip().splitlines()
-            if line.strip()
-        }
-
-        results: list[dict[str, Any]] = []
-        for p in sorted(partitions):
-            try:
-                results.append(self._get_partition_resources(p))
-            except Exception as e:
-                logger.warning("Failed to get resources for partition %s: %s", p, e)
-                continue
-        return results
+        return _list_partition_resources_impl(self, partition)
 
     def get_cluster_snapshot(self) -> dict[str, Any]:
-        """Return a single cluster-wide resource snapshot dict.
-
-        Used by the resource snapshotter for a single row in
-        ``resource_snapshots``. Differs from ``get_resources(None)``
-        in two important ways:
-
-        1. Runs ONE ``sinfo`` (no ``-p`` filter) and ONE ``squeue``,
-           then dedups nodes by name via ``seen_nodes``. Summing the
-           per-partition output of ``get_resources(None)`` would
-           double-count any node that belongs to multiple partitions
-           (a common SLURM setup — e.g. ``debug`` and ``gpu`` sharing
-           the same physical nodes).
-        2. Exceptions propagate instead of being swallowed per
-           partition. Transient SSH/SLURM failures surface to the
-           poller supervisor for exponential backoff rather than
-           silently writing understated totals to the DB.
-
-        Returned keys match :meth:`_get_partition_resources` with
-        ``partition=None``.
-        """
-        # One cluster-wide sinfo call — seen_nodes dedup handles
-        # multi-partition membership correctly.
-        sinfo_output = _run_slurm_cmd(self, 'sinfo -o "%n %G %T" --noheader')
-
-        nodes_total = 0
-        nodes_idle = 0
-        nodes_down = 0
-        total_gpus = 0
-        seen_nodes: set[str] = set()
-
-        for line in sinfo_output.strip().splitlines():
-            parts = line.split()
-            if len(parts) < 3:
-                continue
-            node_name, gres, state = parts[0], parts[1], parts[2].lower()
-            if node_name in seen_nodes:
-                continue
-            seen_nodes.add(node_name)
-            nodes_total += 1
-
-            if any(s in state for s in _UNAVAILABLE_STATES):
-                nodes_down += 1
-                continue
-            if "idle" in state:
-                nodes_idle += 1
-
-            if gres and gres != "(null)":
-                for entry in gres.split(","):
-                    gpu_match = GPU_TRES_RE.search(entry)
-                    if gpu_match:
-                        total_gpus += int(gpu_match.group(1))
-
-        # Cluster-wide squeue — same TRES parsing as the per-partition path.
-        squeue_output = _run_slurm_cmd(self, 'squeue -o "%i %T %b %D" --noheader')
-        gpus_in_use = 0
-        jobs_running = 0
-        for line in squeue_output.strip().splitlines():
-            parts = line.split()
-            if len(parts) < 2 or parts[1] != "RUNNING":
-                continue
-            jobs_running += 1
-            if len(parts) >= 3:
-                gpu_match = GPU_TRES_RE.search(parts[2])
-                if gpu_match:
-                    per_node_gpus = int(gpu_match.group(1))
-                    num_nodes = 1
-                    if len(parts) >= 4 and parts[3].isdigit():
-                        num_nodes = int(parts[3])
-                    gpus_in_use += per_node_gpus * num_nodes
-
-        gpus_available = max(0, total_gpus - gpus_in_use)
-        gpu_utilization = gpus_in_use / total_gpus if total_gpus > 0 else 0.0
-
-        return {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "partition": None,
-            "total_gpus": total_gpus,
-            "gpus_in_use": gpus_in_use,
-            "gpus_available": gpus_available,
-            "jobs_running": jobs_running,
-            "nodes_total": nodes_total,
-            "nodes_idle": nodes_idle,
-            "nodes_down": nodes_down,
-            "gpu_utilization": gpu_utilization,
-            "has_available_gpus": gpus_available > 0,
-        }
+        return _cluster_snapshot_impl(self)
 
     def _get_partition_resources(self, partition: str) -> dict[str, Any]:
-        """Get resources for a single partition."""
-        _validate_identifier(partition, "partition")
+        from srunx.slurm.clients._ssh_resources import partition_resources
 
-        sinfo_output = _run_slurm_cmd(
-            self,
-            f'sinfo -o "%n %G %T" --noheader -p {partition}',
-        )
-
-        nodes_total = 0
-        nodes_idle = 0
-        nodes_down = 0
-        total_gpus = 0
-        seen_nodes: set[str] = set()
-
-        for line in sinfo_output.strip().splitlines():
-            parts = line.split()
-            if len(parts) < 3:
-                continue
-            node_name, gres, state = parts[0], parts[1], parts[2].lower()
-            if node_name in seen_nodes:
-                continue
-            seen_nodes.add(node_name)
-            nodes_total += 1
-
-            # Filter unavailable states (aligned with core ResourceMonitor)
-            if any(s in state for s in _UNAVAILABLE_STATES):
-                nodes_down += 1
-                continue
-            if "idle" in state:
-                nodes_idle += 1
-
-            # Parse GPU count using shared regex (handles gpu:NVIDIA-A100:8 etc.)
-            if gres and gres != "(null)":
-                for entry in gres.split(","):
-                    gpu_match = GPU_TRES_RE.search(entry)
-                    if gpu_match:
-                        total_gpus += int(gpu_match.group(1))
-
-        # squeue for GPU usage — include %D (node count) to handle multi-node jobs
-        # %b is TRES_PER_NODE, so actual GPU usage = per_node_gpus * num_nodes
-        squeue_output = _run_slurm_cmd(
-            self,
-            f'squeue -o "%i %T %b %D" --noheader -p {partition}',
-        )
-
-        gpus_in_use = 0
-        jobs_running = 0
-        for line in squeue_output.strip().splitlines():
-            parts = line.split()
-            if len(parts) < 2 or parts[1] != "RUNNING":
-                continue
-            jobs_running += 1
-            if len(parts) >= 3:
-                gpu_match = GPU_TRES_RE.search(parts[2])
-                if gpu_match:
-                    per_node_gpus = int(gpu_match.group(1))
-                    # Multiply by node count for multi-node jobs
-                    num_nodes = 1
-                    if len(parts) >= 4 and parts[3].isdigit():
-                        num_nodes = int(parts[3])
-                    gpus_in_use += per_node_gpus * num_nodes
-
-        gpus_available = max(0, total_gpus - gpus_in_use)
-        gpu_utilization = gpus_in_use / total_gpus if total_gpus > 0 else 0.0
-
-        return {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "partition": partition,
-            "total_gpus": total_gpus,
-            "gpus_in_use": gpus_in_use,
-            "gpus_available": gpus_available,
-            "jobs_running": jobs_running,
-            "nodes_total": nodes_total,
-            "nodes_idle": nodes_idle,
-            "nodes_down": nodes_down,
-            "gpu_utilization": gpu_utilization,
-            "has_available_gpus": gpus_available > 0,
-        }
+        return partition_resources(self, partition)

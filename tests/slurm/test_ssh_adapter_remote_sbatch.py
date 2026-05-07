@@ -1,4 +1,4 @@
-"""Tests for :meth:`SlurmSSHAdapter.submit_remote_sbatch`.
+"""Tests for :meth:`SlurmSSHClient.submit_remote_sbatch`.
 
 Codex follow-up #1 on PR #134 flagged that the existing CLI tests
 mock the adapter, leaving no direct proof that ``submit_remote_sbatch``
@@ -16,16 +16,16 @@ import pytest
 
 from srunx.callbacks import Callback
 from srunx.domain import ShellJob
-from srunx.slurm.ssh import SlurmSSHAdapter
+from srunx.slurm.clients.ssh import SlurmSSHClient
 
 
 def _bare_adapter(
     callbacks: list[Callback] | None = None,
     *,
     profile_name: str | None = "ml-cluster",
-) -> SlurmSSHAdapter:
+) -> SlurmSSHClient:
     """Build a fully-populated adapter that bypasses real SSH I/O."""
-    adapter = object.__new__(SlurmSSHAdapter)
+    adapter = object.__new__(SlurmSSHClient)
     adapter._io_lock = threading.RLock()
     adapter._client = MagicMock()
     adapter.callbacks = list(callbacks) if callbacks else []
@@ -55,7 +55,7 @@ class _RecordingCallback(Callback):
         self.submitted.append(job.name)
 
 
-def _stub_inner_submit(adapter: SlurmSSHAdapter, *, job_id: str, name: str) -> None:
+def _stub_inner_submit(adapter: SlurmSSHClient, *, job_id: str, name: str) -> None:
     """Wire ``adapter._client.slurm.submit_remote_sbatch_file`` to a MagicMock.
 
     The class-level ``_client`` is typed as :class:`SSHSlurmClient`,

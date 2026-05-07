@@ -1,4 +1,4 @@
-"""Phase 2: LSP alignment of Slurm and SlurmSSHAdapter with JobOperations.
+"""Phase 2: LSP alignment of Slurm and SlurmSSHClient with JobOperations.
 
 These tests verify the new Protocol-conformant entry points added in
 ``src/srunx/client.py`` and ``src/srunx/web/ssh_adapter.py`` without
@@ -73,22 +73,22 @@ class TestSlurmTailLogIncremental:
         assert isinstance(chunk, LogChunk)
 
 
-class TestSlurmSSHAdapterProtocolCompliance:
+class TestSlurmSSHClientProtocolCompliance:
     """SSHAdapter needs a live SSH connection to instantiate — use
     class-level structural checks instead of ``isinstance(instance, ...)``.
     """
 
     def test_ssh_adapter_has_protocol_methods(self) -> None:
         """Structural check: all 5 Protocol methods are defined."""
-        from srunx.slurm.ssh import SlurmSSHAdapter
+        from srunx.slurm.clients.ssh import SlurmSSHClient
 
         for method in ("submit", "cancel", "status", "queue", "tail_log_incremental"):
-            assert hasattr(SlurmSSHAdapter, method), f"missing method: {method}"
-            assert callable(getattr(SlurmSSHAdapter, method))
+            assert hasattr(SlurmSSHClient, method), f"missing method: {method}"
+            assert callable(getattr(SlurmSSHClient, method))
 
     def test_ssh_adapter_backcompat_aliases_preserved(self) -> None:
         """Existing method names must still be callable (non-breaking change)."""
-        from srunx.slurm.ssh import SlurmSSHAdapter
+        from srunx.slurm.clients.ssh import SlurmSSHClient
 
         for legacy_method in (
             "submit_job",
@@ -97,25 +97,25 @@ class TestSlurmSSHAdapterProtocolCompliance:
             "list_jobs",
             "get_job_output",
         ):
-            assert hasattr(SlurmSSHAdapter, legacy_method), (
+            assert hasattr(SlurmSSHClient, legacy_method), (
                 f"legacy method removed: {legacy_method}"
             )
-            assert callable(getattr(SlurmSSHAdapter, legacy_method))
+            assert callable(getattr(SlurmSSHClient, legacy_method))
 
     def test_ssh_adapter_status_returns_base_job_shape(self) -> None:
         """``status`` returns a BaseJob whose ``status`` attribute is a JobStatus."""
         from srunx.domain import BaseJob, JobStatus
+        from srunx.slurm.clients.ssh import SlurmSSHClient
         from srunx.slurm.protocols import JobSnapshot
-        from srunx.slurm.ssh import SlurmSSHAdapter
 
         # Patch out ``queue_by_ids`` to avoid touching any SSH client.
         with patch.object(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "queue_by_ids",
             return_value={99: JobSnapshot(status="RUNNING")},
         ):
             # Bypass __init__ entirely — we only test the status() path shape.
-            adapter = SlurmSSHAdapter.__new__(SlurmSSHAdapter)
+            adapter = SlurmSSHClient.__new__(SlurmSSHClient)
             result = adapter.status(99)
         assert isinstance(result, BaseJob)
         assert result.job_id == 99
@@ -124,10 +124,10 @@ class TestSlurmSSHAdapterProtocolCompliance:
     def test_ssh_adapter_status_raises_job_not_found(self) -> None:
         """Missing job → JobNotFoundError, matching the Protocol contract."""
         from srunx.common.exceptions import JobNotFoundError
-        from srunx.slurm.ssh import SlurmSSHAdapter
+        from srunx.slurm.clients.ssh import SlurmSSHClient
 
-        with patch.object(SlurmSSHAdapter, "queue_by_ids", return_value={}):
-            adapter = SlurmSSHAdapter.__new__(SlurmSSHAdapter)
+        with patch.object(SlurmSSHClient, "queue_by_ids", return_value={}):
+            adapter = SlurmSSHClient.__new__(SlurmSSHClient)
             with pytest.raises(JobNotFoundError):
                 adapter.status(99999)
 
@@ -141,7 +141,7 @@ class TestSlurmSSHAdapterProtocolCompliance:
         the sacct merge never runs on the CLI path.
         """
         from srunx.domain import BaseJob, JobStatus
-        from srunx.slurm.ssh import SlurmSSHAdapter
+        from srunx.slurm.clients.ssh import SlurmSSHClient
 
         fake_rows = [
             {
@@ -156,13 +156,13 @@ class TestSlurmSSHAdapterProtocolCompliance:
         ]
         with (
             patch.object(
-                SlurmSSHAdapter,
+                SlurmSSHClient,
                 "_list_active_jobs",
                 return_value=(fake_rows, {101}),
             ),
-            patch.object(SlurmSSHAdapter, "list_jobs") as list_jobs_mock,
+            patch.object(SlurmSSHClient, "list_jobs") as list_jobs_mock,
         ):
-            adapter = SlurmSSHAdapter.__new__(SlurmSSHAdapter)
+            adapter = SlurmSSHClient.__new__(SlurmSSHClient)
             adapter._username = "alice"  # queue() reads profile's username on None
             out = adapter.queue(user="alice")
         assert isinstance(out, list)
@@ -175,15 +175,15 @@ class TestSlurmSSHAdapterProtocolCompliance:
 
     def test_ssh_adapter_tail_log_incremental_returns_log_chunk(self) -> None:
         """``tail_log_incremental`` returns a Pydantic LogChunk."""
+        from srunx.slurm.clients.ssh import SlurmSSHClient
         from srunx.slurm.protocols import LogChunk
-        from srunx.slurm.ssh import SlurmSSHAdapter
 
         with patch.object(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "get_job_output",
             return_value=("stdout bytes", "stderr bytes", 12, 12),
         ):
-            adapter = SlurmSSHAdapter.__new__(SlurmSSHAdapter)
+            adapter = SlurmSSHClient.__new__(SlurmSSHClient)
             chunk = adapter.tail_log_incremental(
                 job_id=1, stdout_offset=0, stderr_offset=0
             )
