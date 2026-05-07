@@ -79,7 +79,7 @@ class TestWorkflowExecutionControl:
         assert "Stop execution at this job" in stdout
         assert "Execute only this specific job" in stdout
 
-    @patch("srunx.cli.workflow.WorkflowRunner")
+    @patch("srunx.cli.workflow.orchestrator.WorkflowRunner")
     def test_workflow_run_with_from_option(self, mock_runner_class):
         """Test workflow run with --from option."""
         mock_runner = Mock()
@@ -99,7 +99,7 @@ class TestWorkflowExecutionControl:
                 from_job="job2", to_job=None, single_job=None
             )
 
-    @patch("srunx.cli.workflow.WorkflowRunner")
+    @patch("srunx.cli.workflow.orchestrator.WorkflowRunner")
     def test_workflow_run_with_to_option(self, mock_runner_class):
         """Test workflow run with --to option."""
         mock_runner = Mock()
@@ -119,7 +119,7 @@ class TestWorkflowExecutionControl:
                 from_job=None, to_job="job2", single_job=None
             )
 
-    @patch("srunx.cli.workflow.WorkflowRunner")
+    @patch("srunx.cli.workflow.orchestrator.WorkflowRunner")
     def test_workflow_run_with_job_option(self, mock_runner_class):
         """Test workflow run with --job option."""
         mock_runner = Mock()
@@ -139,7 +139,7 @@ class TestWorkflowExecutionControl:
                 from_job=None, to_job=None, single_job="job2"
             )
 
-    @patch("srunx.cli.workflow.WorkflowRunner")
+    @patch("srunx.cli.workflow.orchestrator.WorkflowRunner")
     def test_workflow_run_with_from_and_to_options(self, mock_runner_class):
         """Test workflow run with both --from and --to options."""
         mock_runner = Mock()
@@ -218,7 +218,7 @@ class TestWorkflowExecutionControl:
                 or "Cannot use --job" in str(result.exception)
             )
 
-    @patch("srunx.cli.workflow.WorkflowRunner")
+    @patch("srunx.cli.workflow.orchestrator.WorkflowRunner")
     def test_workflow_dry_run_with_execution_options(self, mock_runner_class):
         """Test workflow dry run shows execution plan with new options."""
         mock_runner = Mock()
@@ -245,7 +245,7 @@ class TestWorkflowExecutionControl:
             assert "job2: echo 2" in result.stdout
             mock_runner._get_jobs_to_execute.assert_called_with(None, None, "job2")
 
-    @patch("srunx.cli.workflow.WorkflowRunner")
+    @patch("srunx.cli.workflow.orchestrator.WorkflowRunner")
     def test_workflow_dry_run_with_from_to_options(self, mock_runner_class):
         """Test workflow dry run shows execution range with --from and --to options."""
         mock_runner = Mock()

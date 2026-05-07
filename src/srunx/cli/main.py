@@ -33,8 +33,8 @@ app = typer.Typer(
 )
 
 # Create subapps (``flow`` stays here because ``flow_run`` is a thin shim
-# delegating to ``srunx.cli.workflow._execute_workflow``; extracting it
-# would only move one function and buy nothing).
+# delegating to ``srunx.cli.workflow.orchestrator._execute_workflow``;
+# extracting it would only move one function and buy nothing).
 flow_app = typer.Typer(help="Workflow management")
 
 # Register sub-Typers first so the command order in ``srunx --help``
@@ -160,7 +160,7 @@ def flow_run(
     # Delegate to the shared implementation in srunx.cli.workflow which
     # already handles sweep orchestration + args_override. The flags here
     # must stay in sync with that helper's signature.
-    from srunx.cli.workflow import _execute_workflow
+    from srunx.cli.workflow.orchestrator import _execute_workflow
 
     _execute_workflow(
         yaml_file=yaml_file,
