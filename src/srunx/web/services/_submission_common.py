@@ -217,7 +217,7 @@ async def hold_workflow_mounts_web(
     """Hold the per-mount sync lock across the whole workflow submission.
 
     Workflow Phase 2 (#135) — web parity with the CLI's
-    :func:`srunx.cli.workflow._hold_workflow_mounts`. Each unique
+    :func:`srunx.cli.workflow.mounts._hold_workflow_mounts`. Each unique
     mount touched by the workflow's :class:`ShellJob` ``script_path``
     values is rsynced **once** under
     :func:`~srunx.sync.service.mount_sync_session`, and the

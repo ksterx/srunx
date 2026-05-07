@@ -1320,7 +1320,7 @@ class SlurmSSHAdapter:
         ``submission_context.allow_in_place`` so callers that do NOT
         hold the per-(profile, mount) sync lock cannot race a
         concurrent rsync. CLI workflow runs flip the flag inside
-        :func:`srunx.cli.workflow._hold_workflow_mounts`; Web /
+        :func:`srunx.cli.workflow.mounts._hold_workflow_mounts`; Web /
         MCP paths leave it ``False`` and keep the safe temp-upload
         behaviour. Closes Codex blocker #3 on PR #141.
         """

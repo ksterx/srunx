@@ -18,7 +18,7 @@ import pytest
 import yaml  # type: ignore
 from typer.testing import CliRunner
 
-from srunx.cli.workflow import app as workflow_app
+from srunx.cli.workflow.orchestrator import app as workflow_app
 
 
 @pytest.fixture
@@ -77,8 +77,8 @@ class TestNonSweepArgOverride:
 
         runner = CliRunner()
         with (
-            patch("srunx.cli.workflow.WorkflowRunner") as runner_cls,
-            patch("srunx.cli.workflow.SweepOrchestrator") as orch_cls,
+            patch("srunx.cli.workflow.orchestrator.WorkflowRunner") as runner_cls,
+            patch("srunx.cli.workflow.sweep.SweepOrchestrator") as orch_cls,
         ):
             mock_runner = MagicMock()
             runner_cls.from_yaml.return_value = mock_runner
@@ -104,8 +104,8 @@ class TestSweepFlag:
 
         runner = CliRunner()
         with (
-            patch("srunx.cli.workflow.SweepOrchestrator") as orch_cls,
-            patch("srunx.cli.workflow.WorkflowRunner") as runner_cls,
+            patch("srunx.cli.workflow.sweep.SweepOrchestrator") as orch_cls,
+            patch("srunx.cli.workflow.orchestrator.WorkflowRunner") as runner_cls,
         ):
             mock_orch = MagicMock()
             mock_orch.run.return_value = _FakeSweepRun()
@@ -161,7 +161,7 @@ class TestSweepFlag:
         yaml_path = _write_workflow(tmp_path)
 
         runner = CliRunner()
-        with patch("srunx.cli.workflow.SweepOrchestrator") as orch_cls:
+        with patch("srunx.cli.workflow.sweep.SweepOrchestrator") as orch_cls:
             mock_orch = MagicMock()
             mock_orch.run.return_value = _FakeSweepRun()
             orch_cls.return_value = mock_orch
@@ -188,7 +188,7 @@ class TestSweepFlag:
         yaml_path = _write_workflow(tmp_path, with_sweep=True)
 
         runner = CliRunner()
-        with patch("srunx.cli.workflow.SweepOrchestrator") as orch_cls:
+        with patch("srunx.cli.workflow.sweep.SweepOrchestrator") as orch_cls:
             mock_orch = MagicMock()
             mock_orch.run.return_value = _FakeSweepRun()
             orch_cls.return_value = mock_orch
@@ -226,8 +226,10 @@ class TestSweepFlag:
 
         runner = CliRunner()
         with (
-            patch("srunx.cli.workflow.SweepOrchestrator") as orch_cls,
-            patch("srunx.cli.workflow.NotificationWatchCallback") as cb_cls,
+            patch("srunx.cli.workflow.sweep.SweepOrchestrator") as orch_cls,
+            patch(
+                "srunx.cli.workflow.notifications.NotificationWatchCallback"
+            ) as cb_cls,
         ):
             mock_orch = MagicMock()
             mock_orch.run.return_value = _FakeSweepRun()
@@ -263,7 +265,7 @@ class TestSweepFlag:
         yaml_path = _write_workflow(tmp_path)
 
         runner = CliRunner()
-        with patch("srunx.cli.workflow.SweepOrchestrator") as orch_cls:
+        with patch("srunx.cli.workflow.sweep.SweepOrchestrator") as orch_cls:
             result = runner.invoke(
                 workflow_app,
                 [

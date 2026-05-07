@@ -223,7 +223,7 @@ def _patch_sweep_transport(
 ):
     """Stub SSH transport for sweep tests; capture per-cell submission_context.
 
-    Mirrors ``test_workflow_in_place._patch_workflow_transport`` but
+    Mirrors ``test_orchestrator_in_place._patch_workflow_transport`` but
     keeps the executor visible across cells so we can assert how
     many times each method was called.
     """
