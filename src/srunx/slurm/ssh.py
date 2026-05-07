@@ -120,7 +120,7 @@ def _run_slurm_cmd(adapter: SlurmSSHAdapter, cmd: str) -> str:
     """
     with adapter._io_lock:  # noqa: SLF001
         adapter._ensure_connected()
-        stdout, stderr, exit_code = adapter._client._execute_slurm_command(cmd)  # noqa: SLF001
+        stdout, stderr, exit_code = adapter._client.slurm.execute_slurm_command(cmd)  # noqa: SLF001
     if exit_code != 0:
         raise RuntimeError(f"Remote command failed ({exit_code}): {stderr.strip()}")
     return stdout
@@ -360,7 +360,7 @@ class SlurmSSHAdapter:
         raises — any transport-level error is treated as "not connected".
         """
         try:
-            ssh = self._client.ssh_client
+            ssh = self._client.connection.ssh_client
             if ssh is None:
                 return False
             transport = ssh.get_transport()
@@ -369,7 +369,7 @@ class SlurmSSHAdapter:
             return False
 
     def _set_keepalive(self) -> None:
-        ssh = self._client.ssh_client
+        ssh = self._client.connection.ssh_client
         if ssh is not None:
             transport = ssh.get_transport()
             if transport:
@@ -408,7 +408,7 @@ class SlurmSSHAdapter:
         check and the use.
         """
         with self._io_lock:
-            ssh = self._client.ssh_client
+            ssh = self._client.connection.ssh_client
             if ssh is None:
                 logger.debug("SSH adapter connecting for the first time")
                 if not self._client.connect():
@@ -800,7 +800,7 @@ class SlurmSSHAdapter:
         """
         with self._io_lock:
             self._ensure_connected()
-            result = self._client.submit_sbatch_job(
+            result = self._client.slurm.submit_sbatch_job(
                 script_content, job_name=job_name, dependency=dependency
             )
         if result is None:
@@ -851,7 +851,7 @@ class SlurmSSHAdapter:
 
         with self._io_lock:
             self._ensure_connected()
-            result = self._client.submit_remote_sbatch_file(
+            result = self._client.slurm.submit_remote_sbatch_file(
                 remote_path,
                 submit_cwd=submit_cwd,
                 job_name=job_name,
@@ -933,7 +933,7 @@ class SlurmSSHAdapter:
         """
         with self._io_lock:
             self._ensure_connected()
-            return self._client.get_job_output(
+            return self._client.logs.get_job_output(
                 str(job_id),
                 job_name=job_name,
                 stdout_offset=stdout_offset,
@@ -953,7 +953,7 @@ class SlurmSSHAdapter:
         """
         with self._io_lock:
             self._ensure_connected()
-            return self._client.get_job_status(str(job_id))
+            return self._client.slurm.get_job_status(str(job_id))
 
     def get_job_output_detailed(
         self,
@@ -972,7 +972,9 @@ class SlurmSSHAdapter:
         """
         with self._io_lock:
             self._ensure_connected()
-            info = self._client.get_job_output_detailed(str(job_id), job_name=job_name)
+            info = self._client.logs.get_job_output_detailed(
+                str(job_id), job_name=job_name
+            )
         if skip_content:
             # Preserve the list[str] / None / str shape expected by callers.
             info["output"] = ""
@@ -1065,7 +1067,7 @@ class SlurmSSHAdapter:
         try:
             with self._io_lock:
                 self._ensure_connected()
-                result = self._client.submit_sbatch_job(
+                result = self._client.slurm.submit_sbatch_job(
                     script_content, job_name=job.name
                 )
         except paramiko.AuthenticationException as exc:
@@ -1462,13 +1464,13 @@ class SlurmSSHAdapter:
 
             # --- 2. Submit via SSH ---
             if in_place_remote_path is not None:
-                result = self._client.submit_remote_sbatch_file(
+                result = self._client.slurm.submit_remote_sbatch_file(
                     in_place_remote_path,
                     submit_cwd=in_place_submit_cwd,
                     job_name=job.name,
                 )
             else:
-                result = self._client.submit_sbatch_job(
+                result = self._client.slurm.submit_sbatch_job(
                     script_content, job_name=job.name
                 )
             if result is None or not result.job_id:

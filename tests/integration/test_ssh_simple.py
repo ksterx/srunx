@@ -26,13 +26,13 @@ class TestSimpleSSHIntegration:
             with patch.object(client, "disconnect"):
                 mock_ssh = Mock()
                 mock_sftp = Mock()
-                client.ssh_client = mock_ssh
-                client.sftp_client = mock_sftp
+                client.connection.ssh_client = mock_ssh
+                client.connection.sftp_client = mock_sftp
 
                 with client as ctx:
                     assert ctx is client
-                    assert client.ssh_client == mock_ssh
-                    assert client.sftp_client == mock_sftp
+                    assert client.connection.ssh_client == mock_ssh
+                    assert client.connection.sftp_client == mock_sftp
 
     def test_profile_creation_and_usage(self):
         """Test creating and using SSH profiles."""
@@ -76,15 +76,15 @@ class TestSimpleSSHIntegration:
         client = SSHSlurmClient(hostname="test.example.com", username="testuser")
 
         # Mock all required components
-        client.ssh_client = Mock()
-        client.sftp_client = Mock()
+        client.connection.ssh_client = Mock()
+        client.connection.sftp_client = Mock()
 
         # Mock file operations
-        client._write_remote_file = Mock()
-        client.execute_command = Mock(return_value=("", "", 0))
-        client.validate_remote_script = Mock(return_value=(True, ""))
-        client._get_slurm_command = Mock(return_value="sbatch")
-        client._execute_slurm_command = Mock(
+        client.files.write_remote_file = Mock()
+        client.connection.execute_command = Mock(return_value=("", "", 0))
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        client.slurm._get_slurm_command = Mock(return_value="sbatch")
+        client.slurm.execute_slurm_command = Mock(
             return_value=("Submitted batch job 12345", "", 0)
         )
 
@@ -94,16 +94,16 @@ class TestSimpleSSHIntegration:
 echo "Hello from SLURM!"
 """
 
-        job = client.submit_sbatch_job(script_content, job_name="test_job")
+        job = client.slurm.submit_sbatch_job(script_content, job_name="test_job")
 
         assert job is not None
         assert job.job_id == "12345"
         assert job.name == "test_job"
 
         # Verify methods were called
-        client._write_remote_file.assert_called_once()
-        client.execute_command.assert_called()
-        client._execute_slurm_command.assert_called_once()
+        client.files.write_remote_file.assert_called_once()
+        client.connection.execute_command.assert_called()
+        client.slurm.execute_slurm_command.assert_called_once()
 
     def test_job_status_monitoring(self):
         """Test job status monitoring functionality."""
@@ -123,19 +123,19 @@ echo "Hello from SLURM!"
 
             return (f"12345 {status}", "", 0)
 
-        client._execute_slurm_command = mock_execute_slurm_command
+        client.slurm.execute_slurm_command = mock_execute_slurm_command
 
         # Create a job for monitoring
         job = SlurmJob(job_id="12345", name="test_job")
 
         # Test individual status checks
-        status1 = client.get_job_status("12345")
+        status1 = client.slurm.get_job_status("12345")
         assert status1 == "PENDING"
 
-        status2 = client.get_job_status("12345")
+        status2 = client.slurm.get_job_status("12345")
         assert status2 == "RUNNING"
 
-        status3 = client.get_job_status("12345")
+        status3 = client.slurm.get_job_status("12345")
         assert status3 == "COMPLETED"
 
     def test_error_handling_scenarios(self):
@@ -143,12 +143,12 @@ echo "Hello from SLURM!"
         client = SSHSlurmClient(hostname="test.example.com", username="testuser")
 
         # Test SLURM command not found
-        client._execute_slurm_command = Mock(
+        client.slurm.execute_slurm_command = Mock(
             return_value=("", "sbatch: command not found", 127)
         )
 
-        with patch.object(client, "logger") as mock_logger:
-            client._handle_slurm_error("sbatch", "sbatch: command not found", 127)
+        with patch.object(client.slurm, "logger") as mock_logger:
+            client.slurm._handle_slurm_error("sbatch", "sbatch: command not found", 127)
 
             # Should log helpful error messages
             assert mock_logger.error.call_count >= 2
@@ -160,9 +160,9 @@ echo "Hello from SLURM!"
         client = SSHSlurmClient(hostname="test.example.com", username="testuser")
 
         # Mock SFTP client
-        client.sftp_client = Mock()
-        client.sftp_client.put = Mock()
-        client.execute_command = Mock(return_value=("", "", 0))
+        client.connection.sftp_client = Mock()
+        client.connection.sftp_client.put = Mock()
+        client.connection.execute_command = Mock(return_value=("", "", 0))
 
         # Create temporary test file
         with tempfile.NamedTemporaryFile(
@@ -172,12 +172,12 @@ echo "Hello from SLURM!"
             test_path = test_file.name
 
         try:
-            remote_path = client.upload_file(test_path)
+            remote_path = client.files.upload_file(test_path)
 
             # Verify upload was attempted
             assert remote_path.startswith("/tmp/srunx/")
             assert Path(test_path).stem in remote_path
-            client.sftp_client.put.assert_called_once()
+            client.connection.sftp_client.put.assert_called_once()
 
         finally:
             Path(test_path).unlink()
@@ -194,7 +194,7 @@ echo "Hello from SLURM!"
             hostname="test.example.com", username="testuser", env_vars=env_vars
         )
 
-        env_setup = client._get_slurm_env_setup()
+        env_setup = client.slurm._get_slurm_env_setup()
 
         # Verify environment variables are included (with proper quoting)
         assert "export CUDA_VISIBLE_DEVICES='0,1,2,3'" in env_setup

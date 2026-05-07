@@ -67,9 +67,9 @@ def _bare_adapter(*, connected: bool = True) -> SlurmSSHAdapter:
         transport.is_active.return_value = True
         ssh = MagicMock()
         ssh.get_transport.return_value = transport
-        adapter._client.ssh_client = ssh
+        adapter._client.connection.ssh_client = ssh
     else:
-        adapter._client.ssh_client = None
+        adapter._client.connection.ssh_client = None
     return adapter
 
 
@@ -217,8 +217,8 @@ class TestPoolConcurrency:
         # treats the adapter as unhealthy and drops it.
         with pool.lease() as executor:
             assert isinstance(executor, SSHWorkflowJobExecutor)
-            assert executor._adapter._client.ssh_client is not None
-            executor._adapter._client.ssh_client.get_transport.return_value.is_active.return_value = False
+            assert executor._adapter._client.connection.ssh_client is not None
+            executor._adapter._client.connection.ssh_client.get_transport.return_value.is_active.return_value = False
 
         # Created counter must have been decremented; next lease mints anew.
         assert pool._created == 0
@@ -331,7 +331,7 @@ class TestRenderParity:
             slurm_job.name = job_name
             return slurm_job
 
-        adapter._client.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
+        adapter._client.slurm.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
 
         # Short-circuit monitor + DB.
         monkeypatch.setattr(

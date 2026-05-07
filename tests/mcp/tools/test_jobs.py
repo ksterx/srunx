@@ -46,7 +46,7 @@ class TestSubmitJob:
         mock_returned_job.name = "ssh_job"
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.submit_sbatch_job.return_value = mock_returned_job
+        mock_client.slurm.submit_sbatch_job.return_value = mock_returned_job
         mock_get_client.return_value = mock_client
 
         result = submit_job(
@@ -67,7 +67,7 @@ class TestSubmitJob:
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.submit_sbatch_job.return_value = None
+        mock_client.slurm.submit_sbatch_job.return_value = None
         mock_get_client.return_value = mock_client
 
         result = submit_job(
@@ -95,7 +95,7 @@ class TestSubmitJob:
         mock_returned_job.name = "ssh_job"
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.submit_sbatch_job.return_value = mock_returned_job
+        mock_client.slurm.submit_sbatch_job.return_value = mock_returned_job
         mock_get_client.return_value = mock_client
 
         result = submit_job(
@@ -105,7 +105,7 @@ class TestSubmitJob:
             work_dir="/remote/workdir",
         )
         assert result["success"] is True, result
-        script_content = mock_client.submit_sbatch_job.call_args[0][0]
+        script_content = mock_client.slurm.submit_sbatch_job.call_args[0][0]
         assert "#SBATCH --job-name=ssh_job" in script_content
         assert "SRUNX_OUTPUTS_DIR" not in script_content
 
@@ -143,7 +143,7 @@ class TestListJobs:
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client._execute_slurm_command.return_value = (
+        mock_client.slurm.execute_slurm_command.return_value = (
             "12345     gpu       train         user1  RUNNING   0:05:00  1:00:00      1 node001 gpu:1\n",
             "",
             0,
@@ -161,7 +161,7 @@ class TestListJobs:
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client._execute_slurm_command.return_value = ("", "error msg", 1)
+        mock_client.slurm.execute_slurm_command.return_value = ("", "error msg", 1)
         mock_get_client.return_value = mock_client
 
         result = list_jobs(use_ssh=True)
@@ -195,7 +195,7 @@ class TestGetJobStatus:
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.get_job_status.return_value = "COMPLETED"
+        mock_client.slurm.get_job_status.return_value = "COMPLETED"
         mock_get_client.return_value = mock_client
 
         result = get_job_status(job_id="12345", use_ssh=True)
@@ -207,7 +207,7 @@ class TestGetJobStatus:
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.get_job_status.return_value = "NOT_FOUND"
+        mock_client.slurm.get_job_status.return_value = "NOT_FOUND"
         mock_get_client.return_value = mock_client
 
         result = get_job_status(job_id="99999", use_ssh=True)
@@ -243,7 +243,7 @@ class TestCancelJob:
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client._execute_slurm_command.return_value = ("", "", 0)
+        mock_client.slurm.execute_slurm_command.return_value = ("", "", 0)
         mock_get_client.return_value = mock_client
 
         result = cancel_job(job_id="12345", use_ssh=True)
@@ -255,7 +255,11 @@ class TestCancelJob:
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client._execute_slurm_command.return_value = ("", "permission denied", 1)
+        mock_client.slurm.execute_slurm_command.return_value = (
+            "",
+            "permission denied",
+            1,
+        )
         mock_get_client.return_value = mock_client
 
         result = cancel_job(job_id="12345", use_ssh=True)
@@ -291,7 +295,7 @@ class TestGetJobLogs:
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.get_job_output.return_value = (
+        mock_client.logs.get_job_output.return_value = (
             "stdout content",
             "stderr content",
             100,
@@ -309,7 +313,7 @@ class TestGetJobLogs:
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.get_job_output.return_value = ("", "", 0, 0)
+        mock_client.logs.get_job_output.return_value = ("", "", 0, 0)
         mock_get_client.return_value = mock_client
 
         result = get_job_logs(job_id="12345", use_ssh=True)

@@ -463,7 +463,7 @@ class TestLockedMountNamesSafetyNet:
             )
 
         monkeypatch.setattr(
-            adapter._client, "submit_remote_sbatch_file", _fake_remote_submit
+            adapter._client.slurm, "submit_remote_sbatch_file", _fake_remote_submit
         )
 
         ctx = SubmissionRenderContext(
@@ -518,7 +518,7 @@ class TestLockedMountNamesSafetyNet:
             return SlurmJob(job_id="42", name="r")
 
         monkeypatch.setattr(
-            adapter._client, "submit_remote_sbatch_file", _fake_remote_submit
+            adapter._client.slurm, "submit_remote_sbatch_file", _fake_remote_submit
         )
         monkeypatch.setattr(
             adapter, "_monitor_until_terminal", lambda *a, **kw: "COMPLETED"

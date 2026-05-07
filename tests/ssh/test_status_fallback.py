@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from srunx.ssh.core.client import SSHSlurmClient
+from srunx.ssh.core.slurm import SlurmRemoteClient
 from srunx.ssh.core.utils import parse_scontrol_job_state
 
 # ── Pure parser ──────────────────────────────────────────────────────
@@ -68,11 +68,18 @@ class TestParseScontrolStatus:
 # ── get_job_status three-tier fallback ───────────────────────────────
 
 
-def _bare_ssh_client() -> SSHSlurmClient:
-    """Minimal SSHSlurmClient instance bypassing paramiko / config init."""
-    client = object.__new__(SSHSlurmClient)
-    client.logger = MagicMock()
-    return client
+def _bare_ssh_client() -> SlurmRemoteClient:
+    """Minimal SlurmRemoteClient bypassing paramiko / SLURM-path discovery.
+
+    ``get_job_status`` lives on the :class:`SlurmRemoteClient` component
+    after the facade-deduplication refactor, so the three-tier fallback
+    tests target it directly. ``_conn`` / ``_files`` are MagicMocks the
+    tests don't read; the suite stubs ``execute_slurm_command`` directly
+    since that's the only path ``get_job_status`` traverses.
+    """
+    slurm = SlurmRemoteClient(MagicMock(), MagicMock())
+    slurm.logger = MagicMock()
+    return slurm
 
 
 def _stub_exec(responses: list[tuple[str, str, int]]):
@@ -92,14 +99,14 @@ def _stub_exec(responses: list[tuple[str, str, int]]):
 class TestGetJobStatusFallback:
     def test_sacct_hit_short_circuits(self) -> None:
         client = _bare_ssh_client()
-        client._execute_slurm_command = _stub_exec(  # type: ignore[method-assign]
+        client.execute_slurm_command = _stub_exec(  # type: ignore[method-assign]
             [("12345  COMPLETED\n", "", 0)]
         )
         assert client.get_job_status("12345") == "COMPLETED"
 
     def test_squeue_hit_when_sacct_empty(self) -> None:
         client = _bare_ssh_client()
-        client._execute_slurm_command = _stub_exec(  # type: ignore[method-assign]
+        client.execute_slurm_command = _stub_exec(  # type: ignore[method-assign]
             [("", "", 0), ("RUNNING\n", "", 0)]
         )
         assert client.get_job_status("123") == "RUNNING"
@@ -110,7 +117,7 @@ class TestGetJobStatusFallback:
         scontrol_out = (
             "JobId=777 JobName=ok JobState=COMPLETED Reason=None ExitCode=0:0"
         )
-        client._execute_slurm_command = _stub_exec(  # type: ignore[method-assign]
+        client.execute_slurm_command = _stub_exec(  # type: ignore[method-assign]
             [
                 ("", "", 0),  # sacct
                 ("", "", 0),  # squeue
@@ -122,14 +129,14 @@ class TestGetJobStatusFallback:
     def test_scontrol_nonzero_exit_yields_failed(self) -> None:
         client = _bare_ssh_client()
         scontrol_out = "JobId=777 JobState=COMPLETED Reason=NonZeroExit ExitCode=1:0"
-        client._execute_slurm_command = _stub_exec(  # type: ignore[method-assign]
+        client.execute_slurm_command = _stub_exec(  # type: ignore[method-assign]
             [("", "", 0), ("", "", 0), (scontrol_out, "", 0)]
         )
         assert client.get_job_status("777") == "FAILED"
 
     def test_all_three_sources_empty_returns_not_found(self) -> None:
         client = _bare_ssh_client()
-        client._execute_slurm_command = _stub_exec(  # type: ignore[method-assign]
+        client.execute_slurm_command = _stub_exec(  # type: ignore[method-assign]
             [("", "", 0), ("", "", 0), ("", "", 0)]
         )
         assert client.get_job_status("999") == "NOT_FOUND"
@@ -137,7 +144,7 @@ class TestGetJobStatusFallback:
     def test_scontrol_command_failure_returns_not_found(self) -> None:
         """scontrol exiting non-zero (e.g. permission denied) → NOT_FOUND."""
         client = _bare_ssh_client()
-        client._execute_slurm_command = _stub_exec(  # type: ignore[method-assign]
+        client.execute_slurm_command = _stub_exec(  # type: ignore[method-assign]
             [("", "", 0), ("", "", 0), ("", "no job", 1)]
         )
         assert client.get_job_status("999") == "NOT_FOUND"

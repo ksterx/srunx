@@ -40,7 +40,7 @@ class TestGetResources:
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client._execute_slurm_command.return_value = (
+        mock_client.slurm.execute_slurm_command.return_value = (
             "node001 gpu:4 idle gpu*\n",
             "",
             0,
@@ -56,7 +56,7 @@ class TestGetResources:
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client._execute_slurm_command.return_value = ("", "sinfo error", 1)
+        mock_client.slurm.execute_slurm_command.return_value = ("", "sinfo error", 1)
         mock_get_client.return_value = mock_client
 
         result = get_resources(use_ssh=True)

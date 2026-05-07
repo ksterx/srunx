@@ -112,7 +112,9 @@ def submit_job(
             )
             ssh_client = get_ssh_client()
             with ssh_client:
-                slurm_job = ssh_client.submit_sbatch_job(script_content, job_name=name)
+                slurm_job = ssh_client.slurm.submit_sbatch_job(
+                    script_content, job_name=name
+                )
                 if slurm_job is None:
                     return err("SSH job submission failed")
                 return ok(
@@ -139,7 +141,7 @@ def list_jobs(use_ssh: bool = False) -> dict[str, Any]:
         if use_ssh:
             ssh_client = get_ssh_client()
             with ssh_client:
-                stdout, stderr, rc = ssh_client._execute_slurm_command(
+                stdout, stderr, rc = ssh_client.slurm.execute_slurm_command(
                     'squeue --me --format "%.18i %.9P %.30j %.12u %.8T %.10M %.9l %.6D %R %b" --noheader'
                 )
                 if rc != 0:
@@ -186,7 +188,7 @@ def get_job_status(job_id: str, use_ssh: bool = False) -> dict[str, Any]:
         if use_ssh:
             ssh_client = get_ssh_client()
             with ssh_client:
-                status = ssh_client.get_job_status(str(job_id))
+                status = ssh_client.slurm.get_job_status(str(job_id))
                 if status in ("ERROR", "NOT_FOUND"):
                     return err(f"Job {job_id}: {status}")
                 return ok(job_id=job_id, status=status)
@@ -212,7 +214,7 @@ def cancel_job(job_id: str, use_ssh: bool = False) -> dict[str, Any]:
         if use_ssh:
             ssh_client = get_ssh_client()
             with ssh_client:
-                stdout, stderr, rc = ssh_client._execute_slurm_command(
+                stdout, stderr, rc = ssh_client.slurm.execute_slurm_command(
                     f"scancel {job_id}"
                 )
                 if rc != 0:
@@ -246,7 +248,9 @@ def get_job_logs(
         if use_ssh:
             ssh_client = get_ssh_client()
             with ssh_client:
-                stdout, stderr, _, _ = ssh_client.get_job_output(str(job_id), job_name)
+                stdout, stderr, _, _ = ssh_client.logs.get_job_output(
+                    str(job_id), job_name
+                )
                 if not stdout and not stderr:
                     return err(f"No logs found for job {job_id}")
                 return ok(job_id=job_id, stdout=stdout, stderr=stderr)

@@ -46,7 +46,7 @@ def _bare_adapter(callbacks: list[Callback] | None = None) -> SlurmSSHAdapter:
     transport.is_active.return_value = True
     ssh = MagicMock()
     ssh.get_transport.return_value = transport
-    adapter._client.ssh_client = ssh
+    adapter._client.connection.ssh_client = ssh
 
     return adapter
 
@@ -99,7 +99,7 @@ class TestSSHAdapterRun:
             sj.name = job_name
             return sj
 
-        adapter._client.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
+        adapter._client.slurm.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
 
         monkeypatch.setattr(
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
@@ -135,7 +135,7 @@ class TestSSHAdapterRun:
         sj = MagicMock()
         sj.job_id = "101"
         sj.name = "cbok"
-        adapter._client.submit_sbatch_job = MagicMock(return_value=sj)  # type: ignore[method-assign]
+        adapter._client.slurm.submit_sbatch_job = MagicMock(return_value=sj)  # type: ignore[method-assign]
 
         monkeypatch.setattr(
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
@@ -169,7 +169,7 @@ class TestSSHAdapterRun:
         sj = MagicMock()
         sj.job_id = "202"
         sj.name = "bad"
-        adapter._client.submit_sbatch_job = MagicMock(return_value=sj)  # type: ignore[method-assign]
+        adapter._client.slurm.submit_sbatch_job = MagicMock(return_value=sj)  # type: ignore[method-assign]
 
         monkeypatch.setattr(adapter, "_monitor_until_terminal", lambda _jid: "FAILED")
         monkeypatch.setattr(
@@ -202,7 +202,7 @@ class TestSSHAdapterRun:
         sj = MagicMock()
         sj.job_id = "303"
         sj.name = "cancelme"
-        adapter._client.submit_sbatch_job = MagicMock(return_value=sj)  # type: ignore[method-assign]
+        adapter._client.slurm.submit_sbatch_job = MagicMock(return_value=sj)  # type: ignore[method-assign]
 
         monkeypatch.setattr(
             adapter, "_monitor_until_terminal", lambda _jid: "CANCELLED"
@@ -234,7 +234,7 @@ class TestSSHAdapterRun:
         sj = MagicMock()
         sj.job_id = "404"
         sj.name = "wfjob"
-        adapter._client.submit_sbatch_job = MagicMock(return_value=sj)  # type: ignore[method-assign]
+        adapter._client.slurm.submit_sbatch_job = MagicMock(return_value=sj)  # type: ignore[method-assign]
 
         monkeypatch.setattr(
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
@@ -268,7 +268,7 @@ class TestSSHAdapterRun:
 
     def test_submit_failure_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         adapter = _bare_adapter()
-        adapter._client.submit_sbatch_job = MagicMock(return_value=None)  # type: ignore[method-assign]
+        adapter._client.slurm.submit_sbatch_job = MagicMock(return_value=None)  # type: ignore[method-assign]
 
         job = Job(name="nope", command=["echo"], log_dir="", work_dir="")
         with pytest.raises(RuntimeError, match="Failed to submit"):
@@ -296,7 +296,7 @@ class TestSSHAdapterRunUnknownStatus:
         sj = MagicMock()
         sj.job_id = "501"
         sj.name = "disappeared"
-        adapter._client.submit_sbatch_job = MagicMock(return_value=sj)  # type: ignore[method-assign]
+        adapter._client.slurm.submit_sbatch_job = MagicMock(return_value=sj)  # type: ignore[method-assign]
 
         monkeypatch.setattr(
             adapter, "_monitor_until_terminal", lambda _jid: "NOT_FOUND"
@@ -331,7 +331,7 @@ class TestSSHAdapterRunUnknownStatus:
         sj = MagicMock()
         sj.job_id = "502"
         sj.name = "weird"
-        adapter._client.submit_sbatch_job = MagicMock(return_value=sj)  # type: ignore[method-assign]
+        adapter._client.slurm.submit_sbatch_job = MagicMock(return_value=sj)  # type: ignore[method-assign]
 
         monkeypatch.setattr(
             adapter, "_monitor_until_terminal", lambda _jid: "SOME_FUTURE_STATE"
@@ -449,14 +449,14 @@ class TestSSHAdapterRunInPlace:
         sbatch_job_mock = MagicMock()
         sbatch_job_mock.job_id = "1"
         sbatch_job_mock.name = "train"
-        adapter._client.submit_sbatch_job = MagicMock(  # type: ignore[method-assign]
+        adapter._client.slurm.submit_sbatch_job = MagicMock(  # type: ignore[method-assign]
             return_value=sbatch_job_mock
         )
 
         remote_mock = MagicMock()
         remote_mock.job_id = "2"
         remote_mock.name = "train"
-        adapter._client.submit_remote_sbatch_file = MagicMock(  # type: ignore[method-assign]
+        adapter._client.slurm.submit_remote_sbatch_file = MagicMock(  # type: ignore[method-assign]
             return_value=remote_mock
         )
 
@@ -494,8 +494,8 @@ class TestSSHAdapterRunInPlace:
         ctx = SubmissionRenderContext(mounts=adapter._mounts, allow_in_place=False)
         adapter.run(job, submission_context=ctx)
 
-        adapter._client.submit_sbatch_job.assert_called_once()  # type: ignore[attr-defined]
-        adapter._client.submit_remote_sbatch_file.assert_not_called()  # type: ignore[attr-defined]
+        adapter._client.slurm.submit_sbatch_job.assert_called_once()  # type: ignore[attr-defined]
+        adapter._client.slurm.submit_remote_sbatch_file.assert_not_called()  # type: ignore[attr-defined]
 
     def test_allow_in_place_true_takes_in_place_path(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
@@ -516,12 +516,12 @@ class TestSSHAdapterRunInPlace:
         ctx = SubmissionRenderContext(mounts=adapter._mounts, allow_in_place=True)
         adapter.run(job, submission_context=ctx)
 
-        adapter._client.submit_remote_sbatch_file.assert_called_once()  # type: ignore[attr-defined]
+        adapter._client.slurm.submit_remote_sbatch_file.assert_called_once()  # type: ignore[attr-defined]
         # The temp-upload path must NOT fire when IN_PLACE took over.
-        adapter._client.submit_sbatch_job.assert_not_called()  # type: ignore[attr-defined]
+        adapter._client.slurm.submit_sbatch_job.assert_not_called()  # type: ignore[attr-defined]
         # The IN_PLACE call passed the translated remote path + a
         # submit_cwd under the mount.
-        call = adapter._client.submit_remote_sbatch_file.call_args  # type: ignore[attr-defined]
+        call = adapter._client.slurm.submit_remote_sbatch_file.call_args  # type: ignore[attr-defined]
         assert call.args[0] == "/r/ml/train.sh"
         assert call.kwargs["submit_cwd"] == "/r/ml"
 
@@ -555,8 +555,8 @@ class TestSSHAdapterRunInPlace:
         adapter.run(job, submission_context=ctx)
 
         # Render did substitute → temp-upload is the only safe path.
-        adapter._client.submit_sbatch_job.assert_called_once()  # type: ignore[attr-defined]
-        adapter._client.submit_remote_sbatch_file.assert_not_called()  # type: ignore[attr-defined]
+        adapter._client.slurm.submit_sbatch_job.assert_called_once()  # type: ignore[attr-defined]
+        adapter._client.slurm.submit_remote_sbatch_file.assert_not_called()  # type: ignore[attr-defined]
 
     def test_in_place_skipped_when_script_outside_mount(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
@@ -576,8 +576,8 @@ class TestSSHAdapterRunInPlace:
         ctx = SubmissionRenderContext(mounts=adapter._mounts, allow_in_place=True)
         adapter.run(job, submission_context=ctx)
 
-        adapter._client.submit_sbatch_job.assert_called_once()  # type: ignore[attr-defined]
-        adapter._client.submit_remote_sbatch_file.assert_not_called()  # type: ignore[attr-defined]
+        adapter._client.slurm.submit_sbatch_job.assert_called_once()  # type: ignore[attr-defined]
+        adapter._client.slurm.submit_remote_sbatch_file.assert_not_called()  # type: ignore[attr-defined]
 
 
 class TestSSHAdapterRunSubmissionContext:
@@ -610,7 +610,7 @@ class TestSSHAdapterRunSubmissionContext:
             sj.name = job_name
             return sj
 
-        adapter._client.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
+        adapter._client.slurm.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
 
         monkeypatch.setattr(
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
@@ -668,7 +668,7 @@ class TestSSHAdapterRunSubmissionContext:
             sj.name = job_name
             return sj
 
-        adapter._client.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
+        adapter._client.slurm.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
 
         monkeypatch.setattr(
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
@@ -715,7 +715,7 @@ class TestSSHAdapterRunSubmissionContext:
             sj.name = job_name
             return sj
 
-        adapter._client.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
+        adapter._client.slurm.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
 
         monkeypatch.setattr(
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
@@ -762,7 +762,7 @@ class TestSSHAdapterRunSubmissionContext:
             sj.name = job_name
             return sj
 
-        adapter._client.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
+        adapter._client.slurm.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
         monkeypatch.setattr(
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
         )
@@ -853,19 +853,19 @@ class TestIsConnected:
 
     def test_is_connected_false_when_ssh_client_none(self) -> None:
         adapter = _bare_adapter()
-        adapter._client.ssh_client = None
+        adapter._client.connection.ssh_client = None
         assert adapter.is_connected is False
 
     def test_is_connected_false_when_transport_inactive(self) -> None:
         adapter = _bare_adapter()
-        assert adapter._client.ssh_client is not None
-        adapter._client.ssh_client.get_transport.return_value.is_active.return_value = (
-            False
-        )
+        assert adapter._client.connection.ssh_client is not None
+        adapter._client.connection.ssh_client.get_transport.return_value.is_active.return_value = False
         assert adapter.is_connected is False
 
     def test_is_connected_false_on_exception(self) -> None:
         adapter = _bare_adapter()
-        assert adapter._client.ssh_client is not None
-        adapter._client.ssh_client.get_transport.side_effect = RuntimeError("boom")
+        assert adapter._client.connection.ssh_client is not None
+        adapter._client.connection.ssh_client.get_transport.side_effect = RuntimeError(
+            "boom"
+        )
         assert adapter.is_connected is False
