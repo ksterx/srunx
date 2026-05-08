@@ -472,7 +472,7 @@ def _enforce_shell_script_roots_cli(workflow: Workflow, rt: ResolvedTransport) -
 
     Mirrors the Web router and MCP tool guards (see
     :func:`srunx.web.routers.workflows._enforce_shell_script_roots` and
-    :func:`srunx.mcp.server._enforce_shell_script_roots_mcp`): when the
+    :func:`srunx.mcp.tools.workflows._enforce_shell_script_roots`): when the
     workflow will be dispatched over SSH, every :class:`ShellJob`
     ``script_path`` must sit under one of the profile's mount ``local``
     roots so the remote executor can map it to a legitimate remote path.
