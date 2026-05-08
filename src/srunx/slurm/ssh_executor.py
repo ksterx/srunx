@@ -5,11 +5,11 @@ Step 4 of the Phase 2 SSH sweep integration. Provides:
 * :class:`SSHWorkflowJobExecutor` — a protocol-conforming wrapper around
   a single :class:`~srunx.slurm.clients.ssh.SlurmSSHClient` lease.
 * :class:`SlurmSSHExecutorPool` — a thread-safe bounded pool of pre-built
-  adapters for concurrent sweep cells, exposing a context-manager factory
+  clients for concurrent sweep cells, exposing a context-manager factory
   that satisfies :data:`~srunx.slurm.protocols.WorkflowJobExecutorFactory`.
 
 The pool keeps at most ``size`` SSH sessions open to the cluster and
-discards adapters whose paramiko transport dropped, so a sweep of N
+discards clients whose paramiko transport dropped, so a sweep of N
 cells never fans out into N bespoke SSH connections.
 """
 
@@ -34,7 +34,7 @@ logger = get_logger(__name__)
 
 
 class SSHWorkflowJobExecutor:
-    """Thin :class:`WorkflowJobExecutor` wrapper over a single adapter.
+    """Thin :class:`WorkflowJobExecutor` wrapper over a single client.
 
     Yielded by :meth:`SlurmSSHExecutorPool.lease` for the lifetime of a
     single sweep cell's ``run`` + optional log retrieval. The underlying
@@ -42,8 +42,8 @@ class SSHWorkflowJobExecutor:
     closing it.
     """
 
-    def __init__(self, adapter: SlurmSSHClient) -> None:
-        self._adapter = adapter
+    def __init__(self, client: SlurmSSHClient) -> None:
+        self._client = client
 
     def run(
         self,
@@ -56,10 +56,10 @@ class SSHWorkflowJobExecutor:
         """Delegate to :meth:`SlurmSSHClient.run`.
 
         ``submission_context`` is forwarded so mount-aware path
-        translation happens inside the adapter just before render (see
+        translation happens inside the client just before render (see
         :meth:`SlurmSSHClient.run`).
         """
-        return self._adapter.run(
+        return self._client.run(
             job,
             workflow_name=workflow_name,
             workflow_run_id=workflow_run_id,
@@ -73,7 +73,7 @@ class SSHWorkflowJobExecutor:
         skip_content: bool = False,
     ) -> dict[str, str | list[str] | None]:
         """Delegate to :meth:`SlurmSSHClient.get_job_output_detailed`."""
-        return self._adapter.get_job_output_detailed(
+        return self._client.get_job_output_detailed(
             job_id, job_name=job_name, skip_content=skip_content
         )
 
@@ -82,17 +82,17 @@ class SlurmSSHExecutorPool:
     """Bounded pool of :class:`SlurmSSHClient` clones for concurrent leases.
 
     Each lease checked out via :meth:`lease` yields a protocol-conforming
-    executor. On release the underlying adapter is either returned to the
+    executor. On release the underlying client is either returned to the
     free queue (if healthy) or discarded (if the transport dropped), so a
     broken connection never poisons subsequent sweep cells.
 
-    Construction is cheap (no SSH I/O); adapters are built lazily on first
+    Construction is cheap (no SSH I/O); clients are built lazily on first
     :meth:`lease`. The pool is thread-safe: concurrent leases beyond
     ``size`` block on the free queue rather than minting extra sessions.
 
     Example::
 
-        pool = SlurmSSHExecutorPool(adapter.connection_spec, size=8)
+        pool = SlurmSSHExecutorPool(client.connection_spec, size=8)
         try:
             runner = WorkflowRunner(workflow, executor_factory=pool.lease)
             runner.run()
@@ -113,13 +113,13 @@ class SlurmSSHExecutorPool:
         self._spec = spec
         self._callbacks: list[Callback] = list(callbacks) if callbacks else []
         self._size = size
-        # Propagated into each cloned adapter's ``submission_source`` so
+        # Propagated into each cloned client's ``submission_source`` so
         # per-cell sweep jobs record the correct transport origin in
         # ``jobs.submission_source`` (see review fix #7).
         self._submission_source = submission_source
         # Unbounded internal queue so release is always non-blocking; we
         # gate creation via ``_created`` so ``_free`` never holds more than
-        # ``size`` adapters.
+        # ``size`` clients.
         self._free: queue.Queue[SlurmSSHClient] = queue.Queue()
         self._created = 0
         self._closed = False
@@ -127,11 +127,11 @@ class SlurmSSHExecutorPool:
 
     @property
     def size(self) -> int:
-        """Maximum number of concurrent adapters."""
+        """Maximum number of concurrent clients."""
         return self._size
 
-    def _build_adapter(self) -> SlurmSSHClient:
-        """Mint a fresh adapter from the pool's connection spec.
+    def _build_client(self) -> SlurmSSHClient:
+        """Mint a fresh client from the pool's connection spec.
 
         Does not connect eagerly — :meth:`SlurmSSHClient.run` and sibling
         SSH I/O methods call ``_ensure_connected`` on their first use.
@@ -143,64 +143,64 @@ class SlurmSSHExecutorPool:
         )
 
     def _acquire(self, timeout: float | None = 30.0) -> SlurmSSHClient:
-        """Pop a free adapter, build a new one, or block up to ``timeout``."""
+        """Pop a free client, build a new one, or block up to ``timeout``."""
         if self._closed:
             raise RuntimeError("SlurmSSHExecutorPool is closed")
 
-        # Fast path: pick up a free adapter.
+        # Fast path: pick up a free client.
         try:
             return self._free.get_nowait()
         except queue.Empty:
             pass
 
-        # Slow path: build a new adapter if under the cap.
+        # Slow path: build a new client if under the cap.
         with self._lock:
             if self._closed:
                 raise RuntimeError("SlurmSSHExecutorPool is closed")
             if self._created < self._size:
-                adapter = self._build_adapter()
+                client = self._build_client()
                 self._created += 1
-                return adapter
+                return client
 
         # Pool is at capacity — block until a lease is released.
         try:
             return self._free.get(timeout=timeout)
         except queue.Empty as exc:
             raise TimeoutError(
-                f"Timed out after {timeout}s waiting for a pooled SSH adapter"
+                f"Timed out after {timeout}s waiting for a pooled SSH client"
             ) from exc
 
-    def _release(self, adapter: SlurmSSHClient) -> None:
-        """Return ``adapter`` to the pool, or discard it if broken.
+    def _release(self, client: SlurmSSHClient) -> None:
+        """Return ``client`` to the pool, or discard it if broken.
 
         The pool being closed implies the caller should disconnect too —
-        drop the adapter in that case to honour the close contract.
+        drop the client in that case to honour the close contract.
         """
         if self._closed:
-            self._disconnect_safely(adapter)
+            self._disconnect_safely(client)
             with self._lock:
                 self._created = max(0, self._created - 1)
             return
 
         try:
-            healthy = adapter.is_connected
+            healthy = client.is_connected
         except Exception:  # noqa: BLE001
             healthy = False
 
         if healthy:
-            self._free.put_nowait(adapter)
+            self._free.put_nowait(client)
         else:
-            self._disconnect_safely(adapter)
+            self._disconnect_safely(client)
             with self._lock:
                 self._created = max(0, self._created - 1)
 
     @staticmethod
-    def _disconnect_safely(adapter: SlurmSSHClient) -> None:
-        """Call ``adapter.disconnect`` and swallow any errors."""
+    def _disconnect_safely(client: SlurmSSHClient) -> None:
+        """Call ``client.disconnect`` and swallow any errors."""
         try:
-            adapter.disconnect()
+            client.disconnect()
         except Exception as exc:  # noqa: BLE001
-            logger.debug(f"Adapter disconnect failed: {exc}")
+            logger.debug(f"Client disconnect failed: {exc}")
 
     @contextmanager
     def lease(self) -> Iterator[WorkflowJobExecutor]:
@@ -211,14 +211,14 @@ class SlurmSSHExecutorPool:
 
             runner = WorkflowRunner(workflow, executor_factory=pool.lease)
         """
-        adapter = self._acquire()
+        client = self._acquire()
         try:
-            yield SSHWorkflowJobExecutor(adapter)
+            yield SSHWorkflowJobExecutor(client)
         finally:
-            self._release(adapter)
+            self._release(client)
 
     def close(self) -> None:
-        """Drain + disconnect every pooled adapter. Idempotent."""
+        """Drain + disconnect every pooled client. Idempotent."""
         with self._lock:
             if self._closed:
                 return
@@ -226,10 +226,10 @@ class SlurmSSHExecutorPool:
 
         while True:
             try:
-                adapter = self._free.get_nowait()
+                client = self._free.get_nowait()
             except queue.Empty:
                 break
-            self._disconnect_safely(adapter)
+            self._disconnect_safely(client)
 
         with self._lock:
             self._created = 0

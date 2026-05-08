@@ -2,11 +2,11 @@
 
 Phase 2 Step 4 of the SSH sweep integration. Verifies that the pool:
 
-* Reuses free adapters on sequential leases.
+* Reuses free clients on sequential leases.
 * Bounds concurrent leases to ``size`` and serializes extras.
-* Drops broken adapters instead of returning them to the free queue.
+* Drops broken clients instead of returning them to the free queue.
 * Preserves the single-flight ``_io_lock`` contract of the shared
-  adapter under concurrent executor invocations.
+  client under concurrent executor invocations.
 * Renders SLURM scripts identically to the local :class:`Slurm` executor.
 * Cleans up on ``close`` + re-builds on subsequent ``lease``.
 """
@@ -88,16 +88,16 @@ class TestPoolBasicLifecycle:
             built.append(a)
             return a
 
-        monkeypatch.setattr(SlurmSSHExecutorPool, "_build_adapter", fake_build)
+        monkeypatch.setattr(SlurmSSHExecutorPool, "_build_client", fake_build)
 
         pool = SlurmSSHExecutorPool(_make_spec(), size=2)
         try:
             with pool.lease() as e1:
                 assert isinstance(e1, SSHWorkflowJobExecutor)
-                first_adapter = e1._adapter
+                first_client = e1._client
             with pool.lease() as e2:
                 assert isinstance(e2, SSHWorkflowJobExecutor)
-                assert e2._adapter is first_adapter
+                assert e2._client is first_client
         finally:
             pool.close()
 
@@ -113,7 +113,7 @@ class TestPoolBasicLifecycle:
             build_count[0] += 1
             return _bare_adapter()
 
-        monkeypatch.setattr(SlurmSSHExecutorPool, "_build_adapter", fake_build)
+        monkeypatch.setattr(SlurmSSHExecutorPool, "_build_client", fake_build)
 
         pool = SlurmSSHExecutorPool(_make_spec(), size=2)
         with pool.lease():
@@ -130,7 +130,7 @@ class TestPoolBasicLifecycle:
     def test_close_is_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             SlurmSSHExecutorPool,
-            "_build_adapter",
+            "_build_client",
             lambda self: _bare_adapter(),
         )
         pool = SlurmSSHExecutorPool(_make_spec(), size=1)
@@ -147,7 +147,7 @@ class TestPoolConcurrency:
         """With ``size=2``, a 3rd thread blocks until one of the first two releases."""
         monkeypatch.setattr(
             SlurmSSHExecutorPool,
-            "_build_adapter",
+            "_build_client",
             lambda self: _bare_adapter(),
         )
 
@@ -209,23 +209,23 @@ class TestPoolConcurrency:
             built.append(a)
             return a
 
-        monkeypatch.setattr(SlurmSSHExecutorPool, "_build_adapter", builder)
+        monkeypatch.setattr(SlurmSSHExecutorPool, "_build_client", builder)
 
         pool = SlurmSSHExecutorPool(_make_spec(), size=1)
 
         # First lease — break the session so the release health check
-        # treats the adapter as unhealthy and drops it.
+        # treats the client as unhealthy and drops it.
         with pool.lease() as executor:
             assert isinstance(executor, SSHWorkflowJobExecutor)
-            assert executor._adapter._client.connection.ssh_client is not None
-            executor._adapter._client.connection.ssh_client.get_transport.return_value.is_active.return_value = False
+            assert executor._client._client.connection.ssh_client is not None
+            executor._client._client.connection.ssh_client.get_transport.return_value.is_active.return_value = False
 
         # Created counter must have been decremented; next lease mints anew.
         assert pool._created == 0
 
         with pool.lease() as executor:
             assert isinstance(executor, SSHWorkflowJobExecutor)
-            assert executor._adapter is not built[0]
+            assert executor._client is not built[0]
             # Keep it healthy so release returns it cleanly.
 
         # Capacity bookkeeping: _created stays ≤ size.
