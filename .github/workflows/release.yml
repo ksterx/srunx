@@ -24,7 +24,10 @@ jobs:
       run: uv python install 3.12
 
     - name: Install dependencies
-      run: uv sync --dev
+      # Mirror ci.yml: ``--extra mcp`` is required because pytest collects
+      # ``tests/mcp/`` and ``srunx.mcp.app`` calls ``sys.exit(1)`` on import
+      # when the optional ``mcp`` package is missing.
+      run: uv sync --dev --extra mcp
 
     - name: Run tests
       # Whole-tree discovery — per-file paths used to be listed here, but
