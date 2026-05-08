@@ -2,7 +2,7 @@
 
 Previously the render path forked between ``src/srunx/web/routers/workflows.py``
 (mount-aware dry-run / submit for Web non-sweep) and
-``src/srunx/web/ssh_adapter.py::SlurmSSHClient.run`` (mount-agnostic sweep
+``src/srunx/slurm/clients/ssh.py::SlurmSSHClient.run`` (mount-agnostic sweep
 cell render). This module unifies them: Web submission (both non-sweep
 and sweep) and MCP sweep call :func:`render_workflow_for_submission`;
 MCP non-sweep still renders via the local ``Slurm`` path. The helper

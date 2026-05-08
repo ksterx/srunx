@@ -1,5 +1,12 @@
 # Implementation Plan
 
+> **Historical naming note** (added during PR #203, the #193 oversized-module
+> split): this spec was authored when the SSH-transport SLURM client was
+> ``SlurmSSHAdapter`` in ``src/srunx/web/ssh_adapter.py``. It has since been
+> renamed to ``SlurmSSHClient`` and moved to ``src/srunx/slurm/clients/ssh.py``.
+> The original names are preserved below as historical context; new work
+> should target the current paths.
+
 ## Task Overview
 
 実装は以下のレイヤ順で積み上げる:

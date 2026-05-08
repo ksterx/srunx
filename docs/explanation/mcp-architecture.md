@@ -172,7 +172,7 @@ flowchart LR
 **Shared code path with the Web UI.** The SSH-backed execution path is
 not reimplemented inside the MCP server. Both `srunx ui` and
 `srunx-mcp` build their sweep executor factories on top of
-`srunx.web.ssh_adapter` + `srunx.web.ssh_executor`. The MCP server is a
+`srunx.slurm.clients.ssh` + `srunx.slurm.ssh_executor`. The MCP server is a
 side-effect-free caller that borrows the Web UI's abstractions; all
 reconciliation, pool lifecycle, and mount-aware render logic live in
 one place. The Web UI's `_run_sweep_background` closes the pool in a

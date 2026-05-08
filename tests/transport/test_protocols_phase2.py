@@ -1,10 +1,11 @@
 """Phase 2: LSP alignment of Slurm and SlurmSSHClient with JobOperations.
 
-These tests verify the new Protocol-conformant entry points added in
-``src/srunx/client.py`` and ``src/srunx/web/ssh_adapter.py`` without
-exercising the full submit path (which would need a live SLURM or SSH
-endpoint). The goal is surface conformance, not behavioural regression
-— existing tests cover the latter.
+These tests verify the Protocol-conformant entry points on
+``srunx.slurm.local.Slurm`` and
+``srunx.slurm.clients.ssh.SlurmSSHClient`` without exercising the full
+submit path (which would need a live SLURM or SSH endpoint). The goal is
+surface conformance, not behavioural regression — existing tests cover
+the latter.
 """
 
 from __future__ import annotations
@@ -134,11 +135,12 @@ class TestSlurmSSHClientProtocolCompliance:
     def test_ssh_adapter_queue_returns_list_base_job(self) -> None:
         """``queue`` adapts active-squeue dicts into Pydantic BaseJob instances.
 
-        Post-S1: ``queue`` routes through :meth:`_list_active_jobs`
-        (squeue only) rather than :meth:`list_jobs` (squeue + sacct
-        merge), so ``srunx squeue`` matches native SLURM ``squeue``
-        semantics. This test patches the active-only helper to prove
-        the sacct merge never runs on the CLI path.
+        Post-S1: ``queue`` routes through
+        :func:`srunx.slurm.clients._ssh_queries.list_active_jobs` (squeue
+        only) rather than :meth:`list_jobs` (squeue + sacct merge), so
+        ``srunx squeue`` matches native SLURM ``squeue`` semantics. This
+        test patches the active-only helper to prove the sacct merge
+        never runs on the CLI path.
         """
         from srunx.domain import BaseJob, JobStatus
         from srunx.slurm.clients.ssh import SlurmSSHClient
@@ -155,9 +157,8 @@ class TestSlurmSSHClientProtocolCompliance:
             }
         ]
         with (
-            patch.object(
-                SlurmSSHClient,
-                "_list_active_jobs",
+            patch(
+                "srunx.slurm.clients.ssh._list_active_jobs_impl",
                 return_value=(fake_rows, {101}),
             ),
             patch.object(SlurmSSHClient, "list_jobs") as list_jobs_mock,

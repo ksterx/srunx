@@ -112,7 +112,7 @@ class TestSSHAdapterRun:
         monkeypatch.setattr(
             SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         result = adapter.run(job, workflow_name="wf", workflow_run_id=7)
@@ -148,7 +148,7 @@ class TestSSHAdapterRun:
         monkeypatch.setattr(
             SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         adapter.run(job)
@@ -180,7 +180,7 @@ class TestSSHAdapterRun:
         monkeypatch.setattr(
             SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         with pytest.raises(RuntimeError, match="FAILED"):
@@ -215,7 +215,7 @@ class TestSSHAdapterRun:
         monkeypatch.setattr(
             SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         with pytest.raises(RuntimeError, match="CANCELLED"):
@@ -309,7 +309,7 @@ class TestSSHAdapterRunUnknownStatus:
         monkeypatch.setattr(
             SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         # run() must return without raising — the pre-fix behaviour would
@@ -344,7 +344,7 @@ class TestSSHAdapterRunUnknownStatus:
         monkeypatch.setattr(
             SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         result = adapter.run(job)
@@ -471,7 +471,7 @@ class TestSSHAdapterRunInPlace:
         monkeypatch.setattr(
             SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         return adapter, script
@@ -623,7 +623,7 @@ class TestSSHAdapterRunSubmissionContext:
         monkeypatch.setattr(
             SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         # Explicitly pass submission_context=None — legacy semantics.
@@ -681,7 +681,7 @@ class TestSSHAdapterRunSubmissionContext:
         monkeypatch.setattr(
             SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         adapter.run(job, submission_context=ctx)
@@ -728,7 +728,7 @@ class TestSSHAdapterRunSubmissionContext:
         monkeypatch.setattr(
             SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         adapter.run(job, submission_context=ctx)
@@ -774,7 +774,7 @@ class TestSSHAdapterRunSubmissionContext:
         monkeypatch.setattr(
             SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         returned = adapter.run(original, submission_context=ctx)

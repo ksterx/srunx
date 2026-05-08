@@ -70,17 +70,17 @@ flowchart LR
   subgraph local["Local Machine"]
     Browser["Browser :8000"]
     FastAPI["FastAPI\n(srunx ui)"]
-    Adapter["SlurmSSHAdapter"]
-    Browser --> FastAPI --> Adapter
+    Client["SlurmSSHClient"]
+    Browser --> FastAPI --> Client
   end
   subgraph remote["DGX / SLURM Server"]
     squeue["squeue / sinfo"]
     sbatch["sbatch / scancel"]
     sacct["sacct"]
   end
-  Adapter -- SSH --> squeue
-  Adapter -- SSH --> sbatch
-  Adapter -- SSH --> sacct
+  Client -- SSH --> squeue
+  Client -- SSH --> sbatch
+  Client -- SSH --> sacct
 ```
 
 **Key design decisions:**
@@ -90,16 +90,19 @@ SSH adds latency that makes real-time WebSocket updates impractical.
 The frontend polls REST endpoints at configurable intervals (3–15 seconds)
 depending on the page and job state.
 
-SlurmSSHAdapter  
-A thin adapter wrapping `SSHSlurmClient` that adds missing operations
-(`list_jobs`, `cancel_job`, `get_resources`) using
-`_execute_slurm_command()` for SLURM path resolution and environment
-setup. The adapter manages SSH reconnection and keep-alive.
+SlurmSSHClient  
+The SSH-transport sibling of `LocalClient` (`src/srunx/slurm/clients/ssh.py`),
+wrapping the lower-level `srunx.ssh.core.client.SSHSlurmClient` and adding
+the operations the Web UI needs (`list_jobs`, `cancel_job`, `get_resources`).
+SLURM CLI invocations route through `client.slurm.execute_slurm_command`
+on the inner ssh-core client, which handles SLURM path resolution and
+login-shell environment setup. The client manages SSH reconnection and
+keep-alive.
 
 No core modifications  
-The Web UI is implemented entirely in `src/srunx/web/` without modifying
-existing core modules. It accesses `SSHSlurmClient`'s private
-`_execute_slurm_command()` method for proper SLURM path handling.
+The Web UI is implemented entirely in `src/srunx/web/` and the SLURM
+transport in `src/srunx/slurm/clients/ssh.py`, both built on the
+`srunx.ssh.core` primitives without modifying them.
 
 Input validation  
 All user-supplied identifiers (user names, partition names, workflow

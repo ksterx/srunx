@@ -2,9 +2,9 @@
 
 These tests exercise the new :func:`render_workflow_for_submission` that
 unifies the Web non-sweep, Web sweep, and MCP render paths. Phase 2
-Batch 1b scope — the helper is standalone; its callers still live in
-``web/routers/workflows.py``, ``web/ssh_adapter.py``, and ``mcp/server.py``
-(Batch 2 migration).
+Batch 1b scope — the helper is standalone; its callers live in
+``web/routers/workflows.py``, ``slurm/clients/ssh.py::SlurmSSHClient.run``,
+and ``mcp/tools/{jobs,workflows}.py`` (post-#193 module split).
 
 Mount registry entries are constructed via a tiny :class:`_FakeMount`
 duck-typed on ``.name / .local / .remote`` so tests stay independent of

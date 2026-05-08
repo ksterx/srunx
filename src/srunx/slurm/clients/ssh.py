@@ -380,11 +380,6 @@ class SlurmSSHClient:
 
     # ── Job query surface (delegated to _ssh_queries) ─────
 
-    def _list_active_jobs(
-        self, user: str | None = None
-    ) -> tuple[list[dict[str, Any]], set[int]]:
-        return _list_active_jobs_impl(self, user)
-
     def list_jobs(self, user: str | None = None) -> list[dict[str, Any]]:
         return _list_jobs_impl(self, user)
 
@@ -816,12 +811,13 @@ class SlurmSSHClient:
     def queue(self, user: str | None = None) -> list[BaseJob]:
         """List *active* jobs (all users by default).
 
-        Adapts :meth:`_list_active_jobs` (squeue only, no sacct merge)
-        into Pydantic :class:`BaseJob` objects so the return type
-        matches :class:`~srunx.slurm.protocols.JobOperations.queue` and
-        the CLI ``srunx squeue`` output matches native SLURM
-        ``squeue`` semantics (active jobs only — finished jobs are the
-        domain of ``srunx history``).
+        Adapts :func:`srunx.slurm.clients._ssh_queries.list_active_jobs`
+        (squeue only, no sacct merge) into Pydantic :class:`BaseJob`
+        objects so the return type matches
+        :class:`~srunx.slurm.protocols.JobOperations.queue` and the CLI
+        ``srunx squeue`` output matches native SLURM ``squeue``
+        semantics (active jobs only — finished jobs are the domain of
+        ``srunx history``).
 
         ``user=None`` shows **all users' jobs**, matching native
         ``squeue`` and the local :meth:`~srunx.slurm.local.Slurm.queue`.
@@ -830,7 +826,7 @@ class SlurmSSHClient:
         """
         from srunx.domain import BaseJob, JobStatus
 
-        raw_entries, _ = self._list_active_jobs(user=user)
+        raw_entries, _ = _list_active_jobs_impl(self, user=user)
         out: list[BaseJob] = []
         for entry in raw_entries:
             status_str = str(entry.get("status", "UNKNOWN"))

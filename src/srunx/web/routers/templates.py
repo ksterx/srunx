@@ -13,7 +13,7 @@ from srunx.runtime.templates import (
     get_template_path,
     list_templates,
 )
-from srunx.slurm.clients.ssh import SlurmSSHClient  # noqa: F811
+from srunx.slurm.clients.ssh import SlurmSSHClient
 
 from ..deps import get_adapter
 

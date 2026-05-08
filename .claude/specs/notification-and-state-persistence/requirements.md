@@ -1,5 +1,12 @@
 # Requirements Document
 
+> **Historical naming note** (added during PR #203, the #193 oversized-module
+> split): this spec was authored when the SSH-transport SLURM client was
+> ``SlurmSSHAdapter`` in ``src/srunx/web/ssh_adapter.py``. It has since been
+> renamed to ``SlurmSSHClient`` and moved to ``src/srunx/slurm/clients/ssh.py``.
+> The original names are preserved below as historical context; new work
+> should target the current paths.
+
 ## Introduction
 
 srunx の通知システムと状態永続化を刷新する。現状は以下の欠陥を抱えており、ユーザーが SLURM ジョブを安心して管理できる状態ではない:
