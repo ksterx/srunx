@@ -123,14 +123,14 @@ class TestTyperCLI:
         """Regression for I6: ``srunx flow run --debug`` must forward debug=True.
 
         Prior to the fix, ``flow run`` parsed ``--debug`` but did not
-        pass it to :func:`srunx.cli.workflow._execute_workflow`, so
+        pass it to :func:`srunx.cli.workflow.orchestrator._execute_workflow`, so
         :class:`DebugCallback` never fired.
         """
         yaml_path = tmp_path / "wf.yaml"
         yaml_path.write_text(
             'name: dbg\njobs:\n  - name: a\n    command: ["echo", "hi"]\n'
         )
-        with patch("srunx.cli.workflow._execute_workflow") as mock_exec:
+        with patch("srunx.cli.workflow.orchestrator._execute_workflow") as mock_exec:
             result = self.runner.invoke(app, ["flow", "run", "--debug", str(yaml_path)])
         assert result.exit_code == 0, result.stdout
         mock_exec.assert_called_once()

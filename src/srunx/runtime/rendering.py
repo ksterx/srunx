@@ -83,7 +83,7 @@ class SubmissionRenderContext:
     sync lock (Web ``/api/workflows/run`` today, MCP sweep cells)
     can't accidentally race a concurrent rsync. The CLI workflow
     runner — which holds the lock for the lifetime of the run via
-    :func:`srunx.cli.workflow._hold_workflow_mounts` — flips this
+    :func:`srunx.cli.workflow.mounts._hold_workflow_mounts` — flips this
     to ``True`` when constructing the context. Closes Codex
     blocker #3 on PR #141."""
 

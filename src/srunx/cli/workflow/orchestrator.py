@@ -1,306 +1,56 @@
-"""CLI interface for workflow management."""
+"""Workflow CLI orchestrator: ``_execute_workflow``, ``run_command``, ``app``, ``main``.
 
-import contextlib
-import os
-import signal
+This module owns the top-level orchestration: parse CLI flags, resolve
+transport, branch sweep vs non-sweep, and drive the helpers in
+:mod:`srunx.cli.workflow.{loading,sweep,mounts,guards,notifications}`.
+The standalone ``app`` Typer instance lets tests drive
+``_execute_workflow`` end-to-end without spinning up the full ``srunx``
+root app.
+"""
+
+from __future__ import annotations
+
 import sys
-from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import Annotated, Any
 
 import typer
-import yaml  # type: ignore
 from rich.console import Console
 
-if TYPE_CHECKING:
-    from srunx.ssh.core.config import MountConfig
-
-from srunx.callbacks import Callback, NotificationWatchCallback
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
+from srunx.cli.workflow.guards import (
+    _enforce_shell_script_roots_cli,
+    _warn_missing_mounts,
+)
+from srunx.cli.workflow.loading import _load_yaml_sweep, _resolve_endpoint_id
+from srunx.cli.workflow.mounts import (
+    _hold_workflow_mounts,
+    _in_place_context,
+    _resolve_sync_flag,
+)
+from srunx.cli.workflow.notifications import _build_workflow_callbacks
+from srunx.cli.workflow.sweep import (
+    _expand_sweep_cell_args,
+    _preview_sweep_dry_run,
+    _resolve_sweep_locked_mounts,
+    _run_sweep,
+    _validate_all_sweep_cells,
+)
 from srunx.common.config import get_config
 from srunx.common.exceptions import WorkflowValidationError
 from srunx.common.logging import configure_workflow_logging, get_logger
-from srunx.domain import Job, ShellJob, Workflow
-from srunx.observability.notifications.legacy_slack import SlackCallback
-from srunx.runtime.security import find_shell_script_violation
-from srunx.runtime.sweep import SweepSpec
+from srunx.domain import Job, ShellJob
 from srunx.runtime.sweep.expand import (
     merge_sweep_specs,
     parse_arg_flags,
     parse_sweep_flags,
 )
-from srunx.runtime.sweep.orchestrator import SweepOrchestrator
 from srunx.runtime.workflow.runner import WorkflowRunner
-from srunx.transport import (
-    ResolvedTransport,
-    peek_scheduler_key,
-    resolve_transport,
-)
+from srunx.transport import peek_scheduler_key, resolve_transport
 
 logger = get_logger(__name__)
 
 
-def _resolve_sync_flag(sync: bool | None) -> bool:
-    """Resolve the effective ``--sync`` value (CLI > config default).
-
-    The Workflow Phase 2 CLI surface mirrors ``srunx sbatch`` here:
-    ``None`` means "fall back to ``[sync] auto``" (default true).
-    Explicit ``--sync`` / ``--no-sync`` always wins. Kept as a tiny
-    free function so the sweep + non-sweep call sites stay readable.
-    """
-    if sync is not None:
-        return sync
-    return get_config().sync.auto
-
-
-def _in_place_context(
-    rt: "ResolvedTransport",
-    *,
-    locked_mount_names: tuple[str, ...] = (),
-) -> "Any":
-    """Return ``rt.submission_context`` with ``allow_in_place=True``.
-
-    The CLI workflow runner holds the per-(profile, mount) sync lock
-    for the entire run via :func:`_hold_workflow_mounts`, so it is
-    safe for the SSH adapter to take the IN_PLACE submission path
-    inside this run. The flag lives on
-    :class:`~srunx.runtime.rendering.SubmissionRenderContext` because it
-    rides the existing context that the sweep orchestrator and the
-    non-sweep runner already pass through to the adapter — adding
-    it here avoids touching every executor / Protocol signature.
-    Closes Codex blocker #3 on PR #141.
-
-    ``locked_mount_names`` (#143) is a defence-in-depth list of the
-    mounts the caller is currently holding the lock for. The SSH
-    adapter rejects IN_PLACE for any mount outside this set,
-    surfacing aggregation bugs as a clear error rather than a
-    silent rsync race. Empty tuple disables enforcement (preserves
-    pre-#143 single-workflow callers verbatim).
-
-    Returns ``None`` when there's no context to clone (e.g. local
-    transport); callers fall back to ``rt.submission_context``.
-    """
-    import dataclasses
-
-    if rt.submission_context is None:
-        return None
-    return dataclasses.replace(
-        rt.submission_context,
-        allow_in_place=True,
-        locked_mount_names=locked_mount_names,
-    )
-
-
-def _expand_sweep_cell_args(
-    workflow_data: dict[str, Any],
-    args_override: dict[str, Any],
-    sweep_spec: SweepSpec,
-) -> list[dict[str, Any]]:
-    """Expand the matrix into per-cell effective arg dicts.
-
-    Mirrors :meth:`SweepOrchestrator._expand_cells` so the CLI's lock
-    aggregation step (#143) sees the same per-cell args the
-    orchestrator will later hand to :meth:`WorkflowRunner.from_yaml`.
-    Returning an empty list means "no cells to expand"; callers
-    should treat that as "fall back to the single-workflow lock-set
-    rather than the per-cell union".
-    """
-    from srunx.runtime.sweep.expand import expand_matrix
-
-    base_args: dict[str, Any] = {
-        **(workflow_data.get("args") or {}),
-        **args_override,
-    }
-    return expand_matrix(sweep_spec.matrix, base_args)
-
-
-def _resolve_sweep_locked_mounts(
-    rt: "ResolvedTransport",
-    cell_args_overrides: list[dict[str, Any]],
-    yaml_file: Path,
-) -> "list[MountConfig]":
-    """Return the union of MountConfigs every sweep cell can touch.
-
-    Drives both the lock-acquisition step (``_hold_workflow_mounts``)
-    and the SSH adapter's defence-in-depth check
-    (``locked_mount_names`` on :class:`SubmissionRenderContext`) off
-    the same rendered set, so the two never disagree about which
-    mounts are actually locked. Returns an empty list when no
-    profile is bound or the profile doesn't exist — the SSH adapter
-    treats that as "no enforcement" which matches the legacy
-    pre-#143 behaviour.
-    """
-    from srunx.runtime.submission_plan import collect_touched_mounts_across_cells
-    from srunx.ssh.core.config import ConfigManager
-
-    if rt.profile_name is None:
-        return []
-    profile = ConfigManager().get_profile(rt.profile_name)
-    if profile is None:
-        return []
-    return collect_touched_mounts_across_cells(
-        yaml_file,
-        None,
-        cell_args_overrides,
-        profile,
-    )
-
-
-@contextlib.contextmanager
-def _hold_workflow_mounts(
-    *,
-    rt: "ResolvedTransport",
-    workflow_for_mounts: "Workflow | None",
-    sync_required: bool,
-    explicit_mounts: "list[MountConfig] | None" = None,
-) -> Iterator[None]:
-    """Acquire per-mount sync locks for every mount the workflow touches.
-
-    Phase 2 (#135): scans the workflow's :class:`ShellJob` ``script_path``
-    values for mounts under the resolved SSH profile, then opens a
-    :func:`mount_sync_session` for each unique mount via
-    :class:`contextlib.ExitStack`. Locks are held across every job
-    submission inside the workflow run, closing the same race window
-    ``mount_sync_session`` closes for single-job ``sbatch``.
-
-    No-ops when:
-
-    * Transport is local — there's no remote workspace to sync.
-    * No profile is bound (legacy direct-hostname path).
-    * Workflow has no ShellJobs touching any mount.
-
-    Each mount is rsynced **at most once** even when the workflow
-    fans out into many cells (sweep) or many ShellJobs targeting the
-    same mount, so a 100-cell sweep doesn't trigger 100 rsyncs.
-
-    ``sync_required=False`` (``--no-sync``) still acquires the locks
-    but skips the rsync invocation; this preserves the lock-held
-    invariant while letting the user opt out of the transfer.
-
-    Sweep callers (#143) can pass ``explicit_mounts`` to override the
-    single-workflow scan with a pre-computed union (typically the
-    per-cell mount aggregation from :func:`collect_touched_mounts_across_cells`).
-    This avoids re-rendering every cell here when the caller already
-    rendered them to compute ``locked_mount_names`` for the SSH
-    adapter — both the lock and the safety net see the same mount
-    list. When omitted the helper falls back to the single-workflow
-    scan and existing non-sweep behaviour is preserved bit-for-bit.
-    """
-    if (
-        rt.transport_type != "ssh"
-        or rt.profile_name is None
-        or workflow_for_mounts is None
-    ):
-        yield
-        return
-
-    from srunx.runtime.submission_plan import collect_touched_mounts
-    from srunx.ssh.core.config import ConfigManager
-    from srunx.sync.lock import SyncLockTimeoutError
-    from srunx.sync.service import SyncAbortedError, mount_sync_session
-
-    profile = ConfigManager().get_profile(rt.profile_name)
-    if profile is None:
-        yield
-        return
-
-    if explicit_mounts is not None:
-        mounts = list(explicit_mounts)
-    else:
-        mounts = collect_touched_mounts(workflow_for_mounts, profile)
-    if not mounts:
-        yield
-        return
-
-    # Sort by profile.mounts order so concurrent ``srunx flow run``
-    # invocations across overlapping mount sets always acquire locks
-    # in the same global order, eliminating lock-inversion deadlocks.
-    # Codex follow-up #2 on PR #141.
-    mount_order = {m.name: i for i, m in enumerate(profile.mounts)}
-    mounts.sort(key=lambda m: mount_order.get(m.name, len(mount_order)))
-
-    config = get_config()
-    with contextlib.ExitStack() as stack:
-        # Acquisition + sync errors must surface as BadParameter so
-        # the CLI exits with a clear message. Errors raised from
-        # **inside** the workflow body (the ``yield`` block — job
-        # failures, sweep cancellations, adapter exceptions) MUST
-        # propagate unchanged — wrapping them as "rsync failed"
-        # would mask the real failure. Codex blocker #1 on PR #141.
-        try:
-            for mount in mounts:
-                outcome = stack.enter_context(
-                    mount_sync_session(
-                        profile_name=rt.profile_name,
-                        profile=profile,
-                        mount=mount,
-                        config=config.sync,
-                        sync_required=sync_required,
-                    )
-                )
-                if outcome.performed:
-                    Console().print(f"⇅  Synced mount [cyan]{mount.name}[/cyan]")
-        except SyncAbortedError as exc:
-            raise typer.BadParameter(str(exc)) from exc
-        except SyncLockTimeoutError as exc:
-            raise typer.BadParameter(str(exc)) from exc
-        except RuntimeError as exc:
-            raise typer.BadParameter(f"rsync failed: {exc}") from exc
-
-        # Body executes here. Any exception escapes the ExitStack
-        # which still releases the locks via __exit__, then bubbles
-        # up to the workflow CLI's top-level handler unchanged.
-        yield
-
-
-def _build_workflow_callbacks(
-    *,
-    endpoint: str | None,
-    effective_preset: str,
-    is_sweep: bool,
-    slack: bool,
-    debug: bool,
-    scheduler_key: str,
-) -> list[Callback]:
-    """Assemble the callback list for a CLI workflow invocation.
-
-    ``NotificationWatchCallback`` is omitted for sweep runs because the
-    orchestrator manages a sweep-level watch + subscription; attaching a
-    per-job callback there would spam one notification per cell. The
-    ``scheduler_key`` is threaded in so the watch the callback creates
-    targets the transport the workflow will actually submit against.
-
-    ``SlackCallback`` is legacy in-process delivery and is still attached
-    in both modes for backward compatibility.
-    """
-    callbacks: list[Callback] = []
-    if endpoint and not is_sweep:
-        callbacks.append(
-            NotificationWatchCallback(
-                endpoint_name=endpoint,
-                preset=effective_preset,
-                scheduler_key=scheduler_key,
-            )
-        )
-    if slack:
-        logger.warning(
-            "`--slack` is deprecated; configure an endpoint via "
-            "Settings → Notifications and pass `--endpoint <name>`."
-        )
-        webhook_url = os.getenv("SLACK_WEBHOOK_URL")
-        if not webhook_url:
-            raise ValueError("SLACK_WEBHOOK_URL environment variable is not set")
-        callbacks.append(SlackCallback(webhook_url=webhook_url))
-
-    if debug:
-        from srunx.cli._helpers.debug_callback import DebugCallback
-
-        callbacks.append(DebugCallback())
-
-    return callbacks
-
-
-# Create Typer app for workflow management
 app = typer.Typer(
     help="Execute YAML-defined workflows using SLURM",
     epilog="""
@@ -356,241 +106,6 @@ Parameter sweeps:
 )
 
 
-def _load_yaml_sweep(yaml_file: Path) -> tuple[dict[str, Any], SweepSpec | None]:
-    """Return ``(raw_yaml_dict, yaml_sweep_spec)``.
-
-    ``yaml_sweep_spec`` is ``None`` when the YAML has no ``sweep:`` block.
-    Invalid sweep blocks surface via ``WorkflowValidationError`` so the
-    CLI path reports them consistently with the orchestrator.
-    """
-    with open(yaml_file, encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    if not isinstance(data, dict):
-        return {}, None
-    raw_sweep = data.get("sweep")
-    if raw_sweep is None:
-        return data, None
-    if not isinstance(raw_sweep, dict):
-        raise WorkflowValidationError(
-            "YAML sweep: must be a mapping with matrix / fail_fast / max_parallel"
-        )
-    try:
-        spec = SweepSpec.model_validate(raw_sweep)
-    except Exception as exc:  # noqa: BLE001 — surface as validation error
-        raise WorkflowValidationError(f"invalid YAML sweep block: {exc}") from exc
-    return data, spec
-
-
-def _resolve_endpoint_id(endpoint: str | None) -> int | None:
-    """Look up a notification endpoint by name, returning its id or ``None``.
-
-    Matches the attach logic used by :class:`NotificationWatchCallback`
-    (lookup by name, skip when missing or disabled) so sweep runs honour
-    ``--endpoint`` the same way non-sweep runs do.
-    """
-    if not endpoint:
-        return None
-    try:
-        from srunx.observability.storage.connection import open_connection
-        from srunx.observability.storage.repositories.endpoints import (
-            EndpointRepository,
-        )
-    except ImportError:  # pragma: no cover — DB module unavailable
-        return None
-    conn = open_connection()
-    try:
-        row = EndpointRepository(conn).get_by_name("slack_webhook", endpoint)
-    finally:
-        conn.close()
-    if row is None or row.disabled_at is not None or row.id is None:
-        return None
-    return row.id
-
-
-def _preview_sweep_dry_run(
-    sweep_spec: SweepSpec,
-    workflow_data: dict[str, Any],
-    args_override: dict[str, Any],
-) -> None:
-    """Expand the matrix and print cell count / per-cell args without executing."""
-    from srunx.runtime.sweep.expand import expand_matrix
-
-    base_args: dict[str, Any] = {
-        **(workflow_data.get("args") or {}),
-        **args_override,
-    }
-    cells = expand_matrix(sweep_spec.matrix, base_args)
-    console = Console()
-    console.print("🔍 Sweep dry run:")
-    console.print(f"  Cell count: {len(cells)}")
-    console.print(f"  Matrix: {sweep_spec.matrix}")
-    console.print(f"  Max parallel: {sweep_spec.max_parallel}")
-    console.print(f"  Fail fast: {sweep_spec.fail_fast}")
-    for i, cell in enumerate(cells):
-        console.print(f"  Cell {i}: {cell}")
-
-
-def _validate_all_sweep_cells(
-    *,
-    yaml_file: Path,
-    workflow_data: dict[str, Any],
-    args_override: dict[str, Any],
-    sweep_spec: SweepSpec,
-    callbacks: list[Callback],
-) -> None:
-    """Load + validate the workflow once per expanded matrix cell.
-
-    Reuses :func:`srunx.runtime.sweep.expand.expand_matrix` to produce the same
-    per-cell arg overlay the orchestrator will feed into
-    :meth:`WorkflowRunner.from_yaml` at execution time. The first cell
-    that fails Jinja rendering or workflow validation is reported with
-    its index and effective args, matching the error shape used by the
-    non-sweep validator.
-    """
-    from srunx.runtime.sweep.expand import expand_matrix
-
-    base_args: dict[str, Any] = {
-        **(workflow_data.get("args") or {}),
-        **args_override,
-    }
-    cells = expand_matrix(sweep_spec.matrix, base_args)
-
-    for idx, cell_args in enumerate(cells):
-        try:
-            runner = WorkflowRunner.from_yaml(
-                yaml_file, callbacks=callbacks, args_override=cell_args
-            )
-            runner.workflow.validate()
-        except WorkflowValidationError as exc:
-            raise WorkflowValidationError(
-                f"cell {idx} args={cell_args}: {exc}"
-            ) from exc
-
-
-def _enforce_shell_script_roots_cli(workflow: Workflow, rt: ResolvedTransport) -> None:
-    """Reject ShellJob script paths that escape the SSH profile's mounts.
-
-    Mirrors the Web router and MCP tool guards (see
-    :func:`srunx.web.routers.workflows._enforce_shell_script_roots` and
-    :func:`srunx.mcp.tools.workflows._enforce_shell_script_roots`): when the
-    workflow will be dispatched over SSH, every :class:`ShellJob`
-    ``script_path`` must sit under one of the profile's mount ``local``
-    roots so the remote executor can map it to a legitimate remote path.
-
-    Local transport imposes no check: Phase 5b keeps local ShellJob
-    behaviour unchanged.
-    """
-    if rt.transport_type != "ssh":
-        return
-    ctx = rt.submission_context
-    if ctx is None or not ctx.mounts:
-        # Profile has no mounts configured: fall through and warn instead
-        # of raising — see _warn_missing_mounts.
-        return
-
-    allowed_roots = [Path(m.local).resolve() for m in ctx.mounts]
-    violation = find_shell_script_violation(workflow, allowed_roots)
-    if violation is not None:
-        raise typer.BadParameter(
-            f"ShellJob '{violation.job_name}' script_path "
-            f"'{violation.script_path}' is not under any mount's local root "
-            f"for profile '{rt.profile_name}'. "
-            f"Allowed roots: {[str(r) for r in allowed_roots]}"
-        )
-
-
-def _warn_missing_mounts(rt: ResolvedTransport) -> None:
-    """Warn when an SSH-bound flow has no profile mounts configured.
-
-    Without mount translation, workflow ``work_dir`` / ``log_dir`` /
-    ``ShellJob.script_path`` fields render verbatim on the remote side;
-    they must already exist there or the submission will fail at the
-    remote executor. The warning surfaces this expectation instead of
-    letting the failure happen silently in a sbatch script that SLURM
-    refuses.
-    """
-    if rt.transport_type != "ssh":
-        return
-    ctx = rt.submission_context
-    if ctx is None or not ctx.mounts:
-        logger.warning(
-            "Profile '%s' has no mounts configured; workflow paths "
-            "(work_dir / log_dir / script_path) will be rendered as-is "
-            "on the remote cluster.",
-            rt.profile_name,
-        )
-
-
-def _run_sweep(
-    yaml_file: Path,
-    workflow_data: dict[str, Any],
-    args_override: dict[str, Any],
-    sweep_spec: SweepSpec,
-    callbacks: list[Callback],
-    endpoint_id: int | None,
-    preset: str,
-    rt: ResolvedTransport,
-    submission_context: Any | None = None,
-) -> None:
-    """Drive :class:`SweepOrchestrator` under a SIGINT → request_cancel guard.
-
-    First Ctrl+C triggers :meth:`SweepOrchestrator.request_cancel` (drain
-    pending cells). A second Ctrl+C re-raises ``KeyboardInterrupt`` so
-    the user can escape a stuck orchestrator.
-
-    The resolved transport's ``executor_factory`` and ``submission_context``
-    are forwarded to the orchestrator so SSH-backed sweeps route each
-    cell through the pool + mount translation path already used by the
-    Web / MCP sweep surfaces.
-    """
-    # Caller may supply an override (CLI workflow Phase 2 passes one
-    # with ``allow_in_place=True`` after the workflow lock is held).
-    # When omitted, fall back to the transport's default context.
-    effective_context = (
-        submission_context if submission_context is not None else rt.submission_context
-    )
-    orchestrator = SweepOrchestrator(
-        workflow_yaml_path=yaml_file,
-        workflow_data=workflow_data,
-        args_override=args_override or None,
-        sweep_spec=sweep_spec,
-        submission_source="cli",
-        callbacks=callbacks,
-        endpoint_id=endpoint_id,
-        preset=preset,
-        executor_factory=rt.executor_factory,
-        submission_context=effective_context,
-    )
-
-    original_handler = signal.getsignal(signal.SIGINT)
-    cancel_requested = {"n": 0}
-
-    def _on_sigint(signum: int, frame: Any) -> None:
-        cancel_requested["n"] += 1
-        if cancel_requested["n"] == 1:
-            logger.warning(
-                "Received Ctrl+C — requesting sweep cancel. Press Ctrl+C again to abort."
-            )
-            try:
-                orchestrator.request_cancel()
-            except Exception:  # noqa: BLE001
-                logger.warning("request_cancel raised", exc_info=True)
-            # Restore default so the second Ctrl+C raises KeyboardInterrupt.
-            signal.signal(signal.SIGINT, signal.default_int_handler)
-
-    signal.signal(signal.SIGINT, _on_sigint)
-    try:
-        sweep_run = orchestrator.run()
-    finally:
-        signal.signal(signal.SIGINT, original_handler)
-
-    logger.info(
-        f"Sweep {sweep_run.id} finished: status={sweep_run.status} "
-        f"cells={sweep_run.cell_count} completed={sweep_run.cells_completed} "
-        f"failed={sweep_run.cells_failed} cancelled={sweep_run.cells_cancelled}"
-    )
-
-
 def _execute_workflow(
     yaml_file: Path,
     validate: bool = False,
@@ -613,7 +128,6 @@ def _execute_workflow(
     sync: bool | None = None,
 ) -> None:
     """Common workflow execution logic."""
-    # Configure logging for workflow execution
     configure_workflow_logging(level=log_level)
 
     if job and (from_job or to_job):
@@ -897,7 +411,10 @@ def _execute_workflow(
             "💡 Make sure all required packages are installed in your environment"
         )
         sys.exit(1)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
+        # Top-level safety net for unexpected failures: log a full
+        # traceback and exit non-zero so the CLI surfaces the failure
+        # rather than handing back a Python stack to the user.
         logger.error(f"❌ Workflow execution failed: {e}")
         logger.error(f"💡 Error type: {type(e).__name__}")
         import traceback
