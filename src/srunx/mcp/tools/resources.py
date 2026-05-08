@@ -25,7 +25,7 @@ def get_resources(
             ssh_client = get_ssh_client()
             with ssh_client:
                 partition_flag = f"-p {partition}" if partition else ""
-                stdout, stderr, rc = ssh_client._execute_slurm_command(
+                stdout, stderr, rc = ssh_client.slurm.execute_slurm_command(
                     f'sinfo {partition_flag} -o "%n %G %T %P" --noheader'
                 )
                 if rc != 0:

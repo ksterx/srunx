@@ -174,8 +174,8 @@ with SSHSlurmClient(
     # 1. Sync project to remote
     remote_path = client.sync_project()
 
-    # 2. Submit job using the synced project
-    job = client.submit_sbatch_job(
+    # 2. Submit job using the synced project (via the SLURM component)
+    job = client.slurm.submit_sbatch_job(
         script_content=f"""#!/bin/bash
 #SBATCH --job-name=training
 #SBATCH --gpus=2
@@ -187,7 +187,7 @@ python train.py
 
     # 3. Monitor job
     if job:
-        client.monitor_job(job.job_id)
+        client.slurm.monitor_job(job)
 
     # 4. Pull results back
     client._rsync_client.pull(

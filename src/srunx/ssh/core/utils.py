@@ -106,8 +106,7 @@ def query_slurm_job_state(
     sentinels ``"NOT_FOUND"`` / ``"ERROR"``. The ``execute`` callable must
     run a SLURM command with a fully prepared environment and return the
     ``(stdout, stderr, exit_code)`` tuple — typically
-    ``SSHSlurmClient._execute_slurm_command`` or
-    ``SlurmRemoteClient.execute_slurm_command``.
+    :meth:`SlurmRemoteClient.execute_slurm_command`.
 
     The scontrol tier is load-bearing on pyxis / slurmdbd-unreachable
     clusters: sacct returns empty for finished jobs and once a job

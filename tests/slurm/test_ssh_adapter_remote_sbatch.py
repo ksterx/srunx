@@ -56,7 +56,7 @@ class _RecordingCallback(Callback):
 
 
 def _stub_inner_submit(adapter: SlurmSSHAdapter, *, job_id: str, name: str) -> None:
-    """Wire ``adapter._client.submit_remote_sbatch_file`` to a MagicMock.
+    """Wire ``adapter._client.slurm.submit_remote_sbatch_file`` to a MagicMock.
 
     The class-level ``_client`` is typed as :class:`SSHSlurmClient`,
     so mypy refuses ``return_value =`` on a real-typed method. The
@@ -68,7 +68,7 @@ def _stub_inner_submit(adapter: SlurmSSHAdapter, *, job_id: str, name: str) -> N
     submitted_inner.job_id = job_id
     submitted_inner.name = name
     mock_method.return_value = submitted_inner
-    adapter._client.submit_remote_sbatch_file = mock_method  # type: ignore[method-assign]
+    adapter._client.slurm.submit_remote_sbatch_file = mock_method  # type: ignore[method-assign]
 
 
 def test_submit_remote_sbatch_fires_on_job_submitted_callback(
@@ -172,7 +172,7 @@ def test_submit_remote_sbatch_raises_when_inner_returns_none(
     """Inner failure surfaces as RuntimeError so the CLI catches it cleanly."""
     adapter = _bare_adapter()
     fail_method = MagicMock(return_value=None)
-    adapter._client.submit_remote_sbatch_file = fail_method  # type: ignore[method-assign]
+    adapter._client.slurm.submit_remote_sbatch_file = fail_method  # type: ignore[method-assign]
     monkeypatch.setattr(adapter, "_record_job_submission", lambda *a, **kw: None)
 
     with pytest.raises(RuntimeError, match="remote sbatch submission failed"):
@@ -189,7 +189,7 @@ def test_submit_remote_sbatch_forwards_extra_args() -> None:
     inner_result.job_id = "7"
     inner_result.name = "j"
     inner.return_value = inner_result
-    adapter._client.submit_remote_sbatch_file = inner  # type: ignore[method-assign]
+    adapter._client.slurm.submit_remote_sbatch_file = inner  # type: ignore[method-assign]
 
     adapter.submit_remote_sbatch(
         "/r/x.sh",
