@@ -83,7 +83,7 @@ def _bare_ssh_client() -> SlurmRemoteClient:
 
 
 def _stub_exec(responses: list[tuple[str, str, int]]):
-    """Return an `_execute_slurm_command` stub that pops responses in order."""
+    """Return an `execute_slurm_command` stub that pops responses in order."""
     idx = {"i": 0}
 
     def _exec(cmd: str) -> tuple[str, str, int]:
@@ -151,6 +151,6 @@ class TestGetJobStatusFallback:
 
     def test_invalid_job_id_short_circuits_without_probing(self) -> None:
         client = _bare_ssh_client()
-        # No stubs registered — if get_job_status reaches _execute_slurm_command
+        # No stubs registered — if get_job_status reaches execute_slurm_command
         # it would AttributeError.
         assert client.get_job_status("not; a-number") == "ERROR"
