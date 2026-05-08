@@ -1,5 +1,12 @@
 # Design Document
 
+> **Historical naming note** (added during PR #203, the #193 oversized-module
+> split): this spec was authored when the SSH-transport SLURM client was
+> ``SlurmSSHAdapter`` in ``src/srunx/web/ssh_adapter.py``. It has since been
+> renamed to ``SlurmSSHClient`` and moved to ``src/srunx/slurm/clients/ssh.py``.
+> The original names are preserved below as historical context; new work
+> should target the current paths.
+
 ## Overview
 
 srunx ワークフローに `sweep` 概念を追加する。既存の load-time `args` 展開パイプラインを活用しつつ、matrix cross product による N セル生成、各セルの独立 `workflow_run` 永続化、`max_parallel` semaphore による同時実行制御、親 sweep 単位の集約通知を実現する。

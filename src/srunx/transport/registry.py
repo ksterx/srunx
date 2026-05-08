@@ -18,7 +18,7 @@ Banner emission (REQ-7): explicit sources print a one-line banner to
 stderr; the default path stays silent so existing scripts that rely on
 byte-exact CLI output keep working.
 
-The SSH-related imports (``SlurmSSHAdapter``, ``SlurmSSHExecutorPool``,
+The SSH-related imports (``SlurmSSHClient``, ``SlurmSSHExecutorPool``,
 ``SubmissionRenderContext``, ``ConfigManager``) are gated inside
 :func:`_build_ssh_handle` so the local fallback path never pays the
 paramiko import cost (R-3).
@@ -423,7 +423,7 @@ def _build_ssh_handle(
 ) -> tuple[TransportHandle, Any]:
     """Build an SSH :class:`TransportHandle` and its backing executor pool.
 
-    Imports are local so ``SlurmSSHAdapter`` / paramiko / pool module
+    Imports are local so ``SlurmSSHClient`` / paramiko / pool module
     costs are never paid by CLI invocations that stay on local SLURM
     (R-3 performance requirement).
 
@@ -458,7 +458,7 @@ def _build_ssh_handle(
             factory rejects the configuration.
     """
     # Conditional imports — see module docstring.
-    from srunx.slurm.ssh import SlurmSSHAdapter, SlurmSSHAdapterSpec
+    from srunx.slurm.clients.ssh import SlurmSSHClient, SlurmSSHClientSpec
     from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
     from srunx.ssh.core.config import ConfigManager
 
@@ -472,7 +472,7 @@ def _build_ssh_handle(
         )
 
     try:
-        adapter = SlurmSSHAdapter(
+        adapter = SlurmSSHClient(
             profile_name=profile_name,
             callbacks=callbacks,
             submission_source=submission_source,
@@ -487,7 +487,7 @@ def _build_ssh_handle(
     # workflow / sweep path fire ``on_job_submitted`` (including
     # :class:`NotificationWatchCallback`) with the adapter's
     # ``scheduler_key`` already bound.
-    spec: SlurmSSHAdapterSpec = adapter.connection_spec
+    spec: SlurmSSHClientSpec = adapter.connection_spec
     pool = SlurmSSHExecutorPool(
         spec,
         callbacks=callbacks,
@@ -596,7 +596,7 @@ def resolve_transport(
         submission_source: Origin tag for ``jobs.submission_source``.
             Defaults to ``'cli'`` which is correct for every CLI entry
             point; the value is a no-op on the local path and is passed
-            through to :class:`SlurmSSHAdapter` on SSH.
+            through to :class:`SlurmSSHClient` on SSH.
         mount_name: Explicit mount selection forwarded to the SSH
             handle builder for path translation. ``None`` triggers
             single-mount auto-selection.

@@ -167,14 +167,14 @@ def _resolve_mount_context(
 ) -> tuple[Any, SubmissionRenderContext, Any]:
     """Resolve ``(adapter, submission_context, profile)`` for an MCP mount run.
 
-    Returns the :class:`SlurmSSHAdapter` for the active SSH profile, a
+    Returns the :class:`SlurmSSHClient` for the active SSH profile, a
     :class:`SubmissionRenderContext` pinned to ``mount.remote`` as the
     default work dir, and the profile object itself (needed by the
     ShellJob guard). Raises :class:`ValueError` on any misconfiguration —
     no current profile, unknown mount name, etc.
     """
     from srunx.runtime.rendering import SubmissionRenderContext
-    from srunx.slurm.ssh import SlurmSSHAdapter
+    from srunx.slurm.clients.ssh import SlurmSSHClient
     from srunx.ssh.core.config import ConfigManager
 
     cm = ConfigManager()
@@ -193,7 +193,7 @@ def _resolve_mount_context(
     if mount_found is None:
         raise ValueError(f"Mount '{mount}' not found in profile '{profile_name}'")
 
-    adapter = SlurmSSHAdapter(profile_name=profile_name)
+    adapter = SlurmSSHClient(profile_name=profile_name)
     context = SubmissionRenderContext(
         mount_name=mount,
         mounts=tuple(profile.mounts),

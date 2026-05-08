@@ -2,7 +2,7 @@
 
 Previously the render path forked between ``src/srunx/web/routers/workflows.py``
 (mount-aware dry-run / submit for Web non-sweep) and
-``src/srunx/web/ssh_adapter.py::SlurmSSHAdapter.run`` (mount-agnostic sweep
+``src/srunx/slurm/clients/ssh.py::SlurmSSHClient.run`` (mount-agnostic sweep
 cell render). This module unifies them: Web submission (both non-sweep
 and sweep) and MCP sweep call :func:`render_workflow_for_submission`;
 MCP non-sweep still renders via the local ``Slurm`` path. The helper
@@ -73,7 +73,7 @@ class SubmissionRenderContext:
     allow_in_place: bool = False
     """Permission flag for the IN_PLACE submission path.
 
-    Workflow Phase 2 (#135): :meth:`SlurmSSHAdapter.run` only takes
+    Workflow Phase 2 (#135): :meth:`SlurmSSHClient.run` only takes
     the IN_PLACE shortcut (sbatch the user's mount-resident script
     verbatim, skipping the temp upload) when this flag is True,
     AND the source bytes equal the rendered bytes, AND the source
@@ -244,7 +244,7 @@ def normalize_job_for_submission(
     """Public entry for mount-aware path normalization on a single job.
 
     Thin alias around :func:`_normalize_paths_for_mount` so callers that
-    render a single job at submission time (e.g. :class:`SlurmSSHAdapter.run`)
+    render a single job at submission time (e.g. :class:`SlurmSSHClient.run`)
     can apply the same ``work_dir`` / ``log_dir`` translation as the
     full-workflow :func:`render_workflow_for_submission` path without
     reaching into private module state.
@@ -280,7 +280,7 @@ def _render_one(job: RunnableJobType, tmpdir: Path) -> str:
         )
     elif isinstance(job, ShellJob):
         # ShellJob uses its own script path as the "template" (existing
-        # semantics in ``SlurmSSHAdapter.run``).
+        # semantics in ``SlurmSSHClient.run``).
         rendered_path = render_shell_job_script(
             job.script_path,
             job,

@@ -21,7 +21,7 @@ from srunx.observability.storage.repositories.workflow_run_jobs import (
 )
 from srunx.observability.storage.repositories.workflow_runs import WorkflowRunRepository
 from srunx.runtime.sweep.state_service import WorkflowRunStateService
-from srunx.slurm.ssh import SlurmSSHAdapter
+from srunx.slurm.clients.ssh import SlurmSSHClient
 
 from .workflow_run_query import parse_run_id
 
@@ -37,7 +37,7 @@ class WorkflowRunCancellationService:
         *,
         run_id: str,
         conn: sqlite3.Connection,
-        adapter: SlurmSSHAdapter,
+        adapter: SlurmSSHClient,
     ) -> dict[str, Any]:
         rid = parse_run_id(run_id)
         run_repo = WorkflowRunRepository(conn)

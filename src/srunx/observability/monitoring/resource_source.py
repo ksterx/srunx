@@ -10,7 +10,7 @@ This module decouples "fetch cluster state" from "interpret it":
 
 * :class:`ResourceSource` is a structural contract.
 * :class:`SSHAdapterResourceSource` adapts the existing
-  :class:`srunx.slurm.ssh.SlurmSSHAdapter.get_resources` so
+  :class:`srunx.slurm.clients.ssh.SlurmSSHClient.get_resources` so
   remote clusters flow through the same code path already used by
   ``/api/resources``. When ``partition=None`` it sums across every
   partition so the cluster-wide snapshot matches the local subprocess
@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from srunx.observability.monitoring.types import ResourceSnapshot
 
 if TYPE_CHECKING:
-    from srunx.slurm.ssh import SlurmSSHAdapter
+    from srunx.slurm.clients.ssh import SlurmSSHClient
 
 
 @runtime_checkable
@@ -47,7 +47,7 @@ class ResourceSource(Protocol):
 
 
 class SSHAdapterResourceSource:
-    """``ResourceSource`` implementation that reuses ``SlurmSSHAdapter``.
+    """``ResourceSource`` implementation that reuses ``SlurmSSHClient``.
 
     Takes an **adapter provider** (a callable returning the current
     adapter or ``None``), not a captured reference. That matters
@@ -77,7 +77,7 @@ class SSHAdapterResourceSource:
 
     def __init__(
         self,
-        adapter_provider: Callable[[], SlurmSSHAdapter | None],
+        adapter_provider: Callable[[], SlurmSSHClient | None],
     ) -> None:
         self._provider = adapter_provider
 
@@ -108,7 +108,7 @@ class SSHAdapterResourceSource:
 
 
 def _dict_to_snapshot(row: dict[str, Any], partition: str | None) -> ResourceSnapshot:
-    """Coerce a ``SlurmSSHAdapter.get_resources`` row into a snapshot."""
+    """Coerce a ``SlurmSSHClient.get_resources`` row into a snapshot."""
     return ResourceSnapshot(
         partition=row.get("partition", partition),
         total_gpus=int(row.get("total_gpus", 0) or 0),

@@ -1,7 +1,7 @@
 """Unified SLURM client protocol.
 
 Defines the interface that both the local :class:`LocalClient` and the
-``SlurmSSHAdapter`` implement, so that notification pollers and other
+``SlurmSSHClient`` implement, so that notification pollers and other
 downstream consumers can target either transparently.
 """
 
@@ -285,7 +285,7 @@ Intended usage::
 Implementations:
 
 - Local: returns ``nullcontext(LocalClient())`` — singleton reuse, no teardown.
-- SSH pool: returns a lease from a bounded pool of ``SlurmSSHAdapter``
+- SSH pool: returns a lease from a bounded pool of ``SlurmSSHClient``
   clones so concurrent sweep cells don't serialize through one SSH
   connection.
 """

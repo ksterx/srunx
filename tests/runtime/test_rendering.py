@@ -2,9 +2,9 @@
 
 These tests exercise the new :func:`render_workflow_for_submission` that
 unifies the Web non-sweep, Web sweep, and MCP render paths. Phase 2
-Batch 1b scope — the helper is standalone; its callers still live in
-``web/routers/workflows.py``, ``web/ssh_adapter.py``, and ``mcp/server.py``
-(Batch 2 migration).
+Batch 1b scope — the helper is standalone; its callers live in
+``web/routers/workflows.py``, ``slurm/clients/ssh.py::SlurmSSHClient.run``,
+and ``mcp/tools/{jobs,workflows}.py`` (post-#193 module split).
 
 Mount registry entries are constructed via a tiny :class:`_FakeMount`
 duck-typed on ``.name / .local / .remote`` so tests stay independent of
@@ -644,7 +644,7 @@ def test_smoke_multi_job_sweep_style_render(tmp_path: Path) -> None:
     Mirrors the shape of a sweep cell (same workflow rendered N times
     with different ``args_override``) so the Batch 2 migration can
     verify this helper is a drop-in replacement for the sweep render
-    path in ``SlurmSSHAdapter.run``.
+    path in ``SlurmSSHClient.run``.
     """
     local_root = tmp_path / "projects" / "sweep"
     local_root.mkdir(parents=True)

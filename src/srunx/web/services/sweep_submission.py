@@ -25,7 +25,7 @@ from fastapi import HTTPException, Request
 from srunx.common.exceptions import SweepExecutionError, WorkflowValidationError
 from srunx.common.logging import get_logger
 from srunx.runtime.workflow.runner import WorkflowRunner
-from srunx.slurm.ssh import SlurmSSHAdapter
+from srunx.slurm.clients.ssh import SlurmSSHClient
 from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
 
 from ..schemas.workflows import WorkflowRunRequest
@@ -107,7 +107,7 @@ class SweepSubmissionService:
         name: str,
         body: WorkflowRunRequest,
         request: Request,
-        adapter: SlurmSSHAdapter,
+        adapter: SlurmSSHClient,
         mount: str | None = None,
     ) -> dict[str, Any]:
         """Materialize synchronously + spawn orchestrator as a background task.

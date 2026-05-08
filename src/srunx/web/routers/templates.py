@@ -13,7 +13,7 @@ from srunx.runtime.templates import (
     get_template_path,
     list_templates,
 )
-from srunx.slurm.ssh import SlurmSSHAdapter  # noqa: F811
+from srunx.slurm.clients.ssh import SlurmSSHClient
 
 from ..deps import get_adapter
 
@@ -81,7 +81,7 @@ class TemplateApplyRequest(BaseModel):
 async def apply_template(
     name: str,
     req: TemplateApplyRequest,
-    adapter: SlurmSSHAdapter = Depends(get_adapter),
+    adapter: SlurmSSHClient = Depends(get_adapter),
 ) -> dict[str, Any]:
     """Submit a job using a template, or preview the rendered script."""
     import tempfile

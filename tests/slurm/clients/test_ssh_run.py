@@ -1,4 +1,4 @@
-"""Tests for :meth:`SlurmSSHAdapter.run` — Step 4a of the SSH sweep wiring.
+"""Tests for :meth:`SlurmSSHClient.run` — Step 4a of the SSH sweep wiring.
 
 Verifies the wrapper composes render → submit → monitor correctly, fires
 callbacks on terminal transitions, and propagates ``workflow_run_id`` into
@@ -14,18 +14,18 @@ import pytest
 
 from srunx.callbacks import Callback
 from srunx.domain import Job, JobStatus
-from srunx.slurm.ssh import (
-    SlurmSSHAdapter,
-    SlurmSSHAdapterSpec,
+from srunx.slurm.clients.ssh import (
+    SlurmSSHClient,
+    SlurmSSHClientSpec,
     SSHMonitorTimeoutError,
 )
 
 # --- Helpers ---------------------------------------------------------
 
 
-def _bare_adapter(callbacks: list[Callback] | None = None) -> SlurmSSHAdapter:
+def _bare_adapter(callbacks: list[Callback] | None = None) -> SlurmSSHClient:
     """Build a fully-populated adapter that bypasses real SSH I/O."""
-    adapter = object.__new__(SlurmSSHAdapter)
+    adapter = object.__new__(SlurmSSHClient)
     adapter._io_lock = threading.RLock()
     adapter._client = MagicMock()
     adapter.callbacks = list(callbacks) if callbacks else []
@@ -105,14 +105,14 @@ class TestSSHAdapterRun:
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_job_submission",
             staticmethod(lambda *a, **k: None),
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         result = adapter.run(job, workflow_name="wf", workflow_run_id=7)
@@ -141,14 +141,14 @@ class TestSSHAdapterRun:
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_job_submission",
             staticmethod(lambda *a, **k: None),
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         adapter.run(job)
@@ -173,14 +173,14 @@ class TestSSHAdapterRun:
 
         monkeypatch.setattr(adapter, "_monitor_until_terminal", lambda _jid: "FAILED")
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_job_submission",
             staticmethod(lambda *a, **k: None),
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         with pytest.raises(RuntimeError, match="FAILED"):
@@ -208,14 +208,14 @@ class TestSSHAdapterRun:
             adapter, "_monitor_until_terminal", lambda _jid: "CANCELLED"
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_job_submission",
             staticmethod(lambda *a, **k: None),
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         with pytest.raises(RuntimeError, match="CANCELLED"):
@@ -248,7 +248,7 @@ class TestSSHAdapterRun:
             recorded["workflow_run_id"] = workflow_run_id
 
         # Patch the best-effort DB import site (inlined inside
-        # SlurmSSHAdapter._record_job_submission).
+        # SlurmSSHClient._record_job_submission).
         monkeypatch.setattr(
             "srunx.observability.storage.cli_helpers.record_submission_from_job",
             fake_record,
@@ -302,14 +302,14 @@ class TestSSHAdapterRunUnknownStatus:
             adapter, "_monitor_until_terminal", lambda _jid: "NOT_FOUND"
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_job_submission",
             staticmethod(lambda *a, **k: None),
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         # run() must return without raising — the pre-fix behaviour would
@@ -337,14 +337,14 @@ class TestSSHAdapterRunUnknownStatus:
             adapter, "_monitor_until_terminal", lambda _jid: "SOME_FUTURE_STATE"
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_job_submission",
             staticmethod(lambda *a, **k: None),
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         result = adapter.run(job)
@@ -464,14 +464,14 @@ class TestSSHAdapterRunInPlace:
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_job_submission",
             staticmethod(lambda *a, **k: None),
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         return adapter, script
@@ -584,7 +584,7 @@ class TestSSHAdapterRunSubmissionContext:
     """Batch 2a: ``submission_context`` drives mount-aware path rewriting.
 
     These tests target the ``normalize_job_for_submission`` hook at the
-    top of :meth:`SlurmSSHAdapter.run`. They verify that the rendered
+    top of :meth:`SlurmSSHClient.run`. They verify that the rendered
     script sent to ``submit_sbatch_job`` reflects the *translated* paths
     when a context is supplied, and is unchanged when ``submission_context``
     is ``None`` (pre-Batch-2a semantics).
@@ -616,14 +616,14 @@ class TestSSHAdapterRunSubmissionContext:
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_job_submission",
             staticmethod(lambda *a, **k: None),
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         # Explicitly pass submission_context=None — legacy semantics.
@@ -674,14 +674,14 @@ class TestSSHAdapterRunSubmissionContext:
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_job_submission",
             staticmethod(lambda *a, **k: None),
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         adapter.run(job, submission_context=ctx)
@@ -721,14 +721,14 @@ class TestSSHAdapterRunSubmissionContext:
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_job_submission",
             staticmethod(lambda *a, **k: None),
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         adapter.run(job, submission_context=ctx)
@@ -767,14 +767,14 @@ class TestSSHAdapterRunSubmissionContext:
             adapter, "_monitor_until_terminal", lambda _jid: "COMPLETED"
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_job_submission",
             staticmethod(lambda *a, **k: None),
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_completion_safe",
-            staticmethod(lambda *a, **k: None),
+            lambda *a, **k: None,
         )
 
         returned = adapter.run(original, submission_context=ctx)
@@ -786,7 +786,7 @@ class TestSSHAdapterRunSubmissionContext:
 
 class TestAdapterFromSpec:
     def test_from_spec_creates_disconnected_clone(self) -> None:
-        spec = SlurmSSHAdapterSpec(
+        spec = SlurmSSHClientSpec(
             profile_name=None,
             hostname="clone.example.com",
             username="user",
@@ -797,7 +797,7 @@ class TestAdapterFromSpec:
             mounts=(),
         )
 
-        adapter = SlurmSSHAdapter.from_spec(spec)
+        adapter = SlurmSSHClient.from_spec(spec)
 
         # Connection spec reconstruction is identical.
         round_trip = adapter.connection_spec
@@ -808,14 +808,14 @@ class TestAdapterFromSpec:
 
     def test_from_spec_attaches_callbacks(self) -> None:
         cb = _RecordingCallback()
-        spec = SlurmSSHAdapterSpec(
+        spec = SlurmSSHClientSpec(
             profile_name=None,
             hostname="h",
             username="u",
             key_filename=None,
             port=22,
         )
-        adapter = SlurmSSHAdapter.from_spec(spec, callbacks=[cb])
+        adapter = SlurmSSHClient.from_spec(spec, callbacks=[cb])
         assert adapter.callbacks == [cb]
 
     def test_spec_with_mounts_is_hashable(self, tmp_path) -> None:
@@ -833,7 +833,7 @@ class TestAdapterFromSpec:
             remote="/remote/proj",
             exclude_patterns=["data/", "*.bin"],
         )
-        spec = SlurmSSHAdapterSpec(
+        spec = SlurmSSHClientSpec(
             profile_name=None,
             hostname="h",
             username="u",

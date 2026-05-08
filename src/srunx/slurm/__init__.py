@@ -4,7 +4,8 @@ Canonical entry points:
 
 - :class:`Client` — Protocol every submission backend implements
 - :class:`LocalClient` — in-process ``sbatch`` / ``squeue`` / ``scancel``
-- :class:`SSHClient` — SLURM over SSH (populated in Phase 6 / #162)
+- :class:`SlurmSSHClient` (in :mod:`srunx.slurm.clients.ssh`) — SLURM over
+  SSH (delegates to :mod:`srunx.ssh.core.client`)
 
 Also exposes :data:`SLURM_TERMINAL_JOB_STATES` and the
 ``JobOperations`` / ``WorkflowJobExecutor`` protocols.

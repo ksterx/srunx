@@ -20,7 +20,7 @@ from srunx.common.logging import get_logger
 from srunx.runtime.sweep import SweepSpec
 from srunx.runtime.sweep.orchestrator import SweepOrchestrator
 from srunx.runtime.workflow.runner import WorkflowRunner
-from srunx.slurm.ssh import SlurmSSHAdapter
+from srunx.slurm.clients.ssh import SlurmSSHClient
 from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
 
 from ..deps import get_adapter, get_db_conn
@@ -91,7 +91,7 @@ async def get_run(
 @router.post("/runs/{run_id}/cancel")
 async def cancel_run(
     run_id: str,
-    adapter: SlurmSSHAdapter = Depends(get_adapter),
+    adapter: SlurmSSHClient = Depends(get_adapter),
     conn: sqlite3.Connection = Depends(get_db_conn),
 ) -> dict[str, Any]:
     """Cancel all jobs in a running workflow."""
@@ -142,7 +142,7 @@ async def _dispatch_sweep(
     name: str,
     body: WorkflowRunRequest,
     request: Request,
-    adapter: SlurmSSHAdapter,
+    adapter: SlurmSSHClient,
     mount: str | None = None,
 ) -> dict[str, Any]:
     """Dispatch shim — see :meth:`SweepSubmissionService.dispatch`."""
@@ -180,7 +180,7 @@ async def run_workflow(
     request: Request,
     mount: str | None = None,
     body: WorkflowRunRequest | None = None,
-    adapter: SlurmSSHAdapter = Depends(get_adapter),
+    adapter: SlurmSSHClient = Depends(get_adapter),
     conn: sqlite3.Connection = Depends(get_db_conn),
 ) -> dict[str, Any]:
     """Run a workflow: sync mounts, submit jobs with SLURM dependencies.

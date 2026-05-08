@@ -1,5 +1,12 @@
 # Design Document
 
+> **Historical naming note** (added during PR #203, the #193 oversized-module
+> split): this spec was authored when the SSH-transport SLURM client was
+> ``SlurmSSHAdapter`` in ``src/srunx/web/ssh_adapter.py``. It has since been
+> renamed to ``SlurmSSHClient`` and moved to ``src/srunx/slurm/clients/ssh.py``.
+> The original names are preserved below as historical context; new work
+> should target the current paths.
+
 ## Overview
 
 本 spec は srunx の通知配送と状態永続化を刷新する。既存の in-memory / file-based なバラバラな状態管理を、**単一の SQLite データベース (`srunx.db`)** に統合する。通知は Outbox パターンベースの耐久性ある配送(Watch / Subscription / Endpoint / Event / Delivery の5概念)で実現し、ワークフロー実行状態・ジョブ状態遷移・リソース時系列も同 DB に乗せる。

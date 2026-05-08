@@ -434,7 +434,7 @@ class TestLockedMountNamesSafetyNet:
         """Adapter rejects IN_PLACE when ``mount.name`` not in locked set."""
         from srunx.domain import JobStatus, ShellJob
         from srunx.runtime.rendering import SubmissionRenderContext
-        from srunx.slurm.ssh import SlurmSSHAdapter
+        from srunx.slurm.clients.ssh import SlurmSSHClient
 
         # Build a real ShellJob that lives under the adapter's mount.
         mount_local = tmp_path / "ml"
@@ -442,7 +442,7 @@ class TestLockedMountNamesSafetyNet:
         s = mount_local / "run.sh"
         s.write_text("#!/bin/bash\necho hi\n")
 
-        adapter = SlurmSSHAdapter(
+        adapter = SlurmSSHClient(
             hostname="h",
             username="u",
             key_filename="/tmp/none",
@@ -496,14 +496,14 @@ class TestLockedMountNamesSafetyNet:
         """
         from srunx.domain import JobStatus, ShellJob
         from srunx.runtime.rendering import SubmissionRenderContext
-        from srunx.slurm.ssh import SlurmSSHAdapter
+        from srunx.slurm.clients.ssh import SlurmSSHClient
 
         mount_local = tmp_path / "ml"
         mount_local.mkdir()
         s = mount_local / "run.sh"
         s.write_text("#!/bin/bash\necho hi\n")
 
-        adapter = SlurmSSHAdapter(
+        adapter = SlurmSSHClient(
             hostname="h",
             username="u",
             key_filename="/tmp/none",
@@ -524,7 +524,7 @@ class TestLockedMountNamesSafetyNet:
             adapter, "_monitor_until_terminal", lambda *a, **kw: "COMPLETED"
         )
         monkeypatch.setattr(
-            SlurmSSHAdapter,
+            SlurmSSHClient,
             "_record_job_submission",
             staticmethod(lambda *a, **kw: None),
         )
