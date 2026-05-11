@@ -1,3 +1,7 @@
+---
+description: REST API reference for the srunx Web UI server — endpoints for jobs, workflows, runs, resources, endpoints, deliveries, and templates.
+---
+
 # Web UI REST API Reference
 
 The srunx Web UI exposes a REST API at `http://127.0.0.1:8000/api/`. All responses are JSON.

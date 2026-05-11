@@ -1,3 +1,7 @@
+---
+description: Python API reference for srunx — Slurm client, workflow runner, monitors, callbacks, and sync utilities, auto-generated from source docstrings.
+---
+
 # API Reference
 
 ## Sync Module

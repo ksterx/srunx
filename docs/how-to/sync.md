@@ -1,3 +1,7 @@
+---
+description: Sync local project directories to remote SLURM servers via rsync — configure mounts, control automatic sync, and run scripts in place on the remote.
+---
+
 # Project Synchronization
 
 srunx can sync your local project directory to a remote SLURM server using

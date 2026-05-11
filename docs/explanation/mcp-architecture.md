@@ -1,3 +1,7 @@
+---
+description: Why and how the srunx MCP server is designed — layering on top of the existing CLI / Python API / Web UI, security model, and tool surface.
+---
+
 # MCP Integration Architecture
 
 This document explains the design decisions behind the srunx MCP server and

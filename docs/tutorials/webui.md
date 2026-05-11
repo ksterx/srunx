@@ -1,3 +1,7 @@
+---
+description: Install, configure, and launch the srunx Web UI to manage SLURM jobs and workflows from your browser.
+---
+
 # Web UI Setup
 
 This tutorial walks you through installing and starting the srunx Web UI to manage SLURM jobs from your browser.

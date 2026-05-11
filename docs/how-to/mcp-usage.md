@@ -1,3 +1,7 @@
+---
+description: Recipes for managing SLURM through Claude Code with srunx MCP tools — submit jobs, run workflows, sync files, and monitor status conversationally.
+---
+
 # Using srunx MCP Tools
 
 This guide shows how to accomplish specific tasks through Claude Code using the

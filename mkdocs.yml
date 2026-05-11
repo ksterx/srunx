@@ -10,6 +10,7 @@ site_dir: public
 
 theme:
   name: material
+  custom_dir: overrides
   font: false
   logo: assets/images/icon.svg
   favicon: assets/images/icon.svg
@@ -39,6 +40,11 @@ theme:
         name: Switch to dark mode
   icon:
     repo: fontawesome/brands/github
+
+extra:
+  # Paste the content value from Google Search Console (HTML tag verification).
+  # Leave empty to skip emitting the meta tag.
+  google_site_verification: "orUwpzx94uyyxETR5_t9C1noirNXCAuo6Me-VzwvOBA"
 
 extra_css:
   - stylesheets/extra.css

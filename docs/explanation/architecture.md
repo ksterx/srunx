@@ -1,3 +1,7 @@
+---
+description: How srunx is organized internally — a 6-layer modular architecture spanning interfaces, runtime, SLURM wrappers, observability, integrations, and common code.
+---
+
 # Architecture
 
 This document explains the internal architecture and design decisions of srunx.

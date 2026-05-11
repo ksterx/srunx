@@ -1,3 +1,7 @@
+---
+description: Browse local project files and submit scripts to SLURM from the srunx Web UI File Explorer — a VS Code-style tree panel for sbatch scripts.
+---
+
 # File Explorer
 
 The file explorer is a VS Code-style tree panel that lets you browse local project files and submit scripts to SLURM directly from the Web UI.

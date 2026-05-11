@@ -1,3 +1,7 @@
+---
+description: Comprehensive guide to srunx CLI commands for SLURM — sbatch / squeue / scancel / sinfo, plus profiles, conda/venv setup, and SSH integration.
+---
+
 # User Guide
 
 This comprehensive guide covers all aspects of using srunx for SLURM job management.

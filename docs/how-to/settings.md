@@ -1,3 +1,7 @@
+---
+description: Configure srunx from the Web UI Settings page — manage SSH profiles, mount points, notification endpoints, and default resources without editing JSON.
+---
+
 # Settings
 
 The Settings page lets you manage srunx configuration directly from the Web UI instead of editing config files or running CLI commands.

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block extrahead %}
+  {% if config.extra and config.extra.google_site_verification %}
+    <meta name="google-site-verification" content="{{ config.extra.google_site_verification }}">
+  {% endif %}
+
+  {% if page and page.is_homepage %}
+    {% set og_title = config.site_name %}
+  {% else %}
+    {% set og_title = (page.title if page and page.title else config.site_name) | striptags %}
+  {% endif %}
+  {% set og_description = (page.meta.description if page and page.meta and page.meta.description else config.site_description) | striptags %}
+  {% set og_url = page.canonical_url if page and page.canonical_url else config.site_url %}
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="{{ config.site_name }}">
+  <meta property="og:title" content="{{ og_title }}">
+  <meta property="og:description" content="{{ og_description }}">
+  <meta property="og:url" content="{{ og_url }}">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{{ og_title }}">
+  <meta name="twitter:description" content="{{ og_description }}">
+{% endblock %}

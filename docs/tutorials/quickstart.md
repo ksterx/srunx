@@ -1,3 +1,7 @@
+---
+description: Submit your first SLURM job with srunx in minutes — sbatch wrapping, GPU allocation, and watching job status from the CLI.
+---
+
 # Quick Start
 
 This guide will help you get started with srunx quickly.

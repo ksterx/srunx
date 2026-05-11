@@ -1,3 +1,7 @@
+---
+description: Monitor SLURM jobs and GPU resources with srunx — continuous watches, availability thresholds, and scheduled cluster reports via Slack.
+---
+
 # Job and Resource Monitoring
 
 srunx provides comprehensive monitoring capabilities for SLURM jobs and GPU resources.

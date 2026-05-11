@@ -1,4 +1,5 @@
 ---
+description: srunx is a Python toolkit for managing SLURM jobs and workflows — submit, monitor, and orchestrate GPU jobs from the CLI, Web UI, or Claude Code via MCP.
 hide:
   - navigation
   - toc

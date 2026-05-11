@@ -1,3 +1,7 @@
+---
+description: Practical recipes for the srunx Web UI — switching clusters, submitting scripts, watching jobs, and managing notification subscriptions.
+---
+
 # Web UI How-to Guide
 
 Practical recipes for common Web UI tasks.

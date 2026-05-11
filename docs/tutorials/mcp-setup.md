@@ -1,3 +1,7 @@
+---
+description: Connect srunx to Claude Code via MCP (Model Context Protocol) so the agent can submit, monitor, and cancel SLURM jobs through natural language.
+---
+
 # Getting Started with MCP
 
 MCP (Model Context Protocol) lets Claude Code call srunx tools directly,

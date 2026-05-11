@@ -1,3 +1,7 @@
+---
+description: Manual procedure for verifying the srunx notification pipeline (ActiveWatchPoller → DeliveryPoller → Slack) end-to-end against a real SLURM cluster.
+---
+
 # Smoke-testing the notification pipeline against real SLURM
 
 Manual procedure for verifying `ActiveWatchPoller` → `DeliveryPoller` →

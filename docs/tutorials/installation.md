@@ -1,3 +1,7 @@
+---
+description: Install srunx with uv or pip. Requires Python 3.12+ and access to a SLURM cluster, either locally or via SSH.
+---
+
 # Installation
 
 ## Requirements

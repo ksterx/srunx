@@ -1,3 +1,7 @@
+---
+description: Define and execute multi-step SLURM pipelines with YAML workflows in srunx — dependencies, parameter sweeps, retries, and partial execution.
+---
+
 # Workflows
 
 srunx provides a powerful workflow system for orchestrating complex multi-step computational pipelines on SLURM clusters.

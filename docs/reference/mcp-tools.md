@@ -1,3 +1,7 @@
+---
+description: Complete reference for the 14 tools exposed by the srunx MCP server — submit_job, run_workflow, get_job_status, sync_files, and more.
+---
+
 # MCP Tool Reference
 
 Complete reference for all 14 tools exposed by the srunx MCP server.
