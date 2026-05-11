@@ -4,6 +4,24 @@ dynamic = ["version"]
 description = "Slurm job workflow management"
 readme = "README.md"
 authors = [{ name = "ksterx", email = "kostonerx@gmail.com" }]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+keywords = ["slurm", "hpc", "workflow", "gpu", "scheduler", "sbatch", "mcp", "cluster", "job-management"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Clustering",
+    "Topic :: System :: Distributed Computing",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.136.0",
@@ -19,6 +37,13 @@ dependencies = [
     "typer>=0.24.1",
     "apscheduler>=3.11.2",
 ]
+
+[project.urls]
+Homepage = "https://ksterx.github.io/srunx/"
+Documentation = "https://ksterx.github.io/srunx/"
+Repository = "https://github.com/ksterx/srunx"
+Issues = "https://github.com/ksterx/srunx/issues"
+Changelog = "https://github.com/ksterx/srunx/releases"
 
 [project.optional-dependencies]
 mcp = [
