@@ -14,6 +14,7 @@ Stop juggling `sbatch` scripts, `squeue` loops, and SSH sessions.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/ksterx/srunx/workflows/CI/badge.svg)](https://github.com/ksterx/srunx/actions)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://ksterx.github.io/srunx/)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/ksterx/srunx)
 
 </div>
 
