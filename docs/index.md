@@ -7,8 +7,6 @@ hide:
 
 <div class="srunx-hero" markdown>
 
-<p class="srunx-status">v1.2 · SLURM · Apache-2.0</p>
-
 # Orchestrate SLURM jobs<br>like <span class="accent">code</span>.
 
 <p class="lede">A Python toolkit for submitting, monitoring, and chaining compute jobs on HPC clusters — with a web UI, an MCP server, and YAML workflows that feel like CI.</p>
