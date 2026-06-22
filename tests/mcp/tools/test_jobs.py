@@ -343,3 +343,47 @@ class TestGetJobLogs:
         assert result["success"] is True
         assert result["stdout"] == ""
         assert result["log_files"] == []
+
+
+class TestArrayJobIdGuard:
+    """Array task IDs (e.g. '12345_7') must be rejected for status/cancel —
+    int('12345_7') == 123457 would silently target a different job."""
+
+    def test_status_rejects_array_id_without_calling_ops(self):
+        rt = _make_rt("ssh")
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
+            result = get_job_status(job_id="12345_7", transport="prod")
+        assert result["success"] is False
+        assert "array task id" in result["error"].lower()
+        rt.job_ops.status.assert_not_called()
+
+    def test_cancel_rejects_array_id_without_calling_ops(self):
+        rt = _make_rt("ssh")
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
+            result = cancel_job(job_id="12345_7", transport="prod")
+        assert result["success"] is False
+        rt.job_ops.cancel.assert_not_called()
+
+    def test_status_accepts_plain_numeric_id(self):
+        rt = _make_rt("local")
+        job = MagicMock()
+        job.name = "j"
+        job.job_id = "100"
+        job._status.value = "RUNNING"
+        del job.script_path
+        del job.command
+        for attr in (
+            "partition",
+            "user",
+            "elapsed_time",
+            "nodes",
+            "nodelist",
+            "cpus",
+            "gpus",
+        ):
+            setattr(job, attr, None)
+        rt.job_ops.status.return_value = job
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
+            result = get_job_status(job_id="100")
+        assert result["success"] is True
+        rt.job_ops.status.assert_called_once_with(100)

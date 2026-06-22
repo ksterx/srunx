@@ -25,6 +25,27 @@ from srunx.mcp.helpers import (
 from srunx.mcp.transport import mcp_transport
 
 
+def _job_id_as_int(job_id: str) -> int:
+    """Convert a validated job id to int for the int-typed status/cancel ops.
+
+    ``validate_job_id`` accepts array task ids like ``12345_7``, but the
+    status / cancel / queue_by_ids Protocol is int-only (the SSH adapter even
+    re-applies ``int()`` internally), and ``int("12345_7")`` silently yields
+    ``123457`` — addressing a *different* job. Reject array ids explicitly so a
+    status/cancel never lands on the wrong job. (Full array-task addressing
+    would require widening the int-based slurm Protocol — out of scope here;
+    log retrieval keeps array support since it passes the id through as a
+    string.)
+    """
+    if "_" in job_id:
+        raise ValueError(
+            f"Array task ID '{job_id}' is not supported for status/cancel "
+            "(the job-operations API is numeric-id only); pass the plain "
+            "numeric job ID."
+        )
+    return int(job_id)
+
+
 @mcp.tool()
 def submit_job(
     command: str,
@@ -147,7 +168,7 @@ def get_job_status(job_id: str, transport: str | None = None) -> dict[str, Any]:
     try:
         validate_job_id(job_id)
         with mcp_transport(transport) as rt:
-            job = rt.job_ops.status(int(job_id))
+            job = rt.job_ops.status(_job_id_as_int(job_id))
             # job_to_dict already carries job_id; don't double-pass it.
             return ok(**job_to_dict(job))
     except Exception as e:
@@ -166,7 +187,7 @@ def cancel_job(job_id: str, transport: str | None = None) -> dict[str, Any]:
     try:
         validate_job_id(job_id)
         with mcp_transport(transport) as rt:
-            rt.job_ops.cancel(int(job_id))
+            rt.job_ops.cancel(_job_id_as_int(job_id))
             return ok(job_id=job_id, message="Job cancelled")
     except Exception as e:
         return err(str(e))
