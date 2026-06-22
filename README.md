@@ -286,8 +286,8 @@ Keep your local editor workflow while the jobs actually run on the cluster. Conf
 
 ```bash
 # One-time setup
-srunx ssh profile add dgx --ssh-host dgx1
-srunx ssh profile mount add dgx ml-exp \
+srunx ssh add --profile dgx --ssh-host dgx1
+srunx ssh mount add --profile dgx --mount ml-exp \
   --local ~/projects/ml-exp --remote /home/user/ml-exp
 
 # Same verbs you already use — now against the remote cluster
@@ -334,11 +334,12 @@ Once connected, the agent can call `run_workflow` with optional sweep and mount 
 run_workflow(
     yaml_path="train.yaml",
     sweep={"matrix": {"lr": [0.001, 0.01]}, "max_parallel": 2},
+    transport="dgx",
     mount="my-project",
 )
 ```
 
-Passing `mount=<name>` routes the run through the matching SSH profile mount, translating `work_dir` / `log_dir` into remote paths — so the agent can launch mount-aware submissions against a remote cluster without leaving the chat.
+`transport="<profile>"` selects the remote cluster; the optional `mount=<name>` translates `work_dir` / `log_dir` into that mount's remote paths. `mount` requires `transport` — passing `mount` alone is an error — so the agent can launch mount-aware submissions against a remote cluster without leaving the chat.
 
 Setup + tool-by-tool usage: [MCP Setup tutorial](https://ksterx.github.io/srunx/tutorials/mcp-setup/) · [MCP Usage how-to](https://ksterx.github.io/srunx/how-to/mcp-usage/) · [MCP Tools reference](https://ksterx.github.io/srunx/reference/mcp-tools/)
 

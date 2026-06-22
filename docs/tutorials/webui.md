@@ -31,20 +31,20 @@ The Web UI connects to your SLURM cluster via SSH. If you already have an srunx 
 Check your current profile:
 
 ``` bash
-srunx ssh profile list
+srunx ssh list
 ```
 
 If you don't have a profile, create one:
 
 ``` bash
-srunx ssh profile add myserver --hostname dgx.example.com --username researcher
+srunx ssh add --profile myserver --hostname dgx.example.com --username researcher
 ```
 
 Set it as the current profile:
 
 ``` bash
 # The Web UI auto-detects the current profile
-srunx ssh profile add myserver
+srunx ssh use --profile myserver
 # myserver is now the default
 ```
 
@@ -192,7 +192,7 @@ Mount points let the file browser in the DAG builder map between local directori
 1.  Add a mount to your SSH profile:
 
     ``` bash
-    srunx ssh profile mount add myserver ml-project \
+    srunx ssh mount add --profile myserver --mount ml-project \
         --local ~/projects/ml-project \
         --remote /home/researcher/ml-project
     ```
@@ -200,7 +200,7 @@ Mount points let the file browser in the DAG builder map between local directori
 2.  Verify the mount was created:
 
     ``` bash
-    srunx ssh profile mount list myserver
+    srunx ssh mount list --profile myserver
     ```
 
 3.  In the DAG builder, click a job node to open the property panel

@@ -67,21 +67,22 @@ Retrieve stdout and stderr from completed or running jobs:
 > Show me the logs for job 12345
 ```
 
-Claude Code calls `get_job_logs` and displays the output. For SSH jobs,
-it fetches logs from the remote cluster.
+Claude Code calls `get_job_logs` and displays the output. For jobs on a
+remote cluster, name the cluster so it passes `transport="<profile>"` and
+fetches logs from there.
 
 ## Sync Files Before Job Submission
 
 Ensure your latest code is on the remote cluster before submitting:
 
 ``` text
-> Sync the ml-project mount and then submit "python train.py" with
-> 2 GPUs via SSH
+> Sync the ml-project mount on the dgx cluster and then submit
+> "python train.py" with 2 GPUs on dgx
 ```
 
-Claude Code calls `sync_files` with the mount name, then calls
-`submit_job` with `use_ssh=True`. The sync uses your configured mount
-points from the SSH profile.
+Claude Code calls `sync_files` with `transport="<profile>"` plus the mount
+name, then calls `submit_job` with the same `transport="<profile>"`. The
+sync uses your configured mount points from that SSH profile.
 
 For explicit paths instead of named mounts:
 
@@ -92,24 +93,26 @@ For explicit paths instead of named mounts:
 Claude Code calls `sync_files` with `local_path` and `remote_path`,
 first with `dry_run=True` to preview, then again to execute.
 
-## Use SSH Mode for Remote Clusters
+## Use a Remote Cluster
 
-Most tools accept a `use_ssh` flag. You can tell Claude Code to operate
-remotely:
+Most tools accept a `transport="<profile>"` argument naming the SSH profile
+to route through. MCP reads neither environment variables nor any "current"
+profile — you (or the agent) must name the profile explicitly. You can tell
+Claude Code to operate against a named cluster:
 
 ``` text
-> List jobs on the remote cluster
+> List jobs on the dgx cluster
 ```
 
 ``` text
-> Cancel job 12345 on the remote cluster
+> Cancel job 12345 on the dgx cluster
 ```
 
 ``` text
-> Check resources on the gpu partition via SSH
+> Check resources on the gpu partition of the dgx cluster
 ```
 
-Claude Code routes these through the active SSH profile. To see which
+Claude Code passes `transport="dgx"` on each of these. To see which
 profiles are configured:
 
 ``` text
@@ -160,13 +163,13 @@ run_workflow(
 )
 ```
 
-Without `mount=`, cells run through the local `Slurm` singleton.
+Without `transport=`, cells run through the local `Slurm` singleton.
 
-### Sweep over SSH (``mount=``)
+### Sweep over SSH (``transport=``)
 
 ``` text
-> Submit the train workflow on the cookbook2 project with seed 1-3,
-> max 2 parallel
+> Submit the train workflow on the dgx cluster's cookbook2 mount with
+> seed 1-3, max 2 parallel
 ```
 
 Claude Code calls:
@@ -178,13 +181,15 @@ run_workflow(
         "matrix": {"seed": [1, 2, 3]},
         "max_parallel": 2,
     },
+    transport="dgx",
     mount="cookbook2",
 )
 ```
 
-With `mount=<profile>`, cells route through a per-sweep SSH executor
-pool. The named mount must exist on the active SSH profile -- unknown
-names return an error envelope.
+With `transport="<profile>"`, cells route through a per-sweep SSH executor
+pool. The optional `mount=` selects the path-translation root and must
+exist on that profile -- unknown names return an error envelope. Passing
+`mount=` without `transport=` is an error.
 
 ### Combine ``args`` and ``sweep``
 
@@ -227,9 +232,9 @@ See also: [Parameter Sweeps in workflows how-to](workflows.md#parameter-sweeps).
 Claude Code can chain tools in a single conversation turn:
 
 ``` text
-> Check if there are at least 2 GPUs available. If yes, sync my
-> ml-project mount and submit "python train.py --lr 0.001" with
-> 2 GPUs via SSH. Show me the job ID when done.
+> Check if there are at least 2 GPUs available on the dgx cluster. If yes,
+> sync my ml-project mount and submit "python train.py --lr 0.001" with
+> 2 GPUs on dgx. Show me the job ID when done.
 ```
 
 This triggers a sequence: `get_resources` -\> `sync_files` -\> `submit_job`.
@@ -261,7 +266,8 @@ These call `get_config` and `list_ssh_profiles` respectively.
 
 - Claude Code picks the right tool based on your intent. You do not need
   to name tools explicitly.
-- Include "via SSH" or "on the remote cluster" to trigger SSH mode.
+- Name the cluster (e.g. "on the dgx cluster") so the agent passes the
+  matching `transport="<profile>"`.
 - Use "dry run" to preview any destructive operation before executing.
 - Reference job IDs from earlier in the conversation -- Claude Code tracks
   context across turns.

@@ -194,18 +194,19 @@ total, in-use, and available GPU counts.
 Claude Code calls `submit_job` with the appropriate parameters and
 returns the SLURM job ID.
 
-### Using SSH Mode
+### Using a Remote Cluster
 
 If your SLURM cluster is remote, ensure you have an SSH profile configured
-(see [Sync](../how-to/sync.md) for mount setup). Then include "via SSH" in your
+(see [Sync](../how-to/sync.md) for mount setup). Then name the cluster in your
 prompt:
 
 ```text
-> List my jobs on the remote cluster
+> List my jobs on the dgx cluster
 ```
 
-Claude Code detects the SSH context and passes `use_ssh=True` to the
-underlying tools, routing commands through your active SSH profile.
+Claude Code passes `transport="dgx"` to the underlying tools, routing
+commands through that SSH profile. MCP reads neither environment variables
+nor any "current" profile, so the profile must be named explicitly.
 
 ## Next Steps
 

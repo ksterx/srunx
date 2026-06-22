@@ -14,7 +14,7 @@ Estimated wall time: **~15 minutes**.
 ## Prerequisites
 
 - An SSH profile configured for a reachable SLURM cluster
-  (`srunx ssh profile list` shows it as current).
+  (`srunx ssh list` shows it as current).
 - A Slack Incoming Webhook URL you own — the adapter POSTs to it during
   the test, so use a test channel.
 - Local Python env with the latest changes installed:

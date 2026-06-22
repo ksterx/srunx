@@ -53,7 +53,7 @@ Each mount has a **Sync** button. Click it to push local files to the remote SLU
 The explorer shows mounts from the active SSH profile. To add mounts:
 
 - **From Settings**: Navigate to **Settings \> SSH Profiles**, expand a profile, and add a mount (see `settings`)
-- **From CLI**: `srunx ssh profile mount add <profile> <name> --local <path> --remote <path>`
+- **From CLI**: `srunx ssh mount add --profile <profile> --mount <name> --local <path> --remote <path>`
 - **From DAG builder**: Click the gear icon in the workflow builder toolbar
 
 ## Keyboard Navigation

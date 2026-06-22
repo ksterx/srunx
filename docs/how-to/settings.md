@@ -74,7 +74,7 @@ Each profile can have mount points that map local directories to remote paths.
 3.  To remove a mount, click the delete button next to it
 
 !!! note
-    Mounts added here are identical to those created via `srunx ssh profile mount add`. Both modify the same config file.
+    Mounts added here are identical to those created via `srunx ssh mount add`. Both modify the same config file.
 
 ### Manage per-profile environment variables
 
@@ -127,9 +127,9 @@ Every action in the Settings page has a CLI equivalent:
 | Settings Action | CLI Equivalent |
 |----|----|
 | Save general config | `srunx config show` / edit `~/.config/srunx/config.json` |
-| Add SSH profile | `srunx ssh profile add <name> --hostname ... --username ...` |
-| Activate profile | `srunx ssh profile add <name>` (sets as current) |
-| Add mount to profile | `srunx ssh profile mount add <profile> <name> --local ... --remote ...` |
-| List mounts | `srunx ssh profile mount list <profile>` |
-| Remove mount | `srunx ssh profile mount remove <profile> <name>` |
+| Add SSH profile | `srunx ssh add --profile <name> --hostname ... --username ...` |
+| Activate profile | `srunx ssh use --profile <name>` |
+| Add mount to profile | `srunx ssh mount add --profile <profile> --mount <name> --local ... --remote ...` |
+| List mounts | `srunx ssh mount list --profile <profile>` |
+| Remove mount | `srunx ssh mount remove --profile <profile> --mount <name>` |
 | View config paths | `srunx config paths` |
