@@ -471,9 +471,9 @@ the cross-product before launching.
 
 ### Execution paths
 
-CLI and MCP sweeps (without a `mount=` argument) run cells through the
+CLI and MCP sweeps (without a `transport=` argument) run cells through the
 local `Slurm` singleton. Web UI sweeps, and MCP sweeps that specify
-`mount=<profile>`, route every cell through a per-sweep
+`transport=<profile>`, route every cell through a per-sweep
 `SlurmSSHExecutorPool` (capped at `min(max_parallel, 8)` pooled SSH
 connections) which is closed when the background sweep task exits.
 

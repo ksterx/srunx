@@ -100,10 +100,16 @@ All job-management commands above accept `--profile <name>` / `--local` /
 1. `--profile <name>` (explicit)
 2. `--local` (mutually exclusive with `--profile`)
 3. `$SRUNX_SSH_PROFILE` environment variable
-4. local SLURM fallback (no banner, preserves legacy CLI behaviour)
+4. current SSH profile (set via `srunx ssh use <name>`), unless
+   `cli.use_current_profile = false`
+5. local SLURM fallback (silent, preserves legacy CLI behaviour)
 
 When a non-default transport is selected, a 1-line banner is emitted on stderr
-(`→ transport: ssh:<profile> (from --profile)`). `--quiet` suppresses it.
+— e.g. `● Connected to user@host (profile: <name> · via --profile)` for SSH,
+or `● Local SLURM (via --local)`. `--quiet` suppresses it; the silent default
+(step 5) never prints one. (MCP applies the same resolver but with steps 3–4
+disabled — it never reads env or the current profile, only an explicit
+`transport`.)
 
 `srunx ssh submit` / `srunx ssh logs` have been removed — use `srunx sbatch
 --profile <name> <script>` / `srunx tail --profile <name> <job_id>` instead.
@@ -119,14 +125,21 @@ When a non-default transport is selected, a 1-line banner is emitted on stderr
 - `uv run srunx watch cluster --schedule 1h --notify $WEBHOOK` - Periodic cluster reports
 
 #### SSH Integration
-- `uv run srunx ssh profile list` - List SSH connection profiles
-- `uv run srunx ssh profile add <name>` - Add SSH connection profile
-- `uv run srunx ssh profile mount add <profile> <name> --local <path> --remote <path>` - Add mount point
-- `uv run srunx ssh profile mount list <profile>` - List mount points
-- `uv run srunx ssh profile mount remove <profile> <name>` - Remove mount point
-- `uv run srunx ssh test` - Test connectivity for a profile
+The `ssh` subcommands are flat: profile names are passed via `--profile` and
+mount names via `--mount` (no `profile` / `mount` positional sub-noun).
+- `uv run srunx ssh list` - List SSH connection profiles
+- `uv run srunx ssh add --profile <name>` - Add SSH connection profile
+- `uv run srunx ssh use --profile <name>` - Set the current profile
+- `uv run srunx ssh show [--profile <name>]` - Show a profile (current if omitted)
+- `uv run srunx ssh remove --profile <name>` - Remove a profile
+- `uv run srunx ssh update --profile <name> ...` - Update profile fields
+- `uv run srunx ssh mount add --profile <profile> --mount <name> --local <path> --remote <path>` - Add mount point
+- `uv run srunx ssh mount list --profile <profile>` - List mount points
+- `uv run srunx ssh mount remove --profile <profile> --mount <name>` - Remove mount point
+- `uv run srunx ssh test --profile <name>` - Test connectivity for a profile
+- `uv run srunx ssh test --host <alias>` - Test an `~/.ssh/config` host alias
 - `uv run srunx ssh sync` - Sync current directory's mount (auto-detect profile and mount from cwd)
-- `uv run srunx ssh sync <profile> <name>` - Sync a specific mount
+- `uv run srunx ssh sync --profile <profile> --mount <name>` - Sync a specific mount
 - `uv run srunx ssh sync --dry-run` - Preview sync without transferring
 
 #### Workflows
@@ -219,7 +232,7 @@ uv run srunx sinfo --partition gpu
 
 #### SSH Integration
 - `uv run srunx sbatch train.sh --profile dgx-server --name remote_training`
-- `uv run srunx ssh profile add myserver --hostname dgx.example.com --username researcher`
+- `uv run srunx ssh add --profile myserver --hostname dgx.example.com --username researcher`
 
 #### Workflows
 - `uv run srunx flow run workflow.yaml`
@@ -516,12 +529,16 @@ Constraints:
 - Web UI + MCP sweep submissions can route through the configured SSH adapter
   via a per-sweep `SlurmSSHExecutorPool` (capped at `min(max_parallel, 8)`
   pooled connections); the pool is closed when the orchestrator returns.
-  MCP opts in explicitly with the `mount=` tool arg; when omitted MCP stays
-  on the local `Slurm` singleton (same as CLI). The orchestrator's default
-  `executor_factory=None` preserves local-SLURM behaviour bit-for-bit.
-- MCP `run_workflow(mount=...)` applies the same ShellJob script-root guard
-  as the Web sweep path (paths outside every profile mount's `local` root
-  are rejected before render), so the MCP and Web security surfaces match.
+  MCP opts in explicitly with the `transport="<profile>"` tool arg; when
+  omitted MCP stays on the local `Slurm` singleton (same as CLI). MCP reads
+  neither env nor current-profile — only an explicit `transport`. The
+  orchestrator's default `executor_factory=None` preserves local-SLURM
+  behaviour bit-for-bit.
+- MCP `run_workflow(transport="<profile>", mount=...)` applies the same
+  ShellJob script-root guard as the Web sweep path (paths outside every
+  profile mount's `local` root are rejected before render), so the MCP and
+  Web security surfaces match. `mount` requires `transport`; passing `mount`
+  alone is an error.
 - MCP-originated sweep cells record `workflow_runs.triggered_by='mcp'`
   (V4 migration widened the CHECK allowlist); parent
   `sweep_runs.submission_source` is `'mcp'` for the same sweep so cell

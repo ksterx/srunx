@@ -209,7 +209,7 @@ a structured way to manage project sync targets.
 **Add a mount:**
 
 ``` bash
-srunx ssh profile mount add myserver ml-project \
+srunx ssh mount add --profile myserver --mount ml-project \
     --local ~/projects/ml-project \
     --remote /home/researcher/projects/ml-project
 ```
@@ -217,13 +217,13 @@ srunx ssh profile mount add myserver ml-project \
 **List mounts for a profile:**
 
 ``` bash
-srunx ssh profile mount list myserver
+srunx ssh mount list --profile myserver
 ```
 
 **Remove a mount:**
 
 ``` bash
-srunx ssh profile mount remove myserver ml-project
+srunx ssh mount remove --profile myserver --mount ml-project
 ```
 
 Mount configuration is stored in `~/.config/srunx/config.json` alongside

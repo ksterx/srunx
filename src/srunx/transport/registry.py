@@ -11,8 +11,10 @@ Resolution priority (see REQ-1):
 
     1. ``--profile <name>``
     2. ``--local``
-    3. ``$SRUNX_SSH_PROFILE``
-    4. local fallback (silent, preserves AC-10.2)
+    3. ``$SRUNX_SSH_PROFILE`` (gated by ``policy.allow_env``)
+    4. current SSH profile via ``srunx ssh use`` (gated by
+       ``policy.allow_current_profile`` + ``cli.use_current_profile``)
+    5. local fallback (silent, preserves AC-10.2)
 
 Banner emission (REQ-7): explicit sources print a one-line banner to
 stderr; the default path stays silent so existing scripts that rely on
@@ -25,11 +27,11 @@ paramiko import cost (R-3).
 
 Manual verification cheatsheet:
 
-    $ srunx submit echo hi                # banner suppressed (default)
-    $ srunx submit --local echo hi        # banner: transport: local (from --local)
-    $ srunx submit --profile foo echo hi  # banner: transport: ssh:foo (from --profile)
-    $ SRUNX_SSH_PROFILE=foo srunx list    # banner: transport: ssh:foo (from env)
-    $ srunx list --quiet                  # banner suppressed for any source
+    $ srunx squeue                          # banner suppressed (default → local)
+    $ srunx squeue --local                  # banner: ● Local SLURM (via --local)
+    $ srunx squeue --profile foo            # banner: ● Connected to … (profile: foo · via --profile)
+    $ SRUNX_SSH_PROFILE=foo srunx squeue    # banner: ● Connected to … (… · via $SRUNX_SSH_PROFILE)
+    $ srunx squeue --quiet                  # banner suppressed for any source
 """
 
 from __future__ import annotations
@@ -42,10 +44,9 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-import typer
 from rich.console import Console
 
-from srunx.common.exceptions import TransportError
+from srunx.common.exceptions import TransportError, TransportSelectionError
 from srunx.common.logging import get_logger
 from srunx.slurm.local import Slurm
 from srunx.slurm.protocols import (
@@ -65,6 +66,36 @@ logger = get_logger(__name__)
 
 
 TransportSource = Literal["--profile", "--local", "env", "current-profile", "default"]
+
+
+@dataclass(frozen=True)
+class TransportPolicy:
+    """Which implicit rungs of the resolution ladder are honoured.
+
+    The 5-step ladder (``--profile`` > ``--local`` > ``$SRUNX_SSH_PROFILE``
+    > current-profile > local) is the single source of truth for picking a
+    transport. Different entry points want different subsets of the
+    *implicit* rungs:
+
+    * **CLI execution** (sbatch / squeue / ...) — both implicit rungs on:
+      env vars and the active SSH profile are convenient and visible (a
+      banner shows where the command runs). This is the default.
+    * **MCP** — both off: an API surface must not run against a remote
+      cluster because of ambient machine state (an env var or a profile
+      someone ran ``srunx ssh use`` on). MCP passes an explicit profile or
+      stays local.
+
+    Explicit ``--profile`` / ``--local`` are never gated — they are caller
+    intent, not ambient state. Only the env and current-profile rungs are
+    policy-controlled.
+    """
+
+    allow_env: bool = True
+    allow_current_profile: bool = True
+
+
+DEFAULT_POLICY = TransportPolicy()
+"""CLI-execution default: both implicit rungs honoured (legacy behaviour)."""
 
 
 @dataclass(frozen=True)
@@ -257,7 +288,7 @@ def _lookup_profile_silently(name: str) -> ServerProfile | None:
 
 
 def _current_profile_name() -> str | None:
-    """Return the active SSH profile set via ``srunx ssh profile set``, or None.
+    """Return the active SSH profile set via ``srunx ssh use``, or None.
 
     Respects :attr:`srunx.common.config.CliTransportConfig.use_current_profile` —
     when the user has opted out (``cli.use_current_profile = false``), this
@@ -286,7 +317,7 @@ def _current_profile_name() -> str | None:
 
 
 def _resolve_source_and_profile(
-    *, profile: str | None, local: bool
+    *, profile: str | None, local: bool, policy: TransportPolicy = DEFAULT_POLICY
 ) -> tuple[TransportSource, str | None]:
     """Return the resolved ``(source, profile_name)`` pair.
 
@@ -298,22 +329,28 @@ def _resolve_source_and_profile(
 
         1. ``--profile <name>``
         2. ``--local``
-        3. ``$SRUNX_SSH_PROFILE``
-        4. active SSH profile (``srunx ssh profile set``) when
-           ``cli.use_current_profile`` is True (default)
+        3. ``$SRUNX_SSH_PROFILE`` (skipped when ``policy.allow_env`` is False)
+        4. active SSH profile (``srunx ssh use``) when ``cli.use_current_profile``
+           is True (skipped when ``policy.allow_current_profile`` is False)
         5. local fallback (silent)
 
-    Raises :class:`typer.BadParameter` on the same ``--profile`` +
-    ``--local`` conflict so every entry point fails consistently.
+    The explicit rungs (1, 2) are never gated by *policy* — they are caller
+    intent. Only the implicit rungs (3, 4) are policy-controlled, so an API
+    surface (MCP) can opt out of resolving a remote from ambient state.
+
+    Raises :class:`~srunx.common.exceptions.TransportSelectionError` on an
+    empty ``--profile`` or a ``--profile`` + ``--local`` conflict, so every
+    entry point fails consistently without coupling the resolver to a CLI
+    framework. The CLI layer translates this into ``typer.BadParameter``.
     """
     profile = profile.strip() if profile else profile
     if profile == "":
-        raise typer.BadParameter(
+        raise TransportSelectionError(
             "--profile cannot be empty or whitespace.",
             param_hint="--profile",
         )
     if profile and local:
-        raise typer.BadParameter(
+        raise TransportSelectionError(
             "--profile and --local cannot be used together.",
             param_hint="--profile / --local",
         )
@@ -321,27 +358,33 @@ def _resolve_source_and_profile(
         return "--profile", profile
     if local:
         return "--local", None
-    env_profile = os.environ.get("SRUNX_SSH_PROFILE", "").strip()
-    if env_profile:
-        return "env", env_profile
-    current = _current_profile_name()
-    if current:
-        return "current-profile", current
+    if policy.allow_env:
+        env_profile = os.environ.get("SRUNX_SSH_PROFILE", "").strip()
+        if env_profile:
+            return "env", env_profile
+    if policy.allow_current_profile:
+        current = _current_profile_name()
+        if current:
+            return "current-profile", current
     return "default", None
 
 
 def resolve_transport_source(
-    *, profile: str | None = None, local: bool = False
+    *,
+    profile: str | None = None,
+    local: bool = False,
+    policy: TransportPolicy = DEFAULT_POLICY,
 ) -> TransportSource:
     """Return the :data:`TransportSource` ``resolve_transport`` would pick.
 
     Pure helper that mirrors the source-detection limb of
     :func:`resolve_transport` so callers using
     :func:`emit_transport_banner` directly don't have to duplicate the
-    precedence rules. Raises :class:`typer.BadParameter` on the same
+    precedence rules. Raises
+    :class:`~srunx.common.exceptions.TransportSelectionError` on the same
     ``--profile`` + ``--local`` conflict.
     """
-    source, _ = _resolve_source_and_profile(profile=profile, local=local)
+    source, _ = _resolve_source_and_profile(profile=profile, local=local, policy=policy)
     return source
 
 
@@ -467,8 +510,7 @@ def _build_ssh_handle(
     if profile is None:
         raise TransportError(
             f"SSH profile '{profile_name}' not found. "
-            "Configure via 'srunx ssh profile add' or check "
-            "'srunx ssh profile list'."
+            "Configure via 'srunx ssh add' or check 'srunx ssh list'."
         )
 
     try:
@@ -529,7 +571,12 @@ def _build_ssh_handle(
         raise
 
 
-def peek_scheduler_key(*, profile: str | None = None, local: bool = False) -> str:
+def peek_scheduler_key(
+    *,
+    profile: str | None = None,
+    local: bool = False,
+    policy: TransportPolicy = DEFAULT_POLICY,
+) -> str:
     """Return the scheduler_key ``resolve_transport`` would pick.
 
     Pure function with no side effects — used by callers that need to
@@ -538,11 +585,13 @@ def peek_scheduler_key(*, profile: str | None = None, local: bool = False) -> st
     matches :func:`resolve_transport` including the current-profile
     fallback (see :func:`_resolve_source_and_profile`).
 
-    Raises :class:`typer.BadParameter` on the same ``--profile`` +
-    ``--local`` conflict so callers fail consistently whether they
-    peek first or go straight to :func:`resolve_transport`.
+    Raises :class:`~srunx.common.exceptions.TransportSelectionError` on the
+    same ``--profile`` + ``--local`` conflict so callers fail consistently
+    whether they peek first or go straight to :func:`resolve_transport`.
     """
-    _, resolved_profile = _resolve_source_and_profile(profile=profile, local=local)
+    _, resolved_profile = _resolve_source_and_profile(
+        profile=profile, local=local, policy=policy
+    )
     return f"ssh:{resolved_profile}" if resolved_profile else "local"
 
 
@@ -569,16 +618,18 @@ def resolve_transport(
     submission_source: str = "cli",
     mount_name: str | None = None,
     pool_size: int = 2,
+    policy: TransportPolicy = DEFAULT_POLICY,
 ) -> Iterator[ResolvedTransport]:
-    """Resolve transport for one CLI invocation.
+    """Resolve transport for one invocation.
 
     Resolution order (REQ-1, Phase 2 extended):
 
         1. ``--profile <name>``
         2. ``--local``
-        3. ``$SRUNX_SSH_PROFILE``
-        4. active SSH profile (``srunx ssh profile set``) when
-           ``cli.use_current_profile`` is True (default)
+        3. ``$SRUNX_SSH_PROFILE`` (gated by ``policy.allow_env``)
+        4. active SSH profile (``srunx ssh use``) when
+           ``cli.use_current_profile`` is True (gated by
+           ``policy.allow_current_profile``)
         5. local fallback (silent)
 
     Args:
@@ -603,18 +654,26 @@ def resolve_transport(
         pool_size: Pool size forwarded to the SSH executor pool. Default
             ``2`` matches single-shot CLI usage; long-lived callers pass
             a larger value.
+        policy: Which implicit ladder rungs to honour. Defaults to
+            :data:`DEFAULT_POLICY` (env + current-profile on, the CLI
+            behaviour). MCP passes ``TransportPolicy(allow_env=False,
+            allow_current_profile=False)`` so an explicit ``profile`` is
+            the only way to reach SSH.
 
     Yields:
         A :class:`ResolvedTransport` for the duration of the ``with``
         block. SSH pools are closed on exit.
 
     Raises:
-        typer.BadParameter: When ``--profile`` and ``--local`` are both
-            set (REQ-1, AC-1.2).
+        TransportSelectionError: When ``--profile`` and ``--local`` are
+            both set, or ``--profile`` is empty (REQ-1, AC-1.2). The CLI
+            layer translates this into ``typer.BadParameter``.
         TransportError: When an explicit / env-selected SSH profile is
             unknown or the adapter factory rejects it.
     """
-    source, resolved_profile = _resolve_source_and_profile(profile=profile, local=local)
+    source, resolved_profile = _resolve_source_and_profile(
+        profile=profile, local=local, policy=policy
+    )
 
     pool: Any = None
     handle: TransportHandle

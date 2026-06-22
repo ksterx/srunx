@@ -17,6 +17,7 @@ from srunx.cli._helpers.sbatch_helpers import (
     _print_in_place_sync_preview,
     _submit_via_transport,
 )
+from srunx.cli._helpers.transport import resolve_transport
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.common.config import get_config
 from srunx.common.logging import get_logger
@@ -27,7 +28,6 @@ from srunx.domain import (
     ShellJob,
 )
 from srunx.observability.notifications.legacy_slack import SlackCallback
-from srunx.transport import resolve_transport
 
 logger = get_logger(__name__)
 

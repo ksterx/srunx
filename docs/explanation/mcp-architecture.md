@@ -115,16 +115,18 @@ All SLURM interaction happens through existing modules:
 
 ## Local vs SSH Execution
 
-Most tools accept a `use_ssh` boolean parameter. The execution path diverges
-early in each tool:
+Most tools accept a `transport` string parameter naming the SSH profile to
+route through. The execution path diverges early in each tool. MCP never
+reads environment variables or the current SSH profile — the cluster is
+selected only by an explicit `transport`.
 
-**Local path** (`use_ssh=false`):  
+**Local path** (`transport` omitted or `"local"`):  
 Imports `srunx.slurm.local.Slurm` and calls SLURM commands via `subprocess`.
 Requires the MCP server to run on a machine with SLURM access (login node
 or compute node).
 
-**SSH path** (`use_ssh=true`):  
-Reads the active SSH profile from `ConfigManager`, creates an
+**SSH path** (`transport="<profile>"`):  
+Loads the named SSH profile from `ConfigManager`, creates an
 `SSHSlurmClient`, and routes commands through Paramiko SSH. The MCP
 server runs on the developer's local machine while SLURM runs on a
 remote cluster.
@@ -132,18 +134,19 @@ remote cluster.
 ```mermaid
 flowchart TD
   Tool["MCP Tool Call"]
-  Check{"use_ssh?"}
+  Check{"transport set?"}
   Local["Slurm Client\n(subprocess)"]
   Remote["SSHSlurmClient\n(Paramiko)"]
   SLURM["SLURM Cluster"]
 
   Tool --> Check
-  Check -- "false" --> Local --> SLURM
-  Check -- "true" --> Remote --> SLURM
+  Check -- "no (local)" --> Local --> SLURM
+  Check -- "yes (profile)" --> Remote --> SLURM
 ```
 
-For SSH mode, the `work_dir` parameter is required on `submit_job` because
-the local working directory has no meaning on the remote cluster.
+When `transport` selects a profile, the `work_dir` parameter is required on
+`submit_job` because the local working directory has no meaning on the
+remote cluster.
 
 ## Parameter Sweeps Through MCP
 
@@ -157,7 +160,7 @@ moment the background task is scheduled.
 
 ```mermaid
 flowchart LR
-  subgraph mcp["MCP tool: run_workflow(sweep=..., mount=...)"]
+  subgraph mcp["MCP tool: run_workflow(sweep=..., transport=...)"]
     Expand["expand_matrix\n(load-time)"]
     Orchestrator["SweepOrchestrator\nanyio.Semaphore"]
     Factory["executor_factory\n= pool.lease"]
@@ -192,11 +195,11 @@ cells without guessing. Before V4, MCP cells were recorded as
 `triggered_by='web'` because the V1 CHECK allowlist did not admit
 `'mcp'`; the V4 rebuild removed that workaround.
 
-**CLI-style sweeps without `mount=`.** When `run_workflow` is called
-with a `sweep` argument but **without** `mount=<profile>`, execution
+**CLI-style sweeps without `transport=`.** When `run_workflow` is called
+with a `sweep` argument but **without** `transport=<profile>`, execution
 stays on the local `Slurm` singleton path -- exactly as if the user
 had run `srunx flow run --sweep ...` on a login node. Passing
-`mount=<profile>` switches the tool to the SSH + pool path above. This
+`transport=<profile>` switches the tool to the SSH + pool path above. This
 mirrors the CLI / Web split: the same tool call, the same blocking
 semantics, but a different transport determined by one argument.
 

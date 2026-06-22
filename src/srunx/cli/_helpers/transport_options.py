@@ -21,7 +21,7 @@ ProfileOpt = Annotated[
     typer.Option(
         "--profile",
         help=(
-            "SSH profile name (from 'srunx ssh profile list'). When set, "
+            "SSH profile name (from 'srunx ssh list'). When set, "
             "commands run over SSH against that profile's cluster. "
             "Mutually exclusive with --local."
         ),

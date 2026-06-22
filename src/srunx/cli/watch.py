@@ -7,6 +7,11 @@ import typer
 from rich.console import Console
 
 from srunx.callbacks import Callback
+from srunx.cli._helpers.transport import (
+    peek_scheduler_key,
+    resolve_transport,
+    resolve_transport_source,
+)
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.observability.monitoring.job_monitor import JobMonitor
 from srunx.observability.monitoring.resource_monitor import ResourceMonitor
@@ -14,12 +19,7 @@ from srunx.observability.monitoring.scheduler import ScheduledReporter
 from srunx.observability.monitoring.types import MonitorConfig, ReportConfig, WatchMode
 from srunx.observability.notifications.legacy_slack import SlackCallback
 from srunx.slurm.local import Slurm
-from srunx.transport import (
-    emit_transport_banner,
-    peek_scheduler_key,
-    resolve_transport,
-    resolve_transport_source,
-)
+from srunx.transport import emit_transport_banner
 
 # Create watch subcommand app
 watch_app = typer.Typer(

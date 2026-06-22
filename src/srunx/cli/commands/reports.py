@@ -59,12 +59,12 @@ def history(
     transport is shown — matching legacy behaviour.
     """
     try:
-        from srunx.observability.storage.cli_helpers import list_recent_jobs
-        from srunx.transport import (
-            emit_transport_banner,
+        from srunx.cli._helpers.transport import (
             peek_scheduler_key,
             resolve_transport_source,
         )
+        from srunx.observability.storage.cli_helpers import list_recent_jobs
+        from srunx.transport import emit_transport_banner
 
         # history is a pure DB query — no SSH connection needed even
         # for SSH profiles. ``peek_scheduler_key`` gives us the WHERE
@@ -126,6 +126,8 @@ def history(
 
         console.print(table)
 
+    except (typer.Exit, typer.BadParameter):
+        raise
     except Exception as e:
         logger.error(f"Error retrieving job history: {e}")
         sys.exit(1)
@@ -235,13 +237,13 @@ def sacct(
     import json
     from typing import cast
 
+    from srunx.cli._helpers.transport import resolve_transport
     from srunx.slurm.accounting import (
         SacctRow,
         fetch_sacct_rows_local,
         fetch_sacct_rows_ssh,
         filter_out_steps,
     )
-    from srunx.transport import resolve_transport
 
     try:
         job_ids = [int(j) for j in job_filter] if job_filter else None
@@ -322,6 +324,8 @@ def sacct(
 
         Console().print(table)
 
+    except (typer.Exit, typer.BadParameter):
+        raise
     except Exception as e:
         logger.error(f"Error running sacct: {e}")
         Console().print(f"[red]Error: {e}[/red]")

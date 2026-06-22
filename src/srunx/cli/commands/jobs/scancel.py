@@ -6,9 +6,9 @@ import typer
 from rich.console import Console
 
 import srunx.slurm.local as _slurm_local  # noqa: E402,I001 — kept so ``patch("srunx.slurm.local.Slurm")`` intercepts all call sites
+from srunx.cli._helpers.transport import resolve_transport
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.common.exceptions import JobNotFoundError, TransportError
-from srunx.transport import resolve_transport
 
 
 def scancel(
@@ -36,6 +36,8 @@ def scancel(
             fg=typer.colors.RED,
         )
         raise typer.Exit(code=1) from None
+    except (typer.Exit, typer.BadParameter):
+        raise
     except TransportError as exc:
         typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from None

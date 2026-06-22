@@ -1,8 +1,24 @@
-"""Tests for srunx.mcp.tools.resources."""
+"""Tests for srunx.mcp.tools.resources.
 
+The local branch still goes through ``ResourceMonitor`` (snapshot), so that
+patch is preserved. The SSH branch routes through ``mcp_transport``: we patch
+it at the tool's lookup site with a contextmanager yielding an ``rt`` whose
+``transport_type == "ssh"`` and whose ``job_ops.get_resources`` returns the
+adapter payload.
+"""
+
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 from srunx.mcp.tools.resources import get_resources
+
+
+def _fake_transport(rt):
+    @contextmanager
+    def _cm(transport, *, mount_name=None):
+        yield rt
+
+    return _cm
 
 
 class TestGetResources:
@@ -35,30 +51,23 @@ class TestGetResources:
         assert result["gpus_available"] == 5
         assert result["gpu_utilization"] == 0.375
 
-    @patch("srunx.mcp.tools.resources.get_ssh_client")
-    def test_ssh_resources(self, mock_get_client):
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.slurm.execute_slurm_command.return_value = (
-            "node001 gpu:4 idle gpu*\n",
-            "",
-            0,
-        )
-        mock_get_client.return_value = mock_client
-
-        result = get_resources(use_ssh=True)
+    def test_ssh_resources(self):
+        rt = MagicMock()
+        rt.transport_type = "ssh"
+        rt.job_ops.get_resources.return_value = {"gpu": {"total": 4, "available": 2}}
+        with patch("srunx.mcp.tools.resources.mcp_transport", _fake_transport(rt)):
+            result = get_resources(partition="gpu", transport="prod")
         assert result["success"] is True
-        assert "node001" in result["raw_output"]
+        assert result["partition"] == "gpu"
+        assert result["resources"] == {"gpu": {"total": 4, "available": 2}}
+        rt.job_ops.get_resources.assert_called_once_with("gpu")
 
-    @patch("srunx.mcp.tools.resources.get_ssh_client")
-    def test_ssh_resources_sinfo_fails(self, mock_get_client):
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.slurm.execute_slurm_command.return_value = ("", "sinfo error", 1)
-        mock_get_client.return_value = mock_client
-
-        result = get_resources(use_ssh=True)
-        assert result["success"] is False
-        assert "sinfo failed" in result["error"]
+    def test_ssh_resources_no_partition(self):
+        rt = MagicMock()
+        rt.transport_type = "ssh"
+        rt.job_ops.get_resources.return_value = {"all": {"total": 8}}
+        with patch("srunx.mcp.tools.resources.mcp_transport", _fake_transport(rt)):
+            result = get_resources(transport="prod")
+        assert result["success"] is True
+        assert result["partition"] is None
+        rt.job_ops.get_resources.assert_called_once_with(None)

@@ -499,6 +499,83 @@ UPDATE watches
 
 
 # ---------------------------------------------------------------------------
+# V6: widen jobs.submission_source CHECK to admit 'mcp'.
+#
+# The CLI transport unification routes MCP job submissions through the same
+# ``resolve_transport`` / SSH adapter path the CLI uses, so MCP-originated
+# jobs now record ``submission_source='mcp'`` (matching the already-allowed
+# 'mcp' on workflow_runs.triggered_by and sweep_runs.submission_source). The
+# V5 ``jobs`` table CHECK only allowed ('cli','web','workflow'); SQLite cannot
+# alter a CHECK in place, so the table is rebuilt with the widened allowlist.
+# ``id`` values are preserved so the FK references from workflow_run_jobs and
+# job_state_transitions stay intact (FKs are toggled off for the rebuild).
+# ---------------------------------------------------------------------------
+
+SCHEMA_V6 = """
+CREATE TABLE jobs_v6 (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id            INTEGER NOT NULL,
+    transport_type    TEXT NOT NULL DEFAULT 'local'
+                        CHECK (transport_type IN ('local','ssh')),
+    profile_name      TEXT,
+    scheduler_key     TEXT NOT NULL DEFAULT 'local',
+    name              TEXT NOT NULL,
+    command           TEXT,
+    status            TEXT NOT NULL,
+    nodes             INTEGER,
+    gpus_per_node     INTEGER,
+    memory_per_node   TEXT,
+    time_limit        TEXT,
+    partition         TEXT,
+    nodelist          TEXT,
+    conda             TEXT,
+    venv              TEXT,
+    container         TEXT,
+    env_vars          TEXT,
+    submitted_at      TEXT NOT NULL,
+    started_at        TEXT,
+    completed_at      TEXT,
+    duration_secs     INTEGER,
+    workflow_run_id   INTEGER REFERENCES workflow_runs(id) ON DELETE SET NULL,
+    submission_source TEXT NOT NULL
+                        CHECK (submission_source IN ('cli','web','workflow','mcp')),
+    log_file          TEXT,
+    metadata          TEXT,
+    UNIQUE (scheduler_key, job_id),
+    CHECK (
+        (transport_type = 'local' AND profile_name IS NULL AND scheduler_key = 'local')
+        OR
+        (transport_type = 'ssh'   AND profile_name IS NOT NULL
+                                  AND scheduler_key = 'ssh:' || profile_name)
+    ),
+    CHECK (profile_name IS NULL OR instr(profile_name, ':') = 0)
+);
+INSERT INTO jobs_v6 (
+    id, job_id, transport_type, profile_name, scheduler_key,
+    name, command, status,
+    nodes, gpus_per_node, memory_per_node, time_limit,
+    partition, nodelist, conda, venv, container, env_vars,
+    submitted_at, started_at, completed_at, duration_secs,
+    workflow_run_id, submission_source, log_file, metadata
+)
+    SELECT
+        id, job_id, transport_type, profile_name, scheduler_key,
+        name, command, status,
+        nodes, gpus_per_node, memory_per_node, time_limit,
+        partition, nodelist, conda, venv, container, env_vars,
+        submitted_at, started_at, completed_at, duration_secs,
+        workflow_run_id, submission_source, log_file, metadata
+    FROM jobs;
+DROP TABLE jobs;
+ALTER TABLE jobs_v6 RENAME TO jobs;
+CREATE INDEX idx_jobs_status          ON jobs(status);
+CREATE INDEX idx_jobs_submitted_at    ON jobs(submitted_at);
+CREATE INDEX idx_jobs_workflow_run_id ON jobs(workflow_run_id);
+CREATE INDEX idx_jobs_scheduler_key   ON jobs(scheduler_key);
+"""
+
+
+# ---------------------------------------------------------------------------
 # Migration registry
 # ---------------------------------------------------------------------------
 
@@ -544,6 +621,12 @@ MIGRATIONS: list[Migration] = [
         version=5,
         name="v5_transport_scheduler_key",
         sql=SCHEMA_V5,
+        requires_fk_off=True,
+    ),
+    Migration(
+        version=6,
+        name="v6_widen_submission_source_mcp",
+        sql=SCHEMA_V6,
         requires_fk_off=True,
     ),
 ]

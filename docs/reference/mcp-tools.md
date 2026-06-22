@@ -39,8 +39,8 @@ Submit a SLURM job.
 | `venv` | str \| null | No | `null` | Path to Python virtual environment to activate |
 | `env_vars` | dict \| null | No | `null` | Additional environment variables as key-value pairs |
 | `log_dir` | str | No | `"logs"` | Directory for stdout/stderr log files |
-| `work_dir` | str \| null | No | `null` | Working directory for the job (defaults to cwd; required when `use_ssh=true`) |
-| `use_ssh` | bool | No | `false` | Submit via SSH to remote SLURM cluster |
+| `work_dir` | str \| null | No | `null` | Working directory for the job (defaults to cwd; required when `transport` is set) |
+| `transport` | str \| null | No | `null` | SSH profile name to submit through. Omit (or pass `"local"`) for local SLURM |
 
 **Return value:**
 
@@ -65,9 +65,9 @@ List current user's SLURM jobs in the queue.
 
 **Parameters:**
 
-| Name      | Type | Required | Default | Description                          |
-|-----------|------|----------|---------|--------------------------------------|
-| `use_ssh` | bool | No       | `false` | Query jobs via SSH on remote cluster |
+| Name        | Type        | Required | Default | Description                                                                       |
+|-------------|-------------|----------|---------|-----------------------------------------------------------------------------------|
+| `transport` | str \| null | No       | `null`  | SSH profile name to query through. Omit (or pass `"local"`) for local SLURM |
 
 **Return value:**
 
@@ -96,7 +96,7 @@ Get the status of a specific SLURM job.
 | Name | Type | Required | Default | Description |
 |----|----|----|----|----|
 | `job_id` | str | Yes |  | SLURM job ID to check (numeric, e.g. `"12345"` or `"12345_1"`) |
-| `use_ssh` | bool | No | `false` | Query via SSH on remote cluster |
+| `transport` | str \| null | No | `null` | SSH profile name to query through. Omit (or pass `"local"`) for local SLURM |
 
 **Return value:**
 
@@ -117,10 +117,10 @@ Cancel a running or pending SLURM job.
 
 **Parameters:**
 
-| Name      | Type | Required | Default | Description                      |
-|-----------|------|----------|---------|----------------------------------|
-| `job_id`  | str  | Yes      |         | SLURM job ID to cancel           |
-| `use_ssh` | bool | No       | `false` | Cancel via SSH on remote cluster |
+| Name        | Type        | Required | Default | Description                                                                  |
+|-------------|-------------|----------|---------|------------------------------------------------------------------------------|
+| `job_id`    | str         | Yes      |         | SLURM job ID to cancel                                                       |
+| `transport` | str \| null | No       | `null`  | SSH profile name to cancel through. Omit (or pass `"local"`) for local SLURM |
 
 **Return value:**
 
@@ -142,7 +142,7 @@ Get stdout/stderr logs for a SLURM job.
 |----|----|----|----|----|
 | `job_id` | str | Yes |  | SLURM job ID |
 | `job_name` | str \| null | No | `null` | Job name to help locate log files |
-| `use_ssh` | bool | No | `false` | Fetch logs via SSH from remote cluster |
+| `transport` | str \| null | No | `null` | SSH profile name to fetch logs through. Omit (or pass `"local"`) for local SLURM |
 
 **Return value:**
 
@@ -157,7 +157,9 @@ Get stdout/stderr logs for a SLURM job.
 ```
 
 !!! note
-    The `log_files` field is only present for local (non-SSH) queries.
+    The `log_files` field is populated the same way for every transport
+    (local and SSH) — it lists the discovered log files, or `[]` when none
+    were found.
 
 ## Resources
 
@@ -170,7 +172,7 @@ Get current GPU and node resource availability on the SLURM cluster.
 | Name | Type | Required | Default | Description |
 |----|----|----|----|----|
 | `partition` | str \| null | No | `null` | Specific partition to check (null for all partitions) |
-| `use_ssh` | bool | No | `false` | Query resources via SSH on remote cluster |
+| `transport` | str \| null | No | `null` | SSH profile name to query through. Omit (or pass `"local"`) for local SLURM |
 
 **Return value (local):**
 
@@ -191,14 +193,31 @@ Get current GPU and node resource availability on the SLURM cluster.
 
 **Return value (SSH):**
 
-When using SSH mode, the return includes a `raw_output` field with the
-`sinfo` output instead of parsed metrics:
+When `transport` selects an SSH profile, the return carries a `resources`
+list — one aggregated metrics object per partition (the same fields as the
+local return, plus `timestamp` / `has_available_gpus`). With an explicit
+`partition` the list has a single element; with `partition` omitted it has
+one element per partition:
 
 ``` json
 {
   "success": true,
   "partition": "gpu",
-  "raw_output": "node001 gpu:4 idle gpu*\nnode002 gpu:4 mixed gpu*"
+  "resources": [
+    {
+      "timestamp": "2026-06-23T00:00:00+00:00",
+      "partition": "gpu",
+      "total_gpus": 32,
+      "gpus_in_use": 24,
+      "gpus_available": 8,
+      "jobs_running": 12,
+      "nodes_total": 8,
+      "nodes_idle": 2,
+      "nodes_down": 0,
+      "gpu_utilization": 0.75,
+      "has_available_gpus": true
+    }
+  ]
 }
 ```
 
@@ -293,7 +312,8 @@ prerequisites to complete.
 | `dry_run` | bool | No | `false` | Show what would be executed without running |
 | `args` | dict \| null | No | `null` | Mapping merged over the YAML `args` section before Jinja rendering. `python:`-prefixed values are rejected |
 | `sweep` | dict \| null | No | `null` | Sweep spec (see schema below). When present, the workflow is routed through `SweepOrchestrator` and the return shape changes |
-| `mount` | str \| null | No | `null` | Active-SSH-profile mount name. When set, the run is routed through the configured cluster adapter with mount-aware path translation for `work_dir` / `log_dir`. Default (null) keeps execution on the local SLURM client |
+| `transport` | str \| null | No | `null` | SSH profile name to run through. When set, the run is routed through that cluster's adapter. Default (null) keeps execution on the local SLURM client |
+| `mount` | str \| null | No | `null` | Mount name (from the profile named by `transport`) used as the path-translation root for `work_dir` / `log_dir`. Requires `transport`; passing `mount` without `transport` is an error |
 
 **`sweep` schema:**
 
@@ -363,10 +383,10 @@ per-job `results` map:
 
 Errors are returned with `{"success": false, "error": "..."}`:
 
-- Mount not present in the active SSH profile →
-  `"Mount '<name>' not found in profile '<profile_name>'"`
-- No current SSH profile selected but `mount=` was passed →
-  `"mount requires a current SSH profile; configure one via `srunx ssh profile add` and select it with `srunx ssh profile use`"`
+- Mount not present in the profile named by `transport` →
+  `"Mount '<name>' not found in profile '<transport>'"`
+- `mount=` passed without `transport=` →
+  `"mount requires an SSH transport; pass transport='<profile>' (there is no mount translation for local runs)"`
 - A `ShellJob`'s `script_path` resolves outside every mount's `local`
   root →
   `"Script path '<path>' is outside allowed directories"`
@@ -383,10 +403,12 @@ Errors are returned with `{"success": false, "error": "..."}`:
   exposes progress through `GET /api/sweep_runs/{id}`.
 - `max_parallel` is required in YAML and defaults to `4` when the MCP
   caller omits it.
-- When `mount=` is combined with `sweep`, every cell is submitted
+- When `transport=` is combined with `sweep`, every cell is submitted
   through a shared `SlurmSSHExecutorPool(size=min(max_parallel, 8))` so
   concurrent cells reuse a small set of SSH sessions against the
   cluster. The pool is closed when the tool call returns.
+- MCP reads neither environment variables nor the current SSH profile;
+  the cluster is selected only by an explicit `transport`.
 - Matrix values must be scalar (`str`, `int`, `float`, `bool`); nested
   lists or dicts are rejected at load time.
 - The total cell count is capped at 1000 as a safety valve.
@@ -479,15 +501,15 @@ or path-based (using explicit local and remote paths).
 
 | Name | Type | Required | Default | Description |
 |----|----|----|----|----|
-| `profile_name` | str \| null | No | `null` | SSH profile name (uses current profile if not specified) |
-| `mount_name` | str \| null | No | `null` | Mount point name from the SSH profile to sync |
-| `local_path` | str \| null | No | `null` | Local directory path (alternative to `mount_name`) |
-| `remote_path` | str \| null | No | `null` | Remote directory path (alternative to `mount_name`) |
+| `transport` | str | Yes |  | SSH profile name to sync through. There is no current-profile fallback — it must be explicit |
+| `mount` | str \| null | No | `null` | Mount point name from the SSH profile to sync |
+| `local_path` | str \| null | No | `null` | Local directory path (alternative to `mount`) |
+| `remote_path` | str \| null | No | `null` | Remote directory path (alternative to `mount`) |
 | `dry_run` | bool | No | `false` | Show what would be transferred without actually syncing |
 
 !!! note
-    You must provide either `mount_name` or `local_path`. When using
-    `mount_name`, the local and remote paths are read from the SSH profile
+    You must provide either `mount` or `local_path`. When using
+    `mount`, the local and remote paths are read from the SSH profile
     configuration. When using `local_path` without `remote_path`, a
     default remote path is derived.
 

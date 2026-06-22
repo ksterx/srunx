@@ -311,7 +311,7 @@ class TestV5MigrationPreservesNonJobWatches:
 
     def _apply_through_v4(self, db_path: Path) -> sqlite3.Connection:
         conn = open_connection(db_path)
-        for mig in MIGRATIONS[:-1]:  # everything except V5
+        for mig in [m for m in MIGRATIONS if m.version < 5]:  # v1..v4
             if mig.requires_fk_off:
                 _apply_fk_off_migration(conn, mig)
             else:
@@ -340,7 +340,7 @@ class TestV5MigrationPreservesNonJobWatches:
             )
             conn.commit()
 
-            v5 = MIGRATIONS[-1]
+            v5 = next(m for m in MIGRATIONS if m.version == 5)
             assert v5.name == "v5_transport_scheduler_key"
             _apply_fk_off_migration(conn, v5)
 
@@ -507,10 +507,12 @@ class TestPeekSchedulerKey:
         assert peek_scheduler_key() == "local"
 
     def test_profile_local_conflict_raises(self, monkeypatch) -> None:
-        import typer
+        from srunx.common.exceptions import TransportSelectionError
 
         monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-        with pytest.raises(typer.BadParameter):
+        # The pure resolver raises the neutral selection error; the CLI
+        # wrapper maps it to typer.BadParameter (see test_cli_transport).
+        with pytest.raises(TransportSelectionError):
             peek_scheduler_key(profile="foo", local=True)
 
 

@@ -44,7 +44,7 @@ EventKind = Literal[
 ]
 DeliveryStatus = Literal["pending", "sending", "delivered", "abandoned"]
 TransitionSource = Literal["poller", "cli_monitor", "webhook"]
-SubmissionSource = Literal["cli", "web", "workflow"]
+SubmissionSource = Literal["cli", "web", "workflow", "mcp"]
 TransportType = Literal["local", "ssh"]
 WorkflowRunStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 WorkflowRunTriggeredBy = Literal["cli", "web", "schedule", "mcp"]

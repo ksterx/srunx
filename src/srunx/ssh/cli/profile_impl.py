@@ -25,7 +25,7 @@ def list_profiles_impl(config: str | None = None):
 
         if not profiles:
             console.print("[yellow]No profiles found.[/yellow]")
-            console.print("[dim]Use 'srunx ssh profile add' to create a profile.[/dim]")
+            console.print("[dim]Use 'srunx ssh add' to create a profile.[/dim]")
             return
 
         # Create table
@@ -104,7 +104,7 @@ def add_profile_impl(
         if config_manager.get_profile(name):
             console.print(f"[red]Error: Profile '{name}' already exists[/red]")
             console.print(
-                "[dim]Use 'srunx ssh profile update' to modify existing profiles[/dim]"
+                "[dim]Use 'srunx ssh update' to modify existing profiles[/dim]"
             )
             raise typer.Exit(1)
 
@@ -151,7 +151,7 @@ def add_profile_impl(
             console.print(info_panel)
 
             console.print(
-                "[dim]Use 'srunx ssh profile set' to make this the current profile[/dim]"
+                "[dim]Use 'srunx ssh use' to make this the current profile[/dim]"
             )
         else:
             console.print(f"[red]❌ Failed to add profile '{name}'[/red]")
@@ -189,7 +189,7 @@ def remove_profile_impl(name: str, config: str | None = None):
                     "[yellow]No current profile set (removed profile was current)[/yellow]"
                 )
                 console.print(
-                    "[dim]Use 'srunx ssh profile set' to set a new current profile[/dim]"
+                    "[dim]Use 'srunx ssh use' to set a new current profile[/dim]"
                 )
         else:
             console.print(f"[red]❌ Failed to remove profile '{name}'[/red]")
@@ -209,9 +209,7 @@ def set_current_profile_impl(name: str, config: str | None = None):
         profile = config_manager.get_profile(name)
         if not profile:
             console.print(f"[red]Error: Profile '{name}' not found[/red]")
-            console.print(
-                "[dim]Use 'srunx ssh profile list' to see available profiles[/dim]"
-            )
+            console.print("[dim]Use 'srunx ssh list' to see available profiles[/dim]")
             raise typer.Exit(1)
 
         # Set current profile
@@ -267,9 +265,7 @@ def show_profile_impl(name: str | None = None, config: str | None = None):
             current_name = config_manager.get_current_profile_name()
             if not profile or not current_name:
                 console.print("[yellow]No current profile set[/yellow]")
-                console.print(
-                    "[dim]Use 'srunx ssh profile set' to set a current profile[/dim]"
-                )
+                console.print("[dim]Use 'srunx ssh use' to set a current profile[/dim]")
                 raise typer.Exit(1)
             profile_name = current_name
 
@@ -490,7 +486,7 @@ def list_env_vars_impl(profile_name: str, config: str | None = None):
                 f"[yellow]No environment variables set for profile '{profile_name}'[/yellow]"
             )
             console.print(
-                "[dim]Use 'srunx ssh profile env set' to add environment variables[/dim]"
+                "[dim]Use 'srunx ssh env set' to add environment variables[/dim]"
             )
             return
 
@@ -592,7 +588,7 @@ def list_mounts_impl(profile_name: str, config: str | None = None) -> None:
 
         if not profile.mounts:
             console.print("[dim]No mounts configured[/dim]")
-            console.print("[dim]Use 'srunx ssh profile mount add' to add mounts[/dim]")
+            console.print("[dim]Use 'srunx ssh mount add' to add mounts[/dim]")
             return
 
         # Create table

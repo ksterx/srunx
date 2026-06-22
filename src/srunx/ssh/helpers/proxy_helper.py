@@ -24,7 +24,8 @@ def suggest_port_forwarding(host: str, ssh_config_path: str | None = None):
     print("\n2. Create a direct connection profile:")
     print("   If you have direct access to the target host, create a profile with:")
     print(
-        f"   srunx ssh profile add {host}-direct <real_hostname> {ssh_host.user} {ssh_host.identity_file}"
+        f"   srunx ssh add --profile {host}-direct --hostname <real_hostname> "
+        f"--username {ssh_host.user} --key-file {ssh_host.identity_file}"
     )
 
     print("\n3. Use SSH config with a bastion setup:")

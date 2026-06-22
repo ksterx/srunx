@@ -268,7 +268,7 @@ class TestTargetRefBackfill:
 
         conn = open_connection(tmp_path / "pre_v5.db")
         try:
-            for mig in MIGRATIONS[:-1]:  # everything except V5
+            for mig in [m for m in MIGRATIONS if m.version < 5]:  # v1..v4
                 if mig.requires_fk_off:
                     _apply_fk_off_migration(conn, mig)
                 else:
@@ -294,7 +294,7 @@ class TestTargetRefBackfill:
             )
             conn.commit()
 
-            v5 = MIGRATIONS[-1]
+            v5 = next(m for m in MIGRATIONS if m.version == 5)
             assert v5.name == "v5_transport_scheduler_key"
             _apply_fk_off_migration(conn, v5)
 
@@ -359,7 +359,7 @@ class TestOpenWatchForceClose:
 
         conn = open_connection(tmp_path / "pre_v5.db")
         try:
-            for mig in MIGRATIONS[:-1]:  # everything except V5
+            for mig in [m for m in MIGRATIONS if m.version < 5]:  # v1..v4
                 if mig.requires_fk_off:
                     _apply_fk_off_migration(conn, mig)
                 else:
@@ -379,7 +379,7 @@ class TestOpenWatchForceClose:
             assert open_before == 1
 
             # Now apply V5.
-            v5 = MIGRATIONS[-1]
+            v5 = next(m for m in MIGRATIONS if m.version == 5)
             assert v5.name == "v5_transport_scheduler_key"
             _apply_fk_off_migration(conn, v5)
 
@@ -408,7 +408,7 @@ class TestDataBackfill:
 
         conn = open_connection(tmp_path / "pre_v5.db")
         try:
-            for mig in MIGRATIONS[:-1]:
+            for mig in [m for m in MIGRATIONS if m.version < 5]:  # v1..v4
                 if mig.requires_fk_off:
                     _apply_fk_off_migration(conn, mig)
                 else:
@@ -425,7 +425,7 @@ class TestDataBackfill:
             )
             conn.commit()
 
-            v5 = MIGRATIONS[-1]
+            v5 = next(m for m in MIGRATIONS if m.version == 5)
             _apply_fk_off_migration(conn, v5)
 
             row = conn.execute(

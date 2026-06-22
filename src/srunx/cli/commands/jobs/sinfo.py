@@ -71,12 +71,12 @@ def sinfo(
     import json
     from typing import cast
 
+    from srunx.cli._helpers.transport import resolve_transport
     from srunx.slurm.partitions import (
         PartitionRow,
         fetch_sinfo_rows_local,
         fetch_sinfo_rows_ssh,
     )
-    from srunx.transport import resolve_transport
 
     try:
         with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
@@ -99,6 +99,8 @@ def sinfo(
 
         _render_sinfo_table(rows)
 
+    except (typer.Exit, typer.BadParameter):
+        raise
     except Exception as e:
         logger.error(f"Error querying partition info: {e}")
         Console().print(f"[red]Error: {e}[/red]")

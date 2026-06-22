@@ -29,7 +29,7 @@ class TestProxyHelper:
         captured = capsys.readouterr()
         assert "uses ProxyJump: bastion.example.com" in captured.out
         assert "SSH Port Forwarding:" in captured.out
-        assert "srunx ssh profile add" in captured.out
+        assert "srunx ssh add --profile" in captured.out
 
     def test_suggest_port_forwarding_no_proxy_jump(self, capsys):
         mock_host = SSHHost(hostname="dgx.example.com", user="researcher")

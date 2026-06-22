@@ -128,7 +128,7 @@ Mount points define local-to-remote directory mappings for the file browser.
 **Add a mount:**
 
 ``` bash
-srunx ssh profile mount add myserver ml-project \
+srunx ssh mount add --profile myserver --mount ml-project \
     --local ~/projects/ml-project \
     --remote /home/researcher/ml-project
 ```
@@ -136,13 +136,13 @@ srunx ssh profile mount add myserver ml-project \
 **List mounts:**
 
 ``` bash
-srunx ssh profile mount list myserver
+srunx ssh mount list --profile myserver
 ```
 
 **Remove a mount:**
 
 ``` bash
-srunx ssh profile mount remove myserver ml-project
+srunx ssh mount remove --profile myserver --mount ml-project
 ```
 
 Mounts are stored in the SSH profile configuration. The `--local` path is the directory on your local machine; `--remote` is the corresponding path on the SLURM cluster.
@@ -283,7 +283,7 @@ In addition to the CLI, mounts can be managed directly from the DAG builder.
 5.  Changes are saved immediately to the SSH profile configuration (`~/.config/srunx/config.json`)
 
 !!! note
-    Mounts added through the Web UI are identical to those added via `srunx ssh profile mount add`. Both methods modify the same configuration file.
+    Mounts added through the Web UI are identical to those added via `srunx ssh mount add`. Both methods modify the same configuration file.
 
 ## View Job Logs from a Workflow Run
 

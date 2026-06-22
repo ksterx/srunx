@@ -46,12 +46,12 @@ def gpus(
     import json
     from typing import cast
 
+    from srunx.cli._helpers.transport import resolve_transport
     from srunx.observability.monitoring.resource_monitor import ResourceMonitor
     from srunx.observability.monitoring.resource_source import (
         ResourceSource,
         SSHAdapterResourceSource,
     )
-    from srunx.transport import resolve_transport
 
     try:
         with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
@@ -95,6 +95,8 @@ def gpus(
 
         Console().print(table)
 
+    except (typer.Exit, typer.BadParameter):
+        raise
     except Exception as e:
         logger.error(f"Error querying GPU resources: {e}")
         Console().print(f"[red]Error: {e}[/red]")

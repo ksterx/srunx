@@ -48,6 +48,15 @@ class TestTransportConflict:
         )
         assert result.exit_code != 0
 
+    def test_squeue_conflict_is_bad_parameter_exit_2(self) -> None:
+        """The conflict must surface as a Typer BadParameter (exit 2), not be
+        swallowed by squeue's broad except into a generic exit-1 error."""
+        runner = CliRunner()
+        result = runner.invoke(app, ["squeue", "--profile", "foo", "--local"])
+        assert result.exit_code == 2
+        combined = (result.stderr or "") + (result.output or "")
+        assert "cannot be used together" in combined.lower()
+
 
 class TestSqueueJsonBannerIsolation:
     """AC-7.1: --format json --quiet stdout must be pure JSON."""

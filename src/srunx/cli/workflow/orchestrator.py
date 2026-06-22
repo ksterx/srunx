@@ -17,6 +17,7 @@ from typing import Annotated, Any
 import typer
 from rich.console import Console
 
+from srunx.cli._helpers.transport import peek_scheduler_key, resolve_transport
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.cli.workflow.guards import (
     _enforce_shell_script_roots_cli,
@@ -46,7 +47,6 @@ from srunx.runtime.sweep.expand import (
     parse_sweep_flags,
 )
 from srunx.runtime.workflow.runner import WorkflowRunner
-from srunx.transport import peek_scheduler_key, resolve_transport
 
 logger = get_logger(__name__)
 

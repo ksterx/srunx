@@ -10,8 +10,10 @@ for the full resolution contract.
 """
 
 from srunx.transport.registry import (
+    DEFAULT_POLICY,
     ResolvedTransport,
     TransportHandle,
+    TransportPolicy,
     TransportRegistry,
     emit_transport_banner,
     peek_scheduler_key,
@@ -20,8 +22,10 @@ from srunx.transport.registry import (
 )
 
 __all__ = [
+    "DEFAULT_POLICY",
     "ResolvedTransport",
     "TransportHandle",
+    "TransportPolicy",
     "TransportRegistry",
     "emit_transport_banner",
     "peek_scheduler_key",

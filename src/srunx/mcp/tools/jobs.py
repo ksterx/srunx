@@ -1,18 +1,49 @@
-"""MCP tools for SLURM job lifecycle: submit / list / status / cancel / logs."""
+"""MCP tools for SLURM job lifecycle: submit / list / status / cancel / logs.
+
+Every tool selects its cluster through the single ``transport`` argument
+(see :mod:`srunx.mcp.transport`): ``None`` / ``"local"`` -> local SLURM,
+``"<profile>"`` -> that SSH profile. Cluster choice is never a boolean
+toggle and never an implicit current-profile fallback — an MCP caller
+reaches a remote only by naming it. All transports run through the shared
+``resolve_transport`` handle, so local and SSH share one code path
+(``rt.job_ops``) instead of forking into hand-rolled ``squeue`` / ``scancel``
+shell calls.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from srunx.mcp.app import mcp
 from srunx.mcp.helpers import (
     err,
-    get_ssh_client,
     job_to_dict,
     ok,
     validate_job_id,
 )
+from srunx.mcp.transport import mcp_transport
+
+
+def _job_id_as_int(job_id: str) -> int:
+    """Convert a validated job id to int for the int-typed status/cancel ops.
+
+    ``validate_job_id`` accepts array task ids like ``12345_7``, but the
+    status / cancel / queue_by_ids Protocol is int-only (the SSH adapter even
+    re-applies ``int()`` internally), and ``int("12345_7")`` silently yields
+    ``123457`` — addressing a *different* job. Reject array ids explicitly so a
+    status/cancel never lands on the wrong job. (Full array-task addressing
+    would require widening the int-based slurm Protocol — out of scope here;
+    log retrieval keeps array support since it passes the id through as a
+    string.)
+    """
+    if "_" in job_id:
+        raise ValueError(
+            f"Array task ID '{job_id}' is not supported for status/cancel "
+            "(the job-operations API is numeric-id only); pass the plain "
+            "numeric job ID."
+        )
+    return int(job_id)
 
 
 @mcp.tool()
@@ -32,7 +63,7 @@ def submit_job(
     env_vars: dict[str, str] | None = None,
     log_dir: str = "logs",
     work_dir: str | None = None,
-    use_ssh: bool = False,
+    transport: str | None = None,
 ) -> dict[str, Any]:
     """Submit a SLURM job.
 
@@ -52,7 +83,8 @@ def submit_job(
         env_vars: Additional environment variables as key-value pairs
         log_dir: Directory for stdout/stderr log files
         work_dir: Working directory for the job (defaults to cwd)
-        use_ssh: If true, submit via SSH to remote SLURM cluster
+        transport: Cluster selector — omit / "local" for local SLURM, or an
+            SSH profile name to submit to that remote cluster.
     """
     try:
         from srunx.domain import Job, JobEnvironment, JobResource
@@ -72,160 +104,89 @@ def submit_job(
             venv=venv,
             env_vars=env_vars or {},
         )
-        if use_ssh and not work_dir:
-            return err(
-                "work_dir is required for SSH job submission "
-                "(local cwd does not exist on remote cluster)"
-            )
 
-        job = Job(
-            name=name,
-            command=command,
-            resources=resource,
-            environment=environment,
-            log_dir=log_dir,
-            work_dir=work_dir or str(Path.cwd()),
-        )
+        with mcp_transport(transport) as rt:
+            if rt.transport_type == "ssh" and not work_dir:
+                return err(
+                    "work_dir is required for SSH job submission "
+                    "(local cwd does not exist on the remote cluster)"
+                )
 
-        if use_ssh:
-            import jinja2
-
-            from srunx.runtime.rendering import _build_environment_setup
-            from srunx.runtime.templates import get_template_path
-
-            template_path = get_template_path("base")
-            with open(template_path) as f:
-                tmpl = jinja2.Template(f.read(), undefined=jinja2.StrictUndefined)
-
-            env_setup, srun_args, launch_prefix = _build_environment_setup(environment)
-            cmd_str = command if isinstance(command, str) else " ".join(command)
-            script_content = tmpl.render(
-                job_name=name,
-                command=cmd_str,
+            job = Job(
+                name=name,
+                command=command,
+                resources=resource,
+                environment=environment,
                 log_dir=log_dir,
-                work_dir=work_dir,
-                environment_setup=env_setup,
-                srun_args=srun_args,
-                launch_prefix=launch_prefix,
-                container=environment.container,
-                **resource.model_dump(),
+                work_dir=work_dir or str(Path.cwd()),
             )
-            ssh_client = get_ssh_client()
-            with ssh_client:
-                slurm_job = ssh_client.slurm.submit_sbatch_job(
-                    script_content, job_name=name
-                )
-                if slurm_job is None:
-                    return err("SSH job submission failed")
-                return ok(
-                    job_id=slurm_job.job_id, name=slurm_job.name, status="PENDING"
-                )
 
-        from srunx.slurm.local import Slurm
-
-        slurm = Slurm()
-        result = slurm.submit(job)
-        return ok(job_id=result.job_id, name=result.name, status=result._status.value)
+            # One submit path for both transports. The SSH adapter renders
+            # the script, applies mount translation via submission_context,
+            # uploads, and runs sbatch; the local client runs sbatch
+            # directly. MCP no longer hand-rolls Jinja rendering.
+            result = rt.job_ops.submit(job, submission_context=rt.submission_context)
+            return ok(
+                job_id=result.job_id,
+                name=result.name,
+                status=job_to_dict(result)["status"],
+            )
     except Exception as e:
         return err(str(e))
 
 
 @mcp.tool()
-def list_jobs(use_ssh: bool = False) -> dict[str, Any]:
-    """List current user's SLURM jobs in the queue.
+def list_jobs(transport: str | None = None) -> dict[str, Any]:
+    """List SLURM jobs in the queue (all users, like ``squeue``).
 
     Args:
-        use_ssh: If true, query jobs via SSH on remote cluster
+        transport: Cluster selector — omit / "local" for local SLURM, or an
+            SSH profile name to query that remote cluster.
     """
     try:
-        if use_ssh:
-            ssh_client = get_ssh_client()
-            with ssh_client:
-                stdout, stderr, rc = ssh_client.slurm.execute_slurm_command(
-                    'squeue --me --format "%.18i %.9P %.30j %.12u %.8T %.10M %.9l %.6D %R %b" --noheader'
-                )
-                if rc != 0:
-                    return err(f"squeue failed: {stderr}")
-                jobs = []
-                for line in stdout.strip().splitlines():
-                    parts = line.split()
-                    if len(parts) >= 5:
-                        jobs.append(
-                            {
-                                "job_id": parts[0],
-                                "partition": parts[1],
-                                "name": parts[2],
-                                "user": parts[3],
-                                "status": parts[4],
-                                "time": parts[5] if len(parts) > 5 else None,
-                                "nodes": parts[7] if len(parts) > 7 else None,
-                            }
-                        )
-                return ok(jobs=jobs, count=len(jobs))
-
-        from srunx.slurm.local import Slurm
-
-        slurm = Slurm()
-        queued = slurm.queue()
-        return ok(
-            jobs=[job_to_dict(j) for j in queued],
-            count=len(queued),
-        )
+        with mcp_transport(transport) as rt:
+            queued = rt.job_ops.queue()
+            return ok(
+                jobs=[job_to_dict(j) for j in queued],
+                count=len(queued),
+            )
     except Exception as e:
         return err(str(e))
 
 
 @mcp.tool()
-def get_job_status(job_id: str, use_ssh: bool = False) -> dict[str, Any]:
+def get_job_status(job_id: str, transport: str | None = None) -> dict[str, Any]:
     """Get the status of a specific SLURM job.
 
     Args:
         job_id: SLURM job ID to check
-        use_ssh: If true, query via SSH on remote cluster
+        transport: Cluster selector — omit / "local" for local SLURM, or an
+            SSH profile name to query that remote cluster.
     """
     try:
         validate_job_id(job_id)
-        if use_ssh:
-            ssh_client = get_ssh_client()
-            with ssh_client:
-                status = ssh_client.slurm.get_job_status(str(job_id))
-                if status in ("ERROR", "NOT_FOUND"):
-                    return err(f"Job {job_id}: {status}")
-                return ok(job_id=job_id, status=status)
-
-        from srunx.slurm.local import Slurm
-
-        job = Slurm.retrieve(int(job_id))
-        return ok(job_id=job_id, **job_to_dict(job))
+        with mcp_transport(transport) as rt:
+            job = rt.job_ops.status(_job_id_as_int(job_id))
+            # job_to_dict already carries job_id; don't double-pass it.
+            return ok(**job_to_dict(job))
     except Exception as e:
         return err(str(e))
 
 
 @mcp.tool()
-def cancel_job(job_id: str, use_ssh: bool = False) -> dict[str, Any]:
+def cancel_job(job_id: str, transport: str | None = None) -> dict[str, Any]:
     """Cancel a running or pending SLURM job.
 
     Args:
         job_id: SLURM job ID to cancel
-        use_ssh: If true, cancel via SSH on remote cluster
+        transport: Cluster selector — omit / "local" for local SLURM, or an
+            SSH profile name to cancel on that remote cluster.
     """
     try:
         validate_job_id(job_id)
-        if use_ssh:
-            ssh_client = get_ssh_client()
-            with ssh_client:
-                stdout, stderr, rc = ssh_client.slurm.execute_slurm_command(
-                    f"scancel {job_id}"
-                )
-                if rc != 0:
-                    return err(f"scancel failed: {stderr}")
-                return ok(job_id=job_id, message="Job cancelled")
-
-        from srunx.slurm.local import Slurm
-
-        slurm = Slurm()
-        slurm.cancel(int(job_id))
-        return ok(job_id=job_id, message="Job cancelled")
+        with mcp_transport(transport) as rt:
+            rt.job_ops.cancel(_job_id_as_int(job_id))
+            return ok(job_id=job_id, message="Job cancelled")
     except Exception as e:
         return err(str(e))
 
@@ -234,36 +195,33 @@ def cancel_job(job_id: str, use_ssh: bool = False) -> dict[str, Any]:
 def get_job_logs(
     job_id: str,
     job_name: str | None = None,
-    use_ssh: bool = False,
+    transport: str | None = None,
 ) -> dict[str, Any]:
     """Get stdout/stderr logs for a SLURM job.
 
     Args:
         job_id: SLURM job ID
         job_name: Optional job name to help locate log files
-        use_ssh: If true, fetch logs via SSH from remote cluster
+        transport: Cluster selector — omit / "local" for local SLURM, or an
+            SSH profile name to fetch logs from that remote cluster.
     """
     try:
         validate_job_id(job_id)
-        if use_ssh:
-            ssh_client = get_ssh_client()
-            with ssh_client:
-                stdout, stderr, _, _ = ssh_client.logs.get_job_output(
-                    str(job_id), job_name
-                )
-                if not stdout and not stderr:
-                    return err(f"No logs found for job {job_id}")
-                return ok(job_id=job_id, stdout=stdout, stderr=stderr)
+        with mcp_transport(transport) as rt:
+            # Full-text log retrieval is the WorkflowJobExecutor face, which
+            # both the local client and the SSH adapter implement. It's not
+            # on the JobOperations Protocol that ``job_ops`` is typed as, so
+            # cast to the protocol that declares it (both concrete clients
+            # satisfy it).
+            from srunx.slurm.protocols import WorkflowJobExecutor
 
-        from srunx.slurm.local import Slurm
-
-        slurm = Slurm()
-        details = slurm.get_job_output_detailed(job_id, job_name)
-        return ok(
-            job_id=job_id,
-            stdout=details.get("output", ""),
-            stderr=details.get("error", ""),
-            log_files=details.get("found_files", []),
-        )
+            executor = cast(WorkflowJobExecutor, rt.job_ops)
+            details = executor.get_job_output_detailed(job_id, job_name)
+            return ok(
+                job_id=job_id,
+                stdout=details.get("output", ""),
+                stderr=details.get("error", ""),
+                log_files=details.get("found_files", []),
+            )
     except Exception as e:
         return err(str(e))

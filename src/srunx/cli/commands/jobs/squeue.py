@@ -12,9 +12,9 @@ from rich.table import Table
 
 import srunx.slurm.local as _slurm_local  # noqa: E402,I001 — kept so ``patch("srunx.slurm.local.Slurm")`` intercepts all call sites
 from srunx.cli._helpers.state_colors import colorize_state
+from srunx.cli._helpers.transport import resolve_transport
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.common.exceptions import TransportError
-from srunx.transport import resolve_transport
 
 
 def squeue(
@@ -168,6 +168,10 @@ def squeue(
 
             Console().print(_render_squeue_table(jobs, visibility))
 
+    except (typer.Exit, typer.BadParameter):
+        # Let Typer render bad --profile/--local flags (exit 2) and explicit
+        # exits cleanly instead of masking them as a generic queue error.
+        raise
     except TransportError as exc:
         typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from None

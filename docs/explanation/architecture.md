@@ -181,10 +181,10 @@ injected dependencies:
 
 This keeps the local path and the SSH path on the **same code path**:
 the runner does not branch on execution mode. CLI and MCP sweeps
-without a `mount=` argument pass `executor_factory=None`, which
+without a `transport=` argument pass `executor_factory=None`, which
 preserves the pre-sweep behaviour bit-for-bit -- cells go through the
 `Slurm` singleton exactly as a non-swept workflow would. Web UI
-sweeps, and MCP sweeps with `mount=<profile>`, pass an
+sweeps, and MCP sweeps with `transport=<profile>`, pass an
 `executor_factory` backed by a per-sweep `SlurmSSHExecutorPool`.
 
 ### SSH pool and mount-aware rendering
