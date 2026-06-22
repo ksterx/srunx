@@ -11,8 +11,10 @@ Resolution priority (see REQ-1):
 
     1. ``--profile <name>``
     2. ``--local``
-    3. ``$SRUNX_SSH_PROFILE``
-    4. local fallback (silent, preserves AC-10.2)
+    3. ``$SRUNX_SSH_PROFILE`` (gated by ``policy.allow_env``)
+    4. current SSH profile via ``srunx ssh use`` (gated by
+       ``policy.allow_current_profile`` + ``cli.use_current_profile``)
+    5. local fallback (silent, preserves AC-10.2)
 
 Banner emission (REQ-7): explicit sources print a one-line banner to
 stderr; the default path stays silent so existing scripts that rely on

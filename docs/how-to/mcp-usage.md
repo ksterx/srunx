@@ -209,13 +209,16 @@ run_workflow(
 
 ### Return value
 
+`run_workflow` blocks until every sweep cell reaches a terminal state, so the
+returned `sweep_run_id` is the integer DB row id and the counters are final:
+
 ``` json
 {
   "success": true,
-  "sweep_run_id": "sr_abc123",
-  "status": "running",
+  "sweep_run_id": 42,
+  "status": "completed",
   "cell_count": 6,
-  "cells_completed": 0,
+  "cells_completed": 6,
   "cells_failed": 0,
   "cells_cancelled": 0
 }

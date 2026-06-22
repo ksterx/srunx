@@ -386,7 +386,7 @@ Errors are returned with `{"success": false, "error": "..."}`:
 - Mount not present in the profile named by `transport` →
   `"Mount '<name>' not found in profile '<transport>'"`
 - `mount=` passed without `transport=` →
-  `"mount requires transport; pass transport=\"<profile>\" to select a cluster"`
+  `"mount requires an SSH transport; pass transport='<profile>' (there is no mount translation for local runs)"`
 - A `ShellJob`'s `script_path` resolves outside every mount's `local`
   root →
   `"Script path '<path>' is outside allowed directories"`

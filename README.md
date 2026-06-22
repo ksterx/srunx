@@ -298,7 +298,7 @@ srunx flow run pipeline.yaml --profile dgx            # full DAG: sync once, hol
 ```
 
 - SSH config hosts, saved profiles, and ProxyJump support
-- Environment variable passthrough (`--env KEY=VALUE`, `--env-local WANDB_API_KEY`)
+- Environment variable passthrough (`--env KEY=VALUE`)
 - File sync via rsync with per-mount locking — auto-detects profile from current directory
 
 Mount model, sync semantics, and in-place execution rules: [SSH sync how-to](https://ksterx.github.io/srunx/how-to/sync/)
