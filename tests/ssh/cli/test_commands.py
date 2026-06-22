@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +11,15 @@ from typer.testing import CliRunner
 
 from srunx.ssh.cli.commands import ssh_app
 from srunx.ssh.core.config import ConfigManager, MountConfig, ServerProfile
+
+# Rich/Typer styles help text with SGR escapes, which can split ``--pull``
+# into ``-`` + escape + ``-pull`` depending on terminal width/colour. Strip
+# them before asserting so the test doesn't depend on the rendering env.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 @pytest.fixture
@@ -134,4 +144,4 @@ class TestSyncHelp:
     def test_help_lists_pull_flag(self, runner: CliRunner):
         result = runner.invoke(ssh_app, ["sync", "--help"])
         assert result.exit_code == 0
-        assert "--pull" in result.output
+        assert "--pull" in _strip_ansi(result.output)
