@@ -71,12 +71,12 @@ def sinfo(
     import json
     from typing import cast
 
+    from srunx.cli._helpers.transport import resolve_transport
     from srunx.slurm.partitions import (
         PartitionRow,
         fetch_sinfo_rows_local,
         fetch_sinfo_rows_ssh,
     )
-    from srunx.transport import resolve_transport
 
     try:
         with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:

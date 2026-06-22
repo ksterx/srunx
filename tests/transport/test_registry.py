@@ -13,14 +13,18 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-import typer
 
+from srunx.common.exceptions import TransportSelectionError
 from srunx.transport import (
     ResolvedTransport,
     TransportHandle,
+    TransportPolicy,
     TransportRegistry,
+    peek_scheduler_key,
     resolve_transport,
+    resolve_transport_source,
 )
+from srunx.transport import registry as _registry
 
 
 class TestResolveTransport:
@@ -48,9 +52,15 @@ class TestResolveTransport:
         assert "via --local" in captured.err
 
     def test_profile_and_local_conflict(self, monkeypatch):
-        """AC-1.2: --profile + --local is rejected at startup."""
+        """AC-1.2: --profile + --local is rejected at startup.
+
+        The pure resolver raises the framework-neutral
+        :class:`TransportSelectionError`; the CLI wrapper
+        (:mod:`srunx.cli._helpers.transport`) is what maps it to
+        ``typer.BadParameter``.
+        """
         monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-        with pytest.raises(typer.BadParameter):
+        with pytest.raises(TransportSelectionError):
             with resolve_transport(profile="foo", local=True):
                 pass
 
@@ -275,3 +285,46 @@ class TestTransportRegistry:
         # Exact SQL check so we catch accidental JOINs / filter additions.
         conn.execute.assert_called_once_with("SELECT DISTINCT scheduler_key FROM jobs")
         reg.close()
+
+
+class TestTransportPolicy:
+    """The implicit ladder rungs (env, current-profile) are policy-gated.
+
+    Explicit ``--profile`` / ``--local`` are never gated — only the ambient
+    sources are. MCP passes a policy with both off so an API surface never
+    resolves a remote from ambient machine state.
+    """
+
+    def test_default_policy_honours_env(self, monkeypatch):
+        monkeypatch.setenv("SRUNX_SSH_PROFILE", "dgx")
+        assert resolve_transport_source() == "env"
+        assert peek_scheduler_key() == "ssh:dgx"
+
+    def test_allow_env_false_skips_env(self, monkeypatch):
+        monkeypatch.setenv("SRUNX_SSH_PROFILE", "dgx")
+        policy = TransportPolicy(allow_env=False)
+        assert resolve_transport_source(policy=policy) == "default"
+        assert peek_scheduler_key(policy=policy) == "local"
+
+    def test_default_policy_honours_current_profile(self, monkeypatch):
+        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
+        monkeypatch.setattr(_registry, "_current_profile_name", lambda: "cur")
+        assert resolve_transport_source() == "current-profile"
+        assert peek_scheduler_key() == "ssh:cur"
+
+    def test_allow_current_profile_false_skips_current(self, monkeypatch):
+        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
+        monkeypatch.setattr(_registry, "_current_profile_name", lambda: "cur")
+        policy = TransportPolicy(allow_current_profile=False)
+        assert resolve_transport_source(policy=policy) == "default"
+        assert peek_scheduler_key(policy=policy) == "local"
+
+    def test_both_off_is_explicit_only(self, monkeypatch):
+        """MCP-style policy: env + current ignored, but explicit profile wins."""
+        monkeypatch.setenv("SRUNX_SSH_PROFILE", "dgx")
+        monkeypatch.setattr(_registry, "_current_profile_name", lambda: "cur")
+        policy = TransportPolicy(allow_env=False, allow_current_profile=False)
+        # No explicit selection -> local despite env + current set.
+        assert peek_scheduler_key(policy=policy) == "local"
+        # Explicit profile is never gated.
+        assert peek_scheduler_key(profile="prod", policy=policy) == "ssh:prod"

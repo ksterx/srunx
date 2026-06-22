@@ -19,6 +19,30 @@ class SweepExecutionError(WorkflowError):
 # ---------------------------------------------------------------------------
 
 
+class TransportSelectionError(ValueError):
+    """Invalid transport selection (e.g. empty ``--profile`` or
+    ``--profile`` + ``--local`` used together).
+
+    Raised by the transport resolver (:func:`srunx.transport.registry`)
+    so the selection logic stays free of any CLI framework dependency.
+    The CLI option layer translates this into ``typer.BadParameter``
+    (forwarding :attr:`param_hint`); MCP catches it and renders ``err()``.
+
+    Subclasses :class:`ValueError` so callers that only catch the broad
+    builtin still behave sensibly.
+
+    Attributes:
+        param_hint: Which CLI flag(s) the error concerns (e.g.
+            ``"--profile / --local"``). Carried so the CLI translator can
+            reproduce the exact ``typer.BadParameter`` UX; ``None`` when
+            no specific flag applies.
+    """
+
+    def __init__(self, message: str, *, param_hint: str | None = None) -> None:
+        super().__init__(message)
+        self.param_hint = param_hint
+
+
 class TransportError(Exception):
     """Base class for transport-layer failures (local subprocess or SSH).
 

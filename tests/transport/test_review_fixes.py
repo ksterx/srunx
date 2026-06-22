@@ -507,10 +507,12 @@ class TestPeekSchedulerKey:
         assert peek_scheduler_key() == "local"
 
     def test_profile_local_conflict_raises(self, monkeypatch) -> None:
-        import typer
+        from srunx.common.exceptions import TransportSelectionError
 
         monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-        with pytest.raises(typer.BadParameter):
+        # The pure resolver raises the neutral selection error; the CLI
+        # wrapper maps it to typer.BadParameter (see test_cli_transport).
+        with pytest.raises(TransportSelectionError):
             peek_scheduler_key(profile="foo", local=True)
 
 

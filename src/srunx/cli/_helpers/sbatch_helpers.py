@@ -284,7 +284,7 @@ def _print_in_place_sync_preview(
     if local or script is None:
         return
 
-    from srunx.transport import peek_scheduler_key
+    from srunx.cli._helpers.transport import peek_scheduler_key
 
     try:
         sched_key = peek_scheduler_key(profile=profile_name, local=local)

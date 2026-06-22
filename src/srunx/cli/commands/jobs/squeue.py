@@ -12,9 +12,9 @@ from rich.table import Table
 
 import srunx.slurm.local as _slurm_local  # noqa: E402,I001 — kept so ``patch("srunx.slurm.local.Slurm")`` intercepts all call sites
 from srunx.cli._helpers.state_colors import colorize_state
+from srunx.cli._helpers.transport import resolve_transport
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.common.exceptions import TransportError
-from srunx.transport import resolve_transport
 
 
 def squeue(
