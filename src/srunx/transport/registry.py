@@ -25,11 +25,11 @@ paramiko import cost (R-3).
 
 Manual verification cheatsheet:
 
-    $ srunx submit echo hi                # banner suppressed (default)
-    $ srunx submit --local echo hi        # banner: transport: local (from --local)
-    $ srunx submit --profile foo echo hi  # banner: transport: ssh:foo (from --profile)
-    $ SRUNX_SSH_PROFILE=foo srunx list    # banner: transport: ssh:foo (from env)
-    $ srunx list --quiet                  # banner suppressed for any source
+    $ srunx squeue                          # banner suppressed (default → local)
+    $ srunx squeue --local                  # banner: ● Local SLURM (via --local)
+    $ srunx squeue --profile foo            # banner: ● Connected to … (profile: foo · via --profile)
+    $ SRUNX_SSH_PROFILE=foo srunx squeue    # banner: ● Connected to … (… · via $SRUNX_SSH_PROFILE)
+    $ srunx squeue --quiet                  # banner suppressed for any source
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Development Commands
 
@@ -594,7 +594,7 @@ All pollers are crash-resilient via a lease mechanism (`leased_until`, `worker_i
 
 Notification settings UI lives in `Settings → Notifications`; Phase 1 supports endpoint CRUD for `slack_webhook` only. Webhook URL validation (both UI and backend): `^https://hooks\.slack\.com/services/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$`.
 
-See `.claude/specs/notification-and-state-persistence/` for full requirements, design, and task list.
+See `.Codex/specs/notification-and-state-persistence/` for full requirements, design, and task list.
 
 ## Dependencies
 - **Jinja2**: Template rendering
