@@ -177,6 +177,13 @@ def sync_mount(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", "-n", help="Preview without syncing")
     ] = False,
+    pull: Annotated[
+        bool,
+        typer.Option(
+            "--pull",
+            help="Reverse direction: sync remote → local (default is local → remote)",
+        ),
+    ] = False,
     config: Annotated[
         str | None,
         typer.Option(
@@ -184,15 +191,21 @@ def sync_mount(
         ),
     ] = None,
 ):
-    """Sync a mount's local directory to the remote via rsync.
+    """Sync a mount between local and remote via rsync.
+
+    By default syncs local → remote (push). Pass ``--pull`` to reverse the
+    direction and sync remote → local — useful for pulling back results or
+    checkpoints a job wrote on the cluster.
 
     With no arguments, auto-detects the profile and mount from the current
     working directory. Works even when inside a subdirectory of the mount.
 
     Examples:
-      srunx ssh sync                          # auto-detect from cwd
-      srunx ssh sync pyxis ml-project         # explicit profile and mount
+      srunx ssh sync                          # push, auto-detect from cwd
+      srunx ssh sync pyxis ml-project         # push, explicit profile and mount
       srunx ssh sync pyxis ml-project --dry-run
+      srunx ssh sync --pull                   # pull remote → local
+      srunx ssh sync pyxis ml-project --pull --dry-run
     """
     from srunx.ssh.core.config import MountConfig
     from srunx.sync.rsync import RsyncClient
@@ -259,9 +272,11 @@ def sync_mount(
 
         # Sync
         action = "Previewing" if dry_run else "Syncing"
+        direction = "remote → local (pull)" if pull else "local → remote (push)"
         console.print(f"[bold]{action}[/bold] mount [cyan]{mount.name}[/cyan]")
         console.print(f"  Local:  {mount.local}")
         console.print(f"  Remote: {mount.remote}")
+        console.print(f"  Direction: {direction}")
         console.print(f"  Profile: {profile_name}")
         if dry_run:
             console.print("  [yellow]Dry run — no files will be transferred[/yellow]")
@@ -295,7 +310,20 @@ def sync_mount(
                 exclude_patterns=all_excludes or None,
             )
 
-        result = rsync.push(mount.local, mount.remote, dry_run=dry_run)
+        # itemize=dry_run so the preview lists every file rsync *would*
+        # touch; a real sync stays quiet (itemize defaults off).
+        if pull:
+            # Trailing slash on the remote source so rsync copies the
+            # mount's *contents* into the local dir (mirroring push),
+            # not the directory itself one level deeper.
+            remote_src = mount.remote.rstrip("/") + "/"
+            result = rsync.pull(
+                remote_src, mount.local, dry_run=dry_run, itemize=dry_run
+            )
+        else:
+            result = rsync.push(
+                mount.local, mount.remote, dry_run=dry_run, itemize=dry_run
+            )
 
         if result.returncode == 0:
             if dry_run:
