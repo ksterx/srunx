@@ -111,32 +111,6 @@
   margin-bottom: 1.8rem;
 }
 
-/* ===== Status pill (signature element) ===== */
-.srunx-status {
-  font-family: var(--srunx-mono);
-  font-size: 0.72rem;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  padding: 0.25rem 0.7rem;
-  border: 1px solid var(--md-default-fg-color--lighter);
-  border-radius: 99px;
-  display: inline-flex;
-  gap: 0.5rem;
-  align-items: center;
-  color: var(--md-default-fg-color--light);
-  margin-bottom: 1.5rem;
-}
-.srunx-status::before {
-  content: "●";
-  color: var(--md-accent-fg-color);
-  font-size: 0.6rem;
-  animation: srunx-pulse 2.2s ease-in-out infinite;
-}
-@keyframes srunx-pulse {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.35; }
-}
-
 /* ===== Mono kicker for sections ===== */
 .srunx-kicker {
   font-family: var(--srunx-mono);
