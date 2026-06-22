@@ -157,8 +157,9 @@ Get stdout/stderr logs for a SLURM job.
 ```
 
 !!! note
-    The `log_files` field is only present for local queries (when
-    `transport` is omitted).
+    The `log_files` field is populated the same way for every transport
+    (local and SSH) — it lists the discovered log files, or `[]` when none
+    were found.
 
 ## Resources
 
@@ -192,14 +193,31 @@ Get current GPU and node resource availability on the SLURM cluster.
 
 **Return value (SSH):**
 
-When `transport` selects an SSH profile, the return includes a `raw_output`
-field with the `sinfo` output instead of parsed metrics:
+When `transport` selects an SSH profile, the return carries a `resources`
+list — one aggregated metrics object per partition (the same fields as the
+local return, plus `timestamp` / `has_available_gpus`). With an explicit
+`partition` the list has a single element; with `partition` omitted it has
+one element per partition:
 
 ``` json
 {
   "success": true,
   "partition": "gpu",
-  "raw_output": "node001 gpu:4 idle gpu*\nnode002 gpu:4 mixed gpu*"
+  "resources": [
+    {
+      "timestamp": "2026-06-23T00:00:00+00:00",
+      "partition": "gpu",
+      "total_gpus": 32,
+      "gpus_in_use": 24,
+      "gpus_available": 8,
+      "jobs_running": 12,
+      "nodes_total": 8,
+      "nodes_idle": 2,
+      "nodes_down": 0,
+      "gpu_utilization": 0.75,
+      "has_available_gpus": true
+    }
+  ]
 }
 ```
 
