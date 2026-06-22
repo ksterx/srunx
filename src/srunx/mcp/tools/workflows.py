@@ -1,7 +1,7 @@
 """MCP tools for workflow YAML lifecycle: create / validate / run / list / get.
 
 Workflow-specific guards (``_enforce_shell_script_roots`` /
-``_resolve_mount_context``) live here rather than in
+``_resolve_ssh_context``) live here rather than in
 :mod:`srunx.mcp.helpers` because they are only consumed by ``run_workflow``
 and reference workflow-layer types.
 """
@@ -162,43 +162,45 @@ def _enforce_shell_script_roots(workflow: Any, profile: Any) -> None:
         )
 
 
-def _resolve_mount_context(
-    mount: str,
-) -> tuple[Any, SubmissionRenderContext, Any]:
-    """Resolve ``(adapter, submission_context, profile)`` for an MCP mount run.
+def _resolve_ssh_context(
+    profile_name: str,
+    mount: str | None,
+) -> tuple[Any, SubmissionRenderContext | None, Any]:
+    """Resolve ``(adapter, submission_context, profile)`` for an SSH run.
 
-    Returns the :class:`SlurmSSHClient` for the active SSH profile, a
-    :class:`SubmissionRenderContext` pinned to ``mount.remote`` as the
-    default work dir, and the profile object itself (needed by the
-    ShellJob guard). Raises :class:`ValueError` on any misconfiguration —
-    no current profile, unknown mount name, etc.
+    The profile is taken from the caller's explicit ``transport`` (not the
+    current profile — MCP never reads ambient profile state). Returns the
+    :class:`SlurmSSHClient` for *profile_name*, the profile object (needed by
+    the ShellJob guard), and a :class:`SubmissionRenderContext` pinned to the
+    selected mount's ``remote`` as the default work dir — or ``None`` when no
+    mount was selected (SSH execution without path translation).
+
+    Raises :class:`ValueError` on an unknown profile or mount name.
     """
     from srunx.runtime.rendering import SubmissionRenderContext
     from srunx.slurm.clients.ssh import SlurmSSHClient
     from srunx.ssh.core.config import ConfigManager
 
     cm = ConfigManager()
-    profile = cm.get_current_profile()
-    profile_name = cm.get_current_profile_name()
+    profile = cm.get_profile(profile_name)
     if profile is None:
-        raise ValueError(
-            "mount requires a current SSH profile; configure one via "
-            "`srunx ssh profile add` and select it with `srunx ssh profile use`"
+        raise ValueError(f"SSH profile '{profile_name}' not found")
+
+    context: SubmissionRenderContext | None = None
+    if mount is not None:
+        mount_found = next(
+            (m for m in (profile.mounts or []) if m.name == mount),
+            None,
+        )
+        if mount_found is None:
+            raise ValueError(f"Mount '{mount}' not found in profile '{profile_name}'")
+        context = SubmissionRenderContext(
+            mount_name=mount,
+            mounts=tuple(profile.mounts),
+            default_work_dir=mount_found.remote,
         )
 
-    mount_found = next(
-        (m for m in (profile.mounts or []) if m.name == mount),
-        None,
-    )
-    if mount_found is None:
-        raise ValueError(f"Mount '{mount}' not found in profile '{profile_name}'")
-
     adapter = SlurmSSHClient(profile_name=profile_name)
-    context = SubmissionRenderContext(
-        mount_name=mount,
-        mounts=tuple(profile.mounts),
-        default_work_dir=mount_found.remote,
-    )
     return adapter, context, profile
 
 
@@ -211,6 +213,7 @@ def run_workflow(
     dry_run: bool = False,
     args: dict[str, Any] | None = None,
     sweep: dict[str, Any] | None = None,
+    transport: str | None = None,
     mount: str | None = None,
 ) -> dict[str, Any]:
     """Execute a SLURM workflow from a YAML file.
@@ -230,28 +233,40 @@ def run_workflow(
             "max_parallel": int}``. When present, the request goes through
             :class:`SweepOrchestrator` and the response contains
             ``sweep_run_id``.
-        mount: Optional mount name from the active SSH profile. When
-            provided, the run is routed through the configured cluster
-            adapter with mount-aware path translation for ``work_dir`` /
-            ``log_dir``. When omitted (default), the run stays on the
-            local SLURM client — same behaviour as pre-5a.
+        transport: Cluster selector — omit / "local" for local SLURM, or an
+            SSH profile name to run against that remote cluster. Orthogonal to
+            ``mount``: ``transport`` picks *which* cluster, ``mount`` picks the
+            path-translation root within it.
+        mount: Optional mount name within the SSH profile, enabling mount-aware
+            path translation for ``work_dir`` / ``log_dir``. Requires an SSH
+            ``transport``; passing ``mount`` with a local transport is an error.
     """
     try:
+        from srunx.mcp.transport import parse_transport
         from srunx.runtime.workflow.runner import WorkflowRunner
         from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
 
         if args is not None:
             reject_python_prefix(args, source="args")
 
-        # Resolve the SSH adapter + render context + profile when the caller
-        # opted into mount-aware mode. ``submission_context=None`` keeps the
-        # legacy "local SLURM only" path intact when ``mount`` is omitted.
+        # Resolve the cluster from the explicit ``transport`` (never the
+        # current profile). ``mount`` is orthogonal: it selects the
+        # path-translation root and is only meaningful on an SSH transport.
+        profile_name, _force_local = parse_transport(transport)
+        if mount is not None and profile_name is None:
+            return err(
+                "mount requires an SSH transport; pass transport='<profile>' "
+                "(there is no mount translation for local runs)"
+            )
+
         submission_context: SubmissionRenderContext | None = None
         adapter = None
         profile = None
-        if mount is not None:
+        if profile_name is not None:
             try:
-                adapter, submission_context, profile = _resolve_mount_context(mount)
+                adapter, submission_context, profile = _resolve_ssh_context(
+                    profile_name, mount
+                )
             except ValueError as exc:
                 return err(str(exc))
 

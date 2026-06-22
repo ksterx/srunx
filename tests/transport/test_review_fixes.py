@@ -311,7 +311,7 @@ class TestV5MigrationPreservesNonJobWatches:
 
     def _apply_through_v4(self, db_path: Path) -> sqlite3.Connection:
         conn = open_connection(db_path)
-        for mig in MIGRATIONS[:-1]:  # everything except V5
+        for mig in [m for m in MIGRATIONS if m.version < 5]:  # v1..v4
             if mig.requires_fk_off:
                 _apply_fk_off_migration(conn, mig)
             else:
@@ -340,7 +340,7 @@ class TestV5MigrationPreservesNonJobWatches:
             )
             conn.commit()
 
-            v5 = MIGRATIONS[-1]
+            v5 = next(m for m in MIGRATIONS if m.version == 5)
             assert v5.name == "v5_transport_scheduler_key"
             _apply_fk_off_migration(conn, v5)
 

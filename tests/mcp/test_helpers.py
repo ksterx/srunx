@@ -1,12 +1,11 @@
 """Tests for srunx.mcp.helpers."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from srunx.mcp.helpers import (
     err,
-    get_ssh_client,
     job_to_dict,
     ok,
     validate_job_id,
@@ -183,94 +182,3 @@ class TestJobToDict:
         job.job_id = "111"
         result = job_to_dict(job)
         assert result["status"] == "UNKNOWN"
-
-
-class TestGetSshClient:
-    """Test get_ssh_client helper."""
-
-    @patch("srunx.ssh.core.config.ConfigManager")
-    def test_no_active_profile_raises(self, mock_cm_cls):
-        mock_cm = MagicMock()
-        mock_cm.get_current_profile_name.return_value = None
-        mock_cm_cls.return_value = mock_cm
-
-        with pytest.raises(RuntimeError, match="No active SSH profile"):
-            get_ssh_client()
-
-    @patch("srunx.ssh.core.config.ConfigManager")
-    def test_profile_not_found_raises(self, mock_cm_cls):
-        mock_cm = MagicMock()
-        mock_cm.get_current_profile_name.return_value = "missing"
-        mock_cm.get_profile.return_value = None
-        mock_cm_cls.return_value = mock_cm
-
-        with pytest.raises(RuntimeError, match="SSH profile 'missing' not found"):
-            get_ssh_client()
-
-    @patch("srunx.ssh.core.client.SSHSlurmClient")
-    @patch("srunx.ssh.core.ssh_config.SSHConfigParser")
-    @patch("srunx.ssh.core.config.ConfigManager")
-    def test_ssh_host_profile(self, mock_cm_cls, mock_parser_cls, mock_client_cls):
-        profile = MagicMock()
-        profile.ssh_host = "myhost"
-        profile.env_vars = {"KEY": "VAL"}
-
-        mock_cm = MagicMock()
-        mock_cm.get_current_profile_name.return_value = "prod"
-        mock_cm.get_profile.return_value = profile
-        mock_cm_cls.return_value = mock_cm
-
-        ssh_host = MagicMock()
-        ssh_host.hostname = "real.host.com"
-        ssh_host.user = "admin"
-        ssh_host.identity_file = "/home/.ssh/id_rsa"
-        ssh_host.port = 2222
-        ssh_host.proxy_jump = None
-        mock_parser = MagicMock()
-        mock_parser.get_host.return_value = ssh_host
-        mock_parser_cls.return_value = mock_parser
-
-        client = get_ssh_client()
-        mock_client_cls.assert_called_once_with(
-            hostname="real.host.com",
-            username="admin",
-            key_filename="/home/.ssh/id_rsa",
-            port=2222,
-            proxy_jump=None,
-            env_vars={"KEY": "VAL"},
-        )
-        assert client is mock_client_cls.return_value
-
-    @patch("srunx.ssh.core.client.SSHSlurmClient")
-    @patch("srunx.ssh.core.ssh_config.SSHConfigParser")
-    @patch("srunx.ssh.core.config.ConfigManager")
-    def test_direct_hostname_profile(
-        self, mock_cm_cls, mock_parser_cls, mock_client_cls
-    ):
-        profile = MagicMock()
-        profile.ssh_host = None
-        profile.hostname = "direct.host.com"
-        profile.username = "user1"
-        profile.key_filename = "/path/key"
-        profile.port = 22
-        profile.proxy_jump = None
-        profile.env_vars = None
-
-        mock_cm = MagicMock()
-        mock_cm.get_current_profile_name.return_value = "dev"
-        mock_cm.get_profile.return_value = profile
-        mock_cm_cls.return_value = mock_cm
-
-        mock_parser = MagicMock()
-        mock_parser.get_host.return_value = None
-        mock_parser_cls.return_value = mock_parser
-
-        get_ssh_client()
-        mock_client_cls.assert_called_once_with(
-            hostname="direct.host.com",
-            username="user1",
-            key_filename="/path/key",
-            port=22,
-            proxy_jump=None,
-            env_vars=None,
-        )

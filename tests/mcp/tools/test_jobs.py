@@ -1,5 +1,14 @@
-"""Tests for srunx.mcp.tools.jobs."""
+"""Tests for srunx.mcp.tools.jobs.
 
+Every cluster-acting tool routes through ``srunx.mcp.transport.mcp_transport``
+(see :mod:`srunx.mcp.transport`). Rather than reproducing the
+``resolve_transport`` ladder, these tests patch ``mcp_transport`` at the tool
+module's lookup site with a contextmanager that yields a controllable ``rt``
+(a stand-in :class:`~srunx.transport.ResolvedTransport`). Local vs SSH is just
+``rt.transport_type``; both share the single ``rt.job_ops`` path.
+"""
+
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 from srunx.mcp.tools.jobs import (
@@ -11,111 +20,125 @@ from srunx.mcp.tools.jobs import (
 )
 
 
+def _fake_transport(rt):
+    """Build a patch target for ``mcp_transport`` yielding *rt*."""
+
+    @contextmanager
+    def _cm(transport, *, mount_name=None):
+        yield rt
+
+    return _cm
+
+
+def _make_rt(transport_type="local"):
+    """A minimal ResolvedTransport double.
+
+    ``job_ops`` is a MagicMock exposing submit / queue / status / cancel /
+    get_job_output_detailed; ``submission_context`` defaults to None (local).
+    """
+    rt = MagicMock()
+    rt.transport_type = transport_type
+    rt.submission_context = None
+    return rt
+
+
 class TestSubmitJob:
     """Test submit_job tool."""
 
-    @patch("srunx.slurm.local.Slurm")
-    def test_submit_local_success(self, mock_slurm_cls):
-        mock_slurm = MagicMock()
-        mock_job = MagicMock()
-        mock_job.job_id = "12345"
-        mock_job.name = "test_job"
-        mock_job._status.value = "PENDING"
-        mock_slurm.submit.return_value = mock_job
-        mock_slurm_cls.return_value = mock_slurm
+    def test_submit_local_success(self):
+        rt = _make_rt("local")
+        result_job = MagicMock()
+        result_job.job_id = "12345"
+        result_job.name = "test_job"
+        result_job._status.value = "PENDING"
+        del result_job.script_path
+        result_job.command = "python train.py"
+        for attr in (
+            "partition",
+            "user",
+            "elapsed_time",
+            "nodes",
+            "nodelist",
+            "cpus",
+            "gpus",
+        ):
+            setattr(result_job, attr, None)
+        rt.job_ops.submit.return_value = result_job
 
-        result = submit_job(command="python train.py", name="test_job")
+        with patch(
+            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
+        ):
+            result = submit_job(command="python train.py", name="test_job")
+
         assert result["success"] is True
         assert result["job_id"] == "12345"
         assert result["name"] == "test_job"
+        assert result["status"] == "PENDING"
+        # submit_job forwards the resolved submission context.
+        rt.job_ops.submit.assert_called_once()
+        assert (
+            rt.job_ops.submit.call_args.kwargs["submission_context"]
+            is rt.submission_context
+        )
 
     def test_submit_ssh_requires_work_dir(self):
-        result = submit_job(command="python train.py", use_ssh=True)
+        rt = _make_rt("ssh")
+        with patch(
+            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
+        ):
+            result = submit_job(command="python train.py", transport="prod")
         assert result["success"] is False
         assert "work_dir is required" in result["error"]
+        rt.job_ops.submit.assert_not_called()
 
-    @patch("srunx.mcp.tools.jobs.get_ssh_client")
-    @patch(
-        "jinja2.Template",
-        return_value=MagicMock(render=MagicMock(return_value="#!/bin/bash\necho hi")),
-    )
-    def test_submit_ssh_success(self, _mock_tpl, mock_get_client):
-        mock_client = MagicMock()
-        mock_returned_job = MagicMock()
-        mock_returned_job.job_id = "99999"
-        mock_returned_job.name = "ssh_job"
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.slurm.submit_sbatch_job.return_value = mock_returned_job
-        mock_get_client.return_value = mock_client
+    def test_submit_ssh_success(self):
+        rt = _make_rt("ssh")
+        result_job = MagicMock()
+        result_job.job_id = "99999"
+        result_job.name = "ssh_job"
+        result_job._status.value = "PENDING"
+        del result_job.script_path
+        result_job.command = "python train.py"
+        for attr in (
+            "partition",
+            "user",
+            "elapsed_time",
+            "nodes",
+            "nodelist",
+            "cpus",
+            "gpus",
+        ):
+            setattr(result_job, attr, None)
+        rt.job_ops.submit.return_value = result_job
 
-        result = submit_job(
-            command="python train.py",
-            name="ssh_job",
-            use_ssh=True,
-            work_dir="/remote/workdir",
-        )
+        with patch(
+            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
+        ):
+            result = submit_job(
+                command="python train.py",
+                name="ssh_job",
+                transport="prod",
+                work_dir="/remote/workdir",
+            )
         assert result["success"] is True
         assert result["job_id"] == "99999"
 
-    @patch("srunx.mcp.tools.jobs.get_ssh_client")
-    @patch(
-        "jinja2.Template",
-        return_value=MagicMock(render=MagicMock(return_value="#!/bin/bash")),
-    )
-    def test_submit_ssh_returns_none(self, _mock_tpl, mock_get_client):
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.slurm.submit_sbatch_job.return_value = None
-        mock_get_client.return_value = mock_client
-
-        result = submit_job(
-            command="python train.py",
-            use_ssh=True,
-            work_dir="/remote/workdir",
-        )
-        assert result["success"] is False
-        assert "SSH job submission failed" in result["error"]
-
     def test_submit_catches_exception(self):
+        rt = _make_rt("local")
+        rt.job_ops.submit.side_effect = RuntimeError("slurm not available")
         with patch(
-            "srunx.slurm.local.Slurm", side_effect=RuntimeError("slurm not available")
+            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
         ):
             result = submit_job(command="echo hi")
-            assert result["success"] is False
-            assert "slurm not available" in result["error"]
-
-    @patch("srunx.mcp.tools.jobs.get_ssh_client")
-    def test_submit_ssh_real_template_render(self, mock_get_client):
-        """Regression test for #117: real template render must succeed."""
-        mock_client = MagicMock()
-        mock_returned_job = MagicMock()
-        mock_returned_job.job_id = "42"
-        mock_returned_job.name = "ssh_job"
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.slurm.submit_sbatch_job.return_value = mock_returned_job
-        mock_get_client.return_value = mock_client
-
-        result = submit_job(
-            command="echo hi",
-            name="ssh_job",
-            use_ssh=True,
-            work_dir="/remote/workdir",
-        )
-        assert result["success"] is True, result
-        script_content = mock_client.slurm.submit_sbatch_job.call_args[0][0]
-        assert "#SBATCH --job-name=ssh_job" in script_content
-        assert "SRUNX_OUTPUTS_DIR" not in script_content
+        assert result["success"] is False
+        assert "slurm not available" in result["error"]
 
 
 class TestListJobs:
     """Test list_jobs tool."""
 
-    @patch("srunx.slurm.local.Slurm")
-    def test_list_local(self, mock_slurm_cls):
-        mock_slurm = MagicMock()
+    def test_list_local(self):
+        rt = _make_rt("local")
         job1 = MagicMock()
         job1.name = "job1"
         job1.job_id = "1"
@@ -129,49 +152,50 @@ class TestListJobs:
         job1.cpus = None
         job1.gpus = None
         del job1.script_path
+        rt.job_ops.queue.return_value = [job1]
 
-        mock_slurm.queue.return_value = [job1]
-        mock_slurm_cls.return_value = mock_slurm
-
-        result = list_jobs(use_ssh=False)
+        with patch(
+            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
+        ):
+            result = list_jobs()
         assert result["success"] is True
         assert result["count"] == 1
         assert result["jobs"][0]["name"] == "job1"
 
-    @patch("srunx.mcp.tools.jobs.get_ssh_client")
-    def test_list_ssh(self, mock_get_client):
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.slurm.execute_slurm_command.return_value = (
-            "12345     gpu       train         user1  RUNNING   0:05:00  1:00:00      1 node001 gpu:1\n",
-            "",
-            0,
-        )
-        mock_get_client.return_value = mock_client
+    def test_list_ssh(self):
+        rt = _make_rt("ssh")
+        job1 = MagicMock()
+        job1.name = "train"
+        job1.job_id = "12345"
+        job1._status.value = "RUNNING"
+        job1.command = "echo"
+        job1.partition = "gpu"
+        job1.user = "user1"
+        job1.elapsed_time = "0:05:00"
+        job1.nodes = 1
+        job1.nodelist = "node001"
+        job1.cpus = None
+        job1.gpus = 1
+        del job1.script_path
+        rt.job_ops.queue.return_value = [job1]
 
-        result = list_jobs(use_ssh=True)
+        with patch(
+            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
+        ):
+            result = list_jobs(transport="prod")
         assert result["success"] is True
         assert result["count"] == 1
         assert result["jobs"][0]["job_id"] == "12345"
         assert result["jobs"][0]["status"] == "RUNNING"
 
-    @patch("srunx.mcp.tools.jobs.get_ssh_client")
-    def test_list_ssh_squeue_fails(self, mock_get_client):
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.slurm.execute_slurm_command.return_value = ("", "error msg", 1)
-        mock_get_client.return_value = mock_client
-
-        result = list_jobs(use_ssh=True)
-        assert result["success"] is False
-        assert "squeue failed" in result["error"]
-
     def test_list_catches_exception(self):
-        with patch("srunx.slurm.local.Slurm", side_effect=RuntimeError("no slurm")):
+        rt = _make_rt("local")
+        rt.job_ops.queue.side_effect = RuntimeError("no slurm")
+        with patch(
+            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
+        ):
             result = list_jobs()
-            assert result["success"] is False
+        assert result["success"] is False
 
 
 class TestGetJobStatus:
@@ -182,37 +206,44 @@ class TestGetJobStatus:
         assert result["success"] is False
         assert "Invalid job ID" in result["error"]
 
-    @patch("srunx.slurm.local.Slurm")
-    def test_local_calls_retrieve(self, mock_slurm_cls):
-        """Local get_job_status calls Slurm.retrieve with int job_id."""
-        mock_slurm_cls.retrieve.side_effect = ValueError("test")
-        result = get_job_status(job_id="12345")
-        mock_slurm_cls.retrieve.assert_called_once_with(12345)
+    def test_local_calls_status(self):
+        """Local get_job_status calls job_ops.status with int job_id."""
+        rt = _make_rt("local")
+        rt.job_ops.status.side_effect = ValueError("test")
+        with patch(
+            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
+        ):
+            result = get_job_status(job_id="12345")
+        rt.job_ops.status.assert_called_once_with(12345)
         assert result["success"] is False
 
-    @patch("srunx.mcp.tools.jobs.get_ssh_client")
-    def test_ssh_success(self, mock_get_client):
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.slurm.get_job_status.return_value = "COMPLETED"
-        mock_get_client.return_value = mock_client
+    def test_ssh_success(self):
+        rt = _make_rt("ssh")
+        job = MagicMock()
+        job.name = "j"
+        job.job_id = "12345"
+        job._status.value = "COMPLETED"
+        del job.script_path
+        del job.command
+        for attr in (
+            "partition",
+            "user",
+            "elapsed_time",
+            "nodes",
+            "nodelist",
+            "cpus",
+            "gpus",
+        ):
+            setattr(job, attr, None)
+        rt.job_ops.status.return_value = job
 
-        result = get_job_status(job_id="12345", use_ssh=True)
+        with patch(
+            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
+        ):
+            result = get_job_status(job_id="12345", transport="prod")
         assert result["success"] is True
         assert result["status"] == "COMPLETED"
-
-    @patch("srunx.mcp.tools.jobs.get_ssh_client")
-    def test_ssh_not_found(self, mock_get_client):
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.slurm.get_job_status.return_value = "NOT_FOUND"
-        mock_get_client.return_value = mock_client
-
-        result = get_job_status(job_id="99999", use_ssh=True)
-        assert result["success"] is False
-        assert "NOT_FOUND" in result["error"]
+        rt.job_ops.status.assert_called_once_with(12345)
 
     def test_injection_attempt(self):
         result = get_job_status(job_id="123; rm -rf /")
@@ -228,43 +259,35 @@ class TestCancelJob:
         assert result["success"] is False
         assert "Invalid job ID" in result["error"]
 
-    @patch("srunx.slurm.local.Slurm")
-    def test_local_cancel(self, mock_slurm_cls):
-        mock_slurm = MagicMock()
-        mock_slurm_cls.return_value = mock_slurm
-
-        result = cancel_job(job_id="12345")
+    def test_local_cancel(self):
+        rt = _make_rt("local")
+        with patch(
+            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
+        ):
+            result = cancel_job(job_id="12345")
         assert result["success"] is True
         assert result["message"] == "Job cancelled"
-        mock_slurm.cancel.assert_called_once_with(12345)
+        rt.job_ops.cancel.assert_called_once_with(12345)
 
-    @patch("srunx.mcp.tools.jobs.get_ssh_client")
-    def test_ssh_cancel(self, mock_get_client):
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.slurm.execute_slurm_command.return_value = ("", "", 0)
-        mock_get_client.return_value = mock_client
-
-        result = cancel_job(job_id="12345", use_ssh=True)
+    def test_ssh_cancel(self):
+        rt = _make_rt("ssh")
+        with patch(
+            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
+        ):
+            result = cancel_job(job_id="12345", transport="prod")
         assert result["success"] is True
         assert result["message"] == "Job cancelled"
+        rt.job_ops.cancel.assert_called_once_with(12345)
 
-    @patch("srunx.mcp.tools.jobs.get_ssh_client")
-    def test_ssh_cancel_fails(self, mock_get_client):
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.slurm.execute_slurm_command.return_value = (
-            "",
-            "permission denied",
-            1,
-        )
-        mock_get_client.return_value = mock_client
-
-        result = cancel_job(job_id="12345", use_ssh=True)
+    def test_cancel_fails(self):
+        rt = _make_rt("ssh")
+        rt.job_ops.cancel.side_effect = RuntimeError("permission denied")
+        with patch(
+            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
+        ):
+            result = cancel_job(job_id="12345", transport="prod")
         assert result["success"] is False
-        assert "scancel failed" in result["error"]
+        assert "permission denied" in result["error"]
 
 
 class TestGetJobLogs:
@@ -275,47 +298,48 @@ class TestGetJobLogs:
         assert result["success"] is False
         assert "Invalid job ID" in result["error"]
 
-    @patch("srunx.slurm.local.Slurm")
-    def test_local_logs(self, mock_slurm_cls):
-        mock_slurm = MagicMock()
-        mock_slurm.get_job_output_detailed.return_value = {
+    def test_local_logs(self):
+        rt = _make_rt("local")
+        rt.job_ops.get_job_output_detailed.return_value = {
             "output": "training started\n",
             "error": "",
             "found_files": ["logs/job-12345.out"],
         }
-        mock_slurm_cls.return_value = mock_slurm
-
-        result = get_job_logs(job_id="12345")
+        with patch(
+            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
+        ):
+            result = get_job_logs(job_id="12345")
         assert result["success"] is True
         assert result["stdout"] == "training started\n"
         assert result["log_files"] == ["logs/job-12345.out"]
 
-    @patch("srunx.mcp.tools.jobs.get_ssh_client")
-    def test_ssh_logs(self, mock_get_client):
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.logs.get_job_output.return_value = (
-            "stdout content",
-            "stderr content",
-            100,
-            50,
-        )
-        mock_get_client.return_value = mock_client
-
-        result = get_job_logs(job_id="12345", use_ssh=True)
+    def test_ssh_logs(self):
+        rt = _make_rt("ssh")
+        rt.job_ops.get_job_output_detailed.return_value = {
+            "output": "stdout content",
+            "error": "stderr content",
+            "found_files": ["a.out", "a.err"],
+        }
+        with patch(
+            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
+        ):
+            result = get_job_logs(job_id="12345", transport="prod")
         assert result["success"] is True
         assert result["stdout"] == "stdout content"
         assert result["stderr"] == "stderr content"
+        assert result["log_files"] == ["a.out", "a.err"]
 
-    @patch("srunx.mcp.tools.jobs.get_ssh_client")
-    def test_ssh_logs_no_output(self, mock_get_client):
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.logs.get_job_output.return_value = ("", "", 0, 0)
-        mock_get_client.return_value = mock_client
-
-        result = get_job_logs(job_id="12345", use_ssh=True)
-        assert result["success"] is False
-        assert "No logs found" in result["error"]
+    def test_logs_empty(self):
+        rt = _make_rt("local")
+        rt.job_ops.get_job_output_detailed.return_value = {
+            "output": "",
+            "error": "",
+            "found_files": [],
+        }
+        with patch(
+            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
+        ):
+            result = get_job_logs(job_id="12345")
+        assert result["success"] is True
+        assert result["stdout"] == ""
+        assert result["log_files"] == []

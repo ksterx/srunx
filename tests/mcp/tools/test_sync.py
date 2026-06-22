@@ -1,4 +1,10 @@
-"""Tests for srunx.mcp.tools.sync."""
+"""Tests for srunx.mcp.tools.sync.
+
+``sync_files`` now takes ``transport`` as a required first argument: it must
+name an SSH profile. There is no local-to-local sync and (unlike the CLI) no
+implicit current-profile fallback, so the former ``get_current_profile_name``
+paths are replaced by explicit ``transport`` + ``ConfigManager.get_profile``.
+"""
 
 from unittest.mock import MagicMock, patch
 
@@ -8,49 +14,54 @@ from srunx.mcp.tools.sync import sync_files
 class TestSyncFiles:
     """Test sync_files tool."""
 
-    def test_no_arguments_returns_error(self):
-        """Neither mount_name nor local_path → error."""
-        result = sync_files()
+    def test_transport_local_rejected(self):
+        """transport='local' is rejected — there is no local sync."""
+        result = sync_files(transport="local", mount_name="ml")
+        assert result["success"] is False
+        assert "SSH profile" in result["error"]
+
+    def test_transport_empty_rejected(self):
+        """Blank transport is rejected before any profile lookup."""
+        result = sync_files(transport="   ", mount_name="ml")
+        assert result["success"] is False
+        assert "SSH profile" in result["error"]
+
+    @patch("srunx.ssh.core.config.ConfigManager")
+    def test_no_sync_target_returns_error(self, mock_cm_cls):
+        """Valid profile but neither mount_name nor local_path → error."""
+        profile = MagicMock()
+        cm = MagicMock()
+        cm.get_profile.return_value = profile
+        mock_cm_cls.return_value = cm
+
+        result = sync_files(transport="prod")
         assert result["success"] is False
         assert "mount_name or local_path" in result["error"]
 
     @patch("srunx.ssh.core.config.ConfigManager")
-    def test_mount_no_current_profile(self, mock_cm_cls):
-        """mount_name set but no current profile + no profile_name → error."""
-        mock_cm = MagicMock()
-        mock_cm.get_current_profile_name.return_value = None
-        mock_cm_cls.return_value = mock_cm
+    def test_unknown_profile(self, mock_cm_cls):
+        """transport doesn't resolve to a profile → error."""
+        cm = MagicMock()
+        cm.get_profile.return_value = None
+        mock_cm_cls.return_value = cm
 
-        result = sync_files(mount_name="ml")
-        assert result["success"] is False
-        assert "No SSH profile" in result["error"]
-
-    @patch("srunx.ssh.core.config.ConfigManager")
-    def test_mount_unknown_profile(self, mock_cm_cls):
-        """profile_name doesn't resolve → error."""
-        mock_cm = MagicMock()
-        mock_cm.get_current_profile_name.return_value = None
-        mock_cm.get_profile.return_value = None
-        mock_cm_cls.return_value = mock_cm
-
-        result = sync_files(profile_name="missing", mount_name="ml")
+        result = sync_files(transport="missing", mount_name="ml")
         assert result["success"] is False
         assert "missing" in result["error"]
 
     @patch("srunx.ssh.core.config.ConfigManager")
     def test_mount_unknown_mount_name(self, mock_cm_cls):
         """profile resolved but mount_name not in profile → error with available list."""
-        mock_profile = MagicMock()
         existing = MagicMock()
         existing.name = "data"
-        mock_profile.mounts = [existing]
+        profile = MagicMock()
+        profile.mounts = [existing]
 
-        mock_cm = MagicMock()
-        mock_cm.get_current_profile_name.return_value = "prod"
-        mock_cm.get_profile.return_value = mock_profile
-        mock_cm_cls.return_value = mock_cm
+        cm = MagicMock()
+        cm.get_profile.return_value = profile
+        mock_cm_cls.return_value = cm
 
-        result = sync_files(mount_name="missing")
+        result = sync_files(transport="prod", mount_name="missing")
         assert result["success"] is False
         assert "missing" in result["error"]
         assert "data" in result["error"]  # available mounts surfaced
@@ -69,7 +80,6 @@ class TestSyncFiles:
         profile.mounts = [mount]
 
         cm = MagicMock()
-        cm.get_current_profile_name.return_value = "prod"
         cm.get_profile.return_value = profile
         mock_cm_cls.return_value = cm
 
@@ -79,8 +89,9 @@ class TestSyncFiles:
         )
         mock_build.return_value = rsync
 
-        result = sync_files(mount_name="ml")
+        result = sync_files(transport="prod", mount_name="ml")
         assert result["success"] is True
+        assert result["profile"] == "prod"
         assert result["mount"] == "ml"
         assert result["local"] == "/local/ml"
         assert result["remote"] == "/remote/ml"
@@ -109,7 +120,6 @@ class TestSyncFiles:
         profile.mounts = [mount]
 
         cm = MagicMock()
-        cm.get_current_profile_name.return_value = "prod"
         cm.get_profile.return_value = profile
         mock_cm_cls.return_value = cm
 
@@ -119,7 +129,7 @@ class TestSyncFiles:
         )
         mock_build.return_value = rsync
 
-        result = sync_files(mount_name="ml")
+        result = sync_files(transport="prod", mount_name="ml")
         assert result["success"] is False
         assert "exit 23" in result["error"]
         assert "permission denied" in result["error"]
@@ -130,7 +140,6 @@ class TestSyncFiles:
         """local_path + remote_path override mount lookup."""
         profile = MagicMock()
         cm = MagicMock()
-        cm.get_current_profile_name.return_value = "prod"
         cm.get_profile.return_value = profile
         mock_cm_cls.return_value = cm
 
@@ -140,7 +149,9 @@ class TestSyncFiles:
         )
         mock_build.return_value = rsync
 
-        result = sync_files(local_path="/src", remote_path="/dst", dry_run=True)
+        result = sync_files(
+            transport="prod", local_path="/src", remote_path="/dst", dry_run=True
+        )
         assert result["success"] is True
         assert result["local"] == "/src"
         assert result["remote"] == "/dst"
@@ -153,7 +164,6 @@ class TestSyncFiles:
         """remote_path omitted → falls back to RsyncClient.get_default_remote_path."""
         profile = MagicMock()
         cm = MagicMock()
-        cm.get_current_profile_name.return_value = "prod"
         cm.get_profile.return_value = profile
         mock_cm_cls.return_value = cm
 
@@ -164,7 +174,7 @@ class TestSyncFiles:
         rsync.get_default_remote_path.return_value = "/remote/auto"
         mock_build.return_value = rsync
 
-        result = sync_files(local_path="/src")
+        result = sync_files(transport="prod", local_path="/src")
         assert result["success"] is True
         assert result["remote"] == "/remote/auto"
         rsync.get_default_remote_path.assert_called_once_with("/src")
@@ -175,6 +185,6 @@ class TestSyncFiles:
             "srunx.ssh.core.config.ConfigManager",
             side_effect=RuntimeError("config broken"),
         ):
-            result = sync_files(mount_name="ml")
+            result = sync_files(transport="prod", mount_name="ml")
             assert result["success"] is False
             assert "config broken" in result["error"]
