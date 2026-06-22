@@ -502,14 +502,14 @@ or path-based (using explicit local and remote paths).
 | Name | Type | Required | Default | Description |
 |----|----|----|----|----|
 | `transport` | str | Yes |  | SSH profile name to sync through. There is no current-profile fallback — it must be explicit |
-| `mount_name` | str \| null | No | `null` | Mount point name from the SSH profile to sync |
-| `local_path` | str \| null | No | `null` | Local directory path (alternative to `mount_name`) |
-| `remote_path` | str \| null | No | `null` | Remote directory path (alternative to `mount_name`) |
+| `mount` | str \| null | No | `null` | Mount point name from the SSH profile to sync |
+| `local_path` | str \| null | No | `null` | Local directory path (alternative to `mount`) |
+| `remote_path` | str \| null | No | `null` | Remote directory path (alternative to `mount`) |
 | `dry_run` | bool | No | `false` | Show what would be transferred without actually syncing |
 
 !!! note
-    You must provide either `mount_name` or `local_path`. When using
-    `mount_name`, the local and remote paths are read from the SSH profile
+    You must provide either `mount` or `local_path`. When using
+    `mount`, the local and remote paths are read from the SSH profile
     configuration. When using `local_path` without `remote_path`, a
     default remote path is derived.
 

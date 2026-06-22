@@ -16,13 +16,13 @@ class TestSyncFiles:
 
     def test_transport_local_rejected(self):
         """transport='local' is rejected — there is no local sync."""
-        result = sync_files(transport="local", mount_name="ml")
+        result = sync_files(transport="local", mount="ml")
         assert result["success"] is False
         assert "SSH profile" in result["error"]
 
     def test_transport_empty_rejected(self):
         """Blank transport is rejected before any profile lookup."""
-        result = sync_files(transport="   ", mount_name="ml")
+        result = sync_files(transport="   ", mount="ml")
         assert result["success"] is False
         assert "SSH profile" in result["error"]
 
@@ -36,7 +36,7 @@ class TestSyncFiles:
 
         result = sync_files(transport="prod")
         assert result["success"] is False
-        assert "mount_name or local_path" in result["error"]
+        assert "mount or local_path" in result["error"]
 
     @patch("srunx.ssh.core.config.ConfigManager")
     def test_unknown_profile(self, mock_cm_cls):
@@ -45,7 +45,7 @@ class TestSyncFiles:
         cm.get_profile.return_value = None
         mock_cm_cls.return_value = cm
 
-        result = sync_files(transport="missing", mount_name="ml")
+        result = sync_files(transport="missing", mount="ml")
         assert result["success"] is False
         assert "missing" in result["error"]
 
@@ -61,7 +61,7 @@ class TestSyncFiles:
         cm.get_profile.return_value = profile
         mock_cm_cls.return_value = cm
 
-        result = sync_files(transport="prod", mount_name="missing")
+        result = sync_files(transport="prod", mount="missing")
         assert result["success"] is False
         assert "missing" in result["error"]
         assert "data" in result["error"]  # available mounts surfaced
@@ -89,7 +89,7 @@ class TestSyncFiles:
         )
         mock_build.return_value = rsync
 
-        result = sync_files(transport="prod", mount_name="ml")
+        result = sync_files(transport="prod", mount="ml")
         assert result["success"] is True
         assert result["profile"] == "prod"
         assert result["mount"] == "ml"
@@ -129,7 +129,7 @@ class TestSyncFiles:
         )
         mock_build.return_value = rsync
 
-        result = sync_files(transport="prod", mount_name="ml")
+        result = sync_files(transport="prod", mount="ml")
         assert result["success"] is False
         assert "exit 23" in result["error"]
         assert "permission denied" in result["error"]
@@ -185,6 +185,6 @@ class TestSyncFiles:
             "srunx.ssh.core.config.ConfigManager",
             side_effect=RuntimeError("config broken"),
         ):
-            result = sync_files(transport="prod", mount_name="ml")
+            result = sync_files(transport="prod", mount="ml")
             assert result["success"] is False
             assert "config broken" in result["error"]
