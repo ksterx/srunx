@@ -623,3 +623,33 @@ class TestNoContainerFlag:
         assert submitted_job.environment.container.runtime == "apptainer"
         # Image should be preserved from config default
         assert submitted_job.environment.container.image == "default-image:latest"
+
+
+class TestVersion:
+    """``srunx --version`` / ``-v`` prints the installed version and exits."""
+
+    def test_version_long_flag(self):
+        from srunx import __version__
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+        assert __version__ in result.stdout
+        assert "srunx" in result.stdout
+
+    def test_version_short_flag(self):
+        from srunx import __version__
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["-v"])
+        assert result.exit_code == 0
+        assert __version__ in result.stdout
+
+    def test_version_is_eager(self):
+        """``-v`` short-circuits before any subcommand runs."""
+        runner = CliRunner()
+        result = runner.invoke(app, ["-v", "squeue"])
+        assert result.exit_code == 0
+        from srunx import __version__
+
+        assert __version__ in result.stdout

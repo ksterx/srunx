@@ -32,6 +32,31 @@ app = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 
+
+def _version_callback(value: bool) -> None:
+    """Print the installed srunx version and exit (eager ``--version`` flag)."""
+    if value:
+        from srunx import __version__
+
+        typer.echo(f"srunx {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            "-v",
+            help="Show the srunx version and exit.",
+            is_eager=True,
+            callback=_version_callback,
+        ),
+    ] = False,
+) -> None:
+    """Python library for SLURM job management."""
+
 # Create subapps (``flow`` stays here because ``flow_run`` is a thin shim
 # delegating to ``srunx.cli.workflow.orchestrator._execute_workflow``;
 # extracting it would only move one function and buy nothing).
