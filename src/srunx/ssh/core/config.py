@@ -141,7 +141,7 @@ class ConfigManager:
 
         Long-lived :class:`ConfigManager` instances (e.g. held by the
         web app ``TransportRegistry``) must observe external edits
-        (``srunx ssh profile add`` / ``remove``) so cached adapters do
+        (``srunx ssh add`` / ``remove``) so cached adapters do
         not keep routing to stale profiles. The stat call is ~µs and
         runs before each read-path lookup.
         """

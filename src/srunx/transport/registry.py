@@ -286,7 +286,7 @@ def _lookup_profile_silently(name: str) -> ServerProfile | None:
 
 
 def _current_profile_name() -> str | None:
-    """Return the active SSH profile set via ``srunx ssh profile set``, or None.
+    """Return the active SSH profile set via ``srunx ssh use``, or None.
 
     Respects :attr:`srunx.common.config.CliTransportConfig.use_current_profile` —
     when the user has opted out (``cli.use_current_profile = false``), this
@@ -508,8 +508,7 @@ def _build_ssh_handle(
     if profile is None:
         raise TransportError(
             f"SSH profile '{profile_name}' not found. "
-            "Configure via 'srunx ssh profile add' or check "
-            "'srunx ssh profile list'."
+            "Configure via 'srunx ssh add' or check 'srunx ssh list'."
         )
 
     try:

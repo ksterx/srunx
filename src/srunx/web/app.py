@@ -97,7 +97,7 @@ def _print_ui_banner(
     else:
         info.add_row(
             "Profile",
-            "[dim]none configured — set via `srunx ssh profile`[/dim]",
+            "[dim]none configured — set via `srunx ssh use`[/dim]",
             status_badge,
         )
 

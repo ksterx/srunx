@@ -91,7 +91,7 @@ class CliTransportConfig(BaseModel):
         description=(
             "When True (default), top-level CLI commands (submit / cancel / "
             "status / list / logs / flow run / monitor jobs) fall back to the "
-            "active SSH profile set via 'srunx ssh profile set <name>' when "
+            "active SSH profile set via 'srunx ssh use <name>' when "
             "no explicit --profile / --local / $SRUNX_SSH_PROFILE is given. "
             "Set to False to force pre-Phase-2 behaviour where the CLI only "
             "routes through SSH on an explicit flag or env var."

@@ -194,6 +194,12 @@ def _resolve_ssh_context(
         )
         if mount_found is None:
             raise ValueError(f"Mount '{mount}' not found in profile '{profile_name}'")
+        # NOTE: default_work_dir is set to the mount's remote root here, unlike
+        # the transport registry's _resolve_submission_context (which leaves it
+        # None). Workflow jobs without an explicit work_dir should land in the
+        # mount root; ad-hoc submit_job instead requires work_dir for SSH. This
+        # difference is *why* run_workflow can't simply reuse mcp_transport —
+        # don't "unify" the two builders without preserving this default.
         context = SubmissionRenderContext(
             mount_name=mount,
             mounts=tuple(profile.mounts),
