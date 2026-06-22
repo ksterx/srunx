@@ -440,7 +440,12 @@ def show_profile(profile: _ProfileOptional = None, config: _ConfigOpt = None):
     """Show profile details (defaults to the current profile)."""
     from .profile_impl import show_profile_impl
 
-    show_profile_impl(profile, config)
+    # Resolve through the shared helper so the current-profile fallback
+    # honours ``cli.use_current_profile`` (consistent with sync / mount list
+    # / env list); show_profile_impl then receives a concrete name.
+    config_manager = ConfigManager(config)
+    profile_name = _resolve_optional_profile(profile, config_manager)
+    show_profile_impl(profile_name, config)
 
 
 @ssh_app.command("update")
@@ -671,8 +676,16 @@ def _determine_connection_params(
         )
         return params, display
 
-    # Fall back to the current profile.
-    profile_obj = config_manager.get_current_profile()
+    # Fall back to the current profile — but only when the implicit
+    # current-profile selection is enabled (same opt-out the other
+    # optional-profile commands honour via ``_resolve_optional_profile``).
+    from srunx.common.config import get_config
+
+    profile_obj = (
+        config_manager.get_current_profile()
+        if get_config().cli.use_current_profile
+        else None
+    )
     if profile_obj:
         params = _connection_params_from_profile(profile_obj, ssh_config)
         display = (

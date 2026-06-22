@@ -95,6 +95,8 @@ def gpus(
 
         Console().print(table)
 
+    except (typer.Exit, typer.BadParameter):
+        raise
     except Exception as e:
         logger.error(f"Error querying GPU resources: {e}")
         Console().print(f"[red]Error: {e}[/red]")

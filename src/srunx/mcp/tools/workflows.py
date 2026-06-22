@@ -316,6 +316,7 @@ def run_workflow(
                     adapter.connection_spec,
                     callbacks=[],
                     size=pool_size,
+                    submission_source="mcp",
                 )
                 executor_factory = pool.lease
 
@@ -361,6 +362,7 @@ def run_workflow(
                 adapter.connection_spec,
                 callbacks=[],
                 size=8,
+                submission_source="mcp",
             )
             executor_factory = pool.lease
 

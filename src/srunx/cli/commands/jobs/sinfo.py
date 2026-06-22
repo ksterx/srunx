@@ -99,6 +99,8 @@ def sinfo(
 
         _render_sinfo_table(rows)
 
+    except (typer.Exit, typer.BadParameter):
+        raise
     except Exception as e:
         logger.error(f"Error querying partition info: {e}")
         Console().print(f"[red]Error: {e}[/red]")

@@ -205,6 +205,8 @@ def tail(
             fg=typer.colors.RED,
         )
         raise typer.Exit(code=1) from None
+    except (typer.Exit, typer.BadParameter):
+        raise
     except TransportError as exc:
         typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from None

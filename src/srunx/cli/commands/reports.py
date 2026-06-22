@@ -126,6 +126,8 @@ def history(
 
         console.print(table)
 
+    except (typer.Exit, typer.BadParameter):
+        raise
     except Exception as e:
         logger.error(f"Error retrieving job history: {e}")
         sys.exit(1)
@@ -322,6 +324,8 @@ def sacct(
 
         Console().print(table)
 
+    except (typer.Exit, typer.BadParameter):
+        raise
     except Exception as e:
         logger.error(f"Error running sacct: {e}")
         Console().print(f"[red]Error: {e}[/red]")

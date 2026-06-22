@@ -23,11 +23,14 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from srunx.common.exceptions import TransportSelectionError
+from srunx.common.logging import get_logger
 from srunx.transport import (
     ResolvedTransport,
     TransportPolicy,
     resolve_transport,
 )
+
+logger = get_logger(__name__)
 
 # API-surface policy: ignore env vars and the active SSH profile entirely.
 # Only an explicit ``transport`` argument can select a remote.
@@ -85,4 +88,20 @@ def mcp_transport(
         mount_name=mount_name,
         policy=MCP_POLICY,
     ) as resolved:
-        yield resolved
+        try:
+            yield resolved
+        finally:
+            # MCP runs as a long-lived server, so a single-shot tool call
+            # must not leave its SSH session dangling for GC to reap (the
+            # CLI gets away with it because its process exits). resolve_transport's
+            # own finally only closes the executor pool, not the singleton
+            # adapter that backs ``job_ops``, so disconnect it here.
+            if resolved.transport_type == "ssh":
+                disconnect = getattr(resolved.job_ops, "disconnect", None)
+                if callable(disconnect):
+                    try:
+                        disconnect()
+                    except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+                        logger.debug(
+                            "MCP SSH adapter disconnect failed (non-fatal): %s", exc
+                        )

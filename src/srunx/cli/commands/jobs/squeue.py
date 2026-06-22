@@ -168,6 +168,10 @@ def squeue(
 
             Console().print(_render_squeue_table(jobs, visibility))
 
+    except (typer.Exit, typer.BadParameter):
+        # Let Typer render bad --profile/--local flags (exit 2) and explicit
+        # exits cleanly instead of masking them as a generic queue error.
+        raise
     except TransportError as exc:
         typer.secho(f"Transport error: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from None

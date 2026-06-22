@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from typer.testing import CliRunner
 
@@ -131,3 +132,35 @@ class TestRoundTrip:
         )
         assert listed.exit_code == 0
         assert "FOO" in listed.output
+
+
+class TestCurrentProfileFallback:
+    """Optional-profile commands fall back to the current profile, honouring
+    the cli.use_current_profile opt-out."""
+
+    def _seed_current(self, tmp_path: Path) -> str:
+        cfg = _cfg(tmp_path)
+        runner.invoke(
+            ssh_app,
+            ["add", "--profile", "dgx", "--ssh-host", "dgx-host", "--config", cfg],
+        )
+        runner.invoke(ssh_app, ["use", "--profile", "dgx", "--config", cfg])
+        return cfg
+
+    def test_show_falls_back_to_current(self, tmp_path: Path):
+        cfg = self._seed_current(tmp_path)
+        # Default config has use_current_profile=True -> show w/o --profile works.
+        res = runner.invoke(ssh_app, ["show", "--config", cfg])
+        assert res.exit_code == 0, res.output
+        assert "dgx-host" in res.output
+
+    def test_show_honors_optout(self, tmp_path: Path, monkeypatch):
+        cfg = self._seed_current(tmp_path)
+        # Disable implicit current-profile selection: show w/o --profile errors.
+        import srunx.common.config as cc
+
+        fake = MagicMock()
+        fake.cli.use_current_profile = False
+        monkeypatch.setattr(cc, "get_config", lambda: fake)
+        res = runner.invoke(ssh_app, ["show", "--config", cfg])
+        assert res.exit_code != 0
