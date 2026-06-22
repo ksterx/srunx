@@ -1,9 +1,24 @@
 #!/usr/bin/env python3
-"""
-Typer-based SSH CLI commands for srunx.
+"""Typer-based SSH CLI commands for srunx.
 
-This module provides a clean typer-based interface for SSH SLURM operations,
-replacing the mixed argparse/typer architecture.
+Command surface (flat — there is no ``profile`` sub-app):
+
+    srunx ssh add     --profile NAME --hostname H --username U [...]
+    srunx ssh list
+    srunx ssh show    [--profile NAME]        # omit -> current profile
+    srunx ssh use     --profile NAME          # set the current profile
+    srunx ssh remove  --profile NAME
+    srunx ssh update  --profile NAME [...]
+    srunx ssh test    [--profile NAME] [--host ALIAS]
+    srunx ssh sync    [--profile NAME] [--mount MOUNT]
+    srunx ssh mount add|list|remove  --profile NAME [--mount MOUNT] [...]
+    srunx ssh env  set|unset|list    --profile NAME [KEY] [VALUE]
+
+The profile is named with ``--profile`` everywhere (never a positional, never
+``-p`` — ``-p`` is reserved for ``--partition`` across srunx). A mount is named
+with ``--mount``. Commands that read or target an *existing* profile accept an
+optional ``--profile`` and fall back to the current profile
+(``srunx ssh use``); commands that create/mutate a specific profile require it.
 """
 
 from pathlib import Path
@@ -21,20 +36,13 @@ from .profile_impl import add_profile_impl
 
 console = Console()
 
-# Create the main SSH app
+# Create the main SSH app. Profile lifecycle verbs live directly under it;
+# only the per-profile sub-entities (mounts, env vars) keep a one-level group.
 ssh_app = typer.Typer(
     name="ssh",
     help="Manage SSH connection profiles, sync mounts, and test connections",
     add_completion=False,
 )
-
-# Profile management subcommand
-profile_app = typer.Typer(
-    name="profile",
-    help="Manage SSH connection profiles",
-    no_args_is_help=True,
-)
-ssh_app.add_typer(profile_app, name="profile")
 
 
 def setup_logging(verbose: bool = False):
@@ -44,31 +52,66 @@ def setup_logging(verbose: bool = False):
     configure_cli_logging(level="DEBUG" if verbose else "WARNING")
 
 
+def _resolve_optional_profile(
+    profile: str | None, config_manager: ConfigManager
+) -> str:
+    """Return the explicit ``--profile`` or fall back to the current profile.
+
+    Honours the same ``cli.use_current_profile`` opt-out that the
+    job-management transport resolver uses, so disabling implicit
+    current-profile selection there also disables it here. (The transport
+    resolver's reader lives in ``srunx.transport`` — a layer ``srunx.ssh``
+    may not import — so the small opt-out + lookup is mirrored locally using
+    only same-layer ``ConfigManager`` and the ``common`` config.) Exits with
+    an error when no profile is given and none is current (or the opt-out is
+    on).
+    """
+    if profile:
+        return profile
+    from srunx.common.config import get_config
+
+    current = (
+        config_manager.get_current_profile_name()
+        if get_config().cli.use_current_profile
+        else None
+    )
+    if not current:
+        console.print(
+            "[red]Error: no --profile given and no current profile set. "
+            "Pass --profile <name> or run 'srunx ssh use <name>'.[/red]"
+        )
+        raise typer.Exit(1)
+    return current
+
+
+# Option aliases shared across the SSH commands. ``--profile`` deliberately has
+# no ``-p`` short flag (reserved for ``--partition`` everywhere in srunx).
+_ProfileRequired = Annotated[
+    str, typer.Option("--profile", help="SSH profile name")
+]
+_ProfileOptional = Annotated[
+    str | None,
+    typer.Option("--profile", help="SSH profile name (default: current profile)"),
+]
+_MountRequired = Annotated[str, typer.Option("--mount", help="Mount name")]
+_ConfigOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--config", help="Config file path (default: ~/.config/srunx/config.json)"
+    ),
+]
+
+
 @ssh_app.command("test")
 def test_connection(
-    # Connection options
-    host: Annotated[
-        str | None, typer.Option("--host", "-H", help="SSH host from .ssh/config")
-    ] = None,
     profile: Annotated[
-        str | None, typer.Option("--profile", "-p", help="Use saved profile")
-    ] = None,
-    hostname: Annotated[
-        str | None, typer.Option("--hostname", help="DGX server hostname")
-    ] = None,
-    username: Annotated[
-        str | None, typer.Option("--username", help="SSH username")
-    ] = None,
-    key_file: Annotated[
-        str | None, typer.Option("--key-file", help="SSH private key file path")
-    ] = None,
-    port: Annotated[int, typer.Option("--port", help="SSH port")] = 22,
-    config: Annotated[
         str | None,
-        typer.Option(
-            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
-        ),
+        typer.Option("--profile", help="Saved profile to test (default: current)"),
     ] = None,
+    host: Annotated[
+        str | None, typer.Option("--host", "-H", help="SSH host alias from ~/.ssh/config")
+    ] = None,
+    config: _ConfigOpt = None,
     ssh_config: Annotated[
         str | None,
         typer.Option(
@@ -79,7 +122,11 @@ def test_connection(
         bool, typer.Option("--verbose", "-v", help="Enable verbose logging")
     ] = False,
 ):
-    """Test SSH connection and SLURM availability."""
+    """Test SSH connection and SLURM availability.
+
+    Pass ``--profile <name>`` for a saved profile, ``--host <alias>`` for a
+    raw ``~/.ssh/config`` alias, or neither to use the current profile.
+    """
     from rich.table import Table
 
     setup_logging(verbose)
@@ -89,10 +136,6 @@ def test_connection(
         connection_params, display_host = _determine_connection_params(
             host,
             profile,
-            hostname,
-            username,
-            key_file,
-            port,
             ssh_config,
             config_manager,
         )
@@ -162,13 +205,10 @@ def test_connection(
 
 @ssh_app.command("sync")
 def sync_mount(
-    profile_name: Annotated[
+    profile: _ProfileOptional = None,
+    mount: Annotated[
         str | None,
-        typer.Argument(help="SSH profile name (auto-detected if omitted)"),
-    ] = None,
-    mount_name: Annotated[
-        str | None,
-        typer.Argument(help="Mount name (auto-detected from cwd if omitted)"),
+        typer.Option("--mount", help="Mount name (auto-detected from cwd if omitted)"),
     ] = None,
     exclude: Annotated[
         list[str] | None,
@@ -177,100 +217,89 @@ def sync_mount(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", "-n", help="Preview without syncing")
     ] = False,
-    config: Annotated[
-        str | None,
-        typer.Option(
-            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
-        ),
-    ] = None,
+    config: _ConfigOpt = None,
 ):
     """Sync a mount's local directory to the remote via rsync.
 
-    With no arguments, auto-detects the profile and mount from the current
-    working directory. Works even when inside a subdirectory of the mount.
+    With no ``--profile`` / ``--mount``, auto-detects the profile (current
+    profile) and the mount (from the current working directory). Works even
+    when inside a subdirectory of the mount.
 
     Examples:
-      srunx ssh sync                          # auto-detect from cwd
-      srunx ssh sync pyxis ml-project         # explicit profile and mount
-      srunx ssh sync pyxis ml-project --dry-run
+      srunx ssh sync                                  # current profile, cwd mount
+      srunx ssh sync --profile pyxis --mount ml-project
+      srunx ssh sync --profile pyxis --mount ml-project --dry-run
     """
     from srunx.ssh.core.config import MountConfig
     from srunx.sync.rsync import RsyncClient
 
     try:
         config_manager = ConfigManager(config)
+        profile_name = _resolve_optional_profile(profile, config_manager)
 
-        # Resolve profile
-        if profile_name is None:
-            profile_name = config_manager.get_current_profile_name()
-            if not profile_name:
-                console.print(
-                    "[red]Error: No current SSH profile set. "
-                    "Specify a profile or run 'srunx ssh profile set <name>'.[/red]"
-                )
-                raise typer.Exit(1)
-
-        profile = config_manager.get_profile(profile_name)
-        if not profile:
+        profile_obj = config_manager.get_profile(profile_name)
+        if not profile_obj:
             console.print(f"[red]Error: Profile '{profile_name}' not found[/red]")
             raise typer.Exit(1)
 
-        if not profile.mounts:
+        if not profile_obj.mounts:
             console.print(
                 f"[red]Error: Profile '{profile_name}' has no mounts configured. "
-                f"Add one with: srunx ssh profile mount add {profile_name} <name> "
-                f"--local <path> --remote <path>[/red]"
+                f"Add one with: srunx ssh mount add --profile {profile_name} "
+                f"--mount <name> --local <path> --remote <path>[/red]"
             )
             raise typer.Exit(1)
 
         # Resolve mount
-        mount: MountConfig | None = None
-        if mount_name is not None:
-            for m in profile.mounts:
-                if m.name == mount_name:
-                    mount = m
+        resolved_mount: MountConfig | None = None
+        if mount is not None:
+            for m in profile_obj.mounts:
+                if m.name == mount:
+                    resolved_mount = m
                     break
-            if mount is None:
+            if resolved_mount is None:
                 console.print(
-                    f"[red]Error: Mount '{mount_name}' not found in profile '{profile_name}'[/red]"
+                    f"[red]Error: Mount '{mount}' not found in profile "
+                    f"'{profile_name}'[/red]"
                 )
                 raise typer.Exit(1)
         else:
             # Auto-detect from cwd
             cwd = Path.cwd().resolve()
-            for m in profile.mounts:
+            for m in profile_obj.mounts:
                 mount_root = Path(m.local).resolve()
                 try:
                     if cwd == mount_root or cwd.is_relative_to(mount_root):
-                        mount = m
+                        resolved_mount = m
                         break
                 except ValueError:
                     continue
 
-            if mount is None:
+            if resolved_mount is None:
                 console.print(
-                    "[red]Error: Current directory is not under any configured mount.[/red]"
+                    "[red]Error: Current directory is not under any configured "
+                    "mount.[/red]"
                 )
                 console.print("\nConfigured mounts:")
-                for m in profile.mounts:
+                for m in profile_obj.mounts:
                     console.print(f"  {m.name}: {m.local}")
                 console.print(f"\nCurrent directory: {cwd}")
                 raise typer.Exit(1)
 
         # Sync
         action = "Previewing" if dry_run else "Syncing"
-        console.print(f"[bold]{action}[/bold] mount [cyan]{mount.name}[/cyan]")
-        console.print(f"  Local:  {mount.local}")
-        console.print(f"  Remote: {mount.remote}")
+        console.print(
+            f"[bold]{action}[/bold] mount [cyan]{resolved_mount.name}[/cyan]"
+        )
+        console.print(f"  Local:  {resolved_mount.local}")
+        console.print(f"  Remote: {resolved_mount.remote}")
         console.print(f"  Profile: {profile_name}")
         if dry_run:
             console.print("  [yellow]Dry run — no files will be transferred[/yellow]")
         console.print()
 
         # Merge mount-level and CLI-level exclude patterns.
-        # mount.exclude_patterns is an immutable tuple; normalize to list
-        # so list concatenation below works.
-        mount_excludes: list[str] = list(mount.exclude_patterns)
+        mount_excludes: list[str] = list(resolved_mount.exclude_patterns)
         cli_excludes = exclude or []
         all_excludes = mount_excludes + [
             p for p in cli_excludes if p not in mount_excludes
@@ -278,29 +307,31 @@ def sync_mount(
 
         # When ssh_host is set, delegate to ~/.ssh/config for all
         # connection params (user, key, proxy, port).
-        if profile.ssh_host:
+        if profile_obj.ssh_host:
             rsync = RsyncClient(
-                hostname=profile.ssh_host,
+                hostname=profile_obj.ssh_host,
                 username="",
                 ssh_config_path=str(Path.home() / ".ssh" / "config"),
                 exclude_patterns=all_excludes or None,
             )
         else:
             rsync = RsyncClient(
-                hostname=profile.hostname,
-                username=profile.username,
-                key_filename=profile.key_filename,
-                port=profile.port,
-                proxy_jump=profile.proxy_jump,
+                hostname=profile_obj.hostname,
+                username=profile_obj.username,
+                key_filename=profile_obj.key_filename,
+                port=profile_obj.port,
+                proxy_jump=profile_obj.proxy_jump,
                 exclude_patterns=all_excludes or None,
             )
 
-        result = rsync.push(mount.local, mount.remote, dry_run=dry_run)
+        result = rsync.push(
+            resolved_mount.local, resolved_mount.remote, dry_run=dry_run
+        )
 
         if result.returncode == 0:
             if dry_run:
                 console.print(result.stdout or "[dim]No changes needed[/dim]")
-            console.print(f"\n[green]Sync complete: {mount.name}[/green]")
+            console.print(f"\n[green]Sync complete: {resolved_mount.name}[/green]")
         else:
             console.print(f"[red]rsync failed (exit code {result.returncode}):[/red]")
             if result.stderr:
@@ -314,16 +345,16 @@ def sync_mount(
 
 @ssh_app.callback(invoke_without_command=True)
 def ssh_main(ctx: typer.Context):
-    """
-    Manage SSH connection profiles, sync mounts, and test connections.
+    """Manage SSH connection profiles, sync mounts, and test connections.
 
     To submit jobs to a remote SLURM server, use ``srunx sbatch --profile <name>``.
     To stream remote job logs, use ``srunx tail --profile <name>``.
 
     Examples:
-      srunx ssh test --host dgx-server
-      srunx ssh profile add ml-cluster --hostname dgx.example.com --username researcher
-      srunx ssh sync ml-cluster ml-project
+      srunx ssh add --profile ml-cluster --hostname dgx.example.com --username researcher
+      srunx ssh use --profile ml-cluster
+      srunx ssh test --profile ml-cluster
+      srunx ssh sync --profile ml-cluster --mount ml-project
     """
     # If no subcommand is invoked, show help
     if ctx.invoked_subcommand is None:
@@ -331,25 +362,22 @@ def ssh_main(ctx: typer.Context):
         raise typer.Exit()
 
 
-# Profile management commands
-@profile_app.command("list")
-def list_profiles(
-    config: Annotated[
-        str | None,
-        typer.Option(
-            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
-        ),
-    ] = None,
-):
+# ---------------------------------------------------------------------------
+# Profile lifecycle (flat verbs under ``ssh``)
+# ---------------------------------------------------------------------------
+
+
+@ssh_app.command("list")
+def list_profiles(config: _ConfigOpt = None):
     """List all connection profiles."""
     from .profile_impl import list_profiles_impl
 
     list_profiles_impl(config)
 
 
-@profile_app.command("add")
+@ssh_app.command("add")
 def add_profile(
-    name: Annotated[str, typer.Argument(help="Profile name")],
+    profile: _ProfileRequired,
     ssh_host: Annotated[
         str | None,
         typer.Option("--ssh-host", help="SSH config host name (from ~/.ssh/config)"),
@@ -370,17 +398,11 @@ def add_profile(
     description: Annotated[
         str | None, typer.Option("--description", help="Profile description")
     ] = None,
-    config: Annotated[
-        str | None,
-        typer.Option(
-            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
-        ),
-    ] = None,
+    config: _ConfigOpt = None,
 ):
     """Add a new connection profile."""
-
     add_profile_impl(
-        name,
+        profile,
         ssh_host,
         hostname,
         username,
@@ -392,59 +414,38 @@ def add_profile(
     )
 
 
-@profile_app.command("remove")
-def remove_profile(
-    name: Annotated[str, typer.Argument(help="Profile name")],
-    config: Annotated[
-        str | None,
-        typer.Option(
-            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
-        ),
-    ] = None,
-):
+@ssh_app.command("remove")
+def remove_profile(profile: _ProfileRequired, config: _ConfigOpt = None):
     """Remove a connection profile."""
     from .profile_impl import remove_profile_impl
 
-    remove_profile_impl(name, config)
+    remove_profile_impl(profile, config)
 
 
-@profile_app.command("set")
-def set_current_profile(
-    name: Annotated[str, typer.Argument(help="Profile name")],
-    config: Annotated[
-        str | None,
-        typer.Option(
-            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
-        ),
-    ] = None,
-):
-    """Set the current default profile."""
+@ssh_app.command("use")
+def use_profile(profile: _ProfileRequired, config: _ConfigOpt = None):
+    """Set the current default profile.
+
+    The current profile is the implicit target of commands that omit
+    ``--profile`` (e.g. ``srunx ssh test``, ``srunx ssh sync``) and the
+    last fallback rung of job-management transport resolution.
+    """
     from .profile_impl import set_current_profile_impl
 
-    set_current_profile_impl(name, config)
+    set_current_profile_impl(profile, config)
 
 
-@profile_app.command("show")
-def show_profile(
-    name: Annotated[
-        str | None, typer.Argument(help="Profile name (default: current)")
-    ] = None,
-    config: Annotated[
-        str | None,
-        typer.Option(
-            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
-        ),
-    ] = None,
-):
-    """Show profile details."""
+@ssh_app.command("show")
+def show_profile(profile: _ProfileOptional = None, config: _ConfigOpt = None):
+    """Show profile details (defaults to the current profile)."""
     from .profile_impl import show_profile_impl
 
-    show_profile_impl(name, config)
+    show_profile_impl(profile, config)
 
 
-@profile_app.command("update")
+@ssh_app.command("update")
 def update_profile(
-    name: Annotated[str, typer.Argument(help="Profile name")],
+    profile: _ProfileRequired,
     ssh_host: Annotated[
         str | None, typer.Option("--ssh-host", help="SSH config host name")
     ] = None,
@@ -464,18 +465,13 @@ def update_profile(
     description: Annotated[
         str | None, typer.Option("--description", help="Profile description")
     ] = None,
-    config: Annotated[
-        str | None,
-        typer.Option(
-            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
-        ),
-    ] = None,
+    config: _ConfigOpt = None,
 ):
     """Update an existing profile."""
     from .profile_impl import update_profile_impl
 
     update_profile_impl(
-        name,
+        profile,
         ssh_host,
         hostname,
         username,
@@ -487,77 +483,65 @@ def update_profile(
     )
 
 
-# Environment variable management for profiles
-profile_env_app = typer.Typer(
+# ---------------------------------------------------------------------------
+# Environment variable management for profiles (``ssh env ...``)
+# ---------------------------------------------------------------------------
+env_app = typer.Typer(
     name="env",
-    help="Manage environment variables for profiles",
+    help="Manage environment variables for a profile",
 )
-profile_app.add_typer(profile_env_app, name="env")
+ssh_app.add_typer(env_app, name="env")
 
 
-@profile_env_app.command("set")
+@env_app.command("set")
 def set_env_var(
-    profile_name: Annotated[str, typer.Argument(help="Profile name")],
+    profile: _ProfileRequired,
     key: Annotated[str, typer.Argument(help="Environment variable name")],
     value: Annotated[str, typer.Argument(help="Environment variable value")],
-    config: Annotated[
-        str | None,
-        typer.Option(
-            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
-        ),
-    ] = None,
+    config: _ConfigOpt = None,
 ):
     """Set an environment variable for a profile."""
     from .profile_impl import set_env_var_impl
 
-    set_env_var_impl(profile_name, key, value, config)
+    set_env_var_impl(profile, key, value, config)
 
 
-@profile_env_app.command("unset")
+@env_app.command("unset")
 def unset_env_var(
-    profile_name: Annotated[str, typer.Argument(help="Profile name")],
+    profile: _ProfileRequired,
     key: Annotated[str, typer.Argument(help="Environment variable name")],
-    config: Annotated[
-        str | None,
-        typer.Option(
-            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
-        ),
-    ] = None,
+    config: _ConfigOpt = None,
 ):
     """Unset an environment variable for a profile."""
     from .profile_impl import unset_env_var_impl
 
-    unset_env_var_impl(profile_name, key, config)
+    unset_env_var_impl(profile, key, config)
 
 
-@profile_env_app.command("list")
-def list_env_vars(
-    profile_name: Annotated[str, typer.Argument(help="Profile name")],
-    config: Annotated[
-        str | None,
-        typer.Option(
-            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
-        ),
-    ] = None,
-):
-    """List environment variables for a profile."""
+@env_app.command("list")
+def list_env_vars(profile: _ProfileOptional = None, config: _ConfigOpt = None):
+    """List environment variables for a profile (defaults to current)."""
     from .profile_impl import list_env_vars_impl
 
+    config_manager = ConfigManager(config)
+    profile_name = _resolve_optional_profile(profile, config_manager)
     list_env_vars_impl(profile_name, config)
 
 
-# Mount management for profiles
-profile_mount_app = typer.Typer(
+# ---------------------------------------------------------------------------
+# Mount management for profiles (``ssh mount ...``)
+# ---------------------------------------------------------------------------
+mount_app = typer.Typer(
     name="mount",
-    help="Manage local-to-remote path mounts for profiles",
+    help="Manage local-to-remote path mounts for a profile",
 )
-profile_app.add_typer(profile_mount_app, name="mount")
+ssh_app.add_typer(mount_app, name="mount")
 
 
-@profile_mount_app.command("add")
+@mount_app.command("add")
 def mount_add(
-    profile_name: Annotated[str, typer.Argument(help="Profile name")],
-    name: Annotated[str, typer.Argument(help="Mount name (e.g. 'ml-project')")],
+    profile: _ProfileRequired,
+    mount: _MountRequired,
     local: Annotated[str, typer.Option("--local", help="Local directory path")],
     remote: Annotated[
         str, typer.Option("--remote", help="Remote directory path (absolute)")
@@ -566,50 +550,34 @@ def mount_add(
         list[str] | None,
         typer.Option("--exclude", "-e", help="Exclude pattern (repeatable)"),
     ] = None,
-    config: Annotated[
-        str | None,
-        typer.Option(
-            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
-        ),
-    ] = None,
+    config: _ConfigOpt = None,
 ) -> None:
     """Add a path mount to a profile."""
     from .profile_impl import add_mount_impl
 
-    add_mount_impl(profile_name, name, local, remote, config, exclude_patterns=exclude)
+    add_mount_impl(profile, mount, local, remote, config, exclude_patterns=exclude)
 
 
-@profile_mount_app.command("list")
-def mount_list(
-    profile_name: Annotated[str, typer.Argument(help="Profile name")],
-    config: Annotated[
-        str | None,
-        typer.Option(
-            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
-        ),
-    ] = None,
-) -> None:
-    """List all mounts for a profile."""
+@mount_app.command("list")
+def mount_list(profile: _ProfileOptional = None, config: _ConfigOpt = None) -> None:
+    """List all mounts for a profile (defaults to current)."""
     from .profile_impl import list_mounts_impl
 
+    config_manager = ConfigManager(config)
+    profile_name = _resolve_optional_profile(profile, config_manager)
     list_mounts_impl(profile_name, config)
 
 
-@profile_mount_app.command("remove")
+@mount_app.command("remove")
 def mount_remove(
-    profile_name: Annotated[str, typer.Argument(help="Profile name")],
-    name: Annotated[str, typer.Argument(help="Mount name to remove")],
-    config: Annotated[
-        str | None,
-        typer.Option(
-            "--config", help="Config file path (default: ~/.config/srunx/config.json)"
-        ),
-    ] = None,
+    profile: _ProfileRequired,
+    mount: _MountRequired,
+    config: _ConfigOpt = None,
 ) -> None:
     """Remove a mount from a profile."""
     from .profile_impl import remove_mount_impl
 
-    remove_mount_impl(profile_name, name, config)
+    remove_mount_impl(profile, mount, config)
 
 
 def _resolve_direct_profile(profile_obj: Any, ssh_config: str | None) -> dict[str, Any]:
@@ -644,27 +612,45 @@ def _resolve_direct_profile(profile_obj: Any, ssh_config: str | None) -> dict[st
     }
 
 
+def _connection_params_from_profile(
+    profile_obj: Any, ssh_config: str | None
+) -> dict[str, Any]:
+    """Build connection params for a saved profile (ssh_host alias or direct)."""
+    if profile_obj.ssh_host:
+        ssh_host = get_ssh_config_host(profile_obj.ssh_host, ssh_config)
+        if not ssh_host:
+            console.print(
+                f"[red]Error: SSH host '{profile_obj.ssh_host}' not found[/red]"
+            )
+            raise typer.Exit(1)
+        return {
+            "hostname": ssh_host.hostname,
+            "username": ssh_host.user,
+            "key_filename": ssh_host.identity_file,
+            "port": ssh_host.port,
+            "proxy_jump": ssh_host.proxy_jump,
+        }
+    return _resolve_direct_profile(profile_obj, ssh_config)
+
+
 def _determine_connection_params(
     host: str | None,
     profile: str | None,
-    hostname: str | None,
-    username: str | None,
-    key_file: str | None,
-    port: int,
     ssh_config: str | None,
     config_manager: ConfigManager,
 ) -> tuple[dict, str]:
-    """Determine connection parameters and display host name."""
-    connection_params = {}
-    display_host = None
+    """Determine connection parameters and display host name for ``ssh test``.
 
+    Resolution order: ``--host`` alias > ``--profile`` saved profile >
+    current profile. Ad-hoc ``--hostname/--username/--key-file`` connections
+    were removed — a connection worth testing belongs in a profile or an
+    ``~/.ssh/config`` alias.
+    """
     if host:
-        # Use SSH config host
         ssh_host = get_ssh_config_host(host, ssh_config)
         if not ssh_host:
             console.print(f"[red]Error: SSH host '{host}' not found[/red]")
             raise typer.Exit(1)
-
         connection_params = {
             "hostname": ssh_host.hostname,
             "username": ssh_host.user,
@@ -672,85 +658,36 @@ def _determine_connection_params(
             "port": ssh_host.port,
             "proxy_jump": ssh_host.proxy_jump,
         }
-        display_host = host
+        return connection_params, host
 
-    elif profile:
-        # Use saved profile
+    if profile:
         profile_obj = config_manager.get_profile(profile)
         if not profile_obj:
             console.print(f"[red]Error: Profile '{profile}' not found[/red]")
             raise typer.Exit(1)
+        params = _connection_params_from_profile(profile_obj, ssh_config)
+        display = (
+            f"{profile} ({profile_obj.ssh_host})" if profile_obj.ssh_host else profile
+        )
+        return params, display
 
-        if profile_obj.ssh_host:
-            # Profile uses SSH config host
-            ssh_host = get_ssh_config_host(profile_obj.ssh_host, ssh_config)
-            if not ssh_host:
-                console.print(
-                    f"[red]Error: SSH host '{profile_obj.ssh_host}' not found[/red]"
-                )
-                raise typer.Exit(1)
-            connection_params = {
-                "hostname": ssh_host.hostname,
-                "username": ssh_host.user,
-                "key_filename": ssh_host.identity_file,
-                "port": ssh_host.port,
-                "proxy_jump": ssh_host.proxy_jump,
-            }
-            display_host = f"{profile} ({profile_obj.ssh_host})"
-        else:
-            # Profile uses direct connection. If hostname happens to be an
-            # ssh_config alias, resolve HostName/IdentityFile/Port/ProxyJump
-            # from ~/.ssh/config so the user doesn't need to duplicate fields
-            # already declared there.
-            connection_params = _resolve_direct_profile(profile_obj, ssh_config)
-            display_host = profile
+    # Fall back to the current profile.
+    profile_obj = config_manager.get_current_profile()
+    if profile_obj:
+        params = _connection_params_from_profile(profile_obj, ssh_config)
+        display = (
+            f"current ({profile_obj.ssh_host})"
+            if profile_obj.ssh_host
+            else "current"
+        )
+        return params, display
 
-    elif all([hostname, username, key_file]):
-        # Use direct parameters
-        assert key_file is not None  # Type guard after all() check
-        key_path = config_manager.expand_path(key_file)
-        if not Path(key_path).exists():
-            console.print(f"[red]Error: SSH key file '{key_path}' not found[/red]")
-            raise typer.Exit(1)
-
-        connection_params = {
-            "hostname": hostname,
-            "username": username,
-            "key_filename": key_path,
-            "port": port,
-        }
-        display_host = hostname
-    else:
-        # Try current profile as fallback
-        profile_obj = config_manager.get_current_profile()
-        if profile_obj:
-            if profile_obj.ssh_host:
-                # Profile uses SSH config host
-                ssh_host = get_ssh_config_host(profile_obj.ssh_host, ssh_config)
-                if not ssh_host:
-                    console.print(
-                        f"[red]Error: SSH host '{profile_obj.ssh_host}' not found[/red]"
-                    )
-                    raise typer.Exit(1)
-                connection_params = {
-                    "hostname": ssh_host.hostname,
-                    "username": ssh_host.user,
-                    "key_filename": ssh_host.identity_file,
-                    "port": ssh_host.port,
-                    "proxy_jump": ssh_host.proxy_jump,
-                }
-                display_host = f"current ({profile_obj.ssh_host})"
-            else:
-                connection_params = _resolve_direct_profile(profile_obj, ssh_config)
-                display_host = "current"
-        else:
-            console.print("[red]Error: No connection method specified[/red]")
-            console.print(
-                "[yellow]Use --host, --profile, or provide --hostname/--username/--key-file[/yellow]"
-            )
-            raise typer.Exit(1)
-
-    return connection_params, display_host or str(connection_params["hostname"])
+    console.print("[red]Error: No connection method specified[/red]")
+    console.print(
+        "[yellow]Use --profile <name>, --host <alias>, or set a current "
+        "profile with 'srunx ssh use <name>'[/yellow]"
+    )
+    raise typer.Exit(1)
 
 
 def _create_ssh_client(
