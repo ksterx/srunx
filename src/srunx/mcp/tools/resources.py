@@ -32,7 +32,9 @@ def get_resources(
                 from srunx.slurm.clients.ssh import SlurmSSHClient
 
                 adapter = cast(SlurmSSHClient, rt.job_ops)
-                return ok(partition=partition, resources=adapter.get_resources(partition))
+                return ok(
+                    partition=partition, resources=adapter.get_resources(partition)
+                )
 
             from srunx.observability.monitoring.resource_monitor import ResourceMonitor
 

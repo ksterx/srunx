@@ -86,9 +86,7 @@ def _resolve_optional_profile(
 
 # Option aliases shared across the SSH commands. ``--profile`` deliberately has
 # no ``-p`` short flag (reserved for ``--partition`` everywhere in srunx).
-_ProfileRequired = Annotated[
-    str, typer.Option("--profile", help="SSH profile name")
-]
+_ProfileRequired = Annotated[str, typer.Option("--profile", help="SSH profile name")]
 _ProfileOptional = Annotated[
     str | None,
     typer.Option("--profile", help="SSH profile name (default: current profile)"),
@@ -109,7 +107,8 @@ def test_connection(
         typer.Option("--profile", help="Saved profile to test (default: current)"),
     ] = None,
     host: Annotated[
-        str | None, typer.Option("--host", "-H", help="SSH host alias from ~/.ssh/config")
+        str | None,
+        typer.Option("--host", "-H", help="SSH host alias from ~/.ssh/config"),
     ] = None,
     config: _ConfigOpt = None,
     ssh_config: Annotated[
@@ -302,9 +301,7 @@ def sync_mount(
         # Sync
         action = "Previewing" if dry_run else "Syncing"
         direction = "remote → local (pull)" if pull else "local → remote (push)"
-        console.print(
-            f"[bold]{action}[/bold] mount [cyan]{resolved_mount.name}[/cyan]"
-        )
+        console.print(f"[bold]{action}[/bold] mount [cyan]{resolved_mount.name}[/cyan]")
         console.print(f"  Local:  {resolved_mount.local}")
         console.print(f"  Remote: {resolved_mount.remote}")
         console.print(f"  Direction: {direction}")
@@ -718,9 +715,7 @@ def _determine_connection_params(
     if profile_obj:
         params = _connection_params_from_profile(profile_obj, ssh_config)
         display = (
-            f"current ({profile_obj.ssh_host})"
-            if profile_obj.ssh_host
-            else "current"
+            f"current ({profile_obj.ssh_host})" if profile_obj.ssh_host else "current"
         )
         return params, display
 

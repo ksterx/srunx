@@ -505,9 +505,7 @@ class TestRunWorkflowTransportRouting:
             mock_runner.run.return_value = {}
             from_yaml.return_value = mock_runner
 
-            result = run_workflow(
-                str(yaml_path), transport="pyxis", mount="cookbook2"
-            )
+            result = run_workflow(str(yaml_path), transport="pyxis", mount="cookbook2")
 
         assert result["success"] is True, result
         pool_cls.assert_called_once()
@@ -551,9 +549,7 @@ class TestRunWorkflowTransportRouting:
         with patch(
             "srunx.slurm.clients.ssh.SlurmSSHClient.__init__", return_value=None
         ):
-            result = run_workflow(
-                str(yaml_path), transport="pyxis", mount="cookbook2"
-            )
+            result = run_workflow(str(yaml_path), transport="pyxis", mount="cookbook2")
 
         assert result["success"] is False
         assert "outside allowed directories" in result["error"]

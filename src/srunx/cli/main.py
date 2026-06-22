@@ -57,6 +57,7 @@ def _root(
 ) -> None:
     """Python library for SLURM job management."""
 
+
 # Create subapps (``flow`` stays here because ``flow_run`` is a thin shim
 # delegating to ``srunx.cli.workflow.orchestrator._execute_workflow``;
 # extracting it would only move one function and buy nothing).

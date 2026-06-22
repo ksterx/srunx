@@ -117,8 +117,20 @@ class TestRoundTrip:
         )
         added = runner.invoke(
             ssh_app,
-            ["mount", "add", "--profile", "dgx", "--mount", "data",
-             "--local", str(tmp_path), "--remote", "/remote/data", "--config", cfg],
+            [
+                "mount",
+                "add",
+                "--profile",
+                "dgx",
+                "--mount",
+                "data",
+                "--local",
+                str(tmp_path),
+                "--remote",
+                "/remote/data",
+                "--config",
+                cfg,
+            ],
         )
         assert added.exit_code == 0, added.output
         listed = runner.invoke(
@@ -251,7 +263,16 @@ class TestSyncDryRun:
         cfg, _, _ = config_with_mount
         result = runner.invoke(
             ssh_app,
-            ["sync", "--profile", "prof", "--mount", "mnt", "--config", cfg, "--dry-run"],
+            [
+                "sync",
+                "--profile",
+                "prof",
+                "--mount",
+                "mnt",
+                "--config",
+                cfg,
+                "--dry-run",
+            ],
         )
         assert result.exit_code == 0, result.output
         kwargs = mock_rsync.push.call_args.kwargs
@@ -262,7 +283,17 @@ class TestSyncDryRun:
         cfg, _, _ = config_with_mount
         result = runner.invoke(
             ssh_app,
-            ["sync", "--profile", "prof", "--mount", "mnt", "--config", cfg, "--pull", "-n"],
+            [
+                "sync",
+                "--profile",
+                "prof",
+                "--mount",
+                "mnt",
+                "--config",
+                cfg,
+                "--pull",
+                "-n",
+            ],
         )
         assert result.exit_code == 0, result.output
         kwargs = mock_rsync.pull.call_args.kwargs

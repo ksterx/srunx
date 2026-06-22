@@ -65,9 +65,7 @@ class TestSubmitJob:
             setattr(result_job, attr, None)
         rt.job_ops.submit.return_value = result_job
 
-        with patch(
-            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
             result = submit_job(command="python train.py", name="test_job")
 
         assert result["success"] is True
@@ -83,9 +81,7 @@ class TestSubmitJob:
 
     def test_submit_ssh_requires_work_dir(self):
         rt = _make_rt("ssh")
-        with patch(
-            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
             result = submit_job(command="python train.py", transport="prod")
         assert result["success"] is False
         assert "work_dir is required" in result["error"]
@@ -111,9 +107,7 @@ class TestSubmitJob:
             setattr(result_job, attr, None)
         rt.job_ops.submit.return_value = result_job
 
-        with patch(
-            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
             result = submit_job(
                 command="python train.py",
                 name="ssh_job",
@@ -126,9 +120,7 @@ class TestSubmitJob:
     def test_submit_catches_exception(self):
         rt = _make_rt("local")
         rt.job_ops.submit.side_effect = RuntimeError("slurm not available")
-        with patch(
-            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
             result = submit_job(command="echo hi")
         assert result["success"] is False
         assert "slurm not available" in result["error"]
@@ -154,9 +146,7 @@ class TestListJobs:
         del job1.script_path
         rt.job_ops.queue.return_value = [job1]
 
-        with patch(
-            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
             result = list_jobs()
         assert result["success"] is True
         assert result["count"] == 1
@@ -179,9 +169,7 @@ class TestListJobs:
         del job1.script_path
         rt.job_ops.queue.return_value = [job1]
 
-        with patch(
-            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
             result = list_jobs(transport="prod")
         assert result["success"] is True
         assert result["count"] == 1
@@ -191,9 +179,7 @@ class TestListJobs:
     def test_list_catches_exception(self):
         rt = _make_rt("local")
         rt.job_ops.queue.side_effect = RuntimeError("no slurm")
-        with patch(
-            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
             result = list_jobs()
         assert result["success"] is False
 
@@ -210,9 +196,7 @@ class TestGetJobStatus:
         """Local get_job_status calls job_ops.status with int job_id."""
         rt = _make_rt("local")
         rt.job_ops.status.side_effect = ValueError("test")
-        with patch(
-            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
             result = get_job_status(job_id="12345")
         rt.job_ops.status.assert_called_once_with(12345)
         assert result["success"] is False
@@ -237,9 +221,7 @@ class TestGetJobStatus:
             setattr(job, attr, None)
         rt.job_ops.status.return_value = job
 
-        with patch(
-            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
             result = get_job_status(job_id="12345", transport="prod")
         assert result["success"] is True
         assert result["status"] == "COMPLETED"
@@ -261,9 +243,7 @@ class TestCancelJob:
 
     def test_local_cancel(self):
         rt = _make_rt("local")
-        with patch(
-            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
             result = cancel_job(job_id="12345")
         assert result["success"] is True
         assert result["message"] == "Job cancelled"
@@ -271,9 +251,7 @@ class TestCancelJob:
 
     def test_ssh_cancel(self):
         rt = _make_rt("ssh")
-        with patch(
-            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
             result = cancel_job(job_id="12345", transport="prod")
         assert result["success"] is True
         assert result["message"] == "Job cancelled"
@@ -282,9 +260,7 @@ class TestCancelJob:
     def test_cancel_fails(self):
         rt = _make_rt("ssh")
         rt.job_ops.cancel.side_effect = RuntimeError("permission denied")
-        with patch(
-            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
             result = cancel_job(job_id="12345", transport="prod")
         assert result["success"] is False
         assert "permission denied" in result["error"]
@@ -305,9 +281,7 @@ class TestGetJobLogs:
             "error": "",
             "found_files": ["logs/job-12345.out"],
         }
-        with patch(
-            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
             result = get_job_logs(job_id="12345")
         assert result["success"] is True
         assert result["stdout"] == "training started\n"
@@ -320,9 +294,7 @@ class TestGetJobLogs:
             "error": "stderr content",
             "found_files": ["a.out", "a.err"],
         }
-        with patch(
-            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
             result = get_job_logs(job_id="12345", transport="prod")
         assert result["success"] is True
         assert result["stdout"] == "stdout content"
@@ -336,9 +308,7 @@ class TestGetJobLogs:
             "error": "",
             "found_files": [],
         }
-        with patch(
-            "srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
             result = get_job_logs(job_id="12345")
         assert result["success"] is True
         assert result["stdout"] == ""

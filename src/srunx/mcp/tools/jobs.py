@@ -125,9 +125,7 @@ def submit_job(
             # the script, applies mount translation via submission_context,
             # uploads, and runs sbatch; the local client runs sbatch
             # directly. MCP no longer hand-rolls Jinja rendering.
-            result = rt.job_ops.submit(
-                job, submission_context=rt.submission_context
-            )
+            result = rt.job_ops.submit(job, submission_context=rt.submission_context)
             return ok(
                 job_id=result.job_id,
                 name=result.name,

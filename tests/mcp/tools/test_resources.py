@@ -54,12 +54,8 @@ class TestGetResources:
     def test_ssh_resources(self):
         rt = MagicMock()
         rt.transport_type = "ssh"
-        rt.job_ops.get_resources.return_value = {
-            "gpu": {"total": 4, "available": 2}
-        }
-        with patch(
-            "srunx.mcp.tools.resources.mcp_transport", _fake_transport(rt)
-        ):
+        rt.job_ops.get_resources.return_value = {"gpu": {"total": 4, "available": 2}}
+        with patch("srunx.mcp.tools.resources.mcp_transport", _fake_transport(rt)):
             result = get_resources(partition="gpu", transport="prod")
         assert result["success"] is True
         assert result["partition"] == "gpu"
@@ -70,9 +66,7 @@ class TestGetResources:
         rt = MagicMock()
         rt.transport_type = "ssh"
         rt.job_ops.get_resources.return_value = {"all": {"total": 8}}
-        with patch(
-            "srunx.mcp.tools.resources.mcp_transport", _fake_transport(rt)
-        ):
+        with patch("srunx.mcp.tools.resources.mcp_transport", _fake_transport(rt)):
             result = get_resources(transport="prod")
         assert result["success"] is True
         assert result["partition"] is None

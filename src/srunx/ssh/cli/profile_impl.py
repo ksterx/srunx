@@ -209,9 +209,7 @@ def set_current_profile_impl(name: str, config: str | None = None):
         profile = config_manager.get_profile(name)
         if not profile:
             console.print(f"[red]Error: Profile '{name}' not found[/red]")
-            console.print(
-                "[dim]Use 'srunx ssh list' to see available profiles[/dim]"
-            )
+            console.print("[dim]Use 'srunx ssh list' to see available profiles[/dim]")
             raise typer.Exit(1)
 
         # Set current profile
@@ -267,9 +265,7 @@ def show_profile_impl(name: str | None = None, config: str | None = None):
             current_name = config_manager.get_current_profile_name()
             if not profile or not current_name:
                 console.print("[yellow]No current profile set[/yellow]")
-                console.print(
-                    "[dim]Use 'srunx ssh use' to set a current profile[/dim]"
-                )
+                console.print("[dim]Use 'srunx ssh use' to set a current profile[/dim]")
                 raise typer.Exit(1)
             profile_name = current_name
 
