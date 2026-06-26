@@ -159,3 +159,170 @@ class TestGetLogPathsFromScontrol:
 
         assert stdout_path is None
         assert stderr_path is None
+
+
+class TestScontrolFoundButFileEmpty:
+    """scontrol gave us a real StdOut path — trust it even if the file is empty.
+
+    Regression guard: the previous flow fell through to pattern-based
+    file search whenever the scontrol-reported StdOut/StdErr files
+    happened to be empty (very common in the first seconds of a job),
+    which logged a misleading ``No log files found ... using common
+    patterns`` warning even though SLURM itself reported the exact log
+    path.
+    """
+
+    def test_empty_stdout_no_pattern_fallback_no_warning(self, client, caplog):
+        scontrol_output = "StdOut=/logs/job.log StdErr=/logs/job.err\n"
+        calls: list[str] = []
+
+        def _exec(cmd: str):
+            calls.append(cmd)
+            if "scontrol" in cmd:
+                return (scontrol_output, "", 0)
+            # tail / cat on the StdOut/StdErr path → empty file
+            if "job.log" in cmd or "job.err" in cmd:
+                if "wc -c" in cmd:
+                    return ("0\n", "", 0)
+                return ("", "", 0)
+            return ("", "", 1)
+
+        client.connection.execute_command = Mock(side_effect=_exec)
+
+        with caplog.at_level("WARNING"):
+            stdout, stderr, out_off, err_off = client.logs.get_job_output("12345")
+
+        assert stdout == ""
+        assert stderr == ""
+        assert out_off == 0
+        assert err_off == 0
+        # No fallback pattern search: zero ``find`` shellouts.
+        assert not any("find " in c for c in calls)
+        # And no misleading "No log files found" warning.
+        assert not any("No log files found" in rec.message for rec in caplog.records)
+
+    def test_only_stdout_path_stderr_remains_empty(self, client):
+        """scontrol returned StdOut only (no StdErr line) → stderr=""."""
+        scontrol_output = "StdOut=/logs/out.log\n"
+
+        def _exec(cmd: str):
+            if "scontrol" in cmd:
+                return (scontrol_output, "", 0)
+            if "out.log" in cmd:
+                if "wc -c" in cmd:
+                    return ("12\n", "", 0)
+                return ("hello world\n", "", 0)
+            return ("", "", 1)
+
+        client.connection.execute_command = Mock(side_effect=_exec)
+
+        stdout, stderr, out_off, err_off = client.logs.get_job_output("12345")
+
+        assert "hello world" in stdout
+        assert stderr == ""
+        assert out_off == 12
+        # stderr_offset stays at the input (0) when no path is known.
+        assert err_off == 0
+
+
+class TestSqueueFallback:
+    """scontrol unavailable on the cluster → fall back to ``squeue -O``.
+
+    Some sites (e.g. multi-tenant managed SLURM) lock down scontrol but
+    leave squeue open. The fallback chain must surface log paths via
+    squeue before resorting to pattern-based file search and emitting
+    the misleading "No log files found" warning.
+    """
+
+    def test_scontrol_fails_squeue_returns_path(self, client, caplog):
+        """scontrol fails → squeue path used → no pattern fallback, no warning."""
+        calls: list[str] = []
+
+        def _exec(cmd: str):
+            calls.append(cmd)
+            if "scontrol" in cmd:
+                return ("", "permission denied", 1)
+            if "squeue" in cmd and "StdOut" in cmd:
+                # squeue -O pads to the requested width; mimic real output.
+                return ("/data/logs/run.out" + " " * 2030 + "\n", "", 0)
+            if "squeue" in cmd and "StdErr" in cmd:
+                return ("/data/logs/run.err" + " " * 2030 + "\n", "", 0)
+            if "/data/logs/run.out" in cmd:
+                if "wc -c" in cmd:
+                    return ("20\n", "", 0)
+                return ("epoch 1 done\n", "", 0)
+            if "/data/logs/run.err" in cmd:
+                if "wc -c" in cmd:
+                    return ("5\n", "", 0)
+                return ("WARN\n", "", 0)
+            return ("", "", 1)
+
+        client.connection.execute_command = Mock(side_effect=_exec)
+
+        with caplog.at_level("WARNING"):
+            stdout, stderr, out_off, err_off = client.logs.get_job_output("99")
+
+        assert "epoch 1 done" in stdout
+        assert "WARN" in stderr
+        assert out_off == 20
+        assert err_off == 5
+        # No fallback pattern search means no `find` shellouts.
+        assert not any("find " in c for c in calls)
+        assert not any("No log files found" in rec.message for rec in caplog.records)
+
+    def test_squeue_null_values_trigger_pattern_fallback(self, client):
+        """squeue prints ``(null)`` for unset fields → treat as not-found."""
+
+        def _exec(cmd: str):
+            if "scontrol" in cmd:
+                return ("", "denied", 1)
+            if "squeue" in cmd and "StdOut" in cmd:
+                return ("(null)" + " " * 2042 + "\n", "", 0)
+            if "squeue" in cmd and "StdErr" in cmd:
+                return ("N/A" + " " * 2045 + "\n", "", 0)
+            if "find" in cmd and "slurm-99.out" in cmd:
+                return ("/tmp/slurm-99.out\n", "", 0)
+            if "cat" in cmd and "/tmp/slurm-99.out" in cmd:
+                return ("pattern hit\n", "", 0)
+            return ("", "", 1)
+
+        client.connection.execute_command = Mock(side_effect=_exec)
+
+        stdout, _, _, _ = client.logs.get_job_output("99")
+
+        assert "pattern hit" in stdout
+
+    def test_squeue_path_stripped_of_padding(self, client):
+        """The padded squeue output must be trimmed before use."""
+        captured: list[str] = []
+
+        def _exec(cmd: str):
+            captured.append(cmd)
+            if "scontrol" in cmd:
+                return ("", "denied", 1)
+            if "squeue" in cmd and "StdOut" in cmd:
+                # Real-world width padding: trailing spaces only.
+                return ("/x/y/z.log" + " " * 2038 + "\n", "", 0)
+            if "squeue" in cmd and "StdErr" in cmd:
+                return ("(null)" + " " * 2042 + "\n", "", 0)
+            if cmd.startswith("tail -n ") and "/x/y/z.log" in cmd:
+                return ("ok\n", "", 0)
+            if "wc -c" in cmd and "/x/y/z.log" in cmd:
+                return ("3\n", "", 0)
+            return ("", "", 1)
+
+        client.connection.execute_command = Mock(side_effect=_exec)
+        stdout, _, out_off, _ = client.logs.get_job_output("42", last_n=10)
+        assert stdout == "ok\n"
+        assert out_off == 3
+        # The path used in the tail command must be the stripped form,
+        # never the padded one (would shell out to a non-existent file).
+        tail_calls = [c for c in captured if c.startswith("tail -n ")]
+        assert tail_calls, "expected a tail -n call"
+        # shlex.quote keeps safe paths unquoted, so a stripped path
+        # appears verbatim followed by ` 2>/dev/null`.
+        assert any("tail -n 10 /x/y/z.log 2>/dev/null" == c for c in tail_calls)
+        # And no tail call carries the padding bytes (would look like
+        # ``tail -n 10 /x/y/z.log<lots of spaces>`` if strip was missed).
+        for c in tail_calls:
+            assert "/x/y/z.log  " not in c

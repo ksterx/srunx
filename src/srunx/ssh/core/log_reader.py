@@ -74,20 +74,32 @@ class RemoteLogReader:
             new_stdout_offset = stdout_offset
             new_stderr_offset = stderr_offset
 
-            # 1. Try scontrol to get actual log paths
+            # 1. Try scontrol to get actual log paths.
             stdout_path, stderr_path = self._get_log_paths_from_scontrol(safe_job_id)
 
+            # 2. squeue --Format fallback when scontrol is unavailable
+            # (some clusters allow squeue but restrict scontrol).
+            # ``StdOut`` / ``StdErr`` fields exist in modern SLURM
+            # squeue and surface the same paths scontrol would.
+            if not stdout_path:
+                stdout_path, stderr_path = self._get_log_paths_from_squeue(
+                    safe_job_id
+                )
+
+            # SLURM itself told us where the log lives → that path is
+            # the source of truth. Read whatever is there (possibly
+            # empty: job just started, buffer not yet flushed, or
+            # genuinely no output) and return straight away. Falling
+            # through to pattern search here would log a misleading
+            # "No log files found" warning even though the path is known.
             if stdout_path:
                 output_content, new_stdout_offset = self._read_file_from_offset(
                     stdout_path, stdout_offset, last_n=last_n
                 )
-
-            if stderr_path and stderr_path != stdout_path:
-                error_content, new_stderr_offset = self._read_file_from_offset(
-                    stderr_path, stderr_offset, last_n=last_n
-                )
-
-            if output_content or error_content:
+                if stderr_path and stderr_path != stdout_path:
+                    error_content, new_stderr_offset = self._read_file_from_offset(
+                        stderr_path, stderr_offset, last_n=last_n
+                    )
                 return (
                     output_content,
                     error_content,
@@ -95,7 +107,11 @@ class RemoteLogReader:
                     new_stderr_offset,
                 )
 
-            # 2. Fallback: pattern-based file search (full read)
+            # 3. Last resort: pattern-based file search (full read).
+            # Only reached when neither scontrol nor squeue could be
+            # used to discover the path — typically a completed job
+            # whose record slurmctld has already evicted, or a cluster
+            # that restricts both query commands.
             out, err = self._get_job_output_by_pattern(safe_job_id, safe_job_name)
             return out, err, len(out.encode()), len(err.encode())
 
@@ -349,6 +365,41 @@ class RemoteLogReader:
                 elif token.startswith("StdErr="):
                     stderr_path = token.split("=", 1)[1]
         return stdout_path, stderr_path
+
+    def _get_log_paths_from_squeue(
+        self, job_id: str
+    ) -> tuple[str | None, str | None]:
+        """Query ``squeue -O StdOut,StdErr`` for log paths.
+
+        Fallback for clusters that restrict ``scontrol`` but still allow
+        ``squeue``. Uses the long-format ``-O`` specifier with an
+        explicit field width so even multi-hundred-character paths
+        survive without truncation. Each field is fetched in its own
+        squeue call so a path containing whitespace cannot blur the
+        StdOut/StdErr boundary.
+
+        SLURM emits ``(null)`` (and occasionally ``N/A``) for unset
+        fields; both are normalised to ``None`` so they cannot leak
+        downstream as if they were real filesystem paths.
+        """
+        quoted_id = shlex.quote(job_id)
+
+        def _fetch(field: str) -> str | None:
+            # 2048 is generous: standard SLURM paths sit well under
+            # 256 chars, but log paths embedded inside Lustre / GPFS
+            # mount points can grow. Padding cost is per-query only.
+            stdout, _, rc = self._slurm.execute_slurm_command(
+                f"squeue -h -j {quoted_id} -O {shlex.quote(field + ':2048')} "
+                "2>/dev/null"
+            )
+            if rc != 0:
+                return None
+            value = stdout.strip()
+            if not value or value in {"N/A", "(null)"}:
+                return None
+            return value
+
+        return _fetch("StdOut"), _fetch("StdErr")
 
     def _get_job_output_by_pattern(
         self, safe_job_id: str, safe_job_name: str | None

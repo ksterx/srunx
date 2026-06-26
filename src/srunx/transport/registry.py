@@ -247,6 +247,14 @@ def _format_ssh_banner_body(*, profile_name: str, source_display: str) -> str:
     user to remember what ``<profile_name>`` maps to. Profile name and
     decision source are kept as parenthetical metadata.
 
+    When the profile is an ``ssh_host`` alias (``username``/``hostname``
+    blank because the real connection info lives in ``~/.ssh/config``),
+    fall through the same resolution path the SSH connection layer
+    uses: parse ``~/.ssh/config`` via :func:`get_ssh_config_host` and
+    render the resolved ``user@host[:port]``. Without this fallback the
+    banner emits ``@`` for alias-only profiles even though the
+    underlying connection succeeds.
+
     Falls back to ``SSH profile: <name>`` when the profile lookup
     fails (config file missing, profile removed, import error) — the
     banner must never raise, even from a degraded state.
@@ -257,9 +265,42 @@ def _format_ssh_banner_body(*, profile_name: str, source_display: str) -> str:
             f"[bold]SSH profile: {profile_name}[/bold]  "
             f"[dim italic]({source_display})[/dim italic]"
         )
-    target = f"{profile.username}@{profile.hostname}"
-    if profile.port != 22:
-        target += f":{profile.port}"
+
+    username = profile.username
+    hostname = profile.hostname
+    port = profile.port
+    if (not username or not hostname) and profile.ssh_host:
+        try:
+            from srunx.ssh.core.ssh_config import get_ssh_config_host
+
+            resolved = get_ssh_config_host(profile.ssh_host)
+        except Exception as exc:  # noqa: BLE001 — banner must never raise
+            logger.debug(
+                "ssh_config lookup for alias %r failed: %s", profile.ssh_host, exc
+            )
+            resolved = None
+        if resolved is not None:
+            username = username or resolved.user
+            hostname = hostname or resolved.hostname
+            # ServerProfile.port defaults to 22; only override when the
+            # profile hasn't been explicitly customised and the ssh_config
+            # Host block specifies a non-default port.
+            if profile.port == 22 and resolved.port != 22:
+                port = resolved.port
+
+    if username and hostname:
+        target = f"{username}@{hostname}"
+        if port != 22:
+            target += f":{port}"
+    elif profile.ssh_host:
+        # ssh_config に該当 Host が無くても alias 名は手掛かりになる
+        target = profile.ssh_host
+    else:
+        return (
+            f"[bold]SSH profile: {profile_name}[/bold]  "
+            f"[dim italic]({source_display})[/dim italic]"
+        )
+
     if profile.proxy_jump:
         target += f" via {profile.proxy_jump}"
     return (

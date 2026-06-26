@@ -328,3 +328,138 @@ class TestTransportPolicy:
         assert peek_scheduler_key(policy=policy) == "local"
         # Explicit profile is never gated.
         assert peek_scheduler_key(profile="prod", policy=policy) == "ssh:prod"
+
+
+class TestSSHBannerBody:
+    """``_format_ssh_banner_body`` must surface a useful ``user@host``.
+
+    Regression guard: profiles that delegate to a ``Host`` block in
+    ``~/.ssh/config`` (``ssh_host`` alias with blank ``username`` /
+    ``hostname``) used to render as a literal ``@`` because the banner
+    never consulted ssh_config the way the SSH connection layer does.
+    """
+
+    def _stub_profile(
+        self,
+        *,
+        username: str = "",
+        hostname: str = "",
+        port: int = 22,
+        ssh_host: str | None = None,
+        proxy_jump: str | None = None,
+    ):
+        """Build a minimal ServerProfile stand-in for the banner formatter.
+
+        The formatter only reads a fixed set of fields; using a
+        ``MagicMock`` keeps the test independent of pydantic validation
+        rules on ``ServerProfile`` (which require key_filename etc.).
+        """
+        profile = MagicMock()
+        profile.username = username
+        profile.hostname = hostname
+        profile.port = port
+        profile.ssh_host = ssh_host
+        profile.proxy_jump = proxy_jump
+        return profile
+
+    def test_ssh_host_alias_only_resolves_via_ssh_config(self, monkeypatch):
+        profile = self._stub_profile(ssh_host="gmo")
+        monkeypatch.setattr(
+            _registry, "_lookup_profile_silently", lambda name: profile
+        )
+        resolved = MagicMock(
+            user="user_00028_557dc2",
+            hostname="connect.gpucloud.gmo",
+            port=8822,
+        )
+        with patch(
+            "srunx.ssh.core.ssh_config.get_ssh_config_host",
+            return_value=resolved,
+        ) as lookup:
+            body = _registry._format_ssh_banner_body(
+                profile_name="gmo",
+                source_display="via current profile",
+            )
+        lookup.assert_called_once_with("gmo")
+        assert "user_00028_557dc2@connect.gpucloud.gmo:8822" in body
+        assert "(profile: gmo · via current profile)" in body
+        assert "@[/cyan]" not in body  # no empty-target leak
+
+    def test_explicit_hostname_username_skips_ssh_config(self, monkeypatch):
+        profile = self._stub_profile(
+            username="alice",
+            hostname="dgx.example.com",
+            ssh_host="dgx",  # ssh_host set, but real fields take precedence
+        )
+        monkeypatch.setattr(
+            _registry, "_lookup_profile_silently", lambda name: profile
+        )
+        with patch(
+            "srunx.ssh.core.ssh_config.get_ssh_config_host",
+        ) as lookup:
+            body = _registry._format_ssh_banner_body(
+                profile_name="dgx",
+                source_display="via --profile",
+            )
+        lookup.assert_not_called()
+        assert "alice@dgx.example.com" in body
+
+    def test_ssh_host_alias_fallback_when_ssh_config_lookup_returns_none(
+        self, monkeypatch
+    ):
+        """No matching ``Host`` in ``~/.ssh/config`` → show alias name."""
+        profile = self._stub_profile(ssh_host="orphan")
+        monkeypatch.setattr(
+            _registry, "_lookup_profile_silently", lambda name: profile
+        )
+        with patch(
+            "srunx.ssh.core.ssh_config.get_ssh_config_host",
+            return_value=None,
+        ):
+            body = _registry._format_ssh_banner_body(
+                profile_name="orphan",
+                source_display="via --profile",
+            )
+        assert "Connected to" in body
+        # The alias itself becomes the target so the banner still has
+        # *something* identifiable to show.
+        assert "orphan" in body
+
+    def test_ssh_config_lookup_exception_does_not_raise(self, monkeypatch):
+        """The banner must never crash from a degraded ssh_config state."""
+        profile = self._stub_profile(ssh_host="gmo")
+        monkeypatch.setattr(
+            _registry, "_lookup_profile_silently", lambda name: profile
+        )
+        with patch(
+            "srunx.ssh.core.ssh_config.get_ssh_config_host",
+            side_effect=RuntimeError("ssh_config exploded"),
+        ):
+            body = _registry._format_ssh_banner_body(
+                profile_name="gmo",
+                source_display="via --profile",
+            )
+        # Falls back to the alias-name path.
+        assert "gmo" in body
+
+    def test_default_port_omitted_for_user_at_host(self, monkeypatch):
+        profile = self._stub_profile(
+            username="bob", hostname="example.com", port=22
+        )
+        monkeypatch.setattr(
+            _registry, "_lookup_profile_silently", lambda name: profile
+        )
+        body = _registry._format_ssh_banner_body(
+            profile_name="example",
+            source_display="via --profile",
+        )
+        assert "bob@example.com" in body
+        assert ":22" not in body
+
+    def test_no_profile_returns_fallback(self, monkeypatch):
+        monkeypatch.setattr(_registry, "_lookup_profile_silently", lambda name: None)
+        body = _registry._format_ssh_banner_body(
+            profile_name="ghost",
+            source_display="via --profile",
+        )
+        assert "SSH profile: ghost" in body
