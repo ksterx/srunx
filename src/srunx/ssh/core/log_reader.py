@@ -82,9 +82,7 @@ class RemoteLogReader:
             # ``StdOut`` / ``StdErr`` fields exist in modern SLURM
             # squeue and surface the same paths scontrol would.
             if not stdout_path:
-                stdout_path, stderr_path = self._get_log_paths_from_squeue(
-                    safe_job_id
-                )
+                stdout_path, stderr_path = self._get_log_paths_from_squeue(safe_job_id)
 
             # SLURM itself told us where the log lives → that path is
             # the source of truth. Read whatever is there (possibly
@@ -366,9 +364,7 @@ class RemoteLogReader:
                     stderr_path = token.split("=", 1)[1]
         return stdout_path, stderr_path
 
-    def _get_log_paths_from_squeue(
-        self, job_id: str
-    ) -> tuple[str | None, str | None]:
+    def _get_log_paths_from_squeue(self, job_id: str) -> tuple[str | None, str | None]:
         """Query ``squeue -O StdOut,StdErr`` for log paths.
 
         Fallback for clusters that restrict ``scontrol`` but still allow

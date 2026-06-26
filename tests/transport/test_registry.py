@@ -364,9 +364,7 @@ class TestSSHBannerBody:
 
     def test_ssh_host_alias_only_resolves_via_ssh_config(self, monkeypatch):
         profile = self._stub_profile(ssh_host="gmo")
-        monkeypatch.setattr(
-            _registry, "_lookup_profile_silently", lambda name: profile
-        )
+        monkeypatch.setattr(_registry, "_lookup_profile_silently", lambda name: profile)
         resolved = MagicMock(
             user="user_00028_557dc2",
             hostname="connect.gpucloud.gmo",
@@ -391,9 +389,7 @@ class TestSSHBannerBody:
             hostname="dgx.example.com",
             ssh_host="dgx",  # ssh_host set, but real fields take precedence
         )
-        monkeypatch.setattr(
-            _registry, "_lookup_profile_silently", lambda name: profile
-        )
+        monkeypatch.setattr(_registry, "_lookup_profile_silently", lambda name: profile)
         with patch(
             "srunx.ssh.core.ssh_config.get_ssh_config_host",
         ) as lookup:
@@ -409,9 +405,7 @@ class TestSSHBannerBody:
     ):
         """No matching ``Host`` in ``~/.ssh/config`` → show alias name."""
         profile = self._stub_profile(ssh_host="orphan")
-        monkeypatch.setattr(
-            _registry, "_lookup_profile_silently", lambda name: profile
-        )
+        monkeypatch.setattr(_registry, "_lookup_profile_silently", lambda name: profile)
         with patch(
             "srunx.ssh.core.ssh_config.get_ssh_config_host",
             return_value=None,
@@ -428,9 +422,7 @@ class TestSSHBannerBody:
     def test_ssh_config_lookup_exception_does_not_raise(self, monkeypatch):
         """The banner must never crash from a degraded ssh_config state."""
         profile = self._stub_profile(ssh_host="gmo")
-        monkeypatch.setattr(
-            _registry, "_lookup_profile_silently", lambda name: profile
-        )
+        monkeypatch.setattr(_registry, "_lookup_profile_silently", lambda name: profile)
         with patch(
             "srunx.ssh.core.ssh_config.get_ssh_config_host",
             side_effect=RuntimeError("ssh_config exploded"),
@@ -443,12 +435,8 @@ class TestSSHBannerBody:
         assert "gmo" in body
 
     def test_default_port_omitted_for_user_at_host(self, monkeypatch):
-        profile = self._stub_profile(
-            username="bob", hostname="example.com", port=22
-        )
-        monkeypatch.setattr(
-            _registry, "_lookup_profile_silently", lambda name: profile
-        )
+        profile = self._stub_profile(username="bob", hostname="example.com", port=22)
+        monkeypatch.setattr(_registry, "_lookup_profile_silently", lambda name: profile)
         body = _registry._format_ssh_banner_body(
             profile_name="example",
             source_display="via --profile",
