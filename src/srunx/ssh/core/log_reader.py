@@ -90,10 +90,17 @@ class RemoteLogReader:
             # genuinely no output) and return straight away. Falling
             # through to pattern search here would log a misleading
             # "No log files found" warning even though the path is known.
-            if stdout_path:
-                output_content, new_stdout_offset = self._read_file_from_offset(
-                    stdout_path, stdout_offset, last_n=last_n
-                )
+            #
+            # Treat *either* stream path as authoritative: a job that
+            # only configures ``StdErr`` (or has ``StdOut=/dev/null``
+            # and only writes useful content to ``StdErr``) still has a
+            # known log location SLURM gave us — falling through to
+            # pattern search would drop it on the floor.
+            if stdout_path or stderr_path:
+                if stdout_path:
+                    output_content, new_stdout_offset = self._read_file_from_offset(
+                        stdout_path, stdout_offset, last_n=last_n
+                    )
                 if stderr_path and stderr_path != stdout_path:
                     error_content, new_stderr_offset = self._read_file_from_offset(
                         stderr_path, stderr_offset, last_n=last_n

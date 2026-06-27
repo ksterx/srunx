@@ -270,8 +270,45 @@ class TestSqueueFallback:
         assert not any("find " in c for c in calls)
         assert not any("No log files found" in rec.message for rec in caplog.records)
 
+    def test_stderr_only_path_is_read_without_pattern_fallback(self, client, caplog):
+        """``StdOut=(null)`` but ``StdErr=<path>`` → read stderr, no warning.
+
+        Regression guard: earlier the read block was gated on
+        ``stdout_path`` alone, so a configured stderr path with no
+        stdout (job sends useful output only to stderr, or
+        ``StdOut=/dev/null``) was silently dropped on the floor and
+        ``srunx tail`` fell through to pattern search.
+        """
+        calls: list[str] = []
+
+        def _exec(cmd: str):
+            calls.append(cmd)
+            if "scontrol" in cmd:
+                return ("", "denied", 1)
+            if "squeue" in cmd and "StdOut" in cmd:
+                return ("(null)" + " " * 2042 + "\n", "", 0)
+            if "squeue" in cmd and "StdErr" in cmd:
+                return ("/data/logs/run.err" + " " * 2030 + "\n", "", 0)
+            if "/data/logs/run.err" in cmd:
+                if "wc -c" in cmd:
+                    return ("9\n", "", 0)
+                return ("stderr ok\n", "", 0)
+            return ("", "", 1)
+
+        client.connection.execute_command = Mock(side_effect=_exec)
+
+        with caplog.at_level("WARNING"):
+            stdout, stderr, out_off, err_off = client.logs.get_job_output("77")
+
+        assert stdout == ""
+        assert "stderr ok" in stderr
+        assert err_off == 9
+        # SLURM-reported path wins → no pattern fallback, no warning.
+        assert not any("find " in c for c in calls)
+        assert not any("No log files found" in rec.message for rec in caplog.records)
+
     def test_squeue_null_values_trigger_pattern_fallback(self, client):
-        """squeue prints ``(null)`` for unset fields → treat as not-found."""
+        """Both ``StdOut`` and ``StdErr`` unset → fall through to pattern search."""
 
         def _exec(cmd: str):
             if "scontrol" in cmd:
