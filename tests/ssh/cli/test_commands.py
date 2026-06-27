@@ -77,18 +77,25 @@ class TestSshTestFlags:
     def test_no_transient_connection_flags(self):
         result = runner.invoke(ssh_app, ["test", "--help"])
         assert result.exit_code == 0
-        assert "--hostname" not in result.output
-        assert "--username" not in result.output
-        assert "--key-file" not in result.output
+        # Strip ANSI before substring checks: under CI's render width Rich
+        # emits e.g. ``\x1b[1;2m-\x1b[0m\x1b[1;2m-profile\x1b[0m`` which
+        # splits ``--profile`` across reset+style sequences and breaks a
+        # naive ``"--profile" in output`` check even though the flag is in
+        # fact rendered.
+        output = _strip_ansi(result.output)
+        assert "--hostname" not in output
+        assert "--username" not in output
+        assert "--key-file" not in output
         # --profile present, --host alias kept.
-        assert "--profile" in result.output
-        assert "--host" in result.output
+        assert "--profile" in output
+        assert "--host" in output
 
     def test_profile_has_no_short_p_flag(self):
         # `-p` is reserved for --partition across srunx; ssh test must not bind it.
         result = runner.invoke(ssh_app, ["test", "--help"])
-        assert " -p " not in result.output
-        assert "-p," not in result.output
+        output = _strip_ansi(result.output)
+        assert " -p " not in output
+        assert "-p," not in output
 
 
 class TestRoundTrip:
