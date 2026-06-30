@@ -96,8 +96,21 @@ async def apply_template(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
-    resources = JobResource(**(req.resources or {}))
-    environment = JobEnvironment(**(req.environment or {}))
+    from pydantic import ValidationError
+
+    try:
+        resources = JobResource(**(req.resources or {}))
+        environment = JobEnvironment(**(req.environment or {}))
+    except ValidationError as e:
+        # Invalid env-var keys (validated on JobEnvironment) surface as a
+        # clean 422 rather than a 500.
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                {"loc": list(x["loc"]), "msg": x["msg"], "type": x["type"]}
+                for x in e.errors()
+            ],
+        ) from e
     job = Job(
         name=req.job_name,
         command=req.command,
@@ -138,7 +151,11 @@ async def apply_template(
 
     try:
         result = await anyio.to_thread.run_sync(
-            lambda: adapter.submit_job(script_content, job_name=req.job_name)
+            lambda: adapter.submit_job(
+                script_content,
+                job_name=req.job_name,
+                job_env_vars=job.environment.env_vars,
+            )
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"sbatch failed: {e}") from e

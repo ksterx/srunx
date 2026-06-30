@@ -109,8 +109,16 @@ class SlurmRemoteClient:
         else:
             return command
 
-    def _get_slurm_env_setup(self) -> str:
-        """Get environment setup commands for SLURM execution."""
+    def _get_slurm_env_setup(self, job_env_vars: dict[str, str] | None = None) -> str:
+        """Get environment setup commands for SLURM execution.
+
+        Job-level ``job_env_vars`` merge into the same ``export KEY='value'``
+        prefix as the profile's ``custom_env_vars``, with job keys taking
+        precedence over profile keys (``{**profile, **job}``). This is the
+        SSH realization of the submission-environment route (the local
+        adapter uses the sbatch process env instead); both pair it with
+        ``--export=ALL`` on the remote sbatch.
+        """
         env_commands = [
             "cd ~",
             "source /etc/profile 2>/dev/null || true",
@@ -123,7 +131,8 @@ class SlurmRemoteClient:
             'export PATH="$PATH:/usr/local/bin:/opt/slurm/bin:/cluster/slurm/bin" 2>/dev/null || true',
         ]
 
-        for key, value in self._conn.custom_env_vars.items():
+        merged_env_vars = {**self._conn.custom_env_vars, **(job_env_vars or {})}
+        for key, value in merged_env_vars.items():
             escaped_value = value.replace("'", "'\\''")
             env_commands.append(f"export {key}='{escaped_value}'")
             self.logger.debug(f"Adding custom environment variable: {key}={value}")
@@ -150,9 +159,11 @@ class SlurmRemoteClient:
     # Command execution
     # ------------------------------------------------------------------
 
-    def execute_slurm_command(self, command: str) -> tuple[str, str, int]:
+    def execute_slurm_command(
+        self, command: str, job_env_vars: dict[str, str] | None = None
+    ) -> tuple[str, str, int]:
         """Execute a SLURM command with proper environment."""
-        env_setup = self._get_slurm_env_setup()
+        env_setup = self._get_slurm_env_setup(job_env_vars)
 
         if self._slurm_path:
             slurm_commands = [
@@ -193,6 +204,8 @@ class SlurmRemoteClient:
         script_content: str,
         job_name: str | None = None,
         dependency: str | None = None,
+        *,
+        job_env_vars: dict[str, str] | None = None,
     ) -> SlurmJob | None:
         """Submit an sbatch job with script content."""
         try:
@@ -210,6 +223,14 @@ class SlurmRemoteClient:
                 return None
 
             cmd = f"{self._get_slurm_command('sbatch')}"
+            # --export=ALL propagates the submission environment (job env_vars
+            # merged into the export prefix) to the job — SLURM-specific
+            # realization confined to this adapter (DIP). Applied ONLY when
+            # job env vars are present so a plain submit keeps the script's /
+            # site's export policy intact (a command-line --export overrides
+            # the script's own #SBATCH --export directive).
+            if job_env_vars:
+                cmd += " --export=ALL"
             if job_name:
                 safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", job_name)
                 cmd += f" --job-name={safe_name}"
@@ -219,7 +240,9 @@ class SlurmRemoteClient:
                 cmd += f" --dependency={dependency}"
             cmd += f" {remote_script_path}"
 
-            stdout, stderr, exit_code = self.execute_slurm_command(cmd)
+            stdout, stderr, exit_code = self.execute_slurm_command(
+                cmd, job_env_vars=job_env_vars
+            )
             if exit_code == 0:
                 match = re.search(r"Submitted batch job (\d+)", stdout)
                 if match:
@@ -313,6 +336,7 @@ class SlurmRemoteClient:
         job_name: str | None = None,
         dependency: str | None = None,
         extra_sbatch_args: list[str] | None = None,
+        job_env_vars: dict[str, str] | None = None,
     ) -> SlurmJob | None:
         """Submit a script that already exists on the remote cluster.
 
@@ -344,6 +368,14 @@ class SlurmRemoteClient:
                 return None
 
             cmd_parts: list[str] = [self._get_slurm_command("sbatch")]
+            # --export=ALL propagates the submission environment (job env_vars
+            # merged into the export prefix) to the job — SLURM-specific
+            # realization confined to this adapter (DIP). Applied ONLY when job
+            # env vars are present: this in-place path is documented to
+            # preserve the user's own #SBATCH directives, and a command-line
+            # --export would override the script's #SBATCH --export=NONE.
+            if job_env_vars:
+                cmd_parts.append("--export=ALL")
             if job_name:
                 safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", job_name)
                 cmd_parts.append(f"--job-name={shlex.quote(safe_name)}")
@@ -364,7 +396,9 @@ class SlurmRemoteClient:
             if submit_cwd:
                 cmd = f"cd {shlex.quote(submit_cwd)} && {cmd}"
 
-            stdout, stderr, exit_code = self.execute_slurm_command(cmd)
+            stdout, stderr, exit_code = self.execute_slurm_command(
+                cmd, job_env_vars=job_env_vars
+            )
             if exit_code == 0:
                 match = re.search(r"Submitted batch job (\d+)", stdout)
                 if match:

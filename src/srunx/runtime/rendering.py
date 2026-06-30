@@ -612,21 +612,23 @@ def _build_environment_setup(
 
     Returns:
         A 3-tuple of (env_setup_lines, srun_args, launch_prefix).
-        - env_setup_lines: Shell setup including env vars, conda/venv activation,
-          and container prelude (if any).
+        - env_setup_lines: Shell setup for conda/venv activation and the
+          container prelude (if any).
         - srun_args: Flags passed to srun (Pyxis uses this).
         - launch_prefix: Command wrapper (Apptainer uses this).
+
+    Two-route propagation (SRP): ``env_vars`` are intentionally NOT rendered
+    into the script body here. They travel via the submission environment —
+    the sbatch launching process env + ``sbatch --export=ALL`` (local adapter)
+    or the remote ``export KEY='value' && ...`` prefix + ``--export=ALL``
+    (SSH adapter). Only conda/venv activation and the container prelude are
+    compute-node shell activation and so belong in the script body.
     """
     from srunx.containers import get_runtime
 
     setup_lines: list[str] = []
 
-    # 1. Environment variables (single-quoted to prevent shell injection)
-    for key, value in environment.env_vars.items():
-        escaped_value = str(value).replace("'", "'\\''")
-        setup_lines.append(f"export {key}='{escaped_value}'")
-
-    # 2. Conda/venv activation (independent of container)
+    # Conda/venv activation (independent of container)
     if environment.conda:
         home_dir = Path.home()
         escaped_conda = environment.conda.replace("'", "'\\''")
@@ -641,7 +643,7 @@ def _build_environment_setup(
         escaped_venv = environment.venv.replace("'", "'\\''")
         setup_lines.append(f"source '{escaped_venv}'/bin/activate")
 
-    # 3. Container setup (independent of conda/venv)
+    # Container setup (independent of conda/venv)
     # Only process container if it has an image — a runtime-only container
     # (no image) is not actionable and would generate broken commands.
     srun_args = ""

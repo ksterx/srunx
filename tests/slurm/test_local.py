@@ -147,6 +147,8 @@ class TestSlurm:
             call for call in mock_run.call_args_list if "sbatch" in call[0][0]
         ]
         assert len(sbatch_calls) >= 1
+        # No --env was supplied, so the export policy is left untouched:
+        # plain `sbatch --parsable <script>` with no --export flag.
         assert sbatch_calls[0][0][0] == ["sbatch", "--parsable", "/tmp/shell_job.slurm"]
 
     @patch("time.sleep")

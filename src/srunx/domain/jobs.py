@@ -227,6 +227,30 @@ class JobEnvironment(BaseModel):
         default_factory=dict, description="Environment variables"
     )
 
+    @field_validator("env_vars")
+    @classmethod
+    def validate_env_var_keys(cls, v: dict[str, str]) -> dict[str, str]:
+        """Validate env var keys at the single domain boundary (CLI/Web/MCP).
+
+        Keys must be valid shell identifiers and must not collide with the
+        reserved scheduler namespaces. The identifier regex also rejects
+        empty keys and keys containing newline/NUL.
+        """
+        for key in v:
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                raise ValueError(
+                    f"Invalid environment variable name: '{key}'. "
+                    "Must be a valid identifier (letters, digits, underscores; "
+                    "no leading digit, no whitespace/newline/NUL)."
+                )
+            if key.startswith(("SLURM_", "SBATCH_")):
+                raise ValueError(
+                    f"Invalid environment variable name: '{key}'. "
+                    "The 'SLURM_' and 'SBATCH_' prefixes are reserved by the "
+                    "scheduler and cannot be set via env_vars."
+                )
+        return v
+
     @model_validator(mode="before")
     @classmethod
     def apply_config_defaults(cls, data: dict) -> dict:
@@ -281,6 +305,10 @@ class BaseJob(BaseModel):
                     "Must be a valid identifier (letters, digits, underscores)."
                 )
         return v
+
+    environment: JobEnvironment = Field(
+        default_factory=JobEnvironment, description="Environment setup"
+    )
 
     retry: int = Field(
         default=0, ge=0, description="Number of retry attempts on failure"
@@ -518,9 +546,6 @@ class Job(BaseJob):
     command: str | list[str] = Field(description="Command to execute")
     resources: JobResource = Field(
         default_factory=JobResource, description="Resource requirements"
-    )
-    environment: JobEnvironment = Field(
-        default_factory=JobEnvironment, description="Environment setup"
     )
     log_dir: str = Field(
         default_factory=lambda: os.getenv("SLURM_LOG_DIR", "logs"),

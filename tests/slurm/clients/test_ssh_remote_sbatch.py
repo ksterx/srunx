@@ -202,3 +202,57 @@ def test_submit_remote_sbatch_forwards_extra_args() -> None:
     call_kwargs = inner.call_args.kwargs
     assert call_kwargs["extra_sbatch_args"] == ["--nodes=4", "--gpus-per-node=2"]
     assert call_kwargs["submit_cwd"] == "/r"
+
+
+def test_submit_remote_sbatch_forwards_job_env_vars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--env`` must reach the in-place remote sbatch (regression guard).
+
+    The IN_PLACE CLI path goes through ``submit_remote_sbatch`` (it passes
+    ``callbacks_job=job``); the job's ``environment.env_vars`` must be forwarded
+    to ``submit_remote_sbatch_file`` or ``--env`` is silently dropped on the
+    primary CLI SSH path.
+    """
+    from srunx.domain import JobEnvironment
+
+    adapter = _bare_adapter()
+    inner = MagicMock()
+    inner_result = MagicMock(spec=["job_id", "name"])
+    inner_result.job_id = "55"
+    inner_result.name = "train"
+    inner.return_value = inner_result
+    adapter._client.slurm.submit_remote_sbatch_file = inner  # type: ignore[method-assign]
+    monkeypatch.setattr(adapter, "_record_job_submission", lambda *a, **kw: None)
+
+    job = ShellJob(
+        name="train",
+        script_path="/cluster/share/ml/train.sh",
+        environment=JobEnvironment(env_vars={"FOO": "bar"}),
+    )
+    adapter.submit_remote_sbatch(
+        "/cluster/share/ml/train.sh",
+        submit_cwd="/cluster/share/ml",
+        job_name="train",
+        callbacks_job=job,
+    )
+
+    assert inner.call_args.kwargs["job_env_vars"] == {"FOO": "bar"}
+
+
+def test_submit_remote_sbatch_no_job_forwards_none_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy callers without a job carry no job-level env (None, not crash)."""
+    adapter = _bare_adapter()
+    inner = MagicMock()
+    inner_result = MagicMock(spec=["job_id", "name"])
+    inner_result.job_id = "56"
+    inner_result.name = "x"
+    inner.return_value = inner_result
+    adapter._client.slurm.submit_remote_sbatch_file = inner  # type: ignore[method-assign]
+    monkeypatch.setattr(adapter, "_record_job_submission", lambda *a, **kw: None)
+
+    adapter.submit_remote_sbatch("/r/x.sh")
+
+    assert inner.call_args.kwargs["job_env_vars"] is None

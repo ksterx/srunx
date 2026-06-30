@@ -59,8 +59,22 @@ async def preview_script(req: ScriptPreviewRequest) -> ScriptPreviewResponse:
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
-    resources = JobResource(**(req.resources or {}))
-    environment = JobEnvironment(**(req.environment or {}))
+    from pydantic import ValidationError
+
+    try:
+        resources = JobResource(**(req.resources or {}))
+        environment = JobEnvironment(**(req.environment or {}))
+    except ValidationError as e:
+        # Surface domain validation (e.g. invalid env-var keys) as a clean
+        # 422 instead of a 500 — the env_vars key validator lives on
+        # JobEnvironment, so a bad key reaches here as a ValidationError.
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                {"loc": list(x["loc"]), "msg": x["msg"], "type": x["type"]}
+                for x in e.errors()
+            ],
+        ) from e
     job = Job(
         name=req.name,
         command=req.command,

@@ -272,12 +272,17 @@ async def submit_jobs_bfs(
                     cwd: str = submit_cwd,
                     n: str = current_name,
                     d: str | None = dependency,
+                    cj: Any = current_job,
                 ) -> int:
+                    # Pass the real job as ``callbacks_job`` so the adapter
+                    # forwards its ``environment.env_vars`` to the remote
+                    # ``sbatch`` (env is no longer baked into the script body).
                     submitted_obj = adapter.submit_remote_sbatch(
                         rp,
                         submit_cwd=cwd,
                         job_name=n,
                         dependency=d,
+                        callbacks_job=cj,
                     )
                     if submitted_obj is None or submitted_obj.job_id is None:
                         raise RuntimeError("remote sbatch returned no job_id")
@@ -288,7 +293,10 @@ async def submit_jobs_bfs(
                 result = await anyio.to_thread.run_sync(
                     lambda s=scripts[current_name],  # type: ignore[misc]
                     n=current_name,
-                    d=dependency: adapter.submit_job(s, job_name=n, dependency=d)
+                    d=dependency,
+                    e=current_job.environment.env_vars: adapter.submit_job(
+                        s, job_name=n, dependency=d, job_env_vars=e
+                    )
                 )
                 slurm_id = int(result["job_id"])
             submitted[current_name] = str(slurm_id)

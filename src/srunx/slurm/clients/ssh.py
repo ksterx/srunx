@@ -409,6 +409,8 @@ class SlurmSSHClient:
         script_content: str,
         job_name: str | None = None,
         dependency: str | None = None,
+        *,
+        job_env_vars: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Submit a job via sbatch. Returns job info dict.
 
@@ -417,11 +419,19 @@ class SlurmSSHClient:
         ``web.routers.templates``). New code should call :meth:`submit`
         with a :class:`~srunx.domain.Job` instance. This alias will
         remain until those routers migrate to the Protocol surface.
+
+        ``job_env_vars`` carries job-level environment overrides to the
+        remote ``sbatch`` export prefix (env is no longer baked into the
+        rendered script body), so callers that build a ``JobEnvironment``
+        must forward its ``env_vars`` here or those variables are dropped.
         """
         with self._io_lock:
             self._ensure_connected()
             result = self._client.slurm.submit_sbatch_job(
-                script_content, job_name=job_name, dependency=dependency
+                script_content,
+                job_name=job_name,
+                dependency=dependency,
+                job_env_vars=job_env_vars,
             )
         if result is None:
             raise RuntimeError("sbatch submission failed")
@@ -469,6 +479,13 @@ class SlurmSSHClient:
         """
         from srunx.domain import JobStatus, ShellJob
 
+        # Job-level env rides on the real job instance (``callbacks_job``); the
+        # SSH adapter realizes it as the remote export prefix + ``--export=ALL``.
+        # ISP — no env param on the JobOperations surface. Legacy callers that
+        # pass no job (``callbacks_job is None``) carry no job-level env.
+        job_env_vars = (
+            callbacks_job.environment.env_vars if callbacks_job is not None else None
+        )
         with self._io_lock:
             self._ensure_connected()
             result = self._client.slurm.submit_remote_sbatch_file(
@@ -477,6 +494,7 @@ class SlurmSSHClient:
                 job_name=job_name,
                 dependency=dependency,
                 extra_sbatch_args=extra_sbatch_args,
+                job_env_vars=job_env_vars,
             )
         if result is None or not result.job_id:
             raise RuntimeError("remote sbatch submission failed")
@@ -689,8 +707,13 @@ class SlurmSSHClient:
         try:
             with self._io_lock:
                 self._ensure_connected()
+                # Job-level env rides on ``job.environment`` (ISP — no env
+                # params on the JobOperations.submit protocol); the SSH adapter
+                # realizes it as the remote export prefix + ``--export=ALL``.
                 result = self._client.slurm.submit_sbatch_job(
-                    script_content, job_name=job.name
+                    script_content,
+                    job_name=job.name,
+                    job_env_vars=job.environment.env_vars,
                 )
         except paramiko.AuthenticationException as exc:
             raise TransportAuthError(f"SSH authentication failed: {exc}") from exc
@@ -1087,15 +1110,22 @@ class SlurmSSHClient:
                     script_content = f.read()
 
             # --- 2. Submit via SSH ---
+            # Job-level env rides on ``job.environment`` (ISP — no env params
+            # on the JobOperations.submit protocol); the SSH adapter realizes
+            # it as the remote export prefix + ``--export=ALL``.
+            job_env_vars = job.environment.env_vars
             if in_place_remote_path is not None:
                 result = self._client.slurm.submit_remote_sbatch_file(
                     in_place_remote_path,
                     submit_cwd=in_place_submit_cwd,
                     job_name=job.name,
+                    job_env_vars=job_env_vars,
                 )
             else:
                 result = self._client.slurm.submit_sbatch_job(
-                    script_content, job_name=job.name
+                    script_content,
+                    job_name=job.name,
+                    job_env_vars=job_env_vars,
                 )
             if result is None or not result.job_id:
                 raise RuntimeError(f"Failed to submit job '{job.name}' via SSH")

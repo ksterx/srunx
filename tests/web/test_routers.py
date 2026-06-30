@@ -747,7 +747,9 @@ class TestWorkflowsRouter:
         # Mock submit_job to return incrementing job IDs
         call_count = 0
 
-        def mock_submit(script_content, job_name=None, dependency=None):
+        def mock_submit(
+            script_content, job_name=None, dependency=None, job_env_vars=None
+        ):
             nonlocal call_count
             call_count += 1
             return {
@@ -823,7 +825,9 @@ class TestWorkflowsRouter:
 
         call_count = 0
 
-        def mock_submit(script_content, job_name=None, dependency=None):
+        def mock_submit(
+            script_content, job_name=None, dependency=None, job_env_vars=None
+        ):
             nonlocal call_count
             call_count += 1
             return {
@@ -1130,7 +1134,9 @@ class TestWorkflowsRouter:
         # sbatch outage between siblings.
         call_count = 0
 
-        def mock_submit(script_content, job_name=None, dependency=None):
+        def mock_submit(
+            script_content, job_name=None, dependency=None, job_env_vars=None
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -1727,6 +1733,18 @@ class TestScriptPreview:
         assert "ml_env" in script
         assert data["template_used"] == "base"
 
+    def test_preview_invalid_env_key_returns_422(self, client: TestClient) -> None:
+        """An invalid env-var key surfaces as 422, not a 500."""
+        resp = client.post(
+            "/api/jobs/preview",
+            json={
+                "name": "bad-env",
+                "command": ["echo", "hi"],
+                "environment": {"env_vars": {"SLURM_FOO": "x"}},
+            },
+        )
+        assert resp.status_code == 422
+
     def test_preview_with_specific_template(self, client: TestClient) -> None:
         """Preview with template_name='base' uses the base template."""
         resp = client.post(
@@ -1845,6 +1863,19 @@ class TestTemplatesRouter:
         assert data["template_used"] == "base"
         assert "#!/bin/bash" in data["script"]
 
+    def test_apply_invalid_env_key_returns_422(self, client: TestClient) -> None:
+        """An invalid env-var key surfaces as 422, not a 500."""
+        resp = client.post(
+            "/api/templates/base/apply",
+            json={
+                "command": ["echo", "hi"],
+                "job_name": "bad-env",
+                "environment": {"env_vars": {"bad-key": "x"}},
+                "preview_only": True,
+            },
+        )
+        assert resp.status_code == 422
+
     def test_apply_submits_job(
         self, client: TestClient, mock_adapter: MagicMock
     ) -> None:
@@ -1925,6 +1956,7 @@ class TestWorkflowExecutionControl:
             script_content: str,
             job_name: str | None = None,
             dependency: str | None = None,
+            job_env_vars: dict | None = None,
         ) -> dict:
             counter["n"] += 1
             return {
@@ -2353,7 +2385,9 @@ class TestWorkflowsRouterInPlace:
 
         counter = {"n": 0}
 
-        def fake_submit(script_content, job_name=None, dependency=None):
+        def fake_submit(
+            script_content, job_name=None, dependency=None, job_env_vars=None
+        ):
             counter["n"] += 1
             return {
                 "name": job_name or "job",

@@ -128,6 +128,29 @@ class TestJobEnvironment:
         assert env.container is None
         assert env.env_vars["TEST"] == "value"
 
+    def test_env_vars_valid_mapping_preserved(self):
+        """AC-3: a valid env_vars mapping constructs and is preserved."""
+        env = JobEnvironment(env_vars={"FOO": "bar", "_BAZ2": "qux"})
+        assert env.env_vars == {"FOO": "bar", "_BAZ2": "qux"}
+
+    @pytest.mark.parametrize("bad_key", ["1BAD", "", "FOO BAR", "FOO-BAR", "FOO.BAR"])
+    def test_env_vars_invalid_identifier_rejected(self, bad_key):
+        """AC-1: keys that are not valid identifiers raise ValueError."""
+        with pytest.raises(ValidationError):
+            JobEnvironment(env_vars={bad_key: "x"})
+
+    @pytest.mark.parametrize("bad_key", ["FOO\nBAR", "FOO\x00BAR"])
+    def test_env_vars_newline_or_nul_rejected(self, bad_key):
+        """AC-1: keys with newline/NUL are rejected by the identifier regex."""
+        with pytest.raises(ValidationError):
+            JobEnvironment(env_vars={bad_key: "x"})
+
+    @pytest.mark.parametrize("bad_key", ["SLURM_FOO", "SBATCH_FOO"])
+    def test_env_vars_reserved_prefix_rejected(self, bad_key):
+        """AC-2: SLURM_/SBATCH_ prefixed keys are rejected."""
+        with pytest.raises(ValidationError):
+            JobEnvironment(env_vars={bad_key: "x"})
+
 
 class TestContainerResource:
     """Test ContainerResource model updates (T6.2)."""
@@ -459,6 +482,14 @@ class TestShellJob:
         with pytest.raises(ValidationError):
             # Missing path
             ShellJob()
+
+    def test_shell_job_carries_environment_env_vars(self):
+        """REQ-2: ShellJob inherits `environment` from BaseJob and carries env_vars."""
+        job = ShellJob(
+            script_path="/path/to/script.sh",
+            environment=JobEnvironment(env_vars={"FOO": "bar"}),
+        )
+        assert job.environment.env_vars == {"FOO": "bar"}
 
 
 class TestStatusThrottle:
