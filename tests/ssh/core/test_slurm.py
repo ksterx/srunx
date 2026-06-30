@@ -10,6 +10,7 @@ graph for us) but exercises the slurm component directly via
   file ops the slurm component calls back into.
 """
 
+import shlex
 from unittest.mock import Mock, patch
 
 import pytest
@@ -116,6 +117,114 @@ class TestSubmitSbatchJob:
 
         job = client.slurm.submit_sbatch_job(script_content, job_name="test_job")
         assert job is None
+
+
+class TestJobEnvPropagation:
+    """AC-7: job env_vars ride into the remote env prefix + --export=ALL.
+
+    Mocks ``connection.execute_command`` so we can inspect the *full* shell
+    command (env prefix + sbatch) that gets sent to the remote — the env
+    prefix is assembled in ``execute_slurm_command`` / ``_get_slurm_env_setup``,
+    which we exercise for real here.
+    """
+
+    def _capture_remote_command(self, client):
+        captured: dict[str, str] = {}
+
+        def fake_execute(cmd: str):
+            captured["cmd"] = cmd
+            # execute_slurm_command wraps the real command in
+            # ``bash -l -c '<inner>'``; the inner command's own single quotes
+            # are re-escaped by that outer wrapper. Unwrap with shlex so
+            # assertions see the de-escaped command actually run on the remote.
+            try:
+                parts = shlex.split(cmd)
+                captured["inner"] = parts[-1] if parts else cmd
+            except ValueError:
+                captured["inner"] = cmd
+            return ("Submitted batch job 12345", "", 0)
+
+        client.connection.execute_command = Mock(side_effect=fake_execute)
+        client.slurm._get_slurm_command = Mock(return_value="sbatch")
+        return captured
+
+    def test_temp_upload_path_env_prefix_and_export_all(self, client):
+        client.files.write_remote_file = Mock()
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = self._capture_remote_command(client)
+
+        job = client.slurm.submit_sbatch_job(
+            "#!/bin/bash\necho hi",
+            job_name="test_job",
+            job_env_vars={"FOO": "bar"},
+        )
+
+        assert job is not None and job.job_id == "12345"
+        assert "export FOO='bar'" in captured["inner"]
+        assert "--export=ALL" in captured["inner"]
+
+    def test_in_place_path_env_prefix_and_export_all(self, client):
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = self._capture_remote_command(client)
+
+        job = client.slurm.submit_remote_sbatch_file(
+            "/remote/run.sh",
+            job_name="test_job",
+            job_env_vars={"FOO": "bar"},
+        )
+
+        assert job is not None and job.job_id == "12345"
+        assert "export FOO='bar'" in captured["inner"]
+        assert "--export=ALL" in captured["inner"]
+
+    def test_env_value_single_quote_escaped(self, client):
+        client.files.write_remote_file = Mock()
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = self._capture_remote_command(client)
+
+        client.slurm.submit_sbatch_job(
+            "#!/bin/bash\necho hi",
+            job_name="test_job",
+            job_env_vars={"MSG": "it's working"},
+        )
+
+        # Single quote escaped as '\'' within the single-quoted value.
+        assert "export MSG='it'\\''s working'" in captured["inner"]
+
+    def test_job_env_overrides_profile_custom_env(self, client):
+        client.connection.custom_env_vars = {"FOO": "profile"}
+        client.files.write_remote_file = Mock()
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = self._capture_remote_command(client)
+
+        client.slurm.submit_sbatch_job(
+            "#!/bin/bash\necho hi",
+            job_name="test_job",
+            job_env_vars={"FOO": "job"},
+        )
+
+        # Job key wins ({**profile, **job}); only the job value is exported.
+        assert "export FOO='job'" in captured["inner"]
+        assert "export FOO='profile'" not in captured["inner"]
+
+    def test_no_job_env_omits_export_all_temp_upload(self, client):
+        """No job env → no --export=ALL, so the script's export policy wins."""
+        client.files.write_remote_file = Mock()
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = self._capture_remote_command(client)
+
+        client.slurm.submit_sbatch_job("#!/bin/bash\necho hi", job_name="test_job")
+
+        assert "--export=ALL" not in captured["inner"]
+
+    def test_no_job_env_omits_export_all_in_place(self, client):
+        """In-place path must preserve the user's own #SBATCH directives."""
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = self._capture_remote_command(client)
+
+        client.slurm.submit_remote_sbatch_file("/remote/run.sh", job_name="test_job")
+
+        assert "--export=ALL" not in captured["inner"]
 
 
 class TestCleanupJobFiles:

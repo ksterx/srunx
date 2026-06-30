@@ -92,7 +92,9 @@ class TestSSHAdapterRun:
 
         submit_calls: list[dict[str, object]] = []
 
-        def fake_submit(script_content: str, *, job_name=None, dependency=None):
+        def fake_submit(
+            script_content: str, *, job_name=None, dependency=None, job_env_vars=None
+        ):
             submit_calls.append({"content": script_content, "name": job_name})
             sj = MagicMock()
             sj.job_id = "42"
@@ -603,7 +605,9 @@ class TestSSHAdapterRunSubmissionContext:
 
         captured: dict[str, object] = {}
 
-        def fake_submit(script_content: str, *, job_name=None, dependency=None):
+        def fake_submit(
+            script_content: str, *, job_name=None, dependency=None, job_env_vars=None
+        ):
             captured["content"] = script_content
             sj = MagicMock()
             sj.job_id = "1"
@@ -661,7 +665,9 @@ class TestSSHAdapterRunSubmissionContext:
 
         captured: dict[str, object] = {}
 
-        def fake_submit(script_content: str, *, job_name=None, dependency=None):
+        def fake_submit(
+            script_content: str, *, job_name=None, dependency=None, job_env_vars=None
+        ):
             captured["content"] = script_content
             sj = MagicMock()
             sj.job_id = "2"
@@ -708,7 +714,9 @@ class TestSSHAdapterRunSubmissionContext:
 
         captured: dict[str, object] = {}
 
-        def fake_submit(script_content: str, *, job_name=None, dependency=None):
+        def fake_submit(
+            script_content: str, *, job_name=None, dependency=None, job_env_vars=None
+        ):
             captured["content"] = script_content
             sj = MagicMock()
             sj.job_id = "3"
@@ -756,7 +764,9 @@ class TestSSHAdapterRunSubmissionContext:
             log_dir="",
         )
 
-        def fake_submit(script_content: str, *, job_name=None, dependency=None):
+        def fake_submit(
+            script_content: str, *, job_name=None, dependency=None, job_env_vars=None
+        ):
             sj = MagicMock()
             sj.job_id = "4242"
             sj.name = job_name
@@ -869,3 +879,49 @@ class TestIsConnected:
             "boom"
         )
         assert adapter.is_connected is False
+
+
+class TestSubmitForwardsJobEnv:
+    """``submit`` (TEMP_UPLOAD CLI path) must forward ``--env`` (regression guard).
+
+    ``rt.job_ops.submit`` is the live CLI SSH path for the tmp-upload mode; the
+    job's ``environment.env_vars`` must reach ``submit_sbatch_job`` or ``--env``
+    is silently dropped there.
+    """
+
+    def test_submit_forwards_job_env_vars(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        from srunx.domain import JobEnvironment, ShellJob
+
+        script = tmp_path / "train.sh"
+        script.write_text("#!/bin/bash\necho hi\n")
+
+        adapter = _bare_adapter()
+        job = ShellJob(
+            name="train",
+            script_path=str(script),
+            environment=JobEnvironment(env_vars={"FOO": "bar"}),
+        )
+
+        captured: dict[str, object] = {}
+
+        def fake_submit(
+            script_content: str, *, job_name=None, dependency=None, job_env_vars=None
+        ):
+            captured["job_env_vars"] = job_env_vars
+            sj = MagicMock()
+            sj.job_id = "9"
+            sj.name = job_name
+            return sj
+
+        adapter._client.slurm.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
+        monkeypatch.setattr(
+            SlurmSSHClient,
+            "_record_job_submission",
+            staticmethod(lambda *a, **k: None),
+        )
+
+        adapter.submit(job)
+
+        assert captured["job_env_vars"] == {"FOO": "bar"}

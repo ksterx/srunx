@@ -950,57 +950,62 @@ class TestPerJobTemplate:
 class TestShellInjectionPrevention:
     """Test that shell injection is prevented in rendered scripts."""
 
-    def test_env_vars_semicolon_injection(self, temp_dir):
-        """Semicolons in env var values must not break out of the export statement."""
-        template_path = get_template_path("base")
-        job = Job(
-            name="injection_test",
-            command=["echo", "hello"],
-            environment=JobEnvironment(
-                env_vars={"EVIL": "foo; rm -rf /"},
-            ),
-            log_dir="",
-            work_dir="",
-        )
-        script_path = render_job_script(template_path, job, temp_dir)
-        content = Path(script_path).read_text()
-        # The value must be single-quoted, preventing the semicolon from executing
-        assert "export EVIL='foo; rm -rf /'" in content
-        # Must NOT contain unquoted export
-        assert "export EVIL=foo;" not in content
+    def test_env_vars_not_baked_into_script_body(self, temp_dir):
+        """AC-5: env_vars are no longer rendered as `export KEY=` lines.
 
-    def test_env_vars_command_substitution_injection(self, temp_dir):
-        """Command substitution in env var values must be quoted."""
+        env_vars now travel via the submission environment (sbatch process
+        env + --export=ALL locally / remote export prefix over SSH), so the
+        rendered script body must contain no `export FOO=` line for them —
+        the former script-body injection surface is gone.
+        """
         template_path = get_template_path("base")
         job = Job(
-            name="subst_test",
+            name="env_no_bake",
             command=["echo", "hello"],
             environment=JobEnvironment(
-                env_vars={"CMD": "$(whoami)"},
+                env_vars={"FOO": "bar", "EVIL": "foo; rm -rf /"},
             ),
             log_dir="",
             work_dir="",
         )
         script_path = render_job_script(template_path, job, temp_dir)
         content = Path(script_path).read_text()
-        assert "export CMD='$(whoami)'" in content
+        assert "export FOO=" not in content
+        assert "export EVIL=" not in content
 
-    def test_env_vars_single_quote_escaping(self, temp_dir):
-        """Single quotes within values must be properly escaped."""
+    def test_shell_job_env_vars_not_baked_into_script_body(self, temp_dir, tmp_path):
+        """AC-5: ShellJob bodies also do not bake in env_vars export lines."""
+        from srunx.domain import ShellJob
+        from srunx.runtime.rendering import render_shell_job_script
+
+        user_script = tmp_path / "run.sh"
+        user_script.write_text("#!/bin/bash\necho hi\n")
+        job = ShellJob(
+            name="shell_env_no_bake",
+            script_path=str(user_script),
+            environment=JobEnvironment(env_vars={"FOO": "bar"}),
+        )
+        script_path = render_shell_job_script(str(user_script), job, temp_dir)
+        content = Path(script_path).read_text()
+        assert "export FOO=" not in content
+
+    def test_conda_activation_still_rendered_with_env_vars(self, temp_dir):
+        """AC-5: conda/venv activation lines remain even when env_vars are set."""
         template_path = get_template_path("base")
         job = Job(
-            name="quote_test",
+            name="env_with_conda",
             command=["echo", "hello"],
             environment=JobEnvironment(
-                env_vars={"MSG": "it's working"},
+                conda="my_env",
+                env_vars={"FOO": "bar"},
             ),
             log_dir="",
             work_dir="",
         )
         script_path = render_job_script(template_path, job, temp_dir)
         content = Path(script_path).read_text()
-        # Single quote must be escaped as '\'' within single-quoted string
-        assert "export MSG='it'\\''s working'" in content
+        assert "conda activate 'my_env'" in content
+        assert "export FOO=" not in content
 
     def test_conda_name_injection(self, temp_dir):
         """Conda env name with special chars must be quoted."""

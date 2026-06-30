@@ -324,7 +324,9 @@ class TestRenderParity:
 
         captured: dict[str, str] = {}
 
-        def fake_submit(script_content: str, *, job_name=None, dependency=None):
+        def fake_submit(
+            script_content: str, *, job_name=None, dependency=None, job_env_vars=None
+        ):
             captured["script"] = script_content
             slurm_job = MagicMock()
             slurm_job.job_id = "99999"

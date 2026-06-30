@@ -5,6 +5,7 @@ from __future__ import annotations
 import glob
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -31,6 +32,34 @@ if TYPE_CHECKING:
     from srunx.slurm.protocols import JobSnapshot, LogChunk
 
 logger = get_logger(__name__)
+
+
+def _sbatch_invocation(
+    script_path: str, env_vars: dict[str, str]
+) -> tuple[list[str], dict[str, str] | None]:
+    """Build the local ``sbatch`` argv + subprocess environment.
+
+    Job-level env vars are realized by composing the submitter process
+    environment and forcing ``--export=ALL`` so SLURM propagates them — this
+    SLURM-specific realization is confined to this adapter (DIP).
+
+    When no env vars are requested we deliberately leave the export policy
+    untouched: no ``--export`` flag (so a script's own ``#SBATCH
+    --export=NONE`` / site default still wins) and ``env=None`` so the child
+    inherits the parent environment unchanged.
+
+    When env vars ARE present we resolve the ``sbatch`` binary against the
+    *launcher's* PATH up front, so a job-level ``PATH`` override (which we
+    still propagate to the job via ``--export=ALL``) can't hide the ``sbatch``
+    executable from the launcher itself.
+    """
+    if not env_vars:
+        return ["sbatch", "--parsable", script_path], None
+    sbatch_bin = shutil.which("sbatch") or "sbatch"
+    return (
+        [sbatch_bin, "--parsable", "--export=ALL", script_path],
+        {**os.environ, **env_vars},
+    )
 
 
 class LocalClient:
@@ -112,8 +141,13 @@ class LocalClient:
                 )
                 logger.debug(f"Generated SLURM script at: {script_path}")
 
-                # Submit job with sbatch --parsable for reliable job ID extraction
-                sbatch_cmd = ["sbatch", "--parsable", script_path]
+                # Submit job with sbatch --parsable for reliable job ID
+                # extraction. --export=ALL + composed env applies ONLY when
+                # job env vars are present, so plain submits keep the script's
+                # / site's export policy (see _sbatch_invocation).
+                sbatch_cmd, proc_env = _sbatch_invocation(
+                    script_path, job.environment.env_vars
+                )
                 if job.environment.container:
                     logger.debug(f"Using container: {job.environment.container}")
 
@@ -125,6 +159,7 @@ class LocalClient:
                         capture_output=True,
                         text=True,
                         check=True,
+                        env=proc_env,
                     )
                 except subprocess.CalledProcessError as e:
                     logger.error(f"Failed to submit job '{job.name}': {e}")
@@ -139,12 +174,18 @@ class LocalClient:
                 script_path = render_shell_job_script(
                     job.script_path, job, temp_dir, verbose
                 )
+                # --export=ALL + composed env only when env vars are present
+                # (see _sbatch_invocation) — Job branch documents the rationale.
+                sbatch_cmd, proc_env = _sbatch_invocation(
+                    script_path, job.environment.env_vars
+                )
                 try:
                     result = subprocess.run(
-                        ["sbatch", "--parsable", script_path],
+                        sbatch_cmd,
                         capture_output=True,
                         text=True,
                         check=True,
+                        env=proc_env,
                     )
                 except subprocess.CalledProcessError as e:
                     logger.error(f"Failed to submit job '{job.script_path}': {e}")

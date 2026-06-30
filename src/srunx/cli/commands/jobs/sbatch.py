@@ -309,15 +309,19 @@ def sbatch(
 
     job: Job | ShellJob
     if script is not None:
-        # ShellJob's schema is intentionally thin: it only records the
-        # script path + script_vars. Resource / environment configuration
-        # travels with the script itself rather than the model, so we do
-        # not forward ``resources`` / ``environment`` / ``log_dir`` /
-        # ``work_dir`` here. Those CLI flags are accepted for UX symmetry
-        # with --wrap submits but are no-ops under positional script mode.
+        # ShellJob's schema is intentionally thin: it records the script
+        # path + script_vars. Resource configuration (``resources`` /
+        # ``log_dir`` / ``work_dir``) still travels with the script itself
+        # rather than the model, so those CLI flags remain no-ops under
+        # positional script mode. ``environment`` IS forwarded: env_vars
+        # propagate via the submission environment (sbatch process env +
+        # --export=ALL locally / remote export prefix + --export=ALL over
+        # SSH), so --env is effective for positional scripts identically to
+        # --wrap.
         shell_data: dict[str, Any] = {
             "name": name,
             "script_path": str(script),
+            "environment": environment,
         }
         job = ShellJob.model_validate(shell_data)
     else:

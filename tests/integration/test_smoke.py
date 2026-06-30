@@ -93,10 +93,12 @@ class TestTemplateRendering:
             assert "#SBATCH --time=8:00:00" in content
             assert "#SBATCH --partition=gpu" in content
 
-            # Verify environment setup
+            # Verify environment setup: conda activation stays in the body,
+            # but env_vars are no longer baked in — they travel via the
+            # submission environment (sbatch process env + --export=ALL).
             assert "conda activate 'pytorch'" in content
-            assert "export CUDA_VISIBLE_DEVICES='0,1,2,3'" in content
-            assert "export OMP_NUM_THREADS='8'" in content
+            assert "export CUDA_VISIBLE_DEVICES=" not in content
+            assert "export OMP_NUM_THREADS=" not in content
 
             # Verify command
             assert "python train.py --epochs 100" in content

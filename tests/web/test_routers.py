@@ -747,7 +747,9 @@ class TestWorkflowsRouter:
         # Mock submit_job to return incrementing job IDs
         call_count = 0
 
-        def mock_submit(script_content, job_name=None, dependency=None):
+        def mock_submit(
+            script_content, job_name=None, dependency=None, job_env_vars=None
+        ):
             nonlocal call_count
             call_count += 1
             return {
@@ -823,7 +825,9 @@ class TestWorkflowsRouter:
 
         call_count = 0
 
-        def mock_submit(script_content, job_name=None, dependency=None):
+        def mock_submit(
+            script_content, job_name=None, dependency=None, job_env_vars=None
+        ):
             nonlocal call_count
             call_count += 1
             return {
@@ -1130,7 +1134,9 @@ class TestWorkflowsRouter:
         # sbatch outage between siblings.
         call_count = 0
 
-        def mock_submit(script_content, job_name=None, dependency=None):
+        def mock_submit(
+            script_content, job_name=None, dependency=None, job_env_vars=None
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -1925,6 +1931,7 @@ class TestWorkflowExecutionControl:
             script_content: str,
             job_name: str | None = None,
             dependency: str | None = None,
+            job_env_vars: dict | None = None,
         ) -> dict:
             counter["n"] += 1
             return {
@@ -2353,7 +2360,9 @@ class TestWorkflowsRouterInPlace:
 
         counter = {"n": 0}
 
-        def fake_submit(script_content, job_name=None, dependency=None):
+        def fake_submit(
+            script_content, job_name=None, dependency=None, job_env_vars=None
+        ):
             counter["n"] += 1
             return {
                 "name": job_name or "job",

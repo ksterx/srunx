@@ -138,7 +138,11 @@ async def apply_template(
 
     try:
         result = await anyio.to_thread.run_sync(
-            lambda: adapter.submit_job(script_content, job_name=req.job_name)
+            lambda: adapter.submit_job(
+                script_content,
+                job_name=req.job_name,
+                job_env_vars=job.environment.env_vars,
+            )
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"sbatch failed: {e}") from e
