@@ -269,6 +269,32 @@ class TestMountConfigExcludePatterns:
         assert loaded_profile is not None
         assert loaded_profile.mounts[0].exclude_patterns == ()
 
+    def test_add_profile_mount_rejects_duplicate_name(self, temp_config_file):
+        cm = ConfigManager(temp_config_file)
+        cm.add_profile(
+            "p", ServerProfile(hostname="h", username="u", key_filename="/k")
+        )
+        cm.add_profile_mount("p", MountConfig(name="m", local="/tmp/a", remote="/r/a"))
+
+        with pytest.raises(ValueError, match="already exists"):
+            cm.add_profile_mount(
+                "p", MountConfig(name="m", local="/tmp/b", remote="/r/b")
+            )
+
+    def test_add_profile_mount_rejects_duplicate_local(self, temp_config_file):
+        cm = ConfigManager(temp_config_file)
+        cm.add_profile(
+            "p", ServerProfile(hostname="h", username="u", key_filename="/k")
+        )
+        cm.add_profile_mount("p", MountConfig(name="m", local="/tmp/a", remote="/r/a"))
+
+        # Same local under a different name + remote is rejected at the
+        # shared path, so the Web API inherits the guard too.
+        with pytest.raises(ValueError, match="already mounted"):
+            cm.add_profile_mount(
+                "p", MountConfig(name="m2", local="/tmp/a", remote="/r/other")
+            )
+
 
 class TestMountConfigImmutability:
     """Verify frozen=True + tuple exclude_patterns cannot be mutated.

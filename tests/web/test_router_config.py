@@ -137,3 +137,35 @@ class TestSSHStatus:
             data = resp.json()
             assert data["connected"] is False
             assert data["profile_name"] is None
+
+
+class TestAddProfileMount:
+    """The Web API shares the CLI's per-profile uniqueness guard because
+    both go through ConfigManager.add_profile_mount."""
+
+    def _seed_profile_with_mount(self) -> None:
+        from srunx.ssh.core.config import ConfigManager, MountConfig, ServerProfile
+
+        cm = ConfigManager()
+        cm.add_profile(
+            "p", ServerProfile(hostname="h", username="u", key_filename="/k")
+        )
+        cm.add_profile_mount("p", MountConfig(name="m", local="/tmp/a", remote="/r/a"))
+
+    def test_rejects_duplicate_local(self, client: TestClient) -> None:
+        self._seed_profile_with_mount()
+        resp = client.post(
+            "/api/config/ssh/profiles/p/mounts",
+            json={"name": "m2", "local": "/tmp/a", "remote": "/r/other"},
+        )
+        assert resp.status_code == 409
+        assert "already mounted" in resp.json()["detail"]
+
+    def test_rejects_duplicate_name(self, client: TestClient) -> None:
+        self._seed_profile_with_mount()
+        resp = client.post(
+            "/api/config/ssh/profiles/p/mounts",
+            json={"name": "m", "local": "/tmp/b", "remote": "/r/b"},
+        )
+        assert resp.status_code == 409
+        assert "already exists" in resp.json()["detail"]

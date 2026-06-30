@@ -265,15 +265,40 @@ class ConfigManager:
         return False
 
     def add_profile_mount(self, profile_name: str, mount: MountConfig) -> bool:
-        """Add a mount to a profile."""
-        if profile_name in self.config_data.get("profiles", {}):
-            profile_data = self.config_data["profiles"][profile_name]
-            if "mounts" not in profile_data:
-                profile_data["mounts"] = []
-            profile_data["mounts"].append(mount.model_dump())
-            self.save_config()
-            return True
-        return False
+        """Add a mount to a profile.
+
+        Enforces two per-profile uniqueness invariants here (the shared
+        add path) rather than in the CLI, so every entry point — CLI,
+        Web API, future callers — gets the same guarantee:
+
+        * mount names are unique;
+        * ``local`` roots are unique. ``MountConfig`` resolves ``local``
+          to an absolute path, so the check catches ``~/x`` vs
+          ``/Users/me/x``. Two mounts sharing a local root would make
+          ``ssh sync``'s cwd auto-detection ambiguous (first match
+          silently wins).
+
+        Raises:
+            ValueError: When the mount name or local path collides with
+                an existing mount on the profile.
+        """
+        if profile_name not in self.config_data.get("profiles", {}):
+            return False
+        profile_data = self.config_data["profiles"][profile_name]
+        existing = profile_data.get("mounts", [])
+        for m in existing:
+            if m.get("name") == mount.name:
+                raise ValueError(
+                    f"Mount '{mount.name}' already exists for profile '{profile_name}'"
+                )
+            if m.get("local") == mount.local:
+                raise ValueError(
+                    f"Local path '{mount.local}' is already mounted as "
+                    f"'{m.get('name')}' in profile '{profile_name}'"
+                )
+        profile_data.setdefault("mounts", []).append(mount.model_dump())
+        self.save_config()
+        return True
 
     def remove_profile_mount(self, profile_name: str, mount_name: str) -> bool:
         """Remove a mount from a profile by name."""

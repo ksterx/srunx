@@ -340,7 +340,11 @@ async def add_profile_mount(name: str, body: MountCreateRequest) -> dict[str, An
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
 
-    cm.add_profile_mount(name, mount)
+    try:
+        cm.add_profile_mount(name, mount)
+    except ValueError as e:
+        # Duplicate mount name or local path on this profile.
+        raise HTTPException(status_code=409, detail=str(e)) from e
     return mount.model_dump()
 
 

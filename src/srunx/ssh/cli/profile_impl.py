@@ -533,15 +533,7 @@ def add_mount_impl(
             console.print(f"[red]Error: Profile '{profile_name}' not found[/red]")
             raise typer.Exit(1)
 
-        # Check if mount name already exists
-        for mount in profile.mounts:
-            if mount.name == name:
-                console.print(
-                    f"[red]Error: Mount '{name}' already exists for profile '{profile_name}'[/red]"
-                )
-                raise typer.Exit(1)
-
-        # Create MountConfig (triggers path validation)
+        # Create MountConfig (triggers path validation + ``local`` resolution)
         mount = MountConfig(
             name=name,
             local=local,
@@ -549,8 +541,14 @@ def add_mount_impl(
             exclude_patterns=exclude_patterns or [],
         )
 
-        # Add mount to profile
-        success = config_manager.add_profile_mount(profile_name, mount)
+        # Name/local uniqueness is enforced in the shared add path
+        # (ConfigManager.add_profile_mount), which raises ValueError on a
+        # collision so CLI and Web API share one guarantee.
+        try:
+            success = config_manager.add_profile_mount(profile_name, mount)
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(1) from e
 
         if success:
             console.print(
