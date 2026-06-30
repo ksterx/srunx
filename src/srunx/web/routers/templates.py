@@ -96,8 +96,21 @@ async def apply_template(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
-    resources = JobResource(**(req.resources or {}))
-    environment = JobEnvironment(**(req.environment or {}))
+    from pydantic import ValidationError
+
+    try:
+        resources = JobResource(**(req.resources or {}))
+        environment = JobEnvironment(**(req.environment or {}))
+    except ValidationError as e:
+        # Invalid env-var keys (validated on JobEnvironment) surface as a
+        # clean 422 rather than a 500.
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                {"loc": list(x["loc"]), "msg": x["msg"], "type": x["type"]}
+                for x in e.errors()
+            ],
+        ) from e
     job = Job(
         name=req.job_name,
         command=req.command,

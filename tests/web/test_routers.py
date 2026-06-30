@@ -1733,6 +1733,18 @@ class TestScriptPreview:
         assert "ml_env" in script
         assert data["template_used"] == "base"
 
+    def test_preview_invalid_env_key_returns_422(self, client: TestClient) -> None:
+        """An invalid env-var key surfaces as 422, not a 500."""
+        resp = client.post(
+            "/api/jobs/preview",
+            json={
+                "name": "bad-env",
+                "command": ["echo", "hi"],
+                "environment": {"env_vars": {"SLURM_FOO": "x"}},
+            },
+        )
+        assert resp.status_code == 422
+
     def test_preview_with_specific_template(self, client: TestClient) -> None:
         """Preview with template_name='base' uses the base template."""
         resp = client.post(
@@ -1850,6 +1862,19 @@ class TestTemplatesRouter:
         assert "script" in data
         assert data["template_used"] == "base"
         assert "#!/bin/bash" in data["script"]
+
+    def test_apply_invalid_env_key_returns_422(self, client: TestClient) -> None:
+        """An invalid env-var key surfaces as 422, not a 500."""
+        resp = client.post(
+            "/api/templates/base/apply",
+            json={
+                "command": ["echo", "hi"],
+                "job_name": "bad-env",
+                "environment": {"env_vars": {"bad-key": "x"}},
+                "preview_only": True,
+            },
+        )
+        assert resp.status_code == 422
 
     def test_apply_submits_job(
         self, client: TestClient, mock_adapter: MagicMock
