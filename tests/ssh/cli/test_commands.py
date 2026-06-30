@@ -146,6 +146,46 @@ class TestRoundTrip:
         assert listed.exit_code == 0
         assert "data" in listed.output
 
+    def test_mount_add_rejects_duplicate_local(self, tmp_path: Path):
+        cfg = _cfg(tmp_path)
+        runner.invoke(
+            ssh_app,
+            ["add", "--profile", "dgx", "--ssh-host", "dgx-host", "--config", cfg],
+        )
+
+        def _add(name: str, local: str, remote: str):
+            return runner.invoke(
+                ssh_app,
+                [
+                    "mount",
+                    "add",
+                    "--profile",
+                    "dgx",
+                    "--mount",
+                    name,
+                    "--local",
+                    local,
+                    "--remote",
+                    remote,
+                    "--config",
+                    cfg,
+                ],
+            )
+
+        first = _add("data", str(tmp_path), "/remote/data")
+        assert first.exit_code == 0, first.output
+
+        # Same local, different name + remote -> rejected.
+        dup = _add("data2", str(tmp_path), "/remote/other")
+        assert dup.exit_code == 1
+        assert "already mounted" in _strip_ansi(dup.output)
+
+        # A distinct local still succeeds.
+        other_dir = tmp_path / "sub"
+        other_dir.mkdir()
+        ok = _add("data3", str(other_dir), "/remote/sub")
+        assert ok.exit_code == 0, ok.output
+
     def test_env_set_list_via_flags(self, tmp_path: Path):
         cfg = _cfg(tmp_path)
         runner.invoke(
