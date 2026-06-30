@@ -109,9 +109,7 @@ class SlurmRemoteClient:
         else:
             return command
 
-    def _get_slurm_env_setup(
-        self, job_env_vars: dict[str, str] | None = None
-    ) -> str:
+    def _get_slurm_env_setup(self, job_env_vars: dict[str, str] | None = None) -> str:
         """Get environment setup commands for SLURM execution.
 
         Job-level ``job_env_vars`` merge into the same ``export KEY='value'``
