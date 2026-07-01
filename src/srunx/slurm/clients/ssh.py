@@ -96,7 +96,6 @@ class SlurmSSHClient:
         key_filename: str | None = None,
         port: int = 22,
         proxy_jump: str | None = None,
-        env_vars: dict[str, str] | None = None,
         mounts: Sequence[MountConfig] | None = None,
         callbacks: Sequence[Callback] | None = None,
         submission_source: str = "web",
@@ -124,7 +123,6 @@ class SlurmSSHClient:
         self._key_filename: str | None = None
         self._port: int = port
         self._proxy_jump: str | None = None
-        self._env_vars: dict[str, str] = dict(env_vars) if env_vars else {}
         self._mounts: tuple[MountConfig, ...] = (
             tuple(mounts) if mounts is not None else ()
         )
@@ -140,8 +138,6 @@ class SlurmSSHClient:
                 raise ValueError(f"SSH profile '{profile_name}' not found")
 
             self._mounts = tuple(profile.mounts) if profile.mounts else ()
-            if profile.env_vars:
-                self._env_vars = dict(profile.env_vars)
 
             # Resolve connection: ssh_host (from ~/.ssh/config) or direct fields.
             if profile.ssh_host:
@@ -162,7 +158,7 @@ class SlurmSSHClient:
                     key_filename=self._key_filename,
                     port=self._port,
                     proxy_jump=self._proxy_jump,
-                    env_vars=self._env_vars or None,
+                    profile_name=profile_name,
                 )
             else:
                 # Resolve hostname via ~/.ssh/config if it's an alias.
@@ -193,7 +189,7 @@ class SlurmSSHClient:
                     key_filename=resolved_key,
                     port=resolved_port,
                     proxy_jump=resolved_proxy,
-                    env_vars=self._env_vars or None,
+                    profile_name=profile_name,
                 )
         elif hostname and username:
             self._hostname = hostname
@@ -207,7 +203,7 @@ class SlurmSSHClient:
                 key_filename=key_filename,
                 port=port,
                 proxy_jump=proxy_jump,
-                env_vars=self._env_vars or None,
+                profile_name=self._profile_name,
             )
         else:
             raise ValueError("Either profile_name or (hostname, username) required")
@@ -245,7 +241,6 @@ class SlurmSSHClient:
             key_filename=self._key_filename,
             port=self._port,
             proxy_jump=self._proxy_jump,
-            env_vars=tuple(sorted(self._env_vars.items())),
             mounts=self._mounts,
         )
 
@@ -286,12 +281,17 @@ class SlurmSSHClient:
             key_filename=spec.key_filename,
             port=spec.port,
             proxy_jump=spec.proxy_jump,
-            env_vars=dict(spec.env_vars) if spec.env_vars else None,
             mounts=list(spec.mounts) if spec.mounts else None,
             callbacks=callbacks,
             submission_source=submission_source,
         )
         client._profile_name = spec.profile_name
+        # Rebind the profile on the inner SSH adapter so account secret
+        # behaviour is enabled for pooled sweep clones (the ctor above ran the
+        # direct-hostname branch with ``profile_name=None`` to avoid the
+        # ConfigManager re-parse). The secret file path itself is account
+        # scoped; the profile name here only flips secret behaviour on.
+        client._client.bind_profile_name(spec.profile_name)
         return client
 
     @property

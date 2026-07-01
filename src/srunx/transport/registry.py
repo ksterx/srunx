@@ -565,7 +565,7 @@ def _build_ssh_handle(
 
     # Build the pool off the adapter's own connection spec so pooled
     # clones inherit the exact same resolved hostname / identity file /
-    # proxy_jump / env_vars the singleton adapter uses. Pooled clones
+    # proxy_jump / profile_name the singleton adapter uses. Pooled clones
     # also pick up the same callback list so per-cell jobs in the
     # workflow / sweep path fire ``on_job_submitted`` (including
     # :class:`NotificationWatchCallback`) with the adapter's

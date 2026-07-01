@@ -191,22 +191,6 @@ class TestJobEnvPropagation:
         # Single quote escaped as '\'' within the single-quoted value.
         assert "export MSG='it'\\''s working'" in captured["inner"]
 
-    def test_job_env_overrides_profile_custom_env(self, client):
-        client.connection.custom_env_vars = {"FOO": "profile"}
-        client.files.write_remote_file = Mock()
-        client.files.validate_remote_script = Mock(return_value=(True, ""))
-        captured = self._capture_remote_command(client)
-
-        client.slurm.submit_sbatch_job(
-            "#!/bin/bash\necho hi",
-            job_name="test_job",
-            job_env_vars={"FOO": "job"},
-        )
-
-        # Job key wins ({**profile, **job}); only the job value is exported.
-        assert "export FOO='job'" in captured["inner"]
-        assert "export FOO='profile'" not in captured["inner"]
-
     def test_no_job_env_omits_export_all_temp_upload(self, client):
         """No job env → no --export=ALL, so the script's export policy wins."""
         client.files.write_remote_file = Mock()
@@ -225,6 +209,104 @@ class TestJobEnvPropagation:
         client.slurm.submit_remote_sbatch_file("/remote/run.sh", job_name="test_job")
 
         assert "--export=ALL" not in captured["inner"]
+
+
+class TestSecretDelivery:
+    """REQ-8, REQ-9: profile secret file is sourced + triggers --export=ALL."""
+
+    def _bind_secret_store(self, client, *, exists: bool):
+        """Bind a profile secret store and stub its remote-facing methods."""
+        client.slurm.bind_profile_name("gmo")
+        store = client.slurm._secret_store
+        store.exists = Mock(return_value=exists)
+        # Account-scoped path: no ``secrets/`` subdir, no profile name.
+        store.secret_path = Mock(return_value="/home/tester/.config/srunx/secrets.env")
+        return store
+
+    def test_env_setup_sources_secret_file_when_present(self, client):
+        self._bind_secret_store(client, exists=True)
+        setup = client.slurm._get_slurm_env_setup()
+        # Path is shlex.quote'd; a plain path with no metacharacters is emitted
+        # verbatim (no surrounding quotes needed). Non-blocking ``if ... fi``
+        # form so an unreadable/absent file never fails the actual command.
+        assert (
+            "if [ -r /home/tester/.config/srunx/secrets.env ]; then "
+            "set -a; . /home/tester/.config/srunx/secrets.env; set +a; fi"
+        ) in setup
+
+    def test_source_prefix_is_non_blocking_not_and_guarded(self, client):
+        """The source prefix must not ``&&``-guard the real slurm command.
+
+        A ``[ -r ] && ...`` chain returns non-zero (and short-circuits the
+        joined command line) when the file is unreadable/removed between probe
+        and run — blocking squeue/scancel/sbatch. The ``if ...; then ...; fi``
+        form always exits 0, so the joined command still runs.
+        """
+        self._bind_secret_store(client, exists=True)
+        setup = client.slurm._get_slurm_env_setup()
+        # The secret source segment must be an ``if``-form (always exit 0),
+        # never a ``[ -r ... ] &&`` guard.
+        assert "if [ -r " in setup
+        assert "[ -r /home/tester/.config/srunx/secrets.env ] &&" not in setup
+
+    def test_env_setup_omits_source_when_absent(self, client):
+        self._bind_secret_store(client, exists=False)
+        setup = client.slurm._get_slurm_env_setup()
+        assert "set -a" not in setup
+
+    def test_secret_path_with_special_chars_is_shell_quoted(self, client):
+        """A resolved secret path containing a space is single-quoted."""
+        store = self._bind_secret_store(client, exists=True)
+        store.secret_path = Mock(return_value="/home/my user/.config/srunx/secrets.env")
+        setup = client.slurm._get_slurm_env_setup()
+        assert ". '/home/my user/.config/srunx/secrets.env'" in setup
+
+    def test_secret_file_probed_once_per_submit_temp_upload(self, client):
+        """The --export=ALL decision and the source prefix share one probe."""
+        store = self._bind_secret_store(client, exists=True)
+        client.files.write_remote_file = Mock()
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = TestJobEnvPropagation()._capture_remote_command(client)
+
+        client.slurm.submit_sbatch_job("#!/bin/bash\necho hi", job_name="test_job")
+
+        # Single existence probe drove both the --export=ALL flag and the
+        # sourced secret prefix — they are consistent by construction.
+        assert store.exists.call_count == 1
+        assert "--export=ALL" in captured["inner"]
+        assert "secrets.env" in captured["inner"]
+
+    def test_secret_file_probed_once_per_submit_in_place(self, client):
+        store = self._bind_secret_store(client, exists=True)
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = TestJobEnvPropagation()._capture_remote_command(client)
+
+        client.slurm.submit_remote_sbatch_file("/remote/run.sh", job_name="test_job")
+
+        assert store.exists.call_count == 1
+        assert "--export=ALL" in captured["inner"]
+        assert "secrets.env" in captured["inner"]
+
+    def test_secret_present_adds_export_all_temp_upload(self, client):
+        self._bind_secret_store(client, exists=True)
+        client.files.write_remote_file = Mock()
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = TestJobEnvPropagation()._capture_remote_command(client)
+
+        # No job env vars, but a secret file exists -> --export=ALL applies.
+        client.slurm.submit_sbatch_job("#!/bin/bash\necho hi", job_name="test_job")
+
+        assert "--export=ALL" in captured["inner"]
+        assert "secrets.env" in captured["inner"]
+
+    def test_secret_present_adds_export_all_in_place(self, client):
+        self._bind_secret_store(client, exists=True)
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = TestJobEnvPropagation()._capture_remote_command(client)
+
+        client.slurm.submit_remote_sbatch_file("/remote/run.sh", job_name="test_job")
+
+        assert "--export=ALL" in captured["inner"]
 
 
 class TestCleanupJobFiles:

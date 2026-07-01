@@ -93,8 +93,6 @@ export function SSHProfilesTab() {
     remote: "",
   });
   const [newMountExcludes, setNewMountExcludes] = useState("");
-  const [newEnvKey, setNewEnvKey] = useState("");
-  const [newEnvValue, setNewEnvValue] = useState("");
   const [connStatus, setConnStatus] = useState<SSHConnectionStatus | null>(
     null,
   );
@@ -263,34 +261,6 @@ export function SSHProfilesTab() {
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to remove mount");
-    }
-  };
-
-  const handleAddEnvVar = async (profileName: string) => {
-    if (!newEnvKey.trim()) return;
-    try {
-      const profile = data?.profiles[profileName];
-      if (!profile) return;
-      const envVars = { ...(profile.env_vars ?? {}), [newEnvKey]: newEnvValue };
-      await configApi.updateSSHProfile(profileName, { env_vars: envVars });
-      setNewEnvKey("");
-      setNewEnvValue("");
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to add env var");
-    }
-  };
-
-  const handleRemoveEnvVar = async (profileName: string, key: string) => {
-    try {
-      const profile = data?.profiles[profileName];
-      if (!profile) return;
-      const envVars = { ...(profile.env_vars ?? {}) };
-      delete envVars[key];
-      await configApi.updateSSHProfile(profileName, { env_vars: envVars });
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to remove env var");
     }
   };
 
@@ -814,135 +784,6 @@ export function SSHProfilesTab() {
                         fontSize: "0.8rem",
                       }}
                     />
-                  </div>
-                </div>
-
-                {/* Profile Env Vars */}
-                <div
-                  style={{
-                    borderTop: "1px solid var(--border-ghost)",
-                    paddingTop: "var(--sp-4)",
-                    marginTop: "var(--sp-4)",
-                  }}
-                >
-                  <span
-                    style={{
-                      fontSize: "0.75rem",
-                      fontWeight: 500,
-                      textTransform: "uppercase",
-                      letterSpacing: "0.08em",
-                      color: "var(--text-muted)",
-                      marginBottom: "var(--sp-3)",
-                      display: "block",
-                    }}
-                  >
-                    Environment Variables
-                  </span>
-                  {Object.entries(profile.env_vars ?? {}).map(([k, v]) => (
-                    <div
-                      key={k}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "var(--sp-2)",
-                        padding: "var(--sp-2) var(--sp-3)",
-                        background: "var(--bg-base)",
-                        borderRadius: "var(--radius-md)",
-                        border: "1px solid var(--border-ghost)",
-                        marginBottom: "var(--sp-2)",
-                      }}
-                    >
-                      <span
-                        style={{
-                          fontFamily: "var(--font-mono)",
-                          fontSize: "0.8rem",
-                          color: "var(--accent)",
-                          minWidth: 100,
-                        }}
-                      >
-                        {k}
-                      </span>
-                      <span
-                        style={{
-                          color: "var(--text-muted)",
-                          fontSize: "0.8rem",
-                        }}
-                      >
-                        =
-                      </span>
-                      <span
-                        style={{
-                          fontFamily: "var(--font-mono)",
-                          fontSize: "0.8rem",
-                          color: "var(--text-secondary)",
-                          flex: 1,
-                        }}
-                      >
-                        {v}
-                      </span>
-                      <button
-                        onClick={() => handleRemoveEnvVar(name, k)}
-                        style={{
-                          background: "transparent",
-                          border: "none",
-                          color: "var(--text-muted)",
-                          cursor: "pointer",
-                          padding: 4,
-                          display: "flex",
-                        }}
-                      >
-                        <X size={14} />
-                      </button>
-                    </div>
-                  ))}
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: "var(--sp-2)",
-                      alignItems: "center",
-                    }}
-                  >
-                    <input
-                      className="input"
-                      placeholder="KEY"
-                      value={newEnvKey}
-                      onChange={(e) => setNewEnvKey(e.target.value)}
-                      style={{
-                        width: 120,
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "0.8rem",
-                      }}
-                      onKeyDown={(e) =>
-                        e.key === "Enter" && handleAddEnvVar(name)
-                      }
-                    />
-                    <span
-                      style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}
-                    >
-                      =
-                    </span>
-                    <input
-                      className="input"
-                      placeholder="value"
-                      value={newEnvValue}
-                      onChange={(e) => setNewEnvValue(e.target.value)}
-                      style={{
-                        flex: 1,
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "0.8rem",
-                      }}
-                      onKeyDown={(e) =>
-                        e.key === "Enter" && handleAddEnvVar(name)
-                      }
-                    />
-                    <button
-                      className="btn btn-ghost"
-                      onClick={() => handleAddEnvVar(name)}
-                      disabled={!newEnvKey.trim()}
-                      style={{ padding: "var(--sp-2)" }}
-                    >
-                      <Plus size={14} />
-                    </button>
                   </div>
                 </div>
               </div>

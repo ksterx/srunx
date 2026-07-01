@@ -162,7 +162,6 @@ async def update_ssh_profile(name: str, body: dict[str, Any]) -> dict[str, Any]:
         "description",
         "ssh_host",
         "proxy_jump",
-        "env_vars",
     }
     update_data = {k: v for k, v in body.items() if k in valid_fields}
     cm.update_profile(name, **update_data)

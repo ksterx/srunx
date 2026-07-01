@@ -136,11 +136,41 @@ mount names via `--mount` (no `profile` / `mount` positional sub-noun).
 - `uv run srunx ssh mount add --profile <profile> --mount <name> --local <path> --remote <path>` - Add mount point
 - `uv run srunx ssh mount list --profile <profile>` - List mount points
 - `uv run srunx ssh mount remove --profile <profile> --mount <name>` - Remove mount point
+- `uv run srunx ssh secret set <KEY> --profile <profile>` - Store a secret for a profile (value via hidden getpass prompt, or `--from-env VAR`; NO inline value argument)
+- `uv run srunx ssh secret list [--profile <profile>]` - List secret KEY names for a profile (values are never printed)
+- `uv run srunx ssh secret unset <KEY> --profile <profile>` - Remove a secret from a profile
 - `uv run srunx ssh test --profile <name>` - Test connectivity for a profile
 - `uv run srunx ssh test --host <alias>` - Test an `~/.ssh/config` host alias
 - `uv run srunx ssh sync` - Sync current directory's mount (auto-detect profile and mount from cwd)
 - `uv run srunx ssh sync --profile <profile> --mount <name>` - Sync a specific mount
 - `uv run srunx ssh sync --dry-run` - Preview sync without transferring
+
+##### Account secrets (`ssh secret`)
+Secrets (API keys etc.) are stored in a single **remote** `0600` file per
+account (not per profile), `$HOME/.config/srunx/secrets.env` (parent dir
+`~/.config/srunx` is `0700`), as `export KEY='...'` lines. The path is keyed by
+remote account (`$HOME`), not by local profile name — the SSH connection you
+pick via `--profile` selects the account, so the same file is shared by any
+profile pointing at that account (this avoids rename-orphaning and profile-name
+mismatches between machines). The value is captured only via a hidden getpass
+prompt or `--from-env VAR` — never an inline command argument — and never
+lands in the local `config.json`, command-line args, or log output. Writes are
+atomic (temp file in the same dir + `mv`) with a symlink/foreign-owner guard.
+`secret list` prints KEY names only. The old `srunx ssh env` /
+profile-`custom_env_vars` mechanism (which stored env vars in local plaintext
+config) has been removed entirely with no backward-compat shim; a legacy
+`config.json` that still carries a profile `env_vars` block still loads (the
+stray key is silently dropped).
+
+On submit over SSH, when the profile's secret file exists srunx sources it into
+the submission shell — `if [ -r '<path>' ]; then set -a; . '<path>'; set +a; fi`
+(non-blocking: always exits 0 so an unreadable/removed file never fails the
+actual squeue/scancel/sbatch) — before the job-level `--env` exports (a `--env`
+key still wins over a same-named secret). Because the secret must reach the job, `--export=ALL` is added to the
+remote `sbatch` whenever job env vars are present **or** the secret file exists;
+that deliberately overrides a script's own `#SBATCH --export=NONE`. With neither
+job env vars nor a secret file, `--export=ALL` is not added and the script's own
+export policy wins.
 
 #### Workflows
 - `uv run srunx flow run <yaml_file>` - Execute workflow from YAML

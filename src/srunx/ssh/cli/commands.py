@@ -12,7 +12,7 @@ Command surface (flat — there is no ``profile`` sub-app):
     srunx ssh test    [--profile NAME] [--host ALIAS]
     srunx ssh sync    [--profile NAME] [--mount MOUNT]
     srunx ssh mount add|list|remove  --profile NAME [--mount MOUNT] [...]
-    srunx ssh env  set|unset|list    --profile NAME [KEY] [VALUE]
+    srunx ssh secret  set|list|unset  --profile NAME [KEY]
 
 The profile is named with ``--profile`` everywhere (never a positional, never
 ``-p`` — ``-p`` is reserved for ``--partition`` across srunx). A mount is named
@@ -37,7 +37,7 @@ from .profile_impl import add_profile_impl
 console = Console()
 
 # Create the main SSH app. Profile lifecycle verbs live directly under it;
-# only the per-profile sub-entities (mounts, env vars) keep a one-level group.
+# only the per-profile sub-entities (mounts, secrets) keep a one-level group.
 ssh_app = typer.Typer(
     name="ssh",
     help="Manage SSH connection profiles, sync mounts, and test connections",
@@ -153,7 +153,7 @@ def test_connection(
         with Status(
             "[bold yellow]Testing connection...[/bold yellow]", console=console
         ):
-            client = _create_ssh_client(connection_params, {}, verbose)
+            client = _create_ssh_client(connection_params, verbose)
             result = client.test_connection()
 
         # Display results
@@ -515,48 +515,61 @@ def update_profile(
 
 
 # ---------------------------------------------------------------------------
-# Environment variable management for profiles (``ssh env ...``)
+# Secret management for profiles (``ssh secret ...``)
 # ---------------------------------------------------------------------------
-env_app = typer.Typer(
-    name="env",
-    help="Manage environment variables for a profile",
+secret_app = typer.Typer(
+    name="secret",
+    help="Manage account secrets stored in a remote 0600 file",
 )
-ssh_app.add_typer(env_app, name="env")
+ssh_app.add_typer(secret_app, name="secret")
 
 
-@env_app.command("set")
-def set_env_var(
+@secret_app.command("set")
+def set_secret(
     profile: _ProfileRequired,
-    key: Annotated[str, typer.Argument(help="Environment variable name")],
-    value: Annotated[str, typer.Argument(help="Environment variable value")],
+    key: Annotated[str, typer.Argument(help="Secret name (shell identifier)")],
+    from_env: Annotated[
+        str | None,
+        typer.Option(
+            "--from-env",
+            help="Read the value from this local environment variable "
+            "instead of prompting",
+        ),
+    ] = None,
     config: _ConfigOpt = None,
 ):
-    """Set an environment variable for a profile."""
-    from .profile_impl import set_env_var_impl
+    """Set a secret for a profile.
 
-    set_env_var_impl(profile, key, value, config)
+    The value is read via a hidden getpass prompt by default, or from a local
+    environment variable with ``--from-env VAR``. No inline value argument is
+    accepted — the secret never lands in your shell history or the process
+    argument list.
+    """
+    from .secret_impl import set_secret_impl
 
-
-@env_app.command("unset")
-def unset_env_var(
-    profile: _ProfileRequired,
-    key: Annotated[str, typer.Argument(help="Environment variable name")],
-    config: _ConfigOpt = None,
-):
-    """Unset an environment variable for a profile."""
-    from .profile_impl import unset_env_var_impl
-
-    unset_env_var_impl(profile, key, config)
+    set_secret_impl(profile, key, from_env, config)
 
 
-@env_app.command("list")
-def list_env_vars(profile: _ProfileOptional = None, config: _ConfigOpt = None):
-    """List environment variables for a profile (defaults to current)."""
-    from .profile_impl import list_env_vars_impl
+@secret_app.command("list")
+def list_secrets(profile: _ProfileOptional = None, config: _ConfigOpt = None):
+    """List secret names for a profile (defaults to current). Values are never shown."""
+    from .secret_impl import list_secrets_impl
 
     config_manager = ConfigManager(config)
     profile_name = _resolve_optional_profile(profile, config_manager)
-    list_env_vars_impl(profile_name, config)
+    list_secrets_impl(profile_name, config)
+
+
+@secret_app.command("unset")
+def unset_secret(
+    profile: _ProfileRequired,
+    key: Annotated[str, typer.Argument(help="Secret name to remove")],
+    config: _ConfigOpt = None,
+):
+    """Remove a secret from a profile."""
+    from .secret_impl import unset_secret_impl
+
+    unset_secret_impl(profile, key, config)
 
 
 # ---------------------------------------------------------------------------
@@ -727,9 +740,7 @@ def _determine_connection_params(
     raise typer.Exit(1)
 
 
-def _create_ssh_client(
-    connection_params: dict, env_vars: dict[str, str], verbose: bool
-) -> SSHSlurmClient:
+def _create_ssh_client(connection_params: dict, verbose: bool) -> SSHSlurmClient:
     """Create SSH SLURM client with proper type handling."""
     hostname = str(connection_params["hostname"])
     username = str(connection_params["username"])
@@ -746,6 +757,5 @@ def _create_ssh_client(
         key_filename=key_filename,
         port=port,
         proxy_jump=proxy_jump,
-        env_vars=env_vars,
         verbose=verbose,
     )

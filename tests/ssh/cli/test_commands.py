@@ -42,7 +42,7 @@ class TestFlatStructure:
             assert verb in result.output
         # Sub-entity groups survive as one-level groups.
         assert "mount" in result.output
-        assert "env" in result.output
+        assert "secret" in result.output
 
     def test_profile_subcommand_is_gone(self):
         # The old `srunx ssh profile ...` nesting must no longer exist.
@@ -186,22 +186,158 @@ class TestRoundTrip:
         ok = _add("data3", str(other_dir), "/remote/sub")
         assert ok.exit_code == 0, ok.output
 
-    def test_env_set_list_via_flags(self, tmp_path: Path):
-        cfg = _cfg(tmp_path)
+
+class TestSecretCommands:
+    """``ssh secret set/list/unset`` — value never appears in output."""
+
+    def _add_profile(self, cfg: str) -> None:
+        # Direct-hostname profile so ``_build_store`` takes the direct branch
+        # (the ssh_host branch would require a real ~/.ssh/config alias).
         runner.invoke(
             ssh_app,
-            ["add", "--profile", "dgx", "--ssh-host", "dgx-host", "--config", cfg],
+            [
+                "add",
+                "--profile",
+                "dgx",
+                "--hostname",
+                "dgx.example.com",
+                "--username",
+                "researcher",
+                "--key-file",
+                "/tmp/key",
+                "--config",
+                cfg,
+            ],
         )
-        setres = runner.invoke(
+
+    def test_set_via_from_env_hides_value(self, tmp_path, monkeypatch):
+        cfg = _cfg(tmp_path)
+        self._add_profile(cfg)
+
+        secret_value = "sk-super-secret-value"
+        monkeypatch.setenv("MY_TOKEN", secret_value)
+
+        fake_store = MagicMock()
+        # Patch RemoteSecretStore + connection so no real SSH happens.
+        with (
+            patch(
+                "srunx.ssh.cli.secret_impl.RemoteSecretStore", return_value=fake_store
+            ),
+            patch("srunx.ssh.cli.secret_impl.SSHConnection"),
+            patch("srunx.ssh.cli.secret_impl.RemoteFileManager"),
+            patch("srunx.ssh.cli.secret_impl.get_ssh_config_host", return_value=None),
+        ):
+            res = runner.invoke(
+                ssh_app,
+                [
+                    "secret",
+                    "set",
+                    "--profile",
+                    "dgx",
+                    "API_KEY",
+                    "--from-env",
+                    "MY_TOKEN",
+                    "--config",
+                    cfg,
+                ],
+            )
+
+        assert res.exit_code == 0, res.output
+        # Value must never leak into stdout; only the KEY is named.
+        assert secret_value not in res.output
+        assert "API_KEY" in res.output
+        fake_store.set_secret.assert_called_once_with("API_KEY", secret_value)
+
+    def test_set_via_getpass_hides_value(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        self._add_profile(cfg)
+
+        secret_value = "hunter2-hidden"
+        fake_store = MagicMock()
+        with (
+            patch(
+                "srunx.ssh.cli.secret_impl.getpass.getpass",
+                return_value=secret_value,
+            ),
+            patch(
+                "srunx.ssh.cli.secret_impl.RemoteSecretStore", return_value=fake_store
+            ),
+            patch("srunx.ssh.cli.secret_impl.SSHConnection"),
+            patch("srunx.ssh.cli.secret_impl.RemoteFileManager"),
+            patch("srunx.ssh.cli.secret_impl.get_ssh_config_host", return_value=None),
+        ):
+            res = runner.invoke(
+                ssh_app,
+                ["secret", "set", "--profile", "dgx", "API_KEY", "--config", cfg],
+            )
+
+        assert res.exit_code == 0, res.output
+        assert secret_value not in res.output
+        fake_store.set_secret.assert_called_once_with("API_KEY", secret_value)
+
+    def test_set_rejects_reserved_prefix(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        self._add_profile(cfg)
+        res = runner.invoke(
             ssh_app,
-            ["env", "set", "--profile", "dgx", "FOO", "bar", "--config", cfg],
+            [
+                "secret",
+                "set",
+                "--profile",
+                "dgx",
+                "SLURM_FOO",
+                "--from-env",
+                "PATH",
+                "--config",
+                cfg,
+            ],
         )
-        assert setres.exit_code == 0, setres.output
-        listed = runner.invoke(
-            ssh_app, ["env", "list", "--profile", "dgx", "--config", cfg]
-        )
-        assert listed.exit_code == 0
-        assert "FOO" in listed.output
+        assert res.exit_code != 0
+        assert "reserved" in _strip_ansi(res.output).lower()
+
+    def test_list_prints_key_names_only(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        self._add_profile(cfg)
+
+        fake_store = MagicMock()
+        fake_store.list_keys.return_value = ["API_KEY", "WANDB_TOKEN"]
+        with (
+            patch(
+                "srunx.ssh.cli.secret_impl.RemoteSecretStore", return_value=fake_store
+            ),
+            patch("srunx.ssh.cli.secret_impl.SSHConnection"),
+            patch("srunx.ssh.cli.secret_impl.RemoteFileManager"),
+            patch("srunx.ssh.cli.secret_impl.get_ssh_config_host", return_value=None),
+        ):
+            res = runner.invoke(
+                ssh_app, ["secret", "list", "--profile", "dgx", "--config", cfg]
+            )
+
+        assert res.exit_code == 0, res.output
+        out = _strip_ansi(res.output)
+        assert "API_KEY" in out
+        assert "WANDB_TOKEN" in out
+
+    def test_unset_removes_key(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        self._add_profile(cfg)
+
+        fake_store = MagicMock()
+        with (
+            patch(
+                "srunx.ssh.cli.secret_impl.RemoteSecretStore", return_value=fake_store
+            ),
+            patch("srunx.ssh.cli.secret_impl.SSHConnection"),
+            patch("srunx.ssh.cli.secret_impl.RemoteFileManager"),
+            patch("srunx.ssh.cli.secret_impl.get_ssh_config_host", return_value=None),
+        ):
+            res = runner.invoke(
+                ssh_app,
+                ["secret", "unset", "--profile", "dgx", "API_KEY", "--config", cfg],
+            )
+
+        assert res.exit_code == 0, res.output
+        fake_store.unset_secret.assert_called_once_with("API_KEY")
 
 
 class TestCurrentProfileFallback:

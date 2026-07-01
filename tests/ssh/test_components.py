@@ -126,12 +126,20 @@ class TestSlurmRemoteClient:
 
     def test_get_slurm_env_setup(self):
         conn = MagicMock(spec=SSHConnection)
-        conn.custom_env_vars = {"FOO": "bar"}
         fm = MagicMock(spec=RemoteFileManager)
         slurm = SlurmRemoteClient(conn, fm)
+        # Job-level env vars are exported in the prefix; no profile-env merge.
+        setup = slurm._get_slurm_env_setup({"FOO": "bar"})
+        assert "export FOO='bar'" in setup
+
+    def test_get_slurm_env_setup_no_secret_when_profile_absent(self):
+        conn = MagicMock(spec=SSHConnection)
+        fm = MagicMock(spec=RemoteFileManager)
+        slurm = SlurmRemoteClient(conn, fm)
+        # No profile bound -> no secret store, no source-prefix line.
+        assert slurm._secret_store is None
         setup = slurm._get_slurm_env_setup()
-        assert "FOO" in setup
-        assert "bar" in setup
+        assert "set -a" not in setup
 
     def test_handle_slurm_error_logs_without_raising(self):
         conn = MagicMock(spec=SSHConnection)

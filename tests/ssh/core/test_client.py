@@ -36,7 +36,6 @@ class TestInit:
             port=2222,
             proxy_jump="bastion.com",
             ssh_config_path="/custom/ssh/config",
-            env_vars={"CUDA_VISIBLE_DEVICES": "0,1"},
             verbose=True,
         )
 

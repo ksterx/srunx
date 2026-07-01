@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 # Imported at module level so the facade can reference it
 from .client_types import SlurmJob  # noqa: F401  re-exported for convenience
+from .secret_store import RemoteSecretStore
 from .utils import query_slurm_job_state
 
 _logger = get_logger(__name__)
@@ -32,11 +33,57 @@ class SlurmRemoteClient:
         self,
         connection: SSHConnection,
         file_manager: RemoteFileManager,
+        *,
+        profile_name: str | None = None,
     ) -> None:
         self._conn = connection
         self._files = file_manager
         self.logger = _logger
         self._slurm_path: str | None = None
+        # A bound profile enables secret behaviour: the account's remote
+        # secret file (``~/.config/srunx/secrets.env``, stored via
+        # ``srunx ssh secret``) is sourced into the submission shell (see
+        # ``_get_slurm_env_setup``) and triggers ``--export=ALL``. The profile
+        # name only acts as an on/off gate here — the file path is account
+        # (``$HOME``) scoped, so it is not threaded into the store. ``None``
+        # (legacy direct-hostname clients) → no secret behaviour, safe default.
+        self._secret_store: RemoteSecretStore | None = (
+            RemoteSecretStore(connection, file_manager)
+            if profile_name is not None
+            else None
+        )
+
+    def bind_profile_name(self, profile_name: str | None) -> None:
+        """(Re)bind the profile to enable/disable the account secret store.
+
+        Used by :meth:`SlurmSSHClient.from_spec`'s pooled-clone path, which
+        constructs the adapter via the direct-hostname branch (no profile) to
+        skip the ConfigManager re-parse, then binds the resolved profile here.
+        The profile name gates secret behaviour on/off; the secret file path
+        is account-scoped, so the name is not stored. ``None`` clears any
+        secret behaviour.
+        """
+        self._secret_store = (
+            RemoteSecretStore(self._conn, self._files)
+            if profile_name is not None
+            else None
+        )
+
+    def _secret_file_exists(self) -> bool:
+        """True when this account has a secret file on the remote.
+
+        Confined to the SSH adapter (DIP): both the ``source`` prefix and the
+        ``--export=ALL`` decision consult this. Best-effort — any transport
+        hiccup is treated as "no secret file" so a probe failure never blocks
+        submission.
+        """
+        if self._secret_store is None:
+            return False
+        try:
+            return self._secret_store.exists()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug(f"Secret file existence probe failed: {exc}")
+            return False
 
     # ------------------------------------------------------------------
     # Initialization (called after connect())
@@ -109,15 +156,29 @@ class SlurmRemoteClient:
         else:
             return command
 
-    def _get_slurm_env_setup(self, job_env_vars: dict[str, str] | None = None) -> str:
+    def _get_slurm_env_setup(
+        self,
+        job_env_vars: dict[str, str] | None = None,
+        *,
+        source_secret: bool | None = None,
+    ) -> str:
         """Get environment setup commands for SLURM execution.
 
-        Job-level ``job_env_vars`` merge into the same ``export KEY='value'``
-        prefix as the profile's ``custom_env_vars``, with job keys taking
-        precedence over profile keys (``{**profile, **job}``). This is the
-        SSH realization of the submission-environment route (the local
-        adapter uses the sbatch process env instead); both pair it with
-        ``--export=ALL`` on the remote sbatch.
+        When the account has a secret file (``srunx ssh secret``), it is
+        sourced into the submission shell so its exports enter the job
+        environment. Job-level ``job_env_vars`` are then exported as an
+        ``export KEY='value'`` prefix (job values win over anything the
+        secret file set for the same key). This is the SSH realization of
+        the submission-environment route (the local adapter uses the sbatch
+        process env instead); both pair it with ``--export=ALL`` on the
+        remote sbatch. Secret sourcing / ``--export=ALL`` are confined to
+        this adapter (DIP).
+
+        ``source_secret`` lets the caller reuse a single existence probe for
+        both the ``source`` prefix here and the ``--export=ALL`` decision in
+        the submit methods (atomicity — one probe, one truth). When ``None``
+        the probe is performed here (e.g. the ``execute_slurm_command`` path
+        for squeue/sacct/etc., which have no ``--export`` decision).
         """
         env_commands = [
             "cd ~",
@@ -131,13 +192,47 @@ class SlurmRemoteClient:
             'export PATH="$PATH:/usr/local/bin:/opt/slurm/bin:/cluster/slurm/bin" 2>/dev/null || true',
         ]
 
-        merged_env_vars = {**self._conn.custom_env_vars, **(job_env_vars or {})}
-        for key, value in merged_env_vars.items():
+        if source_secret is None:
+            source_secret = self._secret_file_exists()
+
+        # Source the account's secret file (0600, remote-only) before the
+        # job-level exports so a job env key can still override a secret with
+        # the same name. ``set -a`` exports every var the file defines. The
+        # path (with ``$HOME`` already resolved to a concrete absolute path by
+        # ``RemoteSecretStore.secret_path``) is passed through ``shlex.quote``
+        # so a home dir containing spaces or shell metacharacters stays safe.
+        #
+        # Non-blocking ``if [ -r ]; then ... fi`` form (always exits 0): a
+        # ``&&`` chain would fail the whole command line — and thus skip the
+        # actual squeue/scancel/sbatch — if the file became unreadable or was
+        # removed between the existence probe and execution. Job-management
+        # commands must run regardless of secret-file readability. The one
+        # accepted consequence is that a submit whose secret file is
+        # (rarely, on misconfiguration) unreadable at run time proceeds
+        # *without* the secret rather than blocking — preferred over a
+        # blocked submission.
+        if source_secret and self._secret_store is not None:
+            secret_path = self._quoted_secret_path()
+            env_commands.append(
+                f"if [ -r {secret_path} ]; then set -a; . {secret_path}; set +a; fi"
+            )
+
+        for key, value in (job_env_vars or {}).items():
             escaped_value = value.replace("'", "'\\''")
             env_commands.append(f"export {key}='{escaped_value}'")
-            self.logger.debug(f"Adding custom environment variable: {key}={value}")
+            self.logger.debug(f"Adding job environment variable: {key}")
 
         return " && ".join(env_commands)
+
+    def _quoted_secret_path(self) -> str:
+        """Return the secret path as a single shell-safe token.
+
+        ``RemoteSecretStore.secret_path()`` resolves ``$HOME`` to a concrete
+        absolute path via ``echo $HOME``; we pass the whole resolved path
+        through ``shlex.quote`` so spaces / shell metacharacters in it survive.
+        """
+        assert self._secret_store is not None
+        return shlex.quote(self._secret_store.secret_path())
 
     def _verify_slurm_setup(self) -> None:
         """Verify that SLURM commands are working properly."""
@@ -160,10 +255,20 @@ class SlurmRemoteClient:
     # ------------------------------------------------------------------
 
     def execute_slurm_command(
-        self, command: str, job_env_vars: dict[str, str] | None = None
+        self,
+        command: str,
+        job_env_vars: dict[str, str] | None = None,
+        *,
+        source_secret: bool | None = None,
     ) -> tuple[str, str, int]:
-        """Execute a SLURM command with proper environment."""
-        env_setup = self._get_slurm_env_setup(job_env_vars)
+        """Execute a SLURM command with proper environment.
+
+        ``source_secret`` is forwarded to :meth:`_get_slurm_env_setup` so a
+        submit method that already probed for the secret file can reuse that
+        single result for both the ``source`` prefix and its ``--export=ALL``
+        decision (see the submit methods). ``None`` re-probes locally.
+        """
+        env_setup = self._get_slurm_env_setup(job_env_vars, source_secret=source_secret)
 
         if self._slurm_path:
             slurm_commands = [
@@ -222,14 +327,21 @@ class SlurmRemoteClient:
                 self.logger.error(f"Script validation failed: {validation_msg}")
                 return None
 
+            # Probe the secret file exactly once and reuse the result for both
+            # the --export=ALL decision here and the ``source`` prefix inside
+            # execute_slurm_command (atomicity — one probe, one truth).
+            secret_present = self._secret_file_exists()
+
             cmd = f"{self._get_slurm_command('sbatch')}"
             # --export=ALL propagates the submission environment (job env_vars
-            # merged into the export prefix) to the job — SLURM-specific
-            # realization confined to this adapter (DIP). Applied ONLY when
-            # job env vars are present so a plain submit keeps the script's /
-            # site's export policy intact (a command-line --export overrides
-            # the script's own #SBATCH --export directive).
-            if job_env_vars:
+            # in the export prefix + any sourced account secret file) to the
+            # job — SLURM-specific realization confined to this adapter (DIP).
+            # Applied when job env vars are present OR the account has a secret
+            # file, so a plain submit with neither keeps the script's / site's
+            # export policy intact. When applied it overrides the script's own
+            # #SBATCH --export directive (including --export=NONE) — that is the
+            # intended "deliver the secret" behaviour.
+            if job_env_vars or secret_present:
                 cmd += " --export=ALL"
             if job_name:
                 safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", job_name)
@@ -241,7 +353,7 @@ class SlurmRemoteClient:
             cmd += f" {remote_script_path}"
 
             stdout, stderr, exit_code = self.execute_slurm_command(
-                cmd, job_env_vars=job_env_vars
+                cmd, job_env_vars=job_env_vars, source_secret=secret_present
             )
             if exit_code == 0:
                 match = re.search(r"Submitted batch job (\d+)", stdout)
@@ -367,14 +479,21 @@ class SlurmRemoteClient:
                 self.logger.error(f"Remote script validation failed: {validation_msg}")
                 return None
 
+            # Probe the secret file exactly once and reuse the result for both
+            # the --export=ALL decision here and the ``source`` prefix inside
+            # execute_slurm_command (atomicity — one probe, one truth).
+            secret_present = self._secret_file_exists()
+
             cmd_parts: list[str] = [self._get_slurm_command("sbatch")]
             # --export=ALL propagates the submission environment (job env_vars
-            # merged into the export prefix) to the job — SLURM-specific
-            # realization confined to this adapter (DIP). Applied ONLY when job
-            # env vars are present: this in-place path is documented to
-            # preserve the user's own #SBATCH directives, and a command-line
-            # --export would override the script's #SBATCH --export=NONE.
-            if job_env_vars:
+            # in the export prefix + any sourced account secret file) to the
+            # job — SLURM-specific realization confined to this adapter (DIP).
+            # This in-place path is otherwise documented to preserve the user's
+            # own #SBATCH directives, so --export=ALL is applied only when job
+            # env vars are present OR the account has a secret file; when
+            # applied it deliberately overrides the script's #SBATCH
+            # --export=NONE so the secret reaches the job.
+            if job_env_vars or secret_present:
                 cmd_parts.append("--export=ALL")
             if job_name:
                 safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", job_name)
@@ -397,7 +516,7 @@ class SlurmRemoteClient:
                 cmd = f"cd {shlex.quote(submit_cwd)} && {cmd}"
 
             stdout, stderr, exit_code = self.execute_slurm_command(
-                cmd, job_env_vars=job_env_vars
+                cmd, job_env_vars=job_env_vars, source_secret=secret_present
             )
             if exit_code == 0:
                 match = re.search(r"Submitted batch job (\d+)", stdout)
