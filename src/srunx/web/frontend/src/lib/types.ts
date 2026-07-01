@@ -68,11 +68,7 @@ export type Workflow = {
 /* ── Workflow run ─────────────────────────────── */
 
 export type WorkflowRunStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled";
+  "pending" | "running" | "completed" | "failed" | "cancelled";
 
 export type WorkflowRun = {
   id: string;
@@ -89,12 +85,7 @@ export type WorkflowRun = {
 /* ── Sweep runs ───────────────────────────────── */
 
 export type SweepStatus =
-  | "pending"
-  | "running"
-  | "draining"
-  | "completed"
-  | "failed"
-  | "cancelled";
+  "pending" | "running" | "draining" | "completed" | "failed" | "cancelled";
 
 export type SweepSubmissionSource = "cli" | "web" | "mcp";
 
@@ -305,10 +296,7 @@ export type NotificationConfig = {
 /* ── Notification endpoints / subscriptions / deliveries ─── */
 
 export type EndpointKind =
-  | "slack_webhook"
-  | "generic_webhook"
-  | "email"
-  | "slack_bot";
+  "slack_webhook" | "generic_webhook" | "email" | "slack_bot";
 
 export type Endpoint = {
   id: number;
@@ -320,10 +308,7 @@ export type Endpoint = {
 };
 
 export type NotificationPreset =
-  | "terminal"
-  | "running_and_terminal"
-  | "all"
-  | "digest";
+  "terminal" | "running_and_terminal" | "all" | "digest";
 
 export type Subscription = {
   id: number;
@@ -334,10 +319,7 @@ export type Subscription = {
 };
 
 export type WatchKind =
-  | "job"
-  | "workflow_run"
-  | "resource_threshold"
-  | "scheduled_report";
+  "job" | "workflow_run" | "resource_threshold" | "scheduled_report";
 
 export type Watch = {
   id: number;
@@ -389,7 +371,6 @@ export type SSHProfile = {
   description: string | null;
   ssh_host: string | null;
   proxy_jump: string | null;
-  env_vars: Record<string, string> | null;
   mounts: SSHMountConfig[];
 };
 

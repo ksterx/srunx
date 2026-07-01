@@ -33,7 +33,6 @@ class SSHConnection:
         ssh_config_path: str | None = None,
         verbose: bool = False,
         temp_dir: str | None = None,
-        env_vars: dict[str, str] | None = None,
     ):
         self.hostname = hostname
         self.username = username
@@ -47,7 +46,6 @@ class SSHConnection:
         self.proxy_client: ProxySSHClient | None = None
         self.logger = _logger
         self.temp_dir: str = temp_dir or os.getenv("SRUNX_TEMP_DIR") or "/tmp/srunx"
-        self.custom_env_vars: dict[str, str] = env_vars or {}
         self.verbose = verbose
         self._last_error: Exception | None = None
 

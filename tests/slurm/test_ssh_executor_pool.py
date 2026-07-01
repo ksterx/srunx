@@ -40,7 +40,6 @@ def _make_spec() -> SlurmSSHClientSpec:
         key_filename=None,
         port=22,
         proxy_jump=None,
-        env_vars=(),
         mounts=(),
     )
 
@@ -57,7 +56,6 @@ def _bare_adapter(*, connected: bool = True) -> SlurmSSHClient:
     adapter._key_filename = None
     adapter._port = 22
     adapter._proxy_jump = None
-    adapter._env_vars = {}
     adapter._mounts = ()
     adapter.submission_source = "web"
 

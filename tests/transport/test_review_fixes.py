@@ -387,7 +387,6 @@ class TestStatusSnapshotDoesNotRefresh:
         adapter._key_filename = None
         adapter._port = 22
         adapter._proxy_jump = None
-        adapter._env_vars = {}
         adapter._mounts = ()
         adapter.submission_source = "cli"
 

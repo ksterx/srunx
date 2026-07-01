@@ -35,7 +35,6 @@ def _bare_adapter(callbacks: list[Callback] | None = None) -> SlurmSSHClient:
     adapter._key_filename = None
     adapter._port = 22
     adapter._proxy_jump = None
-    adapter._env_vars = {}
     adapter._mounts = ()
     # Review fix #7: submission_source is mutable per-handle state the
     # transport registry sets; tests that bypass __init__ must provide
@@ -803,7 +802,6 @@ class TestAdapterFromSpec:
             key_filename="/tmp/key",
             port=2222,
             proxy_jump=None,
-            env_vars=(("FOO", "bar"),),
             mounts=(),
         )
 
@@ -814,7 +812,6 @@ class TestAdapterFromSpec:
         assert round_trip.hostname == "clone.example.com"
         assert round_trip.username == "user"
         assert round_trip.port == 2222
-        assert round_trip.env_vars == (("FOO", "bar"),)
 
     def test_from_spec_attaches_callbacks(self) -> None:
         cb = _RecordingCallback()

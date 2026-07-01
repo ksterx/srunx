@@ -117,7 +117,6 @@ def add_profile_impl(
             description=description,
             ssh_host=ssh_host,
             proxy_jump=proxy_jump,
-            env_vars={},
         )
 
         # Add the profile
@@ -286,23 +285,6 @@ def show_profile_impl(name: str | None = None, config: str | None = None):
             details.append("\n[bold green]Description:[/bold green]")
             details.append(f"  {profile.description}")
 
-        # Environment variables
-        if profile.env_vars:
-            details.append("\n[bold yellow]Environment Variables:[/bold yellow]")
-            for key, value in profile.env_vars.items():
-                # Hide sensitive values
-                if any(
-                    sensitive in key.upper()
-                    for sensitive in ["TOKEN", "KEY", "SECRET", "PASSWORD"]
-                ):
-                    display_value = "***HIDDEN***"
-                else:
-                    display_value = value
-                details.append(f"  {key}={display_value}")
-        else:
-            details.append("\n[bold yellow]Environment Variables:[/bold yellow]")
-            details.append("  [dim]None configured[/dim]")
-
         # Current profile indicator
         current_profile_name = config_manager.get_current_profile_name()
         title = f"Profile: {profile_name}"
@@ -387,126 +369,6 @@ def update_profile_impl(
         else:
             console.print(f"[red]❌ Failed to update profile '{name}'[/red]")
             raise typer.Exit(1)
-
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1) from e
-
-
-def set_env_var_impl(
-    profile_name: str, key: str, value: str, config: str | None = None
-):
-    """Implementation for setting an environment variable for a profile."""
-    try:
-        config_manager = ConfigManager(config)
-
-        # Check if profile exists
-        profile = config_manager.get_profile(profile_name)
-        if not profile:
-            console.print(f"[red]Error: Profile '{profile_name}' not found[/red]")
-            raise typer.Exit(1)
-
-        # Set environment variable
-        success = config_manager.set_profile_env_var(profile_name, key, value)
-
-        if success:
-            # Hide sensitive values in output
-            if any(
-                sensitive in key.upper()
-                for sensitive in ["TOKEN", "KEY", "SECRET", "PASSWORD"]
-            ):
-                display_value = "***HIDDEN***"
-            else:
-                display_value = value
-
-            console.print(
-                f"[green]✅ Environment variable set for profile '{profile_name}'[/green]"
-            )
-            console.print(f"[dim]{key}={display_value}[/dim]")
-        else:
-            console.print(
-                f"[red]❌ Failed to set environment variable for profile '{profile_name}'[/red]"
-            )
-            raise typer.Exit(1)
-
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1) from e
-
-
-def unset_env_var_impl(profile_name: str, key: str, config: str | None = None):
-    """Implementation for unsetting an environment variable for a profile."""
-    try:
-        config_manager = ConfigManager(config)
-
-        # Check if profile exists
-        profile = config_manager.get_profile(profile_name)
-        if not profile:
-            console.print(f"[red]Error: Profile '{profile_name}' not found[/red]")
-            raise typer.Exit(1)
-
-        # Check if environment variable exists
-        if not profile.env_vars or key not in profile.env_vars:
-            console.print(
-                f"[yellow]Environment variable '{key}' not set for profile '{profile_name}'[/yellow]"
-            )
-            return
-
-        # Unset environment variable
-        success = config_manager.unset_profile_env_var(profile_name, key)
-
-        if success:
-            console.print(
-                f"[green]✅ Environment variable '{key}' removed from profile '{profile_name}'[/green]"
-            )
-        else:
-            console.print(
-                f"[red]❌ Failed to remove environment variable '{key}' from profile '{profile_name}'[/red]"
-            )
-            raise typer.Exit(1)
-
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1) from e
-
-
-def list_env_vars_impl(profile_name: str, config: str | None = None):
-    """Implementation for listing environment variables for a profile."""
-    try:
-        config_manager = ConfigManager(config)
-
-        # Check if profile exists
-        profile = config_manager.get_profile(profile_name)
-        if not profile:
-            console.print(f"[red]Error: Profile '{profile_name}' not found[/red]")
-            raise typer.Exit(1)
-
-        if not profile.env_vars:
-            console.print(
-                f"[yellow]No environment variables set for profile '{profile_name}'[/yellow]"
-            )
-            console.print(
-                "[dim]Use 'srunx ssh env set' to add environment variables[/dim]"
-            )
-            return
-
-        # Create table
-        table = Table(title=f"Environment Variables for Profile '{profile_name}'")
-        table.add_column("Variable", style="cyan", no_wrap=True)
-        table.add_column("Value", style="green")
-
-        for key, value in profile.env_vars.items():
-            # Hide sensitive values
-            if any(
-                sensitive in key.upper()
-                for sensitive in ["TOKEN", "KEY", "SECRET", "PASSWORD"]
-            ):
-                display_value = "***HIDDEN***"
-            else:
-                display_value = value
-            table.add_row(key, display_value)
-
-        console.print(table)
 
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")

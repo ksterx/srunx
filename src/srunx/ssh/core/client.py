@@ -73,7 +73,7 @@ class SSHSlurmClient:
         port: int = 22,
         proxy_jump: str | None = None,
         ssh_config_path: str | None = None,
-        env_vars: dict[str, str] | None = None,
+        profile_name: str | None = None,
         verbose: bool = False,
     ):
         self.hostname = hostname
@@ -83,6 +83,7 @@ class SSHSlurmClient:
         self.port = port
         self.proxy_jump = proxy_jump
         self.ssh_config_path = ssh_config_path
+        self.profile_name = profile_name
         self.logger = _logger
         self.verbose = verbose
 
@@ -95,10 +96,11 @@ class SSHSlurmClient:
             proxy_jump=proxy_jump,
             ssh_config_path=ssh_config_path,
             verbose=verbose,
-            env_vars=env_vars,
         )
         self.files = RemoteFileManager(self.connection)
-        self.slurm = SlurmRemoteClient(self.connection, self.files)
+        self.slurm = SlurmRemoteClient(
+            self.connection, self.files, profile_name=profile_name
+        )
         self.logs = RemoteLogReader(self.connection, self.slurm)
 
         # RsyncClient for project sync (key-based auth only).
@@ -138,6 +140,18 @@ class SSHSlurmClient:
             # PATH-resolved binaries even if path discovery failed).
             self.logger.warning(f"SLURM initialization failed: {exc}")
         return True
+
+    def bind_profile_name(self, profile_name: str | None) -> None:
+        """(Re)bind the SSH profile to enable/disable account secrets.
+
+        Delegates to :meth:`SlurmRemoteClient.bind_profile_name`. Used by the
+        sweep pool clone path (:meth:`SlurmSSHClient.from_spec`) where the
+        adapter is built without a profile to avoid a ConfigManager re-parse.
+        The profile name only gates secret behaviour on/off; the secret file
+        itself is account (``$HOME``) scoped.
+        """
+        self.profile_name = profile_name
+        self.slurm.bind_profile_name(profile_name)
 
     def disconnect(self) -> None:
         self.connection.disconnect()

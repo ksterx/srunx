@@ -51,7 +51,6 @@ class TestSimpleSSHIntegration:
                 key_filename="/home/user/.ssh/dgx_key",
                 port=22,
                 description="Test DGX server",
-                env_vars={"CUDA_VISIBLE_DEVICES": "0,1,2,3"},
             )
 
             config_manager.add_profile("dgx_test", profile)
@@ -61,7 +60,6 @@ class TestSimpleSSHIntegration:
             assert loaded_profile is not None
             assert loaded_profile.hostname == "dgx.example.com"
             assert loaded_profile.username == "researcher"
-            assert loaded_profile.env_vars["CUDA_VISIBLE_DEVICES"] == "0,1,2,3"
 
             # Test profile listing
             profiles = config_manager.list_profiles()
@@ -182,62 +180,19 @@ echo "Hello from SLURM!"
         finally:
             Path(test_path).unlink()
 
-    def test_environment_variables_handling(self):
-        """Test environment variable handling."""
-        env_vars = {
-            "CUDA_VISIBLE_DEVICES": "0,1,2,3",
-            "WANDB_API_KEY": "test_key_12345",
-            "CUSTOM_VAR": "custom_value",
-        }
+    def test_job_env_vars_handling(self):
+        """Job-level env vars are exported in the SSH submission prefix."""
+        client = SSHSlurmClient(hostname="test.example.com", username="testuser")
 
-        client = SSHSlurmClient(
-            hostname="test.example.com", username="testuser", env_vars=env_vars
+        env_setup = client.slurm._get_slurm_env_setup(
+            {
+                "CUDA_VISIBLE_DEVICES": "0,1,2,3",
+                "WANDB_API_KEY": "test_key_12345",
+                "CUSTOM_VAR": "custom_value",
+            }
         )
-
-        env_setup = client.slurm._get_slurm_env_setup()
 
         # Verify environment variables are included (with proper quoting)
         assert "export CUDA_VISIBLE_DEVICES='0,1,2,3'" in env_setup
         assert "export WANDB_API_KEY='test_key_12345'" in env_setup
         assert "export CUSTOM_VAR='custom_value'" in env_setup
-
-    def test_profile_environment_variables(self):
-        """Test profile-based environment variable management."""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False
-        ) as config_file:
-            config_path = config_file.name
-
-        try:
-            config_manager = ConfigManager(config_path)
-
-            # Add profile with environment variables
-            profile = ServerProfile(
-                hostname="ml.example.com",
-                username="researcher",
-                key_filename="/keys/ml_key",
-                env_vars={
-                    "WANDB_PROJECT": "deep_learning",
-                    "CUDA_VISIBLE_DEVICES": "0,1",
-                },
-            )
-
-            config_manager.add_profile("ml_server", profile)
-
-            # Test profile retrieval and environment variables
-            loaded_profile = config_manager.get_profile("ml_server")
-            assert loaded_profile.env_vars["WANDB_PROJECT"] == "deep_learning"
-            assert loaded_profile.env_vars["CUDA_VISIBLE_DEVICES"] == "0,1"
-
-            # Test profile update (basic functionality)
-            success = config_manager.update_profile(
-                "ml_server", description="Updated ML server"
-            )
-            assert success
-
-            updated_profile = config_manager.get_profile("ml_server")
-            assert updated_profile.description == "Updated ML server"
-            assert updated_profile.env_vars["WANDB_PROJECT"] == "deep_learning"
-
-        finally:
-            Path(config_path).unlink(missing_ok=True)

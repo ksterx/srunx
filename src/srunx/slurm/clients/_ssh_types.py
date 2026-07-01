@@ -71,5 +71,4 @@ class SlurmSSHClientSpec:
     key_filename: str | None
     port: int
     proxy_jump: str | None = None
-    env_vars: tuple[tuple[str, str], ...] = ()
     mounts: tuple[MountConfig, ...] = field(default_factory=tuple)

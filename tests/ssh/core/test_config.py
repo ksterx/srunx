@@ -171,6 +171,44 @@ class TestConfigManager:
         assert result is False
 
 
+class TestLegacyEnvVarsConfig:
+    """REQ-11 / F6: a legacy config.json with a profile ``env_vars`` block must
+    still load (ServerProfile ``extra='ignore'`` drops the stray key)."""
+
+    def test_legacy_env_vars_ignored_on_load(
+        self, temp_config_file, sample_config_data
+    ):
+        # sample_config_data carries a stray ``env_vars`` block on both
+        # profiles — exactly the removed mechanism's persisted shape.
+        with open(temp_config_file, "w") as f:
+            json.dump(sample_config_data, f)
+
+        config_manager = ConfigManager(temp_config_file)
+
+        # Load must not raise, and the profile is usable.
+        profile = config_manager.get_profile("test-profile")
+        assert profile is not None
+        assert profile.hostname == "example.com"
+        # The stray key is dropped from the model (extra=ignore).
+        assert not hasattr(profile, "env_vars")
+
+        # list_profiles round-trips both legacy profiles without error.
+        profiles = config_manager.list_profiles()
+        assert set(profiles) == {"test-profile", "dgx-profile"}
+
+    def test_server_profile_extra_ignore_drops_env_vars(self):
+        profile = ServerProfile.model_validate(
+            {
+                "hostname": "h",
+                "username": "u",
+                "key_filename": "/k",
+                "env_vars": {"WANDB_PROJECT": "proj"},
+            }
+        )
+        assert profile.hostname == "h"
+        assert not hasattr(profile, "env_vars")
+
+
 class TestMountConfigExcludePatterns:
     """Tests for MountConfig.exclude_patterns field.
 
