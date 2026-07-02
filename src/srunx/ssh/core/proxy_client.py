@@ -5,6 +5,7 @@ import paramiko
 from srunx.common.logging import get_logger
 
 from .ssh_config import SSHHost, get_ssh_config_host
+from .utils import configure_host_key_verification
 
 _logger = get_logger(__name__)
 
@@ -24,8 +25,7 @@ class ProxySSHClient:
         try:
             # Connect to proxy host
             self.proxy_client = paramiko.SSHClient()
-            self.proxy_client.load_system_host_keys()
-            self.proxy_client.set_missing_host_key_policy(paramiko.WarningPolicy())
+            configure_host_key_verification(self.proxy_client)
 
             proxy_connect_kwargs = {
                 "hostname": proxy_host_config.hostname,
@@ -90,8 +90,7 @@ class ProxySSHClient:
 
         # Connect to target through proxy
         target_client = paramiko.SSHClient()
-        target_client.load_system_host_keys()
-        target_client.set_missing_host_key_policy(paramiko.WarningPolicy())
+        configure_host_key_verification(target_client)
 
         # Create transport over proxy channel
         target_transport = paramiko.Transport(proxy_channel)
@@ -152,8 +151,7 @@ def create_proxy_aware_connection(
     if not proxy_jump:
         # Direct connection
         client = paramiko.SSHClient()
-        client.load_system_host_keys()
-        client.set_missing_host_key_policy(paramiko.WarningPolicy())
+        configure_host_key_verification(client)
         client.connect(
             hostname=hostname, username=username, key_filename=key_filename, port=port
         )

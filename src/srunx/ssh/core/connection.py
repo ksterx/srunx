@@ -15,6 +15,7 @@ import paramiko  # type: ignore
 from srunx.common.logging import get_logger
 
 from .proxy_client import ProxySSHClient, create_proxy_aware_connection
+from .utils import configure_host_key_verification
 
 _logger = get_logger(__name__)
 
@@ -71,8 +72,7 @@ class SSHConnection:
                 )
             else:
                 self.ssh_client = paramiko.SSHClient()
-                self.ssh_client.load_system_host_keys()
-                self.ssh_client.set_missing_host_key_policy(paramiko.WarningPolicy())
+                configure_host_key_verification(self.ssh_client)
 
                 if self.key_filename:
                     self.ssh_client.connect(

