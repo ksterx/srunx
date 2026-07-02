@@ -96,3 +96,30 @@ def reject_python_prefix(payload: Any, *, source: str) -> None:
             f"{violation.source} at '{violation.path}' contains 'python:' "
             f"prefix which is not allowed: {violation.value!r}"
         )
+
+
+def reject_python_prefix_in_yaml_file(yaml_path: str) -> None:
+    """Apply the ``python:`` guard to a workflow file's own ``args`` section.
+
+    ``WorkflowRunner.from_yaml`` merges and evaluates the YAML file's ``args``
+    at load time, so guarding only the caller-supplied ``args`` override
+    (as :func:`reject_python_prefix` does) leaves the file's own args
+    unguarded. This mirrors the Web path's ``reject_python_prefix_in_yaml_args``
+    so MCP validate/run/get share the same boundary. Missing/malformed files
+    are left to downstream validation to report.
+    """
+    import yaml
+
+    from pathlib import Path
+
+    try:
+        text = Path(yaml_path).read_text()
+        data = yaml.safe_load(text)
+    except Exception:
+        return
+
+    if not isinstance(data, dict):
+        return
+    args = data.get("args")
+    if isinstance(args, dict):
+        reject_python_prefix(args, source="args")
