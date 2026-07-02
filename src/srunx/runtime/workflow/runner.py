@@ -20,6 +20,7 @@ import yaml  # type: ignore
 from srunx.callbacks import Callback
 from srunx.common.exceptions import WorkflowValidationError
 from srunx.common.logging import get_logger
+from srunx.runtime.security import sandboxed_template
 from srunx.domain import (
     DependencyType,
     Job,
@@ -264,7 +265,9 @@ class WorkflowRunner:
 
             job_yaml = yaml.dump(raw, default_flow_style=False)
             try:
-                template = jinja2.Template(job_yaml, undefined=jinja2.StrictUndefined)
+                template = sandboxed_template(
+                    job_yaml, undefined=jinja2.StrictUndefined
+                )
                 rendered_yaml = template.render(**context)
             except jinja2.TemplateError as e:
                 raise WorkflowValidationError(

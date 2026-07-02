@@ -12,6 +12,7 @@ from typing import Any
 import jinja2
 
 from srunx.common.logging import get_logger
+from srunx.runtime.security import sandboxed_template
 from srunx.runtime.workflow.safe_eval import _safe_eval, _safe_exec
 
 logger = get_logger(__name__)
@@ -71,21 +72,29 @@ class _DepsNamespace:
     def __init__(self, data: dict[str, Any]):
         self._data = data
 
+    def _lookup(self, name: str) -> Any:
+        value = self._data[name]
+        if isinstance(value, dict):
+            return _DepsNamespace(value)
+        return value
+
     def __getattr__(self, name: str) -> Any:
         try:
-            value = self._data[name]
+            return self._lookup(name)
         except KeyError as exc:
             raise AttributeError(
                 f"'deps' has no entry '{name}'. "
                 "Check that it is listed in this job's 'depends_on' "
                 "and that the referenced key is declared in the parent's 'exports'."
             ) from exc
-        if isinstance(value, dict):
-            return _DepsNamespace(value)
-        return value
 
     def __getitem__(self, name: str) -> Any:
-        return self.__getattr__(name)
+        # Raise KeyError (a LookupError), NOT AttributeError: Jinja's
+        # SandboxedEnvironment.getattr falls back to subscripting when attribute
+        # access fails and only catches (TypeError, LookupError) before yielding
+        # a StrictUndefined. An AttributeError here would escape unwrapped
+        # instead of surfacing as a clean load-time validation error.
+        return self._lookup(name)
 
     def __contains__(self, name: str) -> bool:
         return name in self._data
@@ -124,7 +133,7 @@ def _find_required_variables(jobs_yaml: str, args: dict[str, Any]) -> set[str]:
 
 def _eval_python_var(code_raw: str, evaluated: dict[str, Any]) -> Any:
     """Evaluate a single python: variable value."""
-    code = jinja2.Template(code_raw, undefined=jinja2.DebugUndefined).render(
+    code = sandboxed_template(code_raw, undefined=jinja2.DebugUndefined).render(
         **evaluated
     )
     code = dedent(code).lstrip()
@@ -196,7 +205,7 @@ def _evaluate_variables(args: dict[str, Any], required: set[str]) -> dict[str, A
             value = plain[key]
             refs = _find_jinja_refs(value)
             if refs:
-                tmpl = jinja2.Template(value, undefined=jinja2.DebugUndefined)
+                tmpl = sandboxed_template(value, undefined=jinja2.DebugUndefined)
                 evaluated[key] = tmpl.render(**evaluated)
             else:
                 evaluated[key] = value

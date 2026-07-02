@@ -1712,11 +1712,24 @@ class TestSafeEvalExec:
             _safe_eval("().__class__.__bases__[0].__subclasses__()", {})
 
     def test_safe_eval_blocks_type_escape(self):
-        """Prevent sandbox escape via type()."""
+        """Prevent sandbox escape via type().
+
+        Blocked on two independent grounds: ``type`` is not an allowlisted
+        callable (NameError) and dunder attribute access such as
+        ``__bases__`` / ``__subclasses__`` is rejected (AttributeError). The
+        dunder guard is evaluated first for this expression.
+        """
         from srunx.runtime.workflow.safe_eval import _safe_eval
 
-        with pytest.raises(NameError):
+        with pytest.raises((NameError, AttributeError)):
             _safe_eval("type(()).__bases__[0].__subclasses__()", {})
+
+    def test_safe_eval_blocks_dunder_builtins_escape(self):
+        """The datetime.__builtins__ → exec escape must be rejected."""
+        from srunx.runtime.workflow.safe_eval import _safe_eval
+
+        with pytest.raises(AttributeError):
+            _safe_eval("datetime.__builtins__['exec']('1')", {})
 
     def test_safe_exec_allows_result(self):
         """exec sandbox should allow setting result variable."""
