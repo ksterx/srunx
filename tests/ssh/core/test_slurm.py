@@ -358,3 +358,26 @@ class TestEnvVarSecurity:
         client = SSHSlurmClient(hostname="h", username="u", key_filename="k")
         with pytest.raises(ValueError, match="Invalid environment variable name"):
             client.slurm._get_slurm_env_setup({"BAD KEY": "v"})
+
+    def test_redaction_applies_before_outer_quote(self):
+        """Regression: redact the unquoted command, not the shlex.quoted one.
+
+        The debug log wraps the command in `bash -l -c <shlex.quote(cmd)>`.
+        Quoting rewrites the inner `export KEY='...'` single quotes into
+        `'"'"'` sequences the redaction regex can't match, so redaction must
+        run on the unquoted string.
+        """
+        import shlex
+
+        from srunx.ssh.core.slurm import _redact_exports
+
+        client = SSHSlurmClient(hostname="h", username="u", key_filename="k")
+        final_command = client.slurm._get_slurm_env_setup({"API_KEY": "sk-secret"})
+        assert "sk-secret" in final_command  # unredacted baseline
+
+        # The (fixed) log path: redact then quote — secret is gone.
+        logged = f"bash -l -c {shlex.quote(_redact_exports(final_command))}"
+        assert "sk-secret" not in logged
+        # The (buggy) log path: quote then redact — secret would survive.
+        buggy = _redact_exports(f"bash -l -c {shlex.quote(final_command)}")
+        assert "sk-secret" in buggy

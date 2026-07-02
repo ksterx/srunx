@@ -312,7 +312,13 @@ class SlurmRemoteClient:
             final_command = f"{env_setup} && {command}"
 
         full_cmd = f"bash -l -c {shlex.quote(final_command)}"
-        self.logger.debug(f"Executing SLURM command: {_redact_exports(full_cmd)}")
+        # Redact BEFORE the outer shlex.quote: quoting rewrites the inner
+        # `export KEY='...'` single quotes into `'"'"'` sequences the regex
+        # can't match, so redact the unquoted command then re-quote for display.
+        self.logger.debug(
+            "Executing SLURM command: "
+            f"bash -l -c {shlex.quote(_redact_exports(final_command))}"
+        )
         stdout, stderr, exit_code = self._conn.execute_command(full_cmd)
         self.logger.debug(
             f"SLURM command result: exit_code={exit_code}, stdout_len={len(stdout)}, stderr_len={len(stderr)}"
