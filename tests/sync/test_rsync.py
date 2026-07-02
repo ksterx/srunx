@@ -145,7 +145,14 @@ class TestBuildSshCmd:
         idx = cmd.index("-F")
         assert cmd[idx + 1] == "/my/ssh/config"
 
-    def test_strict_host_key_checking(self):
+    def test_strict_host_key_checking_default_is_strict(self, monkeypatch):
+        monkeypatch.delenv("SRUNX_SSH_HOST_KEY_POLICY", raising=False)
+        client = _make_rsync_client(hostname="h", username="u")
+        cmd = client._build_ssh_cmd()
+        assert "StrictHostKeyChecking=yes" in cmd
+
+    def test_strict_host_key_checking_accept_new_opt_in(self, monkeypatch):
+        monkeypatch.setenv("SRUNX_SSH_HOST_KEY_POLICY", "accept-new")
         client = _make_rsync_client(hostname="h", username="u")
         cmd = client._build_ssh_cmd()
         assert "StrictHostKeyChecking=accept-new" in cmd

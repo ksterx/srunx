@@ -227,7 +227,15 @@ class RsyncClient:
         if self.ssh_config_path:
             parts.extend(["-F", self.ssh_config_path])
 
-        parts.extend(["-o", "StrictHostKeyChecking=accept-new"])
+        # Host-key strictness mirrors the paramiko path (same env var). Default
+        # is strict: a host already in known_hosts is required, blocking
+        # first-contact MITM. Opt into TOFU with SRUNX_SSH_HOST_KEY_POLICY=accept-new.
+        policy = os.environ.get("SRUNX_SSH_HOST_KEY_POLICY", "reject").strip().lower()
+        strict_value = {
+            "accept-new": "accept-new",
+            "warn": "no",
+        }.get(policy, "yes")
+        parts.extend(["-o", f"StrictHostKeyChecking={strict_value}"])
         parts.extend(["-o", "BatchMode=yes"])
 
         return parts

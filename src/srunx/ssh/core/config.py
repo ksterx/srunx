@@ -116,6 +116,12 @@ class ConfigManager:
     def _get_default_config_path(self) -> Path:
         config_dir = Path.home() / ".config" / "srunx"
         config_dir.mkdir(parents=True, exist_ok=True)
+        # SSH profiles (hostnames, usernames, key paths) must not be
+        # world-readable on shared login nodes.
+        try:
+            config_dir.chmod(0o700)
+        except OSError:
+            pass
         return config_dir / "config.json"
 
     def load_config(self) -> None:
@@ -175,6 +181,10 @@ class ConfigManager:
 
             with open(self.config_path, "w") as f:
                 json.dump(existing, f, indent=2)
+            try:
+                Path(self.config_path).chmod(0o600)
+            except OSError:
+                pass
         except OSError as e:
             raise RuntimeError(
                 f"Failed to save config to {self.config_path}: {e}"

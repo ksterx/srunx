@@ -7,6 +7,21 @@ so both the CLI-side ``SlackCallback`` and the new
 
 from __future__ import annotations
 
+import re
+
+# Canonical Slack Incoming Webhook URL pattern. Shared by the Web endpoint
+# router (create/update), the delivery adapter (send time), and the config
+# bootstrap migration so every path that stores or POSTs a webhook applies the
+# same anti-SSRF check.
+SLACK_WEBHOOK_URL_RE = re.compile(
+    r"^https://hooks\.slack\.com/services/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$"
+)
+
+
+def is_valid_slack_webhook_url(url: object) -> bool:
+    """Return True iff ``url`` is a well-formed Slack Incoming Webhook URL."""
+    return isinstance(url, str) and SLACK_WEBHOOK_URL_RE.match(url) is not None
+
 
 def sanitize_slack_text(text: str) -> str:
     """Sanitize text for safe use in Slack messages.

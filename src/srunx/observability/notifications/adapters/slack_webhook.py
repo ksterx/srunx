@@ -13,7 +13,10 @@ from typing import Any
 from slack_sdk import WebhookClient
 
 from srunx.observability.notifications.adapters.base import DeliveryError
-from srunx.observability.notifications.sanitize import sanitize_slack_text
+from srunx.observability.notifications.sanitize import (
+    is_valid_slack_webhook_url,
+    sanitize_slack_text,
+)
 from srunx.observability.storage.models import Event
 
 
@@ -40,6 +43,14 @@ class SlackWebhookAdapter:
         if not webhook_url or not isinstance(webhook_url, str):
             raise DeliveryError(
                 "slack_webhook endpoint config is missing 'webhook_url'"
+            )
+        # Re-validate at delivery time: rows can reach the DB from paths that
+        # did not enforce the regex (e.g. the config bootstrap migration), so
+        # never POST to an arbitrary/internal URL just because it is stored.
+        if not is_valid_slack_webhook_url(webhook_url):
+            raise DeliveryError(
+                "slack_webhook endpoint has an invalid webhook_url "
+                "(must be https://hooks.slack.com/services/.../.../...)"
             )
 
         text, blocks = self._build_message(event)
