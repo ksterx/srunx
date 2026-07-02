@@ -25,6 +25,7 @@ from srunx.ssh.core.config import MountConfig
 
 from .config import get_web_config
 from .deps import set_adapter
+from .security import WebSecurityMiddleware, assert_safe_bind
 from .routers import deliveries as deliveries_router
 from .routers import endpoints as endpoints_router
 from .routers import (
@@ -536,6 +537,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Anti-DNS-rebinding (Host header) + optional bearer token on /api/*.
+    app.add_middleware(
+        WebSecurityMiddleware,
+        auth_token=config.auth_token,
+        bind_host=config.host,
+        allowed_hosts=config.allowed_hosts,
+    )
+
     # REST routers
     from .routers import config as config_router
     from .routers import templates
@@ -581,6 +590,7 @@ def main() -> None:
     import uvicorn
 
     config = get_web_config()
+    assert_safe_bind(config.host, config.auth_token)
     uvicorn.run(
         "srunx.web.app:create_app",
         factory=True,
