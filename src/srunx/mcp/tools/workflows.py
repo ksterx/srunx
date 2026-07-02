@@ -14,7 +14,12 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from srunx.mcp.app import mcp
-from srunx.mcp.helpers import err, ok, reject_python_prefix
+from srunx.mcp.helpers import (
+    err,
+    ok,
+    reject_python_prefix,
+    reject_python_prefix_in_yaml_file,
+)
 
 if TYPE_CHECKING:
     from srunx.runtime.rendering import SubmissionRenderContext
@@ -120,6 +125,7 @@ def validate_workflow(yaml_path: str) -> dict[str, Any]:
     try:
         from srunx.runtime.workflow.runner import WorkflowRunner
 
+        reject_python_prefix_in_yaml_file(yaml_path)
         runner = WorkflowRunner.from_yaml(yaml_path)
         runner.workflow.validate()
 
@@ -254,6 +260,8 @@ def run_workflow(
 
         if args is not None:
             reject_python_prefix(args, source="args")
+        # Also guard the YAML file's own args, which from_yaml merges + evaluates.
+        reject_python_prefix_in_yaml_file(yaml_path)
 
         # Resolve the cluster from the explicit ``transport`` (never the
         # current profile). ``mount`` is orthogonal: it selects the
@@ -492,6 +500,7 @@ def get_workflow(yaml_path: str) -> dict[str, Any]:
 
         from srunx.runtime.workflow.runner import WorkflowRunner
 
+        reject_python_prefix_in_yaml_file(yaml_path)
         runner = WorkflowRunner.from_yaml(yaml_path)
 
         jobs_detail = []

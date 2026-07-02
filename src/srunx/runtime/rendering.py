@@ -31,6 +31,7 @@ from rich.syntax import Syntax
 
 from srunx.common.logging import get_logger
 from srunx.domain import Job, JobEnvironment, RunnableJobType, ShellJob, Workflow
+from srunx.runtime.security import sandboxed_template
 from srunx.runtime.templates import get_template_path
 
 # NOTE: ``srunx.runtime.workflow.runner`` is imported lazily inside
@@ -499,7 +500,7 @@ def _render_base_script(
     # default behaviour, every script ending in ``\n`` (i.e. every
     # POSIX-conforming shell script) compared as different and the
     # in-place path was effectively dead. Codex blocker #2 on PR #141.
-    template = jinja2.Template(
+    template = sandboxed_template(
         template_content,
         undefined=jinja2.StrictUndefined,
         keep_trailing_newline=True,

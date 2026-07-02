@@ -274,12 +274,15 @@ class SlackNotificationFormatter:
 
         # Prepare table data
         headers = ["ID", "Name", "Status", "Runtime", "GPU"]
+        # Sanitize user-controlled fields (job name is attacker-settable): a
+        # backtick or newline would otherwise break out of the ``` code fence
+        # and inject fake rows into the report.
         rows = [
             [
                 str(job.get("id", "-")),
-                job.get("name", "-")[:15],
-                job.get("status", "-")[:10],
-                job.get("runtime", "-")[:8],
+                self.table._sanitize_text(str(job.get("name", "-")))[:15],
+                self.table._sanitize_text(str(job.get("status", "-")))[:10],
+                self.table._sanitize_text(str(job.get("runtime", "-")))[:8],
                 str(job.get("gpus", "-")),
             ]
             for job in jobs

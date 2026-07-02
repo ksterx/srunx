@@ -21,9 +21,21 @@ if TYPE_CHECKING:
 # Imported at module level so the facade can reference it
 from .client_types import SlurmJob  # noqa: F401  re-exported for convenience
 from .secret_store import RemoteSecretStore
-from .utils import query_slurm_job_state
+from .utils import query_slurm_job_state, quote_shell_path
 
 _logger = get_logger(__name__)
+
+# Valid POSIX shell environment-variable name.
+_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+# Redacts `export KEY='value'` values in log output so job --env secrets never
+# reach a debug sink. Sourced-secret-file lines carry no inline values.
+_EXPORT_REDACT_RE = re.compile(r"(export\s+[A-Za-z_][A-Za-z0-9_]*=')(?:[^']|'\\'')*'")
+
+
+def _redact_exports(command: str) -> str:
+    """Mask inline ``export KEY='...'`` values for safe logging."""
+    return _EXPORT_REDACT_RE.sub(r"\1***'", command)
 
 
 class SlurmRemoteClient:
@@ -218,6 +230,15 @@ class SlurmRemoteClient:
             )
 
         for key, value in (job_env_vars or {}).items():
+            # Defense-in-depth: the key is interpolated into `export {key}=...`
+            # which runs under `bash -l -c`, so a non-identifier key would be
+            # shell-injected. Callers via JobEnvironment already validate, but
+            # this boundary must not trust that.
+            if not _ENV_KEY_RE.fullmatch(key):
+                raise ValueError(
+                    f"Invalid environment variable name {key!r}: must match "
+                    "[A-Za-z_][A-Za-z0-9_]*"
+                )
             escaped_value = value.replace("'", "'\\''")
             env_commands.append(f"export {key}='{escaped_value}'")
             self.logger.debug(f"Adding job environment variable: {key}")
@@ -291,7 +312,13 @@ class SlurmRemoteClient:
             final_command = f"{env_setup} && {command}"
 
         full_cmd = f"bash -l -c {shlex.quote(final_command)}"
-        self.logger.debug(f"Executing SLURM command: {full_cmd}")
+        # Redact BEFORE the outer shlex.quote: quoting rewrites the inner
+        # `export KEY='...'` single quotes into `'"'"'` sequences the regex
+        # can't match, so redact the unquoted command then re-quote for display.
+        self.logger.debug(
+            "Executing SLURM command: "
+            f"bash -l -c {shlex.quote(_redact_exports(final_command))}"
+        )
         stdout, stderr, exit_code = self._conn.execute_command(full_cmd)
         self.logger.debug(
             f"SLURM command result: exit_code={exit_code}, stdout_len={len(stdout)}, stderr_len={len(stderr)}"
@@ -350,7 +377,7 @@ class SlurmRemoteClient:
                 if not re.fullmatch(r"[a-z]+:\d+(,[a-z]+:\d+)*", dependency):
                     raise ValueError(f"Invalid dependency format: {dependency!r}")
                 cmd += f" --dependency={dependency}"
-            cmd += f" {remote_script_path}"
+            cmd += f" {quote_shell_path(remote_script_path)}"
 
             stdout, stderr, exit_code = self.execute_slurm_command(
                 cmd, job_env_vars=job_env_vars, source_secret=secret_present
@@ -388,7 +415,7 @@ class SlurmRemoteClient:
                 cmd = f"{self._get_slurm_command('sbatch')}"
                 cmd += f" -J {safe_name}"
                 cmd += " -o $SLURM_LOG_DIR/%x_%j.log"
-                cmd += f" {remote_path}"
+                cmd += f" {quote_shell_path(remote_path)}"
 
                 stdout, stderr, exit_code = self.execute_slurm_command(cmd)
                 if exit_code == 0:

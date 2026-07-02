@@ -35,11 +35,19 @@ def ui(
     import uvicorn
 
     from srunx.web.config import get_web_config
+    from srunx.web.security import InsecureBindError, assert_safe_bind
 
     config = get_web_config()
     config.host = host
     config.port = port
     config.verbose = verbose
+
+    # Refuse to expose an unauthenticated API on a non-loopback interface.
+    try:
+        assert_safe_bind(host, config.auth_token)
+    except InsecureBindError as e:
+        Console().print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1) from e
 
     # Quiet mode: silence uvicorn access logs and demote srunx loguru to WARNING.
     if not verbose:

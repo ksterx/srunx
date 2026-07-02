@@ -753,10 +753,13 @@ class LocalClient:
             f"{job_id_str}.log",
         ]
         patterns = [p for p in potential_log_patterns if p is not None]
+        # Deliberately excludes /tmp: it is world-writable on shared login
+        # nodes, so another user could plant `*_<jobid>.log` (or a symlink to
+        # a file we can read) and have us read/print it. Restrict discovery to
+        # the operator-configured log dir and the user's own cwd.
         log_dirs = [
             os.environ.get("SLURM_LOG_DIR", ""),
             "./",
-            "/tmp",
         ]
 
         found_files: list[str] = []
@@ -785,7 +788,11 @@ class LocalClient:
 
         primary_log = found_files[0]
         try:
-            with open(primary_log, encoding="utf-8") as f:
+            # O_NOFOLLOW: refuse to follow a symlink at the final path
+            # component, so a planted `*_<jobid>.log -> ~/.ssh/id_rsa` symlink
+            # cannot redirect us into an unrelated file.
+            fd = os.open(primary_log, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, encoding="utf-8") as f:
                 output_content = f.read()
         except (OSError, UnicodeDecodeError) as e:
             logger.warning(f"Failed to read log file {primary_log}: {e}")

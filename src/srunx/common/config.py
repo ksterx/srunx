@@ -377,6 +377,11 @@ def save_user_config(config: SrunxConfig) -> None:
 
     # Create directory if it doesn't exist
     user_config_path.parent.mkdir(parents=True, exist_ok=True)
+    # The config may hold SSH profile details; keep the dir private.
+    try:
+        user_config_path.parent.chmod(0o700)
+    except OSError:
+        pass
 
     # Load existing data to preserve non-SrunxConfig keys (e.g. SSH profiles)
     existing: dict[str, Any] = {}
@@ -396,6 +401,10 @@ def save_user_config(config: SrunxConfig) -> None:
     try:
         with open(user_config_path, "w", encoding="utf-8") as f:
             json.dump(existing, f, indent=2)
+        try:
+            user_config_path.chmod(0o600)
+        except OSError:
+            pass
         logger.info(f"Configuration saved to {user_config_path}")
     except OSError as e:
         logger.error(f"Failed to save config to {user_config_path}: {e}")

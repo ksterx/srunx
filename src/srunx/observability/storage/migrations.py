@@ -894,6 +894,17 @@ def bootstrap_from_config(conn: sqlite3.Connection, config: Any) -> bool:
     except AttributeError:
         webhook_url = None
 
+    # Only migrate a well-formed Slack webhook URL. A malformed / internal URL
+    # in local config must not be silently promoted into an endpoint the
+    # DeliveryPoller would later POST to (anti-SSRF).
+    if webhook_url is not None:
+        from srunx.observability.notifications.sanitize import (
+            is_valid_slack_webhook_url,
+        )
+
+        if not is_valid_slack_webhook_url(webhook_url):
+            webhook_url = None
+
     # Case: nothing to migrate — still record so we don't re-read next time.
     if not webhook_url:
         conn.execute(

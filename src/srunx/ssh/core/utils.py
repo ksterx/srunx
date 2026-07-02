@@ -6,12 +6,49 @@ instance state, so they live here as plain module-level functions.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+import paramiko
+
+
+def configure_host_key_verification(client: paramiko.SSHClient) -> None:
+    """Load known host keys and set the missing-host-key policy on ``client``.
+
+    Loads both the system host-keys file and the user's ``~/.ssh/known_hosts``
+    so a host already pinned there is verified and a key **mismatch** is
+    rejected by paramiko regardless of policy. The policy below only governs
+    *unknown* (not-yet-seen) hosts:
+
+    - ``reject`` (default): refuse unknown hosts (OpenSSH ``StrictHostKeyChecking=yes``).
+      For the common case — connecting to your own cluster you've already
+      ``ssh``'d to — the host is in ``known_hosts`` and this never fires.
+    - ``accept-new``: trust-on-first-use; add + persist the new key.
+    - ``warn``: legacy behaviour — accept unknown keys with only a warning.
+
+    Override via ``SRUNX_SSH_HOST_KEY_POLICY``.
+    """
+    client.load_system_host_keys()
+    user_known_hosts = os.path.expanduser("~/.ssh/known_hosts")
+    if os.path.exists(user_known_hosts):
+        try:
+            client.load_host_keys(user_known_hosts)
+        except OSError:
+            pass
+
+    policy = os.environ.get("SRUNX_SSH_HOST_KEY_POLICY", "reject").strip().lower()
+    if policy == "accept-new":
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    elif policy == "warn":
+        client.set_missing_host_key_policy(paramiko.WarningPolicy())
+    else:
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+
 
 # scontrol prints whitespace-separated ``Key=Value`` tokens; ``JobState=`` is
 # the observed state (e.g. RUNNING, COMPLETED) and ``ExitCode=N:M`` carries
@@ -29,13 +66,16 @@ _JOB_ID_RE = re.compile(r"^[0-9]+([._][A-Za-z0-9_-]+)?$")
 def quote_shell_path(path: str) -> str:
     """Quote a path for remote shell, handling ~ expansion.
 
-    shlex.quote prevents ~ expansion, so paths starting with ~/
-    are converted to use $HOME with double quotes instead.
+    ``shlex.quote`` prevents ``~`` expansion, so paths starting with ``~/``
+    keep a literal ``$HOME`` prefix (expanded remotely) while the suffix is
+    single-quoted. Using ``shlex.quote`` on the suffix — rather than wrapping
+    the whole thing in double quotes — is what makes it injection-safe:
+    ``"$HOME/"'sub/$(id)'`` leaves ``$(id)``/backticks inside single quotes,
+    so they are never command-substituted.
     """
     if path.startswith("~/"):
-        # Double quotes allow $HOME expansion while preventing word splitting
         suffix = path[2:]
-        return '"$HOME/' + suffix + '"'
+        return '"$HOME/"' + shlex.quote(suffix)
     return shlex.quote(path)
 
 

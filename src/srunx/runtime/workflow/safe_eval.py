@@ -102,6 +102,14 @@ def _eval_node(node: ast.AST, local_vars: dict[str, Any]) -> Any:  # noqa: C901,
 
     # Attribute access (only on allowlisted modules)
     if isinstance(node, ast.Attribute):
+        # Never allow dunder / private attribute access. This is the primary
+        # sandbox boundary: without it, `datetime.__builtins__` (datetime is a
+        # pure-Python module) exposes the full builtins dict, from which
+        # `exec`/`eval`/`__import__` give arbitrary code execution.
+        if node.attr.startswith("_"):
+            raise AttributeError(
+                f"Attribute '{node.attr}' is not allowed in python: args"
+            )
         obj = _eval_node(node.value, local_vars)
         # Only allow attribute access on allowlisted modules and their results
         if obj in _SAFE_MODULES.values() or type(obj).__module__ in (

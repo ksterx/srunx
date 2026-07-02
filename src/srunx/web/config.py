@@ -13,6 +13,23 @@ class WebConfig(BaseModel):
     port: int = Field(default=8000)
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
+    # Optional bearer token required on all /api/* routes. Unset by default so
+    # the local (127.0.0.1) experience is unchanged; required when exposing the
+    # server on a non-loopback host. Set via SRUNX_WEB_TOKEN.
+    auth_token: str | None = Field(
+        default_factory=lambda: os.getenv("SRUNX_WEB_TOKEN") or None
+    )
+    # Extra Host header values accepted by the anti-DNS-rebinding check
+    # (loopback names are always allowed). Set via SRUNX_WEB_ALLOWED_HOSTS
+    # (comma-separated).
+    allowed_hosts: list[str] = Field(
+        default_factory=lambda: [
+            h.strip()
+            for h in os.getenv("SRUNX_WEB_ALLOWED_HOSTS", "").split(",")
+            if h.strip()
+        ]
+    )
+
     # SSH connection — either profile_name or (hostname + username)
     ssh_profile: str | None = Field(
         default_factory=lambda: os.getenv("SRUNX_SSH_PROFILE")
