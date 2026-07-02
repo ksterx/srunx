@@ -20,7 +20,7 @@ class TestQuoteShellPath:
         assert "'logs/$(id)'" in out
 
     def test_home_path_no_suffix(self):
-        assert quote_shell_path("~/") == '"$HOME/"\'\''
+        assert quote_shell_path("~/") == "\"$HOME/\"''"
 
 
 class TestHostKeyVerification:

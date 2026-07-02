@@ -49,6 +49,7 @@ def configure_host_key_verification(client: paramiko.SSHClient) -> None:
     else:
         client.set_missing_host_key_policy(paramiko.RejectPolicy())
 
+
 # scontrol prints whitespace-separated ``Key=Value`` tokens; ``JobState=`` is
 # the observed state (e.g. RUNNING, COMPLETED) and ``ExitCode=N:M`` carries
 # the process exit code (N) and terminating signal (M). Match until the next

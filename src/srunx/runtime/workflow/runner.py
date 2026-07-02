@@ -20,7 +20,6 @@ import yaml  # type: ignore
 from srunx.callbacks import Callback
 from srunx.common.exceptions import WorkflowValidationError
 from srunx.common.logging import get_logger
-from srunx.runtime.security import sandboxed_template
 from srunx.domain import (
     DependencyType,
     Job,
@@ -31,6 +30,7 @@ from srunx.domain import (
     ShellJob,
     Workflow,
 )
+from srunx.runtime.security import sandboxed_template
 from srunx.runtime.workflow.loader import (
     _dependency_closure,
     _DepsNamespace,

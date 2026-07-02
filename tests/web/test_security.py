@@ -59,7 +59,10 @@ class TestHostHeaderCheck:
             _app(bind_host="0.0.0.0", auth_token="s3cret"),
             base_url="http://anything",
         )
-        assert c.get("/api/ping", headers={"Authorization": "Bearer s3cret"}).status_code == 200
+        assert (
+            c.get("/api/ping", headers={"Authorization": "Bearer s3cret"}).status_code
+            == 200
+        )
 
 
 class TestTokenCheck:

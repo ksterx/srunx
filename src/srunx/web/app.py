@@ -25,7 +25,6 @@ from srunx.ssh.core.config import MountConfig
 
 from .config import get_web_config
 from .deps import set_adapter
-from .security import WebSecurityMiddleware, assert_safe_bind
 from .routers import deliveries as deliveries_router
 from .routers import endpoints as endpoints_router
 from .routers import (
@@ -38,6 +37,7 @@ from .routers import (
 from .routers import subscriptions as subscriptions_router
 from .routers import sweep_runs as sweep_runs_router
 from .routers import watches as watches_router
+from .security import WebSecurityMiddleware, assert_safe_bind
 
 _FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
 logger = get_logger(__name__)

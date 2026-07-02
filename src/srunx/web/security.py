@@ -91,9 +91,7 @@ class WebSecurityMiddleware(BaseHTTPMiddleware):
                     )
             if self.auth_token:
                 header = request.headers.get("authorization", "")
-                token = (
-                    header[7:] if header[:7].lower() == "bearer " else ""
-                )
+                token = header[7:] if header[:7].lower() == "bearer " else ""
                 if not hmac.compare_digest(token, self.auth_token):
                     return JSONResponse(
                         status_code=401,

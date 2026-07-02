@@ -108,9 +108,9 @@ def reject_python_prefix_in_yaml_file(yaml_path: str) -> None:
     so MCP validate/run/get share the same boundary. Missing/malformed files
     are left to downstream validation to report.
     """
-    import yaml
-
     from pathlib import Path
+
+    import yaml
 
     try:
         text = Path(yaml_path).read_text()

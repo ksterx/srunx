@@ -35,7 +35,6 @@ def ui(
     import uvicorn
 
     from srunx.web.config import get_web_config
-
     from srunx.web.security import InsecureBindError, assert_safe_bind
 
     config = get_web_config()
