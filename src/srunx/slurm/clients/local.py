@@ -96,6 +96,7 @@ class LocalClient:
         workflow_run_id: int | None = None,
         *,
         submission_context: SubmissionRenderContext | None = None,
+        inject_job_name: bool = True,
     ) -> RunnableJobType:
         """Submit a job to SLURM.
 
@@ -119,6 +120,11 @@ class LocalClient:
                 :class:`~srunx.slurm.protocols.JobOperations`
                 conformance and ignored — local submission performs no
                 mount translation.
+            inject_job_name: Accepted for
+                :class:`~srunx.slurm.protocols.JobOperations`
+                conformance and ignored — the local path never injects a
+                ``--job-name`` flag (a ShellJob's own ``#SBATCH`` directives
+                always win), so there is nothing to suppress.
 
         Returns:
             Job instance with updated job_id and status.
@@ -127,6 +133,7 @@ class LocalClient:
             subprocess.CalledProcessError: If job submission fails.
         """
         del submission_context  # unused on the local path (see docstring)
+        del inject_job_name  # unused on the local path (see docstring)
         result = None
 
         if isinstance(job, Job):

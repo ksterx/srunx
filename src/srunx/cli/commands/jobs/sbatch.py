@@ -15,6 +15,7 @@ from srunx.cli._helpers.sbatch_helpers import (
     _parse_env_vars,
     _parse_gres_gpu,
     _print_in_place_sync_preview,
+    _resolve_job_name,
     _submit_via_transport,
 )
 from srunx.cli._helpers.transport import resolve_transport
@@ -307,6 +308,23 @@ def sbatch(
 
     environment = JobEnvironment.model_validate(env_config)
 
+    # Did the user actually type ``-J`` / ``--name``? The option defaults
+    # to "job"; only an explicit value may override a script's own
+    # ``#SBATCH --job-name``. Same ParameterSource pattern as the resource
+    # flags below.
+    from click.core import ParameterSource
+
+    name_explicit = ctx.get_parameter_source("name") == ParameterSource.COMMANDLINE
+
+    # ``inject_job_name`` = should ``--job-name`` go on the sbatch command
+    # line? Default True; only a positional script that declares its own
+    # ``#SBATCH --job-name`` (and no explicit ``-J``) suppresses it, so the
+    # script's directive wins. ``--wrap`` always injects — it has no
+    # user-authored directive to protect, and suppressing would let a stray
+    # ``SBATCH_JOB_NAME`` in the environment rename the job out from under
+    # the name srunx records.
+    inject_job_name = True
+
     job: Job | ShellJob
     if script is not None:
         # ShellJob's schema is intentionally thin: it records the script
@@ -318,8 +336,16 @@ def sbatch(
         # --export=ALL locally / remote export prefix + --export=ALL over
         # SSH), so --env is effective for positional scripts identically to
         # --wrap.
+        #
+        # ``name`` is resolved the way SLURM will name the job (explicit
+        # -J > script's #SBATCH --job-name > script basename) so srunx's
+        # display / history match the scheduler without a post-submit
+        # query; ``inject_job_name`` rides along from the same resolution.
+        effective_name, inject_job_name = _resolve_job_name(
+            script, name, cli_name_explicit=name_explicit
+        )
         shell_data: dict[str, Any] = {
-            "name": name,
+            "name": effective_name,
             "script_path": str(script),
             "environment": environment,
         }
@@ -417,8 +443,6 @@ def sbatch(
     # ParameterSource); never forward defaults nor config-injected
     # values, so the on-disk ``#SBATCH`` directives stay authoritative
     # for anything the user did not explicitly override.
-    from click.core import ParameterSource
-
     log_dir_user = (
         log_dir
         if ctx.get_parameter_source("log_dir") == ParameterSource.COMMANDLINE
@@ -474,6 +498,7 @@ def sbatch(
             config=config,
             extra_sbatch_args=extra_sbatch_args,
             force_sync=force_sync,
+            inject_job_name=inject_job_name,
         )
         client = (
             _slurm_local.Slurm(callbacks=callbacks)

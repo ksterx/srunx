@@ -637,6 +637,7 @@ class SlurmSSHClient:
         job: RunnableJobType,
         *,
         submission_context: SubmissionRenderContext | None = None,
+        inject_job_name: bool = True,
     ) -> RunnableJobType:
         """Submit *job* over SSH and return it with ``job_id`` populated.
 
@@ -710,9 +711,16 @@ class SlurmSSHClient:
                 # Job-level env rides on ``job.environment`` (ISP — no env
                 # params on the JobOperations.submit protocol); the SSH adapter
                 # realizes it as the remote export prefix + ``--export=ALL``.
+                #
+                # ``inject_job_name=False`` (CLI positional script with no
+                # explicit ``-J``) suppresses the ``--job-name`` command-line
+                # flag so the script's own ``#SBATCH --job-name`` — already
+                # present in ``script_content`` — is not overridden. The
+                # resolved logical name still travels on ``job.name`` for the
+                # DB record + callbacks fired below.
                 result = self._client.slurm.submit_sbatch_job(
                     script_content,
-                    job_name=job.name,
+                    job_name=job.name if inject_job_name else None,
                     job_env_vars=job.environment.env_vars,
                 )
         except paramiko.AuthenticationException as exc:
