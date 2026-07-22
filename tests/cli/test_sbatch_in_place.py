@@ -146,6 +146,9 @@ def test_sbatch_in_place_under_mount_calls_remote_submit(
     call_kwargs = job_ops.submit_remote_sbatch.call_args
     assert call_kwargs.args[0] == "/cluster/share/ml-project/train.sbatch"
     assert call_kwargs.kwargs["submit_cwd"].startswith("/cluster/share/ml-project")
+    # No ``-J`` was typed, so srunx must NOT inject ``--job-name`` — the
+    # script's own ``#SBATCH --job-name=train`` directive has to win.
+    assert call_kwargs.kwargs["job_name"] is None
 
     # The legacy temp-upload path must NOT have fired.
     job_ops.submit.assert_not_called()

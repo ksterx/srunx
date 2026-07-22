@@ -60,6 +60,7 @@ class JobOperations(Protocol):
         job: RunnableJobType,
         *,
         submission_context: SubmissionRenderContext | None = None,
+        inject_job_name: bool = True,
     ) -> RunnableJobType:
         """Submit *job* to SLURM and return the populated job object.
 
@@ -74,6 +75,15 @@ class JobOperations(Protocol):
         / ``log_dir`` paths get rewritten to the remote-mount equivalents.
         Local implementations accept the kwarg for Protocol conformance
         but ignore it (local submission never performs mount translation).
+
+        ``inject_job_name`` controls whether the job's name is placed on
+        the ``sbatch`` command line as ``--job-name`` (which would override
+        a script's own ``#SBATCH --job-name``). The CLI passes ``False``
+        when the user did not explicitly type ``-J`` on a positional
+        script, so the script's directive wins. Defaults to ``True`` so
+        workflow / Web / MCP callers keep naming their jobs. Local
+        implementations accept it for conformance and ignore it (the local
+        path never injects ``--job-name``).
         """
         ...
 

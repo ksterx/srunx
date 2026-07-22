@@ -5,6 +5,7 @@ These were siblings of ``sbatch`` in the old monolithic ``main.py``; they live
 here so ``commands/jobs.py`` only holds Typer command functions.
 """
 
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,7 @@ def _submit_via_transport(
     config: Any,
     extra_sbatch_args: list[str] | None = None,
     force_sync: bool = False,
+    inject_job_name: bool = True,
 ) -> Any:
     """Dispatch a submit to the right adapter method + optional mount sync.
 
@@ -62,6 +64,15 @@ def _submit_via_transport(
     overrides of the script's ``#SBATCH`` directives, matching real
     sbatch's precedence. Closes Codex blocker #1: previously these
     flags silently no-op'd in ShellJob (positional-script) mode.
+
+    ``inject_job_name`` controls whether ``--job-name`` reaches the
+    remote sbatch command line. It is ``False`` when the user did not
+    type ``-J`` on a positional script, so the script's own ``#SBATCH
+    --job-name`` (or SLURM's default) wins instead of being clobbered
+    by srunx's logical name. ``job.name`` still carries the resolved
+    logical name for display / history regardless — the two concerns
+    are deliberately separate. Non-CLI callers keep the default
+    ``True`` so workflow / Web / MCP submissions still name their jobs.
     """
     from srunx.common.exceptions import TransportError
     from srunx.domain import ShellJob as _ShellJob
@@ -96,7 +107,9 @@ def _submit_via_transport(
         logger.warning(w)
 
     if plan.mode == SubmissionMode.TEMP_UPLOAD:
-        return rt.job_ops.submit(job, submission_context=sub_ctx)
+        return rt.job_ops.submit(
+            job, submission_context=sub_ctx, inject_job_name=inject_job_name
+        )
 
     # IN_PLACE branch: hold the per-(profile,mount) lock across the
     # entire sync + sbatch handoff so a concurrent invocation can't
@@ -145,7 +158,7 @@ def _submit_via_transport(
             submitted = rt.job_ops.submit_remote_sbatch(
                 plan.remote_script_path,
                 submit_cwd=plan.submit_cwd,
-                job_name=job.name,
+                job_name=job.name if inject_job_name else None,
                 extra_sbatch_args=extra_sbatch_args or None,
                 callbacks_job=job,
             )
@@ -229,6 +242,100 @@ def _build_extra_sbatch_args(
         args.append(f"--error={log_dir_user}/%x_%j.log")
 
     return args
+
+
+def _job_name_from_tokens(tokens: list[str]) -> str | None:
+    """Extract ``--job-name`` / ``-J`` from one ``#SBATCH`` line's tokens.
+
+    Handles the four sbatch spellings — ``--job-name=X`` / ``--job-name X``
+    / ``-J X`` / ``-JX`` — and returns the LAST one on the line (matching
+    SLURM's last-wins semantics within a directive line). ``None`` when the
+    line carries no job-name option.
+    """
+    result: str | None = None
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.startswith("--job-name="):
+            result = tok.split("=", 1)[1]
+        elif tok in ("--job-name", "-J") and i + 1 < len(tokens):
+            result = tokens[i + 1]
+            i += 1
+        elif tok.startswith("-J") and len(tok) > 2:
+            result = tok[2:]
+        i += 1
+    return result or None
+
+
+def _script_job_name(script_path: Path | str) -> str | None:
+    """Return the job name declared by a script's ``#SBATCH`` directives.
+
+    Mirrors ``sbatch``'s own directive scan: read ``#SBATCH`` lines from the
+    top of the file, stop at the first non-blank, non-comment line (the first
+    executable command), and honour the LAST ``--job-name`` / ``-J`` seen.
+    Returns ``None`` when no such directive exists or the file can't be read
+    — callers fall back to SLURM's default naming.
+
+    Only the job-name option is parsed (not a general ``#SBATCH`` grammar);
+    a ``%x`` / env-expansion inside a name is returned verbatim (best-effort
+    — the value is used only for srunx's own display, never re-injected).
+    """
+    try:
+        # ``errors="replace"`` so a non-UTF-8 byte anywhere in the script
+        # (e.g. a locale-encoded comment) never raises — such scripts are
+        # valid shell and previously submitted fine (rsync is byte-exact,
+        # the remote sbatch reads the bytes); this display-only scan must
+        # not become a new failure point. ``UnicodeDecodeError`` subclasses
+        # ``ValueError``, NOT ``OSError``, so it would otherwise escape.
+        text = Path(script_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+    found: str | None = None
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#SBATCH"):
+            try:
+                tokens = shlex.split(stripped[len("#SBATCH") :])
+            except ValueError:
+                continue
+            name = _job_name_from_tokens(tokens)
+            if name is not None:
+                found = name  # last directive wins, matching SLURM
+            continue
+        if stripped.startswith("#"):
+            continue  # shebang / comment line — keep scanning
+        break  # first executable line ends #SBATCH processing
+    return found
+
+
+def _resolve_job_name(
+    script: Path | str, cli_name: str, *, cli_name_explicit: bool
+) -> tuple[str, bool]:
+    """Resolve ``(logical job name, inject-as---job-name?)`` for a positional script.
+
+    Name precedence mirrors ``sbatch``: an explicit CLI ``-J`` wins, else
+    the script's own ``#SBATCH --job-name`` / ``-J`` directive, else the
+    script's file name (sbatch(1): "The default job name is the name of the
+    batch script"). Resolved offline so srunx's CLI display / history match
+    the scheduler without a post-submit ``squeue`` / ``sacct`` query.
+
+    The second element says whether to place ``--job-name`` on the sbatch
+    command line. Injection is suppressed **only** when the script declares
+    its own directive and the user didn't type ``-J`` — then the directive
+    must win. With no directive we inject the resolved name so SLURM agrees
+    with srunx; this is essential on the temp-upload path, where the script
+    is uploaded to a random ``job_<uuid>.sh`` and SLURM's *default* name
+    would be that opaque temp filename rather than the source basename.
+    """
+    if cli_name_explicit:
+        return cli_name, True
+    directive = _script_job_name(script)
+    if directive is not None:
+        return directive, False
+    return Path(script).name, True
 
 
 def _parse_gres_gpu(gres: str | None) -> int | None:
