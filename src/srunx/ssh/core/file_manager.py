@@ -121,8 +121,12 @@ class RemoteFileManager:
             f"test -x {quoted_path} && echo 'executable' || echo 'not_executable'"
         )
         if stdout.strip() != "executable":
-            self.logger.warning(
-                f"Remote script file is not executable: {remote_path}. SLURM may fail to run it."
+            # Not a problem for sbatch: SLURM reads the script and runs it
+            # via its interpreter, so the execute bit is never required.
+            # Kept as a debug breadcrumb only (was a misleading WARNING).
+            self.logger.debug(
+                f"Remote script file lacks the execute bit: {remote_path}. "
+                "Harmless for sbatch (SLURM runs the script via its interpreter)."
             )
 
         stdout, stderr, exit_code = self._conn.execute_command(

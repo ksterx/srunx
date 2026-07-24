@@ -110,7 +110,7 @@ def open_connection(db_path: Path | None = None) -> sqlite3.Connection:
         try:
             path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0o600
         except OSError:
-            logger.warning("Could not set 0600 perms on %s", path)
+            logger.warning("Could not set 0600 perms on {}", path)
     return conn
 
 
@@ -147,15 +147,15 @@ def _delete_legacy_history_db() -> None:
         return
     try:
         LEGACY_HISTORY_DB_PATH.unlink()
-        logger.info("Removed legacy history DB at %s", LEGACY_HISTORY_DB_PATH)
+        logger.info("Removed legacy history DB at {}", LEGACY_HISTORY_DB_PATH)
     except OSError:
         broken = LEGACY_HISTORY_DB_PATH.with_suffix(".db.broken")
         try:
             LEGACY_HISTORY_DB_PATH.rename(broken)
-            logger.warning("Could not remove legacy history DB; renamed to %s", broken)
+            logger.warning("Could not remove legacy history DB; renamed to {}", broken)
         except OSError as exc:
             logger.warning(
-                "Could not remove or rename legacy history DB %s: %s",
+                "Could not remove or rename legacy history DB {}: {}",
                 LEGACY_HISTORY_DB_PATH,
                 exc,
             )

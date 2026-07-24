@@ -307,7 +307,7 @@ async def hold_workflow_mounts_web(
                     )
                 )
                 if outcome.performed:
-                    logger.info("Synced mount '%s'", mount.name)
+                    logger.info("Synced mount '{}'", mount.name)
         except BaseException:
             stack.close()
             raise

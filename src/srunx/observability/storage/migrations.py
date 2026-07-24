@@ -692,7 +692,7 @@ def apply_migrations(conn: sqlite3.Connection) -> list[str]:
     for mig in MIGRATIONS:
         if mig.name in _applied_names(conn):
             continue
-        logger.info("Applying migration %s (v%d)", mig.name, mig.version)
+        logger.info("Applying migration {} (v{})", mig.name, mig.version)
         if mig.requires_fk_off:
             applied = _apply_fk_off_migration(conn, mig)
         else:
@@ -740,7 +740,7 @@ def _apply_tx_migration(conn: sqlite3.Connection, mig: Migration) -> bool:
         return True
     except Exception:
         conn.rollback()
-        logger.error("Migration %s failed; rolled back", mig.name)
+        logger.error("Migration {} failed; rolled back", mig.name)
         raise
 
 
@@ -844,14 +844,14 @@ def _apply_fk_off_migration(conn: sqlite3.Connection, mig: Migration) -> bool:
         # record this migration, skip silently.
         if mig.name in _applied_names(conn):
             logger.info(
-                "Migration %s already applied by concurrent caller; skipping",
+                "Migration {} already applied by concurrent caller; skipping",
                 mig.name,
             )
             return False
-        logger.error("Migration %s failed", mig.name)
+        logger.error("Migration {} failed", mig.name)
         raise
     except Exception:
-        logger.error("Migration %s failed", mig.name)
+        logger.error("Migration {} failed", mig.name)
         raise
 
 

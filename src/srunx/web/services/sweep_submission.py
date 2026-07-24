@@ -57,7 +57,7 @@ async def run_sweep_background(
         await orchestrator.arun_from_materialized(sweep_run_id)
     except Exception:  # noqa: BLE001
         logger.warning(
-            "Background sweep task for sweep_run_id=%s raised",
+            "Background sweep task for sweep_run_id={} raised",
             sweep_run_id,
             exc_info=True,
         )
@@ -67,7 +67,7 @@ async def run_sweep_background(
                 await anyio.to_thread.run_sync(pool.close)
             except Exception:  # noqa: BLE001 — pool cleanup is best-effort
                 logger.warning(
-                    "Failed to close SSH executor pool for sweep_run_id=%s",
+                    "Failed to close SSH executor pool for sweep_run_id={}",
                     sweep_run_id,
                     exc_info=True,
                 )

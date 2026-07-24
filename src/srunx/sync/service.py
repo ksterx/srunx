@@ -190,7 +190,7 @@ def mount_sync_session(
                 # message.
                 raise SyncAbortedError(str(exc)) from exc
 
-            logger.info("Syncing mount '%s' before submission", mount.name)
+            logger.info("Syncing mount '{}' before submission", mount.name)
             # delete=False (Codex blocker #4): auto-sync must not wipe
             # remote-only outputs (training checkpoints, run logs).
             # ``srunx ssh sync`` keeps the historical mirror behaviour.

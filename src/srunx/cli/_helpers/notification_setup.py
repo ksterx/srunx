@@ -77,7 +77,7 @@ def attach_notification_watch(
             endpoint = endpoint_repo.get_by_name(endpoint_kind, endpoint_name)
             if endpoint is None:
                 logger.warning(
-                    "Endpoint %s:%s not found; skipping watch creation. "
+                    "Endpoint {}:{} not found; skipping watch creation. "
                     "Create one via `Settings → Notifications` in the Web UI "
                     "or the /api/endpoints API.",
                     endpoint_kind,
@@ -105,7 +105,7 @@ def attach_notification_watch(
             except AttachWatchError as exc:
                 conn.rollback()
                 logger.warning(
-                    "Skipping watch creation for job %s on %s:%s (preset=%s): %s",
+                    "Skipping watch creation for job {} on {}:{} (preset={}): {}",
                     job_id,
                     endpoint_kind,
                     endpoint_name,
@@ -121,8 +121,8 @@ def attach_notification_watch(
 
             if not result.created:
                 logger.debug(
-                    "Existing watch+subscription for job %s on %s:%s "
-                    "(preset=%s); reusing.",
+                    "Existing watch+subscription for job {} on {}:{} "
+                    "(preset={}); reusing.",
                     job_id,
                     endpoint_kind,
                     endpoint_name,
@@ -133,7 +133,7 @@ def attach_notification_watch(
             conn.close()
     except Exception as exc:
         logger.warning(
-            "Failed to attach notification watch for job %s: %s",
+            "Failed to attach notification watch for job {}: {}",
             job_id,
             exc,
         )

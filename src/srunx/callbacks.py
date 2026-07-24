@@ -148,7 +148,7 @@ class NotificationWatchCallback(Callback):
             )
         except Exception as exc:
             _logger.warning(
-                "NotificationWatchCallback: failed to attach watch for job %s: %s",
+                "NotificationWatchCallback: failed to attach watch for job {}: {}",
                 job.job_id,
                 exc,
             )
