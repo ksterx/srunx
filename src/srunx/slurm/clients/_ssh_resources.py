@@ -54,7 +54,7 @@ def list_partition_resources(
         try:
             results.append(partition_resources(client, p))
         except Exception as e:  # noqa: BLE001 — diagnostic
-            logger.warning("Failed to get resources for partition %s: %s", p, e)
+            logger.warning("Failed to get resources for partition {}: {}", p, e)
             continue
     return results
 

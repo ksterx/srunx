@@ -103,5 +103,5 @@ def mcp_transport(
                         disconnect()
                     except Exception as exc:  # noqa: BLE001 — best-effort cleanup
                         logger.debug(
-                            "MCP SSH adapter disconnect failed (non-fatal): %s", exc
+                            "MCP SSH adapter disconnect failed (non-fatal): {}", exc
                         )

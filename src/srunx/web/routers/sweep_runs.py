@@ -185,7 +185,7 @@ async def cancel_sweep_run(
             await anyio.to_thread.run_sync(orch.request_cancel)
         except Exception:  # noqa: BLE001
             logger.warning(
-                "Sweep %s: request_cancel raised in active orchestrator",
+                "Sweep {}: request_cancel raised in active orchestrator",
                 sweep_run_id,
                 exc_info=True,
             )
@@ -196,7 +196,7 @@ async def cancel_sweep_run(
             )
         except Exception:  # noqa: BLE001
             logger.warning(
-                "Sweep %s: drain_sweep_pending_cells raised",
+                "Sweep {}: drain_sweep_pending_cells raised",
                 sweep_run_id,
                 exc_info=True,
             )

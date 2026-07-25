@@ -671,7 +671,7 @@ class WorkflowSubmissionService:
                             )
                         except Exception:
                             logger.warning(
-                                "Failed to cancel orphan SLURM job %s during "
+                                "Failed to cancel orphan SLURM job {} during "
                                 "workflow-run rollback",
                                 jid,
                                 exc_info=True,
@@ -708,7 +708,7 @@ class WorkflowSubmissionService:
                     # open, the user just won't get external
                     # notifications.
                     logger.warning(
-                        "workflow_run %s: requested endpoint_id=%s not usable "
+                        "workflow_run {}: requested endpoint_id={} not usable "
                         "(missing or disabled); skipping subscription",
                         run_id,
                         run_opts.endpoint_id,

@@ -165,7 +165,7 @@ def read_owner_marker(profile: ServerProfile, mount: MountConfig) -> OwnerMarker
         # Malformed marker — log so it's visible in --verbose, but
         # don't raise. The next successful sync overwrites it.
         logger.debug(
-            "Owner marker at %s is malformed; ignoring",
+            "Owner marker at {} is malformed; ignoring",
             _marker_remote_path(mount),
         )
     return marker
@@ -216,7 +216,7 @@ def check_owner(
         # already in trouble and silently aborting would just hide it.
         # The rsync that follows will surface the same connection
         # problem with its own error.
-        logger.debug("Owner marker read failed (treating as absent): %s", exc)
+        logger.debug("Owner marker read failed (treating as absent): {}", exc)
         return
     if marker is None:
         return

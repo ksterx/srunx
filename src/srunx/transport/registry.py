@@ -276,7 +276,7 @@ def _format_ssh_banner_body(*, profile_name: str, source_display: str) -> str:
             resolved = get_ssh_config_host(profile.ssh_host)
         except Exception as exc:  # noqa: BLE001 — banner must never raise
             logger.debug(
-                "ssh_config lookup for alias %r failed: %s", profile.ssh_host, exc
+                "ssh_config lookup for alias {!r} failed: {}", profile.ssh_host, exc
             )
             resolved = None
         if resolved is not None:
@@ -324,7 +324,7 @@ def _lookup_profile_silently(name: str) -> ServerProfile | None:
     try:
         return ConfigManager().get_profile(name)
     except Exception as exc:  # noqa: BLE001 — defensive
-        logger.debug("Could not load SSH profile %r for banner: %s", name, exc)
+        logger.debug("Could not load SSH profile {!r} for banner: {}", name, exc)
         return None
 
 
@@ -350,7 +350,7 @@ def _current_profile_name() -> str | None:
             return None
         name = ConfigManager().get_current_profile_name()
     except Exception as exc:  # noqa: BLE001 — defensive
-        logger.debug("Could not read current SSH profile: %s", exc)
+        logger.debug("Could not read current SSH profile: {}", exc)
         return None
     if not name:
         return None
@@ -484,7 +484,7 @@ def _resolve_submission_context(
             resolved_mount_name = mounts[0].name
         else:
             logger.warning(
-                "SSH profile %r declares %d mounts; no mount selected "
+                "SSH profile {!r} declares {} mounts; no mount selected "
                 "so path translation is disabled. Pass mount_name "
                 "explicitly to enable translation.",
                 profile_name,
@@ -606,7 +606,7 @@ def _build_ssh_handle(
             pool.close()
         except Exception as close_exc:  # noqa: BLE001 — best-effort cleanup
             logger.debug(
-                "Pool close during orphan cleanup failed (non-fatal): %s",
+                "Pool close during orphan cleanup failed (non-fatal): {}",
                 close_exc,
             )
         raise
@@ -746,7 +746,7 @@ def resolve_transport(
             try:
                 pool.close()
             except Exception as exc:  # noqa: BLE001 — best-effort cleanup
-                logger.debug("Pool close failed (non-fatal): %s", exc)
+                logger.debug("Pool close failed (non-fatal): {}", exc)
 
 
 class TransportRegistry:
@@ -805,7 +805,7 @@ class TransportRegistry:
         try:
             disconnect()
         except Exception as exc:  # noqa: BLE001 — best-effort cleanup
-            logger.debug("Adapter disconnect failed (non-fatal): %s", exc)
+            logger.debug("Adapter disconnect failed (non-fatal): {}", exc)
 
     def resolve(self, scheduler_key: str) -> TransportHandle | None:
         """Resolve ``scheduler_key`` to a :class:`TransportHandle`.
@@ -855,7 +855,7 @@ class TransportRegistry:
                 )
             except TransportError as exc:
                 logger.warning(
-                    "Failed to build SSH transport %r: %s", scheduler_key, exc
+                    "Failed to build SSH transport {!r}: {}", scheduler_key, exc
                 )
                 return None
         else:
@@ -883,7 +883,7 @@ class TransportRegistry:
                 discard_pool.close()
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
-                    "Pool close during concurrent-resolve cleanup failed: %s", exc
+                    "Pool close during concurrent-resolve cleanup failed: {}", exc
                 )
         if discard_handle is not None:
             self._disconnect_handle_quietly(discard_handle)
@@ -935,4 +935,4 @@ class TransportRegistry:
             try:
                 pool.close()
             except Exception as exc:  # noqa: BLE001 — best-effort cleanup
-                logger.debug("Pool close failed (non-fatal): %s", exc)
+                logger.debug("Pool close failed (non-fatal): {}", exc)

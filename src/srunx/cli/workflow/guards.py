@@ -61,7 +61,7 @@ def _warn_missing_mounts(rt: ResolvedTransport) -> None:
     ctx = rt.submission_context
     if ctx is None or not ctx.mounts:
         logger.warning(
-            "Profile '%s' has no mounts configured; workflow paths "
+            "Profile '{}' has no mounts configured; workflow paths "
             "(work_dir / log_dir / script_path) will be rendered as-is "
             "on the remote cluster.",
             rt.profile_name,

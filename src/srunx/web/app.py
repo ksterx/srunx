@@ -442,7 +442,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
             if skip_reason is not None:
                 logger.info(
-                    "Skipping ResourceSnapshotter: %s. Set "
+                    "Skipping ResourceSnapshotter: {}. Set "
                     "SRUNX_DISABLE_RESOURCE_SNAPSHOTTER=1 to silence this.",
                     skip_reason,
                 )
@@ -468,7 +468,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         if pollers:
             supervisor = PollerSupervisor(pollers)
-            logger.info("Starting %d background poller(s)", len(pollers))
+            logger.info("Starting {} background poller(s)", len(pollers))
     else:
         logger.info(
             "Background pollers disabled (reload mode or SRUNX_DISABLE_POLLER=1)"

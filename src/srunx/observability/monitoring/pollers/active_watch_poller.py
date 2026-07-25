@@ -182,7 +182,7 @@ def _parse_target_ref(
     if len(parts) < 3:
         # Legacy 2-segment — after V5 migration these should not exist.
         logger.debug(
-            "Skipping 2-segment target_ref %r (post-V5 should not occur)",
+            "Skipping 2-segment target_ref {!r} (post-V5 should not occur)",
             target_ref,
         )
         return None
@@ -388,7 +388,7 @@ class ActiveWatchPoller:
                 queue_client = self._resolve_queue_client(scheduler_key)
                 if queue_client is None:
                     logger.warning(
-                        "Unknown scheduler_key %r in %d watch(es); skipping "
+                        "Unknown scheduler_key {!r} in {} watch(es); skipping "
                         "this cycle (profile may have been removed). "
                         "Watches will be retried next cycle.",
                         scheduler_key,
@@ -405,7 +405,7 @@ class ActiveWatchPoller:
                     )
                 except Exception as exc:  # noqa: BLE001 — transport failure
                     logger.warning(
-                        "queue_by_ids failed for scheduler_key %r: %s; "
+                        "queue_by_ids failed for scheduler_key {!r}: {}; "
                         "skipping this group for this cycle.",
                         scheduler_key,
                         exc,

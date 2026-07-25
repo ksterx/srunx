@@ -416,7 +416,7 @@ def _submit_via_tmp_upload(
                 detail="No SSH profile configured; cannot sync mount",
             )
         try:
-            logger.info("Syncing mount '%s' before job submission", req.mount_name)
+            logger.info("Syncing mount '{}' before job submission", req.mount_name)
             sync_mount_by_name(profile, req.mount_name, delete=True)
         except ValueError as exc:
             raise HTTPException(
@@ -495,7 +495,7 @@ async def submit_job(
             raise
         except Exception:
             logger.warning(
-                "Failed to record submission / create watch for job %s",
+                "Failed to record submission / create watch for job {}",
                 job_id,
                 exc_info=True,
             )
