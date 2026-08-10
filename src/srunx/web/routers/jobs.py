@@ -406,18 +406,23 @@ def _submit_via_tmp_upload(
     ``delete=True`` on the optional mount sync) so existing clients
     that always send ``script_content`` see no contract change.
     """
-    from ..sync_utils import get_current_profile, sync_mount_by_name
+    from ..sync_utils import get_current_profile_with_name, locked_sync_mount
 
     if req.mount_name:
-        profile = get_current_profile()
-        if profile is None:
+        # Profile and name together: the lock must be keyed to the same
+        # profile whose paths are synced.
+        resolved = get_current_profile_with_name()
+        if resolved is None:
             raise HTTPException(
                 status_code=503,
                 detail="No SSH profile configured; cannot sync mount",
             )
+        profile_name, profile = resolved
         try:
             logger.info("Syncing mount '{}' before job submission", req.mount_name)
-            sync_mount_by_name(profile, req.mount_name, delete=True)
+            locked_sync_mount(
+                profile, req.mount_name, profile_name=profile_name, delete=True
+            )
         except ValueError as exc:
             raise HTTPException(
                 status_code=404,

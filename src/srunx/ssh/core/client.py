@@ -189,7 +189,7 @@ class SSHSlurmClient:
         local_path: str | None = None,
         remote_path: str | None = None,
         *,
-        delete: bool = True,
+        delete: bool = False,
         dry_run: bool = False,
         exclude_patterns: list[str] | None = None,
     ) -> str:

@@ -84,14 +84,32 @@ Claude Code calls `sync_files` with `transport="<profile>"` plus the mount
 name, then calls `submit_job` with the same `transport="<profile>"`. The
 sync uses your configured mount points from that SSH profile.
 
-For explicit paths instead of named mounts:
+Sync targets are always named mounts — `sync_files` takes a `mount` name
+and nothing else, so an agent cannot push an arbitrary directory to an
+arbitrary remote path. Register the directory as a mount first:
 
-``` text
-> Sync ./src to ~/workspace/src on the remote cluster (dry run first)
+``` bash
+srunx ssh mount add --profile myserver --mount src \
+    --local ./src --remote /home/researcher/workspace/src
 ```
 
-Claude Code calls `sync_files` with `local_path` and `remote_path`,
-first with `dry_run=True` to preview, then again to execute.
+Give `--remote` an absolute path. An unquoted `~` is expanded by your
+*local* shell before srunx ever sees it, so on a machine whose home
+differs from the cluster's it would register something like
+`/Users/alice/workspace/src` as the remote destination.
+
+Syncing is additive: new and changed files are copied, and files that
+exist only on the cluster (checkpoints, job logs, outputs) are left
+alone. To mirror instead, ask for deletion explicitly:
+
+``` text
+> Preview a mirror of the src mount on myserver, then run it
+```
+
+Claude Code calls `sync_files` with `dry_run=True, delete=True` to show
+the deletions, then again to execute. A real mirror refuses without
+changing anything if it would delete more than `max_delete` files
+(default 100).
 
 ## Use a Remote Cluster
 

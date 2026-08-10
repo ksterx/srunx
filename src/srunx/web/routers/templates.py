@@ -131,14 +131,19 @@ async def apply_template(
 
     # Sync mount before submission if requested
     if req.mount_name:
-        from ..sync_utils import get_current_profile, sync_mount_by_name
+        from ..sync_utils import get_current_profile_with_name, locked_sync_mount
 
-        profile = await anyio.to_thread.run_sync(get_current_profile)
-        if profile:
+        # Profile and name together: the lock must be keyed to the same
+        # profile whose paths are synced.
+        resolved = await anyio.to_thread.run_sync(get_current_profile_with_name)
+        if resolved:
+            profile_name, profile = resolved
             mount_name = req.mount_name
             try:
                 await anyio.to_thread.run_sync(
-                    lambda: sync_mount_by_name(profile, mount_name, delete=True)
+                    lambda: locked_sync_mount(
+                        profile, mount_name, profile_name=profile_name, delete=True
+                    )
                 )
             except ValueError as exc:
                 raise HTTPException(

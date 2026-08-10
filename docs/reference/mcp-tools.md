@@ -493,25 +493,40 @@ resource and environment configuration for each job.
 
 ### sync_files
 
-Sync files between local machine and remote SLURM cluster using rsync.
-Supports two modes: mount-based (using a named mount from the SSH profile)
-or path-based (using explicit local and remote paths).
+Sync a configured mount from the local machine to a remote SLURM cluster
+using rsync. Only mounts registered on the SSH profile can be synced —
+there is no free-form path mode, so an arbitrary source cannot be pushed
+to an arbitrary destination.
 
 **Parameters:**
 
 | Name | Type | Required | Default | Description |
 |----|----|----|----|----|
 | `transport` | str | Yes |  | SSH profile name to sync through. There is no current-profile fallback — it must be explicit |
-| `mount` | str \| null | No | `null` | Mount point name from the SSH profile to sync |
-| `local_path` | str \| null | No | `null` | Local directory path (alternative to `mount`) |
-| `remote_path` | str \| null | No | `null` | Remote directory path (alternative to `mount`) |
-| `dry_run` | bool | No | `false` | Show what would be transferred without actually syncing |
+| `mount` | str | Yes |  | Mount name from that SSH profile. Call `list_ssh_profiles` to see the mounts each profile defines |
+| `dry_run` | bool | No | `false` | Preview only: report what would be transferred and deleted without touching the cluster |
+| `delete` | bool | No | `false` | Mirror — also DELETE cluster files that no longer exist locally. Destroys remote-only data (checkpoints, job logs, outputs) |
+| `max_delete` | int | No | `100` | Refuse the mirror, changing nothing, if it would delete more than this many *entries*. Must be `>= 1` |
+
+!!! note "`max_delete` counts entries, not files"
+    Entries are files **and** directories, matching rsync's own
+    `--max-delete` unit. Removing a directory that holds two files counts
+    as three entries — both files plus the directory — so set the cap
+    above the file count you have in mind.
+
+!!! warning
+    `delete=True` removes files that exist only on the cluster, which is
+    exactly what a running job produces. Preview with `dry_run=True`
+    first. A real mirror is preflighted: deletions are counted in a dry
+    run before anything is touched, so exceeding `max_delete` refuses
+    without modifying the remote.
 
 !!! note
-    You must provide either `mount` or `local_path`. When using
-    `mount`, the local and remote paths are read from the SSH profile
-    configuration. When using `local_path` without `remote_path`, a
-    default remote path is derived.
+    Deletion counts are exact. Path *strings* have one limit: rsync
+    separates its flag block from the filename with whitespace whose
+    width varies by version, so a filename that itself begins with
+    spaces loses those leading spaces in `deleted_paths`. The deletion
+    is still counted, so the cap and refusal logic are unaffected.
 
 **Return value:**
 
@@ -523,9 +538,17 @@ or path-based (using explicit local and remote paths).
   "local": "/home/user/projects/ml-project",
   "remote": "/home/researcher/projects/ml-project",
   "dry_run": false,
-  "output": "sending incremental file list\nsrc/train.py\n..."
+  "delete": false,
+  "files_transferred": 12,
+  "entries_deleted": 0,
+  "deleted_paths": [],
+  "deleted_paths_omitted": false
 }
 ```
+
+`deleted_paths` lists every deletion. Past a very large number of
+deletions the list is omitted and `deleted_paths_omitted` is `true` —
+the count stays exact, and the list is never silently shortened.
 
 ## Configuration
 

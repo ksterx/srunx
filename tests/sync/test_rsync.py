@@ -320,7 +320,10 @@ class TestPush:
         sep_idx = call_args.index("--")
         assert call_args[sep_idx + 1].endswith("/")
         assert call_args[sep_idx + 2] == "u@h:~/.config/srunx/workspace/test/"
-        assert "--delete" in call_args
+        # A plain push adds and updates only. Mirror semantics are opt-in:
+        # inheriting --delete by default is what silently ate remote-only
+        # checkpoints before, so no caller gets it without asking.
+        assert "--delete" not in call_args
 
     def test_push_file(self, tmp_path: Path):
         client = _make_rsync_client(hostname="h", username="u")
@@ -360,6 +363,58 @@ class TestPush:
             client.push(tmp_path, "~/dst/", delete=False)
 
         assert "--delete" not in mock_run.call_args[0][0]
+
+    def test_push_delete_is_opt_in(self, tmp_path: Path):
+        client = _make_rsync_client(hostname="h", username="u")
+
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push(tmp_path, "~/dst/", delete=True)
+
+        assert "--delete" in mock_run.call_args[0][0]
+
+    def test_push_max_delete_caps_a_mirror(self, tmp_path: Path):
+        client = _make_rsync_client(hostname="h", username="u")
+
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push(tmp_path, "~/dst/", delete=True, max_delete=5)
+
+        call_args = mock_run.call_args[0][0]
+        assert "--delete" in call_args
+        assert "--max-delete=5" in call_args
+
+    def test_push_max_delete_omitted_without_delete(self, tmp_path: Path):
+        """Without --delete, rsync deletes nothing — the cap would be noise."""
+        client = _make_rsync_client(hostname="h", username="u")
+
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push(tmp_path, "~/dst/", delete=False, max_delete=5)
+
+        assert not any(a.startswith("--max-delete") for a in mock_run.call_args[0][0])
+
+    def test_push_rejects_zero_max_delete(self, tmp_path: Path):
+        """``max_delete=0`` is ambiguous and unsafe, so it is refused outright.
+
+        Forwarding it would invert the cap: on rsync 2.6.x / openrsync (stock
+        on macOS) 0 means *unlimited*, and a real ``--delete --max-delete=0``
+        run against openrsync deleted every destination-only file and exited 0.
+        Silently dropping ``--delete`` instead is also wrong — the caller asked
+        for a mirror that refuses, not one that quietly leaves extra files.
+        """
+        client = _make_rsync_client(hostname="h", username="u")
+
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="max_delete must be >= 1"):
+                client.push(tmp_path, "~/dst/", delete=True, max_delete=0)
+            mock_run.assert_not_called()
+
+    def test_push_rejects_negative_max_delete(self, tmp_path: Path):
+        client = _make_rsync_client(hostname="h", username="u")
+
+        with pytest.raises(ValueError, match="max_delete must be >= 1"):
+            client.push(tmp_path, "~/dst/", delete=True, max_delete=-1)
 
     def test_push_dry_run(self, tmp_path: Path):
         client = _make_rsync_client(hostname="h", username="u")
@@ -545,6 +600,53 @@ class TestMkpath:
         assert mock_run.call_count == 2
         mkdir_cmd = mock_run.call_args_list[0][0][0]
         assert "mkdir" in " ".join(mkdir_cmd)
+
+    def _openrsync_client(self) -> RsyncClient:
+        """A client whose rsync lacks ``--mkpath`` (stock macOS/openrsync)."""
+        with (
+            patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync"),
+            patch(
+                "srunx.sync.rsync.subprocess.run",
+                return_value=MagicMock(stdout="", stderr="openrsync"),
+            ),
+        ):
+            return RsyncClient(hostname="h", username="u")
+
+    def test_dry_run_never_creates_the_destination(self, tmp_path: Path):
+        """A preview must not modify the remote — not even an empty directory.
+
+        Creating it would make "nothing was changed" false in the mirror
+        preflight's refusal message, and for a *file* destination the mkdir
+        would land a directory exactly where the file belongs. A first mirror
+        against a missing destination therefore fails instead; that is a safe,
+        explicit failure with a documented workaround (sync once with
+        ``delete=False``).
+        """
+        client = self._openrsync_client()
+
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push(tmp_path, "~/dst/", dry_run=True, delete=True, itemize=True)
+
+        # Exactly one call: the rsync itself, and it is a dry run.
+        mock_run.assert_called_once()
+        assert "mkdir" not in " ".join(mock_run.call_args[0][0])
+        assert "-n" in mock_run.call_args[0][0]
+
+    def test_file_destination_creates_parent_not_the_file_path(self, tmp_path: Path):
+        """``mkdir -p`` on a file path would block the file forever."""
+        client = self._openrsync_client()
+        script = tmp_path / "train.sh"
+        script.write_text("echo hi\n")
+
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push(script, "~/jobs/train.sh")
+
+        mkdir_cmd = " ".join(mock_run.call_args_list[0][0][0])
+        assert "mkdir" in mkdir_cmd
+        assert "~/jobs" in mkdir_cmd
+        assert "train.sh" not in mkdir_cmd
 
 
 # ---------------------------------------------------------------------------
