@@ -315,15 +315,20 @@ async def sync_mount(body: SyncRequest) -> dict[str, str]:
     SSH connection is misconfigured, the endpoint returns an appropriate
     error rather than silently failing.
     """
-    profile = await anyio.to_thread.run_sync(_get_current_profile)
-    if profile is None:
+    from ..sync_utils import get_current_profile_with_name, locked_sync_mount
+
+    # Resolved together so the lock is taken under the same profile whose paths
+    # get synced; two separate lookups could disagree.
+    resolved = await anyio.to_thread.run_sync(get_current_profile_with_name)
+    if resolved is None:
         raise HTTPException(status_code=503, detail="No SSH profile configured")
+    profile_name, profile = resolved
 
     try:
-        from ..sync_utils import sync_mount_by_name
-
         await anyio.to_thread.run_sync(
-            lambda: sync_mount_by_name(profile, body.mount, delete=True)
+            lambda: locked_sync_mount(
+                profile, body.mount, profile_name=profile_name, delete=True
+            )
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

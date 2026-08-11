@@ -1,38 +1,216 @@
-"""MCP tool: rsync-based file sync between local + remote SLURM cluster."""
+"""MCP tool: rsync-based file sync between local + remote SLURM cluster.
+
+This tool is reachable by an autonomous agent, which shapes three choices
+that differ from the CLI's:
+
+* **Mount-name only.** There is no free-form ``local_path`` / ``remote_path``
+  pair. An agent that can name arbitrary source and destination paths can
+  push anything the SSH credential can reach to anywhere it can write;
+  restricting the surface to pre-registered mounts makes that structurally
+  impossible instead of relying on a path check to catch it.
+* **Additive by default.** ``delete`` is opt-in, and even when opted in it
+  is capped by ``max_delete`` so a wrong or empty source tree cannot prune
+  a whole remote directory.
+* **Nothing is truncated.** The response reports exact transfer/deletion
+  counts and enumerates every deleted path, because a caller that has to
+  decide whether a sync was safe cannot do it from a clipped preview. The
+  deletion list is bounded by ``max_delete``, which is what keeps "report
+  everything" affordable.
+"""
 
 from __future__ import annotations
 
+import io
+import re
 from typing import Any
 
 from srunx.mcp.app import mcp
 from srunx.mcp.helpers import err, ok
 
+# rsync's ``--itemize-changes`` marks a removal with the literal pseudo-flag
+# ``*deleting``; every other itemize line starts with a flag block whose first
+# char is the update type.
+#
+# The path group is optional and permitted to be empty so that a deletion is
+# still *recognised* when the filename is made purely of spaces. Requiring
+# ``\s+(.+)`` there would fail to match such a line, and a missed deletion is
+# not cosmetic: it under-counts the mirror preflight and lets a sync past the
+# cap that should have stopped it.
+_DELETING_RE = re.compile(r"^\*deleting(?:\s(.*))?$")
+
+# Update types that mean file data actually crossed the wire: ``<`` (sent)
+# and ``>`` (received). Everything else rsync can put here describes a change
+# that moved no data, and counting any of them would inflate a number we
+# promise is exact:
+#   ``c`` — a *local* creation/change (a directory, a symlink's target)
+#   ``h`` — a hard link, created rather than transferred
+#   ``.`` — attributes only; contents already matched
+# This is the same distinction rsync draws in its own "regular files
+# transferred" statistic.
+_TRANSFER_FLAGS = "<>"
+
+# Only regular files (``f``) carry transferred data. Directories (``d``),
+# symlinks (``L``), devices (``D``) and specials (``S``) are recreated on the
+# far side instead. Requiring a valid item type here also rejects English
+# chatter that happens to start with a flag letter.
+_FILE_ITEM_TYPES = "f"
+
+# Ceiling on deletions for a mirror sync, in rsync's own unit: filesystem
+# *entries*, so a removed directory costs one on top of each file inside it.
+# Bounds the damage a wrong source tree can cause on a real run.
+DEFAULT_MAX_DELETE = 100
+
+# Beyond this many deletions we report the count but omit the path list,
+# flagging the omission explicitly (``deleted_paths_omitted``) rather than
+# silently clipping it — a truncated list read as complete is worse than an
+# absent one.
+_MAX_REPORTED_DELETIONS = 1000
+
+# rsync exits 25 (RERR_DEL_LIMIT) when --max-delete is exceeded.
+_RERR_DEL_LIMIT = 25
+
+
+def _parse_itemized(
+    stdout: str, *, max_paths: int | None = None
+) -> tuple[list[str], int, int]:
+    """Parse rsync ``-i`` output into (deleted paths, deletion count, transfers).
+
+    ``max_paths`` bounds how many deletion *paths* are retained; the returned
+    count is always exact. This split matters because an uncapped preview of a
+    huge destination emits one line per deletable file, and retaining all of
+    them would allocate millions of strings for a caller that only reports a
+    number — or discards the list entirely above its reporting limit.
+    ``max_paths=0`` collects no paths at all, which is what the mirror
+    preflight wants since it only compares a count against the cap.
+
+    The flag block is located by splitting on whitespace rather than by a
+    fixed offset, because its width is version-dependent: GNU rsync 3.x emits
+    11 characters (``YXcstpoguax``) while openrsync / rsync 2.6.9 — the stock
+    binary on macOS — emit 9 (``YXcstpogz``). A fixed-offset predicate silently
+    matches nothing on the shorter form and reports zero transfers.
+
+    A line counts as a transfer only when its first token is shaped like a
+    real flag block — a transfer update type followed by a file item type.
+    Everything else is rsync chatter ("sending incremental file list", byte
+    totals, ``created directory ...``, the ``Deletions stopped ...`` warning)
+    and is ignored rather than miscounted. Directory entries are skipped for
+    the same reason: creating a directory moves no file data.
+
+    Trailing whitespace is never stripped from a line, because it can be part
+    of the filename.
+    """
+    deleted: list[str] = []
+    deleted_count = 0
+    transferred = 0
+    # Iterate the buffer instead of materialising splitlines() into a list, so
+    # a mount with very many changed files doesn't cost a second full copy of
+    # rsync's output. (The captured stdout itself still lives in memory —
+    # bounding that would mean streaming inside RsyncClient.)
+    for line in io.StringIO(stdout):
+        line = line.rstrip("\r\n")
+        if not line.strip():
+            continue
+        match = _DELETING_RE.match(line)
+        if match:
+            deleted_count += 1
+            if max_paths is not None and len(deleted) >= max_paths:
+                continue
+            raw_path = match.group(1) or ""
+            # The separator's width is version-dependent (one space on
+            # openrsync, three on GNU rsync), so drop the indent — but keep
+            # the raw value when stripping would empty it, which is how a
+            # name consisting only of spaces survives.
+            #
+            # Known limit: a filename that legitimately *starts* with spaces
+            # is indistinguishable from a wider separator in this format, so
+            # its leading spaces are lost here. Preserving them instead would
+            # prefix every GNU-rsync path with the separator's two extra
+            # spaces — wrong in the common case to be right in a rare one.
+            # The deletion is still counted either way, which is what the cap
+            # and the refusal decision depend on.
+            deleted.append(raw_path.lstrip() or raw_path)
+            continue
+        # The flag block is the first whitespace-delimited token. The filename
+        # is whatever follows and is NOT required to be present or non-blank:
+        # a name made only of spaces is legal, and demanding a non-empty
+        # remainder would drop such a transfer from the count. What qualifies
+        # the line is the flag block's shape, checked below.
+        parts = line.split(None, 1)
+        flags = parts[0] if parts else ""
+        if len(flags) < 2:
+            continue
+        if flags[0] not in _TRANSFER_FLAGS or flags[1] not in _FILE_ITEM_TYPES:
+            continue
+        transferred += 1
+    return deleted, deleted_count, transferred
+
 
 @mcp.tool()
 def sync_files(
     transport: str,
-    mount: str | None = None,
-    local_path: str | None = None,
-    remote_path: str | None = None,
+    mount: str,
     dry_run: bool = False,
+    delete: bool = False,
+    max_delete: int = DEFAULT_MAX_DELETE,
 ) -> dict[str, Any]:
-    """Sync files between local machine and a remote SLURM cluster using rsync.
+    """Sync a configured mount from this machine to a remote SLURM cluster.
 
-    Can sync using a configured mount point (transport + mount), or using
-    explicit paths (local_path + remote_path).
+    Copies new and changed files only. Files that exist on the cluster but
+    not locally are left untouched unless ``delete=True``.
 
     Args:
-        transport: SSH profile name to sync against. Required and must name an
-            SSH profile — there is no local-to-local sync, and (unlike the CLI)
-            no implicit current-profile fallback. ``"local"`` is rejected.
-        mount: Mount point name from the SSH profile to sync
-        local_path: Local directory path (alternative to mount)
-        remote_path: Remote directory path (alternative to mount)
-        dry_run: If true, show what would be transferred without actually syncing
+        transport: SSH profile name to sync against. Required and must name
+            an SSH profile — there is no local-to-local sync, and (unlike
+            the CLI) no implicit current-profile fallback. ``"local"`` is
+            rejected. Call ``list_ssh_profiles`` to see profiles and the
+            mounts each one defines.
+        mount: Mount name from that SSH profile. Only pre-registered mounts
+            can be synced; arbitrary paths are not accepted.
+        dry_run: Preview only. Reports exactly what would be transferred and
+            deleted without touching the cluster. Prefer this first whenever
+            you are unsure, and always before a ``delete=True`` run.
+        delete: Mirror the mount — also DELETE cluster files that no longer
+            exist locally. **This destroys remote-only data** such as
+            training checkpoints, job logs, and outputs written by jobs on
+            the cluster, which by definition do not exist locally. Leave it
+            off unless the user explicitly asked for a mirror, and preview
+            with ``dry_run=True`` before running it.
+        max_delete: Refuse the mirror, without changing anything, if it would
+            delete more than this many **entries**. Entries are files *and*
+            directories, matching rsync's own ``--max-delete`` unit: removing
+            a directory holding two files counts as three entries (both files
+            plus the directory), so set this above the file count you have in
+            mind. Guards against mirroring from a wrong or half-populated
+            local directory. Must be >= 1; to sync without deleting, leave
+            ``delete`` off. Only applies to a real ``delete=True`` run — a
+            ``dry_run`` preview is never capped, so it can show the whole list.
+
+    Returns:
+        On success: ``files_transferred``, ``entries_deleted``, and the
+        ``deleted_paths`` list. Past a very large number of deletions the list
+        is omitted and ``deleted_paths_omitted`` is set — the count stays
+        exact, and no list is ever silently shortened.
+
+        The two counts use different units on purpose, because that is what
+        rsync reports: ``entries_deleted`` includes removed directories, while
+        ``files_transferred`` counts only regular files whose data actually
+        crossed the wire — matching rsync's own "regular files transferred"
+        statistic. Directory creations, symlinks, devices, hard links and
+        attribute-only touch-ups move no data and are excluded, so a sync can
+        legitimately change the remote while reporting zero transfers.
+
+        Counts are reliable; path *strings* have one documented limit. rsync
+        separates its flag block from the filename with whitespace whose width
+        varies by version, so a filename that itself begins with spaces cannot
+        be told apart from that separator, and those leading spaces are lost
+        from the reported string. Such a deletion is still counted, so the
+        cap and the refusal logic are unaffected.
     """
     try:
+        from srunx.common.config import get_config
         from srunx.ssh.core.config import ConfigManager
-        from srunx.web.sync_utils import build_rsync_client
+        from srunx.sync.lock import SyncLockTimeoutError, acquire_sync_lock
+        from srunx.sync.mount_helpers import build_rsync_client
 
         pname = transport.strip() if transport else ""
         if not pname or pname == "local":
@@ -41,58 +219,153 @@ def sync_files(
                 "there is no local sync."
             )
 
+        if max_delete < 1:
+            return err(
+                f"max_delete must be >= 1, got {max_delete}. To sync without "
+                "deleting anything, leave delete=False (the default) instead "
+                "of capping deletions at zero."
+            )
+
         cm = ConfigManager()
         profile = cm.get_profile(pname)
         if not profile:
             return err(f"SSH profile '{pname}' not found")
 
-        if mount:
-            mount_cfg = next((m for m in profile.mounts if m.name == mount), None)
-            if not mount_cfg:
-                available = [m.name for m in profile.mounts]
-                return err(
-                    f"Mount '{mount}' not found in profile '{pname}'. "
-                    f"Available: {available}"
-                )
-
-            rsync = build_rsync_client(profile)
-            result = rsync.push(
-                mount_cfg.local,
-                mount_cfg.remote,
-                dry_run=dry_run,
-                exclude_patterns=mount_cfg.exclude_patterns,
-            )
-            if not result.success:
-                return err(
-                    f"rsync failed (exit {result.returncode}): "
-                    f"{result.stderr[:500] if result.stderr else 'unknown error'}"
-                )
-            return ok(
-                profile=pname,
-                mount=mount,
-                local=mount_cfg.local,
-                remote=mount_cfg.remote,
-                dry_run=dry_run,
-                output=result.stdout[:2000] if result.stdout else "",
+        mount_cfg = next((m for m in profile.mounts if m.name == mount), None)
+        if not mount_cfg:
+            available = [m.name for m in profile.mounts]
+            return err(
+                f"Mount '{mount}' not found in profile '{pname}'. "
+                f"Available: {available}"
             )
 
-        if local_path:
-            rsync = build_rsync_client(profile)
-            result = rsync.push(local_path, remote_path, dry_run=dry_run)
-            if not result.success:
-                return err(
-                    f"rsync failed (exit {result.returncode}): "
-                    f"{result.stderr[:500] if result.stderr else 'unknown error'}"
+        rsync = build_rsync_client(profile)
+        timeout = get_config().sync.lock_timeout_seconds
+
+        # Hold the per-(profile, mount) lock that every srunx writer of a mount
+        # takes — submission auto-sync, workflow runs, `srunx ssh sync`, and the
+        # Web sync route — so an agent-driven sync cannot interleave with any of
+        # them and leave a half-written tree on the cluster. The mirror preflight
+        # below runs inside the same lock as the push it guards, which is what
+        # lets the refusal claim the remote is unchanged. Note the lock is
+        # advisory and machine-local: it cannot stop a cluster-side job from
+        # writing, nor a sync launched from another workstation.
+        try:
+            with acquire_sync_lock(pname, mount_cfg.name, timeout=timeout):
+                # rsync's --max-delete is NOT an atomic precheck. It deletes up
+                # to the cap, skips the remaining deletions, finishes
+                # transferring, and only then exits 25 — verified against
+                # openrsync: a capped run left the destination modified. So the
+                # cap alone can never justify reporting "nothing changed".
+                # Counting the deletions in a dry run first is what lets a
+                # refusal actually mean the remote is untouched.
+                if delete and not dry_run:
+                    preview = rsync.push(
+                        mount_cfg.local,
+                        mount_cfg.remote,
+                        delete=True,
+                        dry_run=True,
+                        itemize=True,
+                        # The preflight carries the cap too. Without it, a
+                        # mirror against a wrong or empty source enumerates
+                        # every deletable path before we get to refuse it, so
+                        # the cap would bound the damage but not the memory —
+                        # the process could die counting deletions it was
+                        # about to reject. With it, rsync stops counting at
+                        # the cap and exits 25, which IS the refusal signal.
+                        max_delete=max_delete,
+                        exclude_patterns=mount_cfg.exclude_patterns,
+                    )
+                    if preview.returncode == _RERR_DEL_LIMIT:
+                        return err(
+                            f"Refused to mirror: it would delete more than "
+                            f"{max_delete} entries under '{mount_cfg.remote}' "
+                            f"(the max_delete cap; entries count directories "
+                            f"as well as files). Nothing was changed. Re-run "
+                            f"with dry_run=True to see the deletions, and only "
+                            f"raise max_delete if they are expected."
+                        )
+                    if not preview.success:
+                        return err(
+                            f"Mirror preflight failed (exit "
+                            f"{preview.returncode}): "
+                            f"{preview.stderr[:500] if preview.stderr else 'unknown error'}. "
+                            f"Nothing was changed. If '{mount_cfg.remote}' does "
+                            f"not exist on the cluster yet, sync once with "
+                            f"delete=False to create it — a preview cannot "
+                            f"create the destination, because a dry run is not "
+                            f"allowed to modify the remote."
+                        )
+                    # Count only: the preflight compares against the cap and
+                    # never reports paths, so retaining none keeps this bounded
+                    # regardless of how many deletions the remote holds.
+                    _, would_delete_count, _ = _parse_itemized(
+                        preview.stdout or "", max_paths=0
+                    )
+                    if would_delete_count > max_delete:
+                        return err(
+                            f"Refused to mirror: it would delete "
+                            f"{would_delete_count} entries (files and "
+                            f"directories) under '{mount_cfg.remote}', over the "
+                            f"max_delete cap of {max_delete}. Nothing was "
+                            f"changed. Re-run with dry_run=True to see the full "
+                            f"list, and only raise max_delete if those "
+                            f"deletions are expected."
+                        )
+
+                result = rsync.push(
+                    mount_cfg.local,
+                    mount_cfg.remote,
+                    delete=delete,
+                    dry_run=dry_run,
+                    # Always itemize: the per-file lines ARE the report, for a
+                    # real push as much as for a preview.
+                    itemize=True,
+                    # Kept as a backstop behind the preflight for a real
+                    # mirror. A preview passes no cap: it changes nothing, and
+                    # capping it would replace the very list the caller asked
+                    # to see with an error.
+                    max_delete=max_delete if (delete and not dry_run) else None,
+                    exclude_patterns=mount_cfg.exclude_patterns,
                 )
-            return ok(
-                profile=pname,
-                local=local_path,
-                remote=remote_path or rsync.get_default_remote_path(local_path),
-                dry_run=dry_run,
-                output=result.stdout[:2000] if result.stdout else "",
+        except SyncLockTimeoutError as exc:
+            return err(str(exc))
+
+        if not result.success:
+            if result.returncode == _RERR_DEL_LIMIT:
+                return err(
+                    f"Mirror hit the max_delete cap of {max_delete} even though "
+                    f"the preflight check passed, so the remote changed in "
+                    f"between. Files may already have been deleted or "
+                    f"transferred — re-run with dry_run=True to see the "
+                    f"current difference before retrying."
+                )
+            return err(
+                f"rsync failed (exit {result.returncode}): "
+                f"{result.stderr[:500] if result.stderr else 'unknown error'}"
             )
 
-        return err("Specify either mount or local_path for sync")
+        # Retain one path beyond the reporting limit: that is all it takes to
+        # know the limit was exceeded, without holding a list we would drop.
+        deleted_paths, deleted_count, transferred = _parse_itemized(
+            result.stdout or "", max_paths=_MAX_REPORTED_DELETIONS + 1
+        )
+        omit_paths = deleted_count > _MAX_REPORTED_DELETIONS
+        return ok(
+            profile=pname,
+            mount=mount_cfg.name,
+            local=mount_cfg.local,
+            remote=mount_cfg.remote,
+            dry_run=dry_run,
+            delete=delete,
+            files_transferred=transferred,
+            # The exact count, not len(deleted_paths) — that list is capped.
+            # Named "entries" because rsync emits (and caps) one deletion per
+            # filesystem entry, directories included.
+            entries_deleted=deleted_count,
+            deleted_paths=[] if omit_paths else deleted_paths,
+            deleted_paths_omitted=omit_paths,
+        )
 
     except Exception as e:
         return err(str(e))

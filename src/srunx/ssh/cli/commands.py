@@ -223,6 +223,16 @@ def sync_mount(
             help="Reverse direction: sync remote → local (default is local → remote)",
         ),
     ] = False,
+    delete: Annotated[
+        bool,
+        typer.Option(
+            "--delete",
+            help=(
+                "Mirror: also delete destination files missing from the source. "
+                "Off by default — sync only adds and updates."
+            ),
+        ),
+    ] = False,
     config: _ConfigOpt = None,
 ):
     """Sync a mount between local and remote via rsync.
@@ -230,6 +240,11 @@ def sync_mount(
     By default syncs local → remote (push). Pass ``--pull`` to reverse the
     direction and sync remote → local — useful for pulling back results or
     checkpoints a job wrote on the cluster.
+
+    Sync **adds and updates only**. Files that exist on the destination but
+    not in the source are left alone unless you pass ``--delete``, which
+    switches to mirror semantics. Combine ``--delete --dry-run`` to see
+    exactly what a mirror would remove before committing to it.
 
     With no ``--profile`` / ``--mount``, auto-detects the profile (current
     profile) and the mount (from the current working directory). Works even
@@ -240,9 +255,12 @@ def sync_mount(
       srunx ssh sync --profile pyxis --mount ml-project
       srunx ssh sync --profile pyxis --mount ml-project --dry-run
       srunx ssh sync --pull                           # pull remote → local
+      srunx ssh sync --delete --dry-run               # preview a mirror's deletions
       srunx ssh sync --profile pyxis --mount ml-project --pull --dry-run
     """
+    from srunx.common.config import get_config
     from srunx.ssh.core.config import MountConfig
+    from srunx.sync.lock import acquire_sync_lock
     from srunx.sync.rsync import RsyncClient
 
     try:
@@ -336,23 +354,37 @@ def sync_mount(
                 exclude_patterns=all_excludes or None,
             )
 
-        # itemize=dry_run so the preview lists every file rsync *would*
-        # touch; a real sync stays quiet (itemize defaults off).
-        if pull:
-            # Trailing slash on the remote source so rsync copies the
-            # mount's *contents* into the local dir (mirroring push),
-            # not the directory itself one level deeper.
-            remote_src = resolved_mount.remote.rstrip("/") + "/"
-            result = rsync.pull(
-                remote_src, resolved_mount.local, dry_run=dry_run, itemize=dry_run
-            )
-        else:
-            result = rsync.push(
-                resolved_mount.local,
-                resolved_mount.remote,
-                dry_run=dry_run,
-                itemize=dry_run,
-            )
+        # Hold the per-(profile, mount) lock for the transfer, the same one the
+        # submission and workflow sync paths take. A manual sync that skipped
+        # it could interleave with an in-flight auto-sync — or with the MCP
+        # mirror preflight, whose "nothing changed between the check and the
+        # push" guarantee only holds while every writer queues on this lock.
+        # SyncLockTimeoutError subclasses RuntimeError, so the handler below
+        # already reports contention.
+        lock_timeout = get_config().sync.lock_timeout_seconds
+        with acquire_sync_lock(profile_name, resolved_mount.name, timeout=lock_timeout):
+            # itemize=dry_run so the preview lists every file rsync *would*
+            # touch; a real sync stays quiet (itemize defaults off).
+            if pull:
+                # Trailing slash on the remote source so rsync copies the
+                # mount's *contents* into the local dir (mirroring push),
+                # not the directory itself one level deeper.
+                remote_src = resolved_mount.remote.rstrip("/") + "/"
+                result = rsync.pull(
+                    remote_src,
+                    resolved_mount.local,
+                    delete=delete,
+                    dry_run=dry_run,
+                    itemize=dry_run,
+                )
+            else:
+                result = rsync.push(
+                    resolved_mount.local,
+                    resolved_mount.remote,
+                    delete=delete,
+                    dry_run=dry_run,
+                    itemize=dry_run,
+                )
 
         if result.returncode == 0:
             if dry_run:

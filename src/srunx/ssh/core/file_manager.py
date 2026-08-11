@@ -166,7 +166,7 @@ class RemoteFileManager:
         local_path: str | None = None,
         remote_path: str | None = None,
         *,
-        delete: bool = True,
+        delete: bool = False,
         dry_run: bool = False,
         exclude_patterns: list[str] | None = None,
     ) -> str:
@@ -177,7 +177,11 @@ class RemoteFileManager:
                 or cwd.
             remote_path: Remote destination. If None, uses the default
                 ``~/.config/srunx/workspace/{repo_name}/``.
-            delete: Remove remote files not present locally (default True).
+            delete: Remove remote files not present locally. **Defaults to
+                False**, matching :meth:`RsyncClient.push`: a wrapper that
+                re-introduced mirror-by-default would defeat that guarantee
+                for its own callers, which is exactly how remote-only
+                checkpoints and job logs got deleted before.
             dry_run: Preview what would be transferred without syncing.
             exclude_patterns: Additional exclude patterns for this sync.
 

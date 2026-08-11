@@ -20,9 +20,11 @@ Two functions live here:
   remote-side outputs/checkpoints inside mounts).
 
 The ``delete`` default change is the user-visible behavioural fix for
-Codex's blocker #4 on PR #134. Callers that explicitly want the old
-mirror-style behaviour pass ``delete=True`` (e.g. the manual
-``srunx ssh sync`` command).
+Codex's blocker #4 on PR #134. It later became the default of
+:meth:`RsyncClient.push` itself, so *no* caller inherits mirror
+semantics by accident — the manual ``srunx ssh sync`` command opts in
+via its ``--delete`` flag, and the Web file/template/job sync routes
+pass ``delete=True`` explicitly.
 """
 
 from __future__ import annotations
@@ -69,9 +71,9 @@ def sync_mount_by_name(
     """Sync a named mount's local directory to remote via rsync.
 
     ``delete`` is **False by default** so callers that don't opt in
-    can't accidentally wipe remote-only outputs. The manual
-    ``srunx ssh sync`` command and any explicit ""mirror this exactly""
-    callers should pass ``delete=True``. Auto-sync paths (PR #134
+    can't accidentally wipe remote-only outputs. Any explicit
+    ""mirror this exactly"" caller passes ``delete=True`` (the Web
+    file/template/job sync routes do). Auto-sync paths (PR #134
     Phase 1) leave the default.
 
     ``dry_run=True`` runs rsync with ``-n -i`` (no transfer + itemize)

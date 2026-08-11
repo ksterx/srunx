@@ -67,13 +67,28 @@ result = rsync.pull("~/work/my_project/outputs/", "./local_outputs/")
 result = rsync.push(
     local_path="./src",
     remote_path="~/workspace/src/",
-    delete=True,        # Remove remote files not in local (default)
+    delete=False,        # Default: keep remote-only files
     dry_run=False,       # Set True to preview without transferring
 )
 ```
 
-- `delete=True` (default): Remote mirrors local exactly. Files on the
-  remote that don't exist locally are deleted.
+- `delete=False` (default): additive. New and changed files are copied;
+  files that exist only on the remote are left alone. This is the default
+  because remote-only files are typically things a job produced —
+  checkpoints, logs, outputs — which by definition do not exist locally.
+- `delete=True`: mirror. Remote-only files are deleted. Pair it with
+  `max_delete=N` to bound how much a mirror out of a wrong or
+  half-populated source directory can remove.
+- `max_delete=N` is a blast-radius cap, **not** an atomic refusal. rsync
+  deletes up to `N` entries, skips the rest, finishes transferring, and
+  only then exits 25 — so when the cap trips, the destination has
+  already changed. If you need "refuse without touching anything",
+  count the deletions in a separate `dry_run=True` call and decide
+  before you push. The MCP `sync_files` tool does this preflight for
+  you; a direct `RsyncClient.push()` does not.
+- `max_delete` must be `>= 1`. Zero is rejected: `--max-delete=0` means
+  *unlimited* on rsync 2.6.x / openrsync, so it cannot be forwarded
+  safely. To forbid deletion, leave `delete=False`.
 - Directories automatically get a trailing `/` so rsync copies contents,
   not the directory itself.
 
@@ -259,7 +274,7 @@ project roots. See [Web UI guide](../how-to/webui.md) for details.
 | Class / Method | Description |
 |----|----|
 | `RsyncClient(hostname, username, ...)` | Create an rsync wrapper with SSH connection parameters |
-| `RsyncClient.push(local, remote, ...)` | Sync local to remote (`--delete` by default) |
+| `RsyncClient.push(local, remote, ...)` | Sync local to remote (additive; no `--delete` unless `delete=True`) |
 | `RsyncClient.pull(remote, local, ...)` | Sync remote to local (no `--delete` by default) |
 | `RsyncClient.get_default_remote_path()` | Returns `~/.config/srunx/workspace/{repo_name}/` |
 | `RsyncResult.success` | `True` if rsync exited with code 0 |

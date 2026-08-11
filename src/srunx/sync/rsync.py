@@ -11,7 +11,7 @@ import sys
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import IO, ClassVar
 
 from srunx.common.logging import get_logger
@@ -115,10 +115,11 @@ class RsyncClient:
         local_path: str | Path,
         remote_path: str | None = None,
         *,
-        delete: bool = True,
+        delete: bool = False,
         dry_run: bool = False,
         itemize: bool = False,
         verbose: bool = False,
+        max_delete: int | None = None,
         exclude_patterns: Sequence[str] | None = None,
     ) -> RsyncResult:
         """Sync a local directory/file to the remote server.
@@ -127,8 +128,28 @@ class RsyncClient:
             local_path: Local file or directory to push.
             remote_path: Destination path on the remote server.
                 If None, uses ``get_default_remote_path()``.
-            delete: Remove remote files not present locally (default True).
-            dry_run: Perform a trial run with no changes made.
+            delete: Remove remote files not present locally. **Defaults to
+                False**: a push that silently prunes remote-only files
+                (training checkpoints, run logs) is a data-loss footgun, and
+                every historical incident here came from a caller inheriting
+                a mirror-by-default. Mirror semantics are opt-in — callers
+                that genuinely want them pass ``delete=True`` explicitly.
+            max_delete: Blast-radius cap for a mirror — **not** an atomic
+                refusal. rsync deletes up to this many entries, skips the
+                remaining deletions, finishes transferring, and only then exits
+                25, so on a cap hit the destination *has already changed*
+                (verified against openrsync). A caller that needs "refuse
+                without touching anything" must count deletions in a separate
+                dry run and decide before calling; the MCP
+                :func:`~srunx.mcp.tools.sync.sync_files` tool does exactly
+                that. Only meaningful with ``delete=True``. Must be >= 1 —
+                see :class:`ValueError` below.
+            dry_run: Perform a trial run that changes nothing on the remote —
+                no transfers, no deletions, and no directory creation. Note
+                that rsync without ``--mkpath`` cannot evaluate a transfer
+                against a missing destination parent, so a preview of a
+                not-yet-created destination fails rather than reporting an
+                empty diff.
             itemize: Add ``--itemize-changes`` so the result lists every
                 file rsync *would* (or did) touch, with the standard
                 ``YXcstpoguax`` flag prefix. Required for ``dry_run``
@@ -141,7 +162,27 @@ class RsyncClient:
 
         Returns:
             RsyncResult with returncode, stdout, and stderr.
+
+        Raises:
+            ValueError: If ``max_delete`` is 0 or negative. Zero cannot be
+                forwarded safely (rsync 2.6.x / openrsync read
+                ``--max-delete=0`` as *unlimited*, inverting the strictest cap
+                into no cap at all), and silently downgrading the call to
+                ``delete=False`` would be worse: the caller asked for a mirror
+                that refuses rather than one that quietly leaves extra
+                destination files behind. To forbid deletion, pass
+                ``delete=False`` explicitly.
         """
+        if max_delete is not None and max_delete < 1:
+            raise ValueError(
+                f"max_delete must be >= 1, got {max_delete}. To forbid "
+                "deletion entirely, pass delete=False — 0 cannot be forwarded "
+                "to rsync safely (2.6.x / openrsync read --max-delete=0 as "
+                "unlimited), and quietly dropping --delete instead would turn "
+                "a mirror that should refuse into one that silently leaves "
+                "extra destination files in place."
+            )
+
         if remote_path is None:
             remote_path = self.get_default_remote_path(local_path)
 
@@ -154,9 +195,25 @@ class RsyncClient:
 
         dst = self._format_remote(remote_path)
 
-        # Ensure remote directory exists when --mkpath is unavailable
+        # Ensure remote directory exists when --mkpath is unavailable.
+        #
+        # Deliberately restricted to real runs. A dry run must not touch the
+        # remote at all: otherwise "nothing was changed" stops being true, and
+        # a preview whose destination is a *file* path would create a
+        # directory exactly where that file belongs. The cost is that a first
+        # mirror against a not-yet-existing destination fails its preflight —
+        # a safe, explicit failure that ``sync_files`` explains how to work
+        # around, which is a better trade than a preview with side effects.
         if not self._supports_mkpath and not dry_run:
-            self._ensure_remote_dir(remote_path)
+            # A file destination needs its *parent* created. ``mkdir -p`` on
+            # the file path itself would put a directory where the file goes,
+            # after which rsync can never write it.
+            if local.is_dir() or remote_path.endswith("/"):
+                self._ensure_remote_dir(remote_path)
+            else:
+                parent = str(PurePosixPath(remote_path).parent)
+                if parent not in (".", "/", ""):
+                    self._ensure_remote_dir(parent)
 
         excludes = self._merge_excludes(exclude_patterns)
         cmd = self._build_rsync_cmd(
@@ -166,6 +223,7 @@ class RsyncClient:
             dry_run=dry_run,
             itemize=itemize,
             verbose=verbose,
+            max_delete=max_delete,
             excludes=excludes,
         )
         if verbose:
@@ -249,6 +307,7 @@ class RsyncClient:
         dry_run: bool,
         itemize: bool = False,
         verbose: bool = False,
+        max_delete: int | None = None,
         excludes: list[str],
     ) -> list[str]:
         """Build the full rsync command."""
@@ -262,8 +321,20 @@ class RsyncClient:
         ssh_cmd = self._build_ssh_cmd()
         cmd.extend(["-e", shlex.join(ssh_cmd)])
 
+        # A zero cap never reaches here — ``push`` rejects it outright, because
+        # ``--max-delete=0`` means *unlimited* on rsync 2.6.x / openrsync
+        # (stock on macOS) rather than "delete nothing". Verified: a
+        # ``--delete --max-delete=0`` run against openrsync deleted every
+        # destination-only file and exited 0, turning the strictest possible
+        # cap into no cap at all.
         if delete:
             cmd.append("--delete")
+            if max_delete is not None:
+                # Bounds a mirror's blast radius: rsync stops deleting and
+                # exits 25 once the cap is exceeded. Only emitted alongside
+                # --delete, since without it rsync deletes nothing and the
+                # flag would be inert noise.
+                cmd.append(f"--max-delete={max_delete}")
         if dry_run:
             cmd.append("-n")
         if itemize:

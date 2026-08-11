@@ -144,6 +144,17 @@ mount names via `--mount` (no `profile` / `mount` positional sub-noun).
 - `uv run srunx ssh sync` - Sync current directory's mount (auto-detect profile and mount from cwd)
 - `uv run srunx ssh sync --profile <profile> --mount <name>` - Sync a specific mount
 - `uv run srunx ssh sync --dry-run` - Preview sync without transferring
+- `uv run srunx ssh sync --delete` - Mirror: also delete destination files missing from the source
+
+##### Sync is additive by default
+`RsyncClient.push()` defaults to `delete=False`, so **no** caller inherits
+mirror semantics by accident — a sync adds and updates, and leaves
+destination-only files (checkpoints, job logs, job outputs) alone. Mirroring
+is opt-in per call site: `srunx ssh sync --delete`, the Web
+file/template/job sync routes (`delete=True` explicit), and MCP
+`sync_files(delete=True)`. This is the standing fix for the incident where
+auto-sync silently pruned remote-only outputs; see
+`src/srunx/sync/mount_helpers.py`.
 
 ##### Account secrets (`ssh secret`)
 Secrets (API keys etc.) are stored in a single **remote** `0600` file per

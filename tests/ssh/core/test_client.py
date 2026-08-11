@@ -8,7 +8,7 @@ component methods live alongside their components — see
 ``test_connection.py``.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -87,3 +87,52 @@ class TestContextManager:
                 with client:
                     pass
                 mock_disconnect.assert_called_once()
+
+
+class TestSyncProjectDeleteDefault:
+    """``sync_project`` must not re-introduce mirror-by-default.
+
+    :meth:`RsyncClient.push` defaults to ``delete=False`` so that no caller
+    inherits mirror semantics by accident. A wrapper that passes
+    ``delete=True`` of its own accord defeats that for every one of its
+    callers — which is precisely how remote-only checkpoints and job logs
+    were deleted before. This pins the wrapper to the additive default.
+    """
+
+    def _client(self) -> SSHSlurmClient:
+        with (
+            patch("srunx.sync.rsync.shutil.which", return_value="/usr/bin/rsync"),
+            patch(
+                "srunx.sync.rsync.subprocess.run",
+                return_value=MagicMock(stdout="--protect-args --mkpath", stderr=""),
+            ),
+            patch(
+                "srunx.ssh.core.client.subprocess.run",
+                return_value=MagicMock(returncode=0, stdout="/home/user/proj\n"),
+            ),
+        ):
+            return SSHSlurmClient(
+                hostname="server", username="user", key_filename="~/.ssh/id_rsa"
+            )
+
+    def test_additive_by_default(self):
+        client = self._client()
+
+        with patch.object(client._rsync_client, "push") as mock_push:
+            mock_push.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            # Explicit paths: project-root detection shells out to git, which
+            # the test suite's isolation fixture blocks.
+            client.sync_project(local_path="/local/proj", remote_path="~/proj/")
+
+        assert mock_push.call_args.kwargs["delete"] is False
+
+    def test_mirror_still_available_on_request(self):
+        client = self._client()
+
+        with patch.object(client._rsync_client, "push") as mock_push:
+            mock_push.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.sync_project(
+                local_path="/local/proj", remote_path="~/proj/", delete=True
+            )
+
+        assert mock_push.call_args.kwargs["delete"] is True
