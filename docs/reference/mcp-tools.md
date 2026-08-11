@@ -1,10 +1,10 @@
 ---
-description: Complete reference for the 14 tools exposed by the srunx MCP server — submit_job, run_workflow, get_job_status, sync_files, and more.
+description: Complete reference for the 15 tools exposed by the srunx MCP server — submit_job, run_workflow, get_job_status, inspect_mount, sync_files, and more.
 ---
 
 # MCP Tool Reference
 
-Complete reference for all 14 tools exposed by the srunx MCP server.
+Complete reference for all 15 tools exposed by the srunx MCP server.
 
 The server is started with `uvx --from 'srunx[mcp]' srunx-mcp` (or the
 plain `srunx-mcp` binary after `uv tool install --with 'mcp[cli]' srunx`)
@@ -491,6 +491,60 @@ resource and environment configuration for each job.
 
 ## File Sync
 
+### inspect_mount
+
+Report what syncing a mount would change — **without changing anything**.
+
+Read-only: it never transfers, deletes, or creates anything on the cluster.
+
+Its purpose is answering a question `sync_files` cannot: **what is on the
+cluster that no longer exists locally?** Syncing is additive, so those files
+stay — including code deleted in a local refactor, which a job can still
+import and run.
+
+**Parameters:**
+
+| Name | Type | Required | Default | Description |
+|----|----|----|----|----|
+| `transport` | str | Yes |  | SSH profile name to inspect. No current-profile fallback — it must be explicit |
+| `mount` | str | Yes |  | Mount name from that SSH profile |
+| `max_paths` | int | No | `1000` | Cap on how many paths to list. Counts stay exact; past the cap the list is omitted, never shortened |
+
+**Return value:**
+
+``` json
+{
+  "success": true,
+  "profile": "myserver",
+  "mount": "ml-project",
+  "local": "/home/user/projects/ml-project",
+  "remote": "/home/researcher/projects/ml-project",
+  "files_would_transfer": 3,
+  "mirror_delete_candidates": 2,
+  "mirror_delete_candidate_paths": ["old_train.py", "checkpoints/500.pt"],
+  "mirror_delete_candidate_paths_omitted": false,
+  "effective_exclude_patterns": [".git/", "__pycache__/", "*.pyc"]
+}
+```
+
+!!! warning "The candidates mix two very different things"
+    `mirror_delete_candidate_paths` lists everything a mirror *would* remove,
+    and that set contains both:
+
+    - **produced by jobs** — checkpoints, logs, outputs. Must **not** be deleted.
+    - **left over locally** — stale modules, renamed files. Usually should be.
+
+    srunx keeps no record of what it previously uploaded, so it cannot tell them
+    apart. Treat the list as something to show a human, not as a delete list.
+
+!!! note "Read the exclude list alongside the candidates"
+    Excluded paths are invisible to this inspection *and* protected from a
+    mirror's deletions, so a path absent from the candidates may simply be
+    excluded rather than in sync.
+
+The inspection takes no sync lock: it only reads, so it does not queue behind a
+running sync. The trade is that its snapshot can be a moment stale.
+
 ### sync_files
 
 Sync a configured mount from the local machine to a remote SLURM cluster
@@ -542,9 +596,15 @@ to an arbitrary destination.
   "files_transferred": 12,
   "entries_deleted": 0,
   "deleted_paths": [],
-  "deleted_paths_omitted": false
+  "deleted_paths_omitted": false,
+  "mirror_candidates_inspected": false
 }
 ```
+
+`mirror_candidates_inspected` separates "nothing to delete" from "deletions were
+never looked for". An additive sync does not ask rsync about them at all, so
+`entries_deleted: 0` must **not** be read as "nothing is stale on the cluster" —
+that is what `inspect_mount` answers.
 
 `deleted_paths` lists every deletion. Past a very large number of
 deletions the list is omitted and `deleted_paths_omitted` is `true` —

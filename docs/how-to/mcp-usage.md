@@ -100,7 +100,33 @@ differs from the cluster's it would register something like
 
 Syncing is additive: new and changed files are copied, and files that
 exist only on the cluster (checkpoints, job logs, outputs) are left
-alone. To mirror instead, ask for deletion explicitly:
+alone.
+
+### Find what is stale on the cluster
+
+Because syncing is additive, a file you delete locally stays on the
+cluster — and a job can still import it. That is the failure worth
+knowing about: a refactor leaves `old_train.py` behind and a run keeps
+using it, silently.
+
+``` text
+> What's on the ml-project mount that isn't here locally any more?
+```
+
+Claude Code calls `inspect_mount`, which is read-only — it reports the
+difference without transferring or deleting anything. The result lists
+cluster-only paths, but note that it mixes two kinds of file:
+
+- **produced by jobs** — checkpoints, logs, outputs. Must not be deleted.
+- **left over locally** — stale modules, renamed files. Usually should be.
+
+srunx keeps no record of what it previously uploaded, so it cannot tell
+them apart; expect the list, not a verdict. Ask for it after a refactor,
+or before submitting a job you want to be sure is running current code.
+
+### Mirror instead
+
+To make the cluster match your machine exactly, ask for deletion:
 
 ``` text
 > Preview a mirror of the src mount on myserver, then run it
@@ -108,7 +134,7 @@ alone. To mirror instead, ask for deletion explicitly:
 
 Claude Code calls `sync_files` with `dry_run=True, delete=True` to show
 the deletions, then again to execute. A real mirror refuses without
-changing anything if it would delete more than `max_delete` files
+changing anything if it would delete more than `max_delete` entries
 (default 100).
 
 ## Use a Remote Cluster

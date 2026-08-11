@@ -156,6 +156,17 @@ file/template/job sync routes (`delete=True` explicit), and MCP
 auto-sync silently pruned remote-only outputs; see
 `src/srunx/sync/mount_helpers.py`.
 
+The trade-off is that a locally deleted file stays on the cluster, where a job
+can still import it. MCP exposes `inspect_mount` for that — read-only, reports
+cluster-only paths. It is a separate tool rather than a flag on `sync_files`
+because an inspection has to be documented as unconditionally safe: folding it
+into `sync_files` meant one `delete` argument carrying both "show me what a
+mirror would remove" (harmless) and "remove it" (destructive), and an agent
+reading the data-loss warning avoids the argument entirely — losing the safe
+inspection with it. srunx keeps no manifest of what it uploaded, so
+`inspect_mount` cannot separate job outputs from stale code; it reports, the
+human decides.
+
 ##### Account secrets (`ssh secret`)
 Secrets (API keys etc.) are stored in a single **remote** `0600` file per
 account (not per profile), `$HOME/.config/srunx/secrets.env` (parent dir
