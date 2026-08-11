@@ -52,6 +52,27 @@ class RsyncClient:
         ".tox/",
         "node_modules/",
         ".DS_Store",
+        # srunx's own control file on the remote side. It has no local
+        # counterpart, so without this a mirror (``--delete``) deletes it on
+        # every sync — taking with it the ownership marker that stops one
+        # machine from syncing over another's mount. Excluding a path also
+        # protects it from deletion, which is the point here.
+        #
+        # Anchored with a leading slash so it matches only the transfer root.
+        # A bare ``.srunx-owner.json`` matches that basename at *every* depth,
+        # which would silently skip a user's own ``subdir/.srunx-owner.json``;
+        # only the file at the mount root is srunx's.
+        #
+        # Known consequence: mirror paths that don't go through
+        # ``mount_sync_session`` (``srunx ssh sync --delete``, the MCP and Web
+        # mirror callers) don't rewrite the marker, so after one workstation
+        # mirrors over a mount another one owned, the marker still names the old
+        # host and the next ordinary auto-sync is refused. That is the safe
+        # direction to fail — nothing is lost, and ``--force-sync`` (or
+        # ``[sync] owner_check = false``) clears it — but it is only truly fixed
+        # by giving every configured-mount push one shared entry point that owns
+        # the marker's lifecycle.
+        "/.srunx-owner.json",
     ]
 
     def __init__(
@@ -449,14 +470,41 @@ class RsyncClient:
         *,
         stdin: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        """Run *remote_cmd* on the configured host via ssh.
+        """Run *remote_cmd* on the configured host via ssh, under ``sh``.
 
         Reuses the same SSH options rsync uses (key, port, ProxyJump,
         ssh_config) so that anything rsync can reach, this can reach
         too. ``stdin`` is piped through to the remote process — used
-        by the owner-marker writer to send JSON via ``tee``.
+        by the owner-marker writer to send its JSON.
+
+        The command is wrapped in ``sh -c`` instead of being handed to the
+        account's login shell. OpenSSH evaluates a remote command *with that
+        login shell*, and the ``if ...; then ...; fi`` scripts here are not
+        valid csh/tcsh — still the default shell on some HPC accounts. Without
+        the wrapper those commands fail on every invocation, and because the
+        callers downgrade failures (a missing marker is a warning, an
+        unavailable hash skips verification) the breakage would be silent:
+        the cross-workstation overwrite guard and the post-sync hash check
+        would both quietly stop working.
+
+        The wrapper only holds for a single-line command. csh cannot carry a
+        newline through single quotes, so a multi-line script gets split and the
+        fragments parsed by csh itself — which not only fails but can run pieces
+        of the script as separate commands. Rather than leave that as a trap for
+        the next caller, a newline is rejected outright; join steps with ``;``.
+
+        Raises:
+            ValueError: If *remote_cmd* spans multiple lines.
         """
-        ssh_cmd = [*self._build_ssh_cmd(), self._ssh_dest(), remote_cmd]
+        if "\n" in remote_cmd:
+            raise ValueError(
+                "remote_cmd must be a single line — a csh/tcsh login shell "
+                "splits newlines out of the quoted argument and parses the "
+                "fragments itself, running part of the script as separate "
+                "commands. Join the steps with ';' instead."
+            )
+        wrapped = f"sh -c {shlex.quote(remote_cmd)}"
+        ssh_cmd = [*self._build_ssh_cmd(), self._ssh_dest(), wrapped]
         logger.debug("ssh: {}", shlex.join(ssh_cmd))
         return subprocess.run(  # noqa: S603
             ssh_cmd,
@@ -497,27 +545,241 @@ class RsyncClient:
         )
 
     def write_remote_file(self, remote_path: str, content: str) -> None:
-        """Atomically write *content* to *remote_path* via ssh + tee.
+        """Write *content* to *remote_path* atomically (temp file + rename).
 
-        ``tee`` (without ``-a``) truncates and rewrites the destination
-        in one shell op so a concurrent reader either sees the old
-        content or the new content — never a half-written file. The
-        parent directory is assumed to exist (the rsync that just ran
-        guarantees it for the owner-marker case).
+        ``mv`` within one directory is a ``rename(2)``, so a concurrent reader
+        sees either the previous file or the complete new one. Writing with
+        ``tee`` straight at the target does **not** give that: ``tee``
+        truncates first, so a reader in that window sees an empty file. This
+        function used to do exactly that while documenting the opposite.
 
-        Raises :class:`RuntimeError` if ssh / tee exits non-zero so the
-        caller can surface the failure rather than silently leaving a
-        stale marker on disk.
+        The target is rejected when it is a symlink (``tee`` / ``mv`` would act
+        on whatever it points at, letting a planted link redirect the write
+        outside the mount) or a directory (``mv`` would move the new file
+        *inside* it and exit 0, reporting success while the control file stays
+        unreadable). A probe that cannot be completed is also an error, since
+        its silence proves nothing.
+
+        Those checks are made twice — once up front and once immediately before
+        the rename — and the result is verified afterwards. GNU coreutils can
+        refuse a directory destination outright (``mv -T``) and that path is
+        taken when available; elsewhere a swap in the instant before the rename
+        is detected rather than prevented, and never reported as success.
+
+        Known limit: a peer could point our temp directory's name at a *different
+        directory we own*, which passes the ownership check. That costs nothing
+        (they cannot reach inside a directory of ours) beyond the publish
+        possibly crossing filesystems. Closing it would need fd-relative
+        operations, which a shell cannot express — it would mean driving this
+        over SFTP instead of ssh.
+
+        The parent directory is assumed to exist (for the owner-marker case
+        the rsync that just ran guarantees it).
+
+        Raises:
+            ValueError: If *remote_path* is login-relative. The write anchors
+                its working directory inside a private temp directory, which
+                would change how such a path resolves.
+            RuntimeError: If the target is a symlink or a directory, if the
+                target could not be probed, or if any write / publish step
+                exits non-zero — so the caller surfaces the failure instead of
+                silently leaving a stale file behind.
         """
-        quoted = shlex.quote(remote_path)
-        # Use ``> /dev/null`` so tee's stdout doesn't echo the JSON
-        # back through ssh (waste of bytes + stdout pollution).
-        result = self._ssh_run(f"tee -- {quoted} > /dev/null", stdin=content)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"ssh write to {remote_path!r} failed "
-                f"(exit {result.returncode}): {result.stderr.strip()}"
+        if not remote_path.startswith(("/", "~")):
+            # The write anchors its working directory inside a private temp
+            # directory (so the directory entry cannot be swapped out from under
+            # it), which changes how a login-relative path would resolve: the
+            # rename would land inside the temp directory and the verification
+            # would look somewhere else entirely. Rejecting is better than
+            # writing the file somewhere the caller did not ask for.
+            raise ValueError(
+                f"remote_path must be absolute or ~-relative, got "
+                f"{remote_path!r} — a login-relative path cannot be resolved "
+                "safely by this writer"
             )
+
+        quoted = shlex.quote(remote_path)
+        prefix = shlex.quote(f"{PurePosixPath(remote_path).parent}/.srunx-write.")
+
+        # The whole guarded sequence runs in ONE ssh invocation. Split across
+        # several it cost that many connections — that many key exchanges, and
+        # that many hardware-key touches — on *every* synced submission, since
+        # the owner marker is rewritten each time. Sharing one shell also shrinks
+        # the window between checking the target and renaming over it to near
+        # zero, and lets the checks repeat immediately before the rename.
+        #
+        # The temp lives inside a directory we create with ``mkdir -m 700``, and
+        # that is what makes writing it safe. Two earlier attempts were not:
+        #
+        # 1. ``mktemp`` then ``chmod`` then ``cat`` — mktemp closes the file, so
+        #    the later steps reopened it **by name**. Another account with write
+        #    access to the directory could unlink it and leave a symlink in that
+        #    gap. Verified locally: the sequence truncated an unrelated file
+        #    through the planted link — arbitrary overwrite, not just a broken
+        #    marker.
+        # 2. A single ``set -C`` redirection — noclobber only refuses an existing
+        #    *regular* file (POSIX XCU 2.7.2). Verified locally: with a FIFO
+        #    planted at the predictable name, the redirection did not fail, it
+        #    **hung** in open(). An attacker could stall every sync, or read the
+        #    marker content, and then have ``mv`` publish their object.
+        #
+        # ``mkdir`` is the exclusive-create primitive that covers every kind of
+        # inode: verified to fail with "File exists" against both a planted FIFO
+        # and a planted symlink. Mode 700 means nobody else can enter the
+        # directory afterwards, so the file created inside it cannot be swapped —
+        # no name is reopened in an untrusted directory at any point.
+        #
+        # ``umask 022`` fixes the marker's mode at creation, since it must stay
+        # readable to other accounts on a shared mount: an unreadable marker
+        # reads as "no owner" and disables the guard for them.
+        #
+        # The directory sits beside the target so publishing is a rename within
+        # one filesystem — across filesystems ``mv`` becomes copy+unlink and
+        # stops being atomic.
+        #
+        # Cleanup removes the known filename and then ``rmdir``s, rather than
+        # ``rm -rf``, so an unexpected entry is never deleted recursively.
+        #
+        # Exit codes are distinct so the failure can be reported precisely
+        # rather than as one opaque "ssh failed".
+        script = (
+            f"set -u; "
+            f"if [ -h {quoted} ]; then exit 3; fi; "
+            f"if [ -d {quoted} ]; then exit 4; fi; "
+            f"d={prefix}$$; "
+            f'mkdir -m 700 -- "$d" || exit 5; '
+            # ``cd`` into the directory we just created and work in relative
+            # paths from here on. Mode 700 stops others entering it, but it does
+            # NOT protect the directory *entry*: write permission on the parent
+            # lets a watcher rename our directory away and recreate one under the
+            # same name, after which a path like "$d/file" would resolve into
+            # theirs. A shell's working directory follows the inode, not the
+            # name, so nothing below reopens a path an attacker controls.
+            f'cd -- "$d" || {{ rmdir -- "$d"; exit 5; }}; '
+            # ``mkdir`` then ``cd`` is itself a TOCTOU: write permission on the
+            # parent lets a peer rename our entry away and put their own
+            # directory (or a symlink) under the same name before we open it. We
+            # would then create, chmod and write inside *their* directory, where
+            # they can swap the file for a symlink — back to the arbitrary
+            # overwrite this whole sequence exists to prevent. So verify what we
+            # actually entered: a peer can only create directories owned by
+            # themselves, so a uid match rules that out. Compared via
+            # ``ls -ldn`` + ``id -u`` because ``test -O`` is a bash/ksh
+            # extension, absent from POSIX test and from dash — the /bin/sh on
+            # most Linux clusters. No cleanup here: if this fails we are standing
+            # in someone else's directory and must not delete anything in it.
+            f'[ "$(ls -ldn . | awk \'NR==1{{print $3}}\')" = "$(id -u)" ] '
+            f"|| exit 5; "
+            # Random basename via mktemp — safe to use here precisely because
+            # this directory is ours and unreachable by others, which was not
+            # true of the mount root. It matters because on a non-GNU ``mv``
+            # (BSD, BusyBox) a target swapped for a symlink-to-directory makes
+            # the publish land at ``<referent>/<basename>``: a predictable name
+            # like the PID could be guessed and made to collide with a file the
+            # attacker wants destroyed. ``$$`` was no good — it is already
+            # exposed in the directory name.
+            f'f=$(mktemp -- ./w.XXXXXX) || {{ cd /; rmdir -- "$d"; exit 5; }}; '
+            # mktemp creates 0600; the published marker must stay readable to
+            # other accounts on a shared mount, since an unreadable marker reads
+            # as "no owner" and disables the guard for them. Reopening by name is
+            # fine *inside* this directory — the risk it carried at the mount
+            # root does not exist where no one else can reach.
+            # No ``--`` here: BSD chmod does not accept it and treats it as a
+            # filename ("chmod: --: No such file or directory"), which failed
+            # every write on macOS-family remotes. Safe to omit because mktemp's
+            # template starts with "./", so the name can never look like a flag.
+            f'chmod 644 "$f" || {{ rm -f -- "$f"; cd /; rmdir -- "$d"; exit 9; }}; '
+            f'cat > "$f" || {{ rm -f -- "$f"; cd /; rmdir -- "$d"; exit 6; }}; '
+            # Re-check right before the rename: a target swapped in after the
+            # first check would otherwise be followed by ``mv``.
+            f"if [ -h {quoted} ] || [ -d {quoted} ]; then "
+            f'rm -f -- "$f"; cd /; rmdir -- "$d"; exit 3; fi; '
+            # GNU coreutils can refuse a directory destination outright with
+            # ``-T``, which closes the swap race instead of only detecting it.
+            # ``mv --version`` is the reliable probe: it succeeds on GNU and
+            # fails on BSD, where ``-T`` does not exist (verified — BSD reports
+            # "illegal option -- T"). Blindly retrying without ``-T`` on any
+            # error would be wrong, since "no such option" and "target is a
+            # directory" would be indistinguishable.
+            f"if mv --version >/dev/null 2>&1; then "
+            f'mv -fT -- "$f" {quoted} '
+            f'|| {{ rm -f -- "$f"; cd /; rmdir -- "$d"; exit 7; }}; '
+            f"else "
+            f'mv -f -- "$f" {quoted} '
+            f'|| {{ rm -f -- "$f"; cd /; rmdir -- "$d"; exit 7; }}; '
+            f"fi; "
+            # Leave the directory before removing it, or the rmdir can fail with
+            # the working directory still inside it.
+            f'cd /; rmdir -- "$d" 2>/dev/null; '
+            # Verify what the rename actually produced. If the target was
+            # swapped for a directory (or a symlink to one) in the instant
+            # between the recheck above and this rename, ``mv`` moved the temp
+            # *inside* it and exited 0. Preventing that portably is not
+            # possible — ``mv -T`` is a GNU extension, and its failure cannot
+            # be told apart from "target is a directory", so falling back on
+            # error would silently drop the guard on BSD. Detecting it is
+            # portable, and refusing to call that success is what matters:
+            # otherwise the caller believes the marker was updated when the
+            # content landed somewhere else entirely.
+            # Nothing is deleted on this path, on purpose. An earlier version
+            # removed ``<target>/marker`` to avoid leaving the relocated file
+            # behind, but if the target was swapped for a symlink to some other
+            # directory, that path resolves to an unrelated pre-existing file and
+            # the cleanup deletes it — under the syncing user's credentials, and
+            # possibly outside the mount. A leftover file costs disk space; a
+            # wrong ``rm`` costs data. The error tells the operator what to
+            # inspect instead.
+            f"if [ ! -f {quoted} ] || [ -h {quoted} ]; then exit 8; fi"
+        )
+        result = self._ssh_run(script, stdin=content)
+        if result.returncode == 0:
+            return
+
+        detail = result.stderr.strip()
+        reasons = {
+            3: (
+                f"refusing to write {remote_path!r}: it is a symlink or a "
+                "directory. Following a symlink could write outside the mount, "
+                "and renaming onto a directory would move the file inside it "
+                "while reporting success"
+            ),
+            4: (
+                f"refusing to write {remote_path!r}: it exists as a directory, "
+                "so publishing would move the new file inside it instead of "
+                "replacing it"
+            ),
+            5: (
+                f"could not set up the private temp directory beside "
+                f"{remote_path!r} — anything already occupying that name "
+                "(file, symlink, FIFO) lands here, since the directory is "
+                "created exclusively, and so does a directory that turned out "
+                "not to be owned by this account (which means another user "
+                "swapped it in between creating and entering it)"
+            ),
+            6: f"could not write the temp file beside {remote_path!r}",
+            9: (
+                f"could not make the replacement for {remote_path!r} readable "
+                "(chmod failed); publishing it owner-only would hide the marker "
+                "from other accounts sharing the mount, which reads as "
+                '"no owner" and disables the guard for them'
+            ),
+            7: f"could not publish {remote_path!r} (rename failed)",
+            8: (
+                f"published {remote_path!r} but it is not a regular file "
+                "afterwards — something replaced the target mid-write, so the "
+                "content may have landed elsewhere and this file was NOT "
+                "updated. Nothing was deleted in response, since the swapped-in "
+                "path could point anywhere; inspect it on the cluster and remove "
+                "any stray 'marker' file yourself before retrying"
+            ),
+        }
+        reason = reasons.get(
+            result.returncode,
+            f"ssh write to {remote_path!r} failed",
+        )
+        raise RuntimeError(
+            f"{reason} (exit {result.returncode})" + (f": {detail}" if detail else "")
+        )
 
     # Custom exit codes wired into the remote shell snippet for
     # remote_sha256. Chosen above the common shell-defined range
@@ -563,15 +825,19 @@ class RsyncClient:
         # exit codes disambiguate "file missing" and "no tool" from
         # genuine failures so the Python side doesn't have to grep
         # stderr to make that distinction.
+        # Written on ONE line. A multi-line script breaks on csh/tcsh login
+        # shells even inside ``sh -c '...'``: csh cannot carry a newline through
+        # single quotes, so it splits the text and parses the fragments itself.
+        # Verified against tcsh — the newline form produced ``Unmatched '``,
+        # ``Ambiguous output redirect`` and ``else: endif not found``, and ran
+        # part of the script as separate commands.
         script = (
-            f"test -f {quoted} || exit {self._SHA256_REMOTE_MISSING_EXIT}\n"
-            f"if command -v sha256sum >/dev/null 2>&1; then\n"
-            f"  sha256sum -- {quoted}\n"
-            f"elif command -v shasum >/dev/null 2>&1; then\n"
-            f"  shasum -a 256 -- {quoted}\n"
-            f"else\n"
-            f"  exit {self._SHA256_REMOTE_NO_TOOL_EXIT}\n"
-            f"fi"
+            f"test -f {quoted} || exit {self._SHA256_REMOTE_MISSING_EXIT}; "
+            f"if command -v sha256sum >/dev/null 2>&1; then "
+            f"sha256sum -- {quoted}; "
+            f"elif command -v shasum >/dev/null 2>&1; then "
+            f"shasum -a 256 -- {quoted}; "
+            f"else exit {self._SHA256_REMOTE_NO_TOOL_EXIT}; fi"
         )
         result = self._ssh_run(script)
         if result.returncode == 0:

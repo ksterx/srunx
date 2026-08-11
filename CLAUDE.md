@@ -329,7 +329,7 @@ src/srunx/
 │   ├── notifications/ # Notification domain (Slack + future channels)
 │   │   ├── sanitize.py, presets.py, service.py, legacy_slack.py, formatting.py
 │   │   └── adapters/  # DeliveryAdapter + SlackWebhookDeliveryAdapter + registry
-│   └── storage/       # SQLite persistence at $XDG_CONFIG_HOME/srunx/srunx.db
+│   └── storage/       # SQLite persistence at $XDG_CONFIG_HOME/srunx/srunx.observability.storage
 │       ├── connection.py, migrations.py, models.py, cli_helpers.py
 │       └── repositories/  # JobRepository, DeliveryRepository, EndpointRepository, ...
 │
@@ -610,7 +610,14 @@ at first-cell-start and at final terminal.
 
 ### Notification + State Persistence (new in 2026-Q2)
 
-srunx stores durable state in a SQLite DB at **`$XDG_CONFIG_HOME/srunx/srunx.db`** (or `~/.config/srunx/srunx.db` when the env var is unset). Schema lives in `src/srunx/db/migrations.py` (`SCHEMA_V1`).
+srunx stores durable state in a SQLite DB at
+**`$XDG_CONFIG_HOME/srunx/srunx.observability.storage`** (or
+`~/.config/srunx/srunx.observability.storage` when the env var is unset). The
+filename is that odd because it was derived from the defining module's dotted
+path; it is kept as-is because renaming it would orphan every existing local DB
+without a migration. See `get_db_path()` in
+`src/srunx/observability/storage/connection.py`. Schema lives in
+`src/srunx/observability/storage/migrations.py`.
 
 Tables (abbreviated):
 - `jobs` — every SLURM submission, annotated with `submission_source` (`cli` / `web` / `workflow`) and `workflow_run_id`.

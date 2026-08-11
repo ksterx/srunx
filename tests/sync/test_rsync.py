@@ -942,3 +942,388 @@ class TestRemoteSha256:
             )
             with pytest.raises(RuntimeError, match="parse sha256"):
                 client.remote_sha256("/r/ml/train.sbatch")
+
+
+# ---------------------------------------------------------------------------
+# write_remote_file (owner marker / control files)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteRemoteFile:
+    """Control-file writes must be atomic and must not follow symlinks.
+
+    The previous implementation piped ``tee`` straight at the target while
+    documenting that a reader "never sees a half-written file". ``tee`` empties
+    the destination first, so a reader in that window saw an empty file — and a
+    symlink at the target redirected the write outside the mount.
+    """
+
+    def _client_with_ssh(self, *results: MagicMock) -> tuple[RsyncClient, MagicMock]:
+        client = _make_rsync_client(hostname="h", username="u")
+        ssh = MagicMock(side_effect=list(results))
+        return client, ssh
+
+    @staticmethod
+    def _ok(stdout: str = "OK\n", returncode: int = 0) -> MagicMock:
+        return MagicMock(returncode=returncode, stdout=stdout, stderr="")
+
+    def test_runs_as_a_single_ssh_invocation(self):
+        """One connection, not several.
+
+        The marker is rewritten on *every* synced submission, so splitting this
+        into probe/create/write/publish cost that many key exchanges — and that
+        many hardware-key touches — each time. One shell also leaves almost no
+        window in which the target could be swapped between check and rename.
+        """
+        client, ssh = self._client_with_ssh(self._ok(""))
+        with patch.object(client, "_ssh_run", ssh):
+            client.write_remote_file("/remote/ml/.srunx-owner.json", '{"a":1}')
+
+        ssh.assert_called_once()
+        script = ssh.call_args.args[0]
+        assert ssh.call_args.kwargs["stdin"] == '{"a":1}'
+        # Content lands in the temp, never at the target.
+        assert 'cat > "$f"' in script
+        # Published by a same-directory rename, which is atomic.
+        assert 'mv -f -- "$f" ' in script
+        assert "/remote/ml/.srunx-owner.json" in script
+
+    def test_temp_lives_in_an_exclusively_created_private_directory(self):
+        """``mkdir`` is the only exclusive-create covering every inode type.
+
+        Two earlier attempts failed, both verified against real shells:
+
+        * ``mktemp`` + ``chmod`` + ``cat`` reopened the temp *by name*, so a
+          symlink planted in that gap redirected the write and destroyed an
+          unrelated file — arbitrary overwrite, not just a broken marker.
+        * ``set -C`` alone only refuses an existing *regular* file (POSIX XCU
+          2.7.2). With a FIFO at the predictable name the redirection did not
+          fail — it **hung** in open(), stalling the sync indefinitely.
+
+        ``mkdir -m 700`` was verified to refuse a planted symlink, FIFO,
+        directory and regular file alike (exit 5, marker never written), and
+        mode 700 stops anyone swapping the file created inside it.
+        """
+        client, ssh = self._client_with_ssh(self._ok(""))
+        with patch.object(client, "_ssh_run", ssh):
+            client.write_remote_file("/remote/ml/.srunx-owner.json", "x")
+
+        script = ssh.call_args.args[0]
+        # mktemp is used, but only *inside* our own directory — the earlier
+        # failure was calling it in the untrusted mount root.
+        assert 'mkdir -m 700 -- "$d"' in script
+        # Anchored by cd: mode 700 guards the contents, but write permission on
+        # the parent still lets a watcher swap the directory entry itself. A
+        # working directory follows the inode, so nothing reopens a path an
+        # attacker controls.
+        assert 'cd -- "$d"' in script
+        assert script.index('cd -- "$d"') < script.index("mktemp")
+        # Random basename from mktemp, safe here because the directory is ours.
+        assert "mktemp -- ./w.XXXXXX" in script
+        assert script.index("mktemp") < script.index('cat > "$f"')
+        # Cleanup is targeted, never recursive.
+        assert "rm -rf" not in script
+        assert 'rmdir -- "$d"' in script
+
+    def test_verifies_it_entered_its_own_directory(self):
+        """``mkdir`` then ``cd`` is a TOCTOU on the directory *entry*.
+
+        Write permission on the parent lets a peer rename our entry away and put
+        their own directory under the same name before we open it — after which
+        we would create, chmod and write inside theirs, where they can swap the
+        file for a symlink. A peer can only create directories owned by
+        themselves, so a uid match rules that out.
+        """
+        client, ssh = self._client_with_ssh(self._ok(""))
+        with patch.object(client, "_ssh_run", ssh):
+            client.write_remote_file("/remote/ml/.srunx-owner.json", "x")
+
+        script = ssh.call_args.args[0]
+        assert '"$(id -u)"' in script
+        assert "ls -ldn ." in script
+        # Checked after entering and before anything is created inside.
+        assert script.index('cd -- "$d"') < script.index("ls -ldn .")
+        assert script.index("ls -ldn .") < script.index("mktemp")
+        # ``test -O`` is a bash/ksh extension, absent from dash (/bin/sh on most
+        # Linux clusters), so it must not be relied on.
+        assert "-O ." not in script
+
+    def test_relative_destination_is_rejected(self):
+        """Anchoring the working directory changes how a relative path resolves.
+
+        The rename would land the replacement inside the temp directory and the
+        verification would look elsewhere, so the call would report failure and
+        leave the requested file unwritten. Refusing up front beats writing to a
+        path the caller did not ask for.
+        """
+        client = _make_rsync_client(hostname="h", username="u")
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="must be absolute"):
+                client.write_remote_file("marker.json", "x")
+            mock_run.assert_not_called()
+
+    def test_tilde_destination_is_accepted(self):
+        """Mount remotes are commonly written ``~/work/...``."""
+        client, ssh = self._client_with_ssh(self._ok(""))
+        with patch.object(client, "_ssh_run", ssh):
+            client.write_remote_file("~/work/.srunx-owner.json", "x")
+
+        assert "~/work/.srunx-owner.json" in ssh.call_args.args[0]
+
+    def test_temp_is_created_beside_the_target(self):
+        """A temp elsewhere could be another filesystem, where mv copies."""
+        client, ssh = self._client_with_ssh(self._ok(""))
+        with patch.object(client, "_ssh_run", ssh):
+            client.write_remote_file("/remote/ml/sub/marker.json", "x")
+
+        assert "/remote/ml/sub/.srunx-write." in ssh.call_args.args[0]
+
+    def test_checks_target_again_immediately_before_rename(self):
+        """Guards a target swapped in after the first check.
+
+        Without the second check, ``mv`` would follow a symlink planted in
+        between and write outside the mount while reporting success.
+        """
+        client, ssh = self._client_with_ssh(self._ok(""))
+        with patch.object(client, "_ssh_run", ssh):
+            client.write_remote_file("/remote/ml/marker.json", "x")
+
+        script = ssh.call_args.args[0]
+        mv_at = script.index("mv -f --")
+        # Guarded up front...
+        assert script.index("-h ") < script.index('cat > "$f"')
+        # ...and again immediately before the rename (the last -d test).
+        assert script.index('cat > "$f"') < script.rindex("-d ") < mv_at
+        # The trailing -h test is the post-rename verification, not a guard.
+        assert script.rindex("-h ") > mv_at
+
+    def test_refuses_symlink_or_directory_target(self):
+        """Exit 3 is the remote guard refusing to follow / rename onto it."""
+        client, ssh = self._client_with_ssh(
+            MagicMock(returncode=3, stdout="", stderr="")
+        )
+        with patch.object(client, "_ssh_run", ssh):
+            with pytest.raises(RuntimeError, match="symlink or a directory"):
+                client.write_remote_file("/remote/ml/.srunx-owner.json", "x")
+
+    def test_refuses_directory_target(self):
+        """``mv temp dir`` succeeds by moving the file *inside* the directory.
+
+        Without this guard the write reports success while the control file
+        stays unreadable — and the rsync exclusion then keeps that bad
+        directory around indefinitely.
+        """
+        client, ssh = self._client_with_ssh(
+            MagicMock(returncode=4, stdout="", stderr="")
+        )
+        with patch.object(client, "_ssh_run", ssh):
+            with pytest.raises(RuntimeError, match="exists as a directory"):
+                client.write_remote_file("/remote/ml/.srunx-owner.json", "x")
+
+    def test_connection_failure_fails_closed(self):
+        """An ssh failure proves nothing about the target, so it must not pass."""
+        client, ssh = self._client_with_ssh(
+            MagicMock(returncode=255, stdout="", stderr="connection closed")
+        )
+        with patch.object(client, "_ssh_run", ssh):
+            with pytest.raises(RuntimeError, match="connection closed"):
+                client.write_remote_file("/remote/ml/marker.json", "x")
+
+    def test_occupied_temp_name_reported_distinctly(self):
+        """Exit 5 is the exclusive mkdir refusing whatever was planted there."""
+        client, ssh = self._client_with_ssh(
+            MagicMock(returncode=5, stdout="", stderr="File exists")
+        )
+        with patch.object(client, "_ssh_run", ssh):
+            with pytest.raises(RuntimeError, match="private temp directory"):
+                client.write_remote_file("/remote/ml/marker.json", "x")
+
+    def test_write_failure_reported_distinctly(self):
+        client, ssh = self._client_with_ssh(
+            MagicMock(returncode=6, stdout="", stderr="disk quota exceeded")
+        )
+        with patch.object(client, "_ssh_run", ssh):
+            with pytest.raises(RuntimeError, match="could not write the temp file"):
+                client.write_remote_file("/remote/ml/marker.json", "x")
+
+    def test_publish_failure_reported_distinctly(self):
+        client, ssh = self._client_with_ssh(
+            MagicMock(returncode=7, stdout="", stderr="permission denied")
+        )
+        with patch.object(client, "_ssh_run", ssh):
+            with pytest.raises(RuntimeError, match="could not publish"):
+                client.write_remote_file("/remote/ml/marker.json", "x")
+
+    def test_verifies_the_result_of_the_rename(self):
+        """The rename's outcome is checked, not assumed.
+
+        A target swapped for a directory between the last check and the rename
+        makes ``mv`` land the temp inside it and exit 0. That cannot be
+        prevented portably, so it is detected instead.
+        """
+        client, ssh = self._client_with_ssh(self._ok(""))
+        with patch.object(client, "_ssh_run", ssh):
+            client.write_remote_file("/remote/ml/marker.json", "x")
+
+        script = ssh.call_args.args[0]
+        assert script.rindex("-f ") > script.index("mv -f --")
+        assert "exit 8" in script
+
+    def test_post_rename_verification_failure_is_not_success(self):
+        client, ssh = self._client_with_ssh(
+            MagicMock(returncode=8, stdout="", stderr="")
+        )
+        with patch.object(client, "_ssh_run", ssh):
+            with pytest.raises(RuntimeError, match="was NOT\n?\\s*updated|was NOT"):
+                client.write_remote_file("/remote/ml/marker.json", "x")
+
+    def test_replacement_is_readable_by_other_accounts(self):
+        """The mode is set at creation, not by a separate chmod.
+
+        On a mount shared between accounts an unreadable marker reads as
+        "no owner", so an owner-only marker would stop protecting the
+        multi-account case the marker exists for. Doing it with ``umask``
+        rather than a follow-up ``chmod`` also removes a step that would have
+        reopened the temp by name — the gap a symlink swap exploits.
+        """
+        client, ssh = self._client_with_ssh(self._ok(""))
+        with patch.object(client, "_ssh_run", ssh):
+            client.write_remote_file("/remote/ml/.srunx-owner.json", "x")
+
+        script = ssh.call_args.args[0]
+        assert 'chmod 644 "$f"' in script
+        # No ``--``: BSD chmod rejects it, which broke every write on macOS
+        # remotes. Safe to omit since mktemp's template starts with "./".
+        assert "chmod 644 --" not in script
+        # Applied before the content, and before the rename publishes the inode.
+        assert script.index("chmod 644") < script.index('cat > "$f"')
+        # The private directory stays 700; only the published marker is 644.
+        assert "mkdir -m 700" in script
+
+    def test_detected_race_deletes_nothing(self):
+        """Cleaning up through a swapped target would delete the wrong file.
+
+        An earlier version removed ``<target>/marker`` so the relocated file
+        wouldn't linger. But if the target was swapped for a symlink to another
+        directory, that path resolves to an unrelated pre-existing file, and the
+        cleanup deletes it — under the syncing user's credentials, outside the
+        mount. A leftover costs disk space; a wrong ``rm`` costs data, so this
+        path reports and touches nothing.
+        """
+        client, ssh = self._client_with_ssh(self._ok(""))
+        with patch.object(client, "_ssh_run", ssh):
+            client.write_remote_file("/remote/ml/marker.json", "x")
+
+        script = ssh.call_args.args[0]
+        # After the last rename branch, nothing is removed at all.
+        tail = script[script.rindex("exit 7") :]
+        assert "rm -f" not in tail
+        assert tail.rstrip().endswith("exit 8; fi")
+
+    def test_temp_is_cleaned_up_on_every_failure_path(self):
+        """A temp left beside the marker would accumulate on each failure."""
+        client, ssh = self._client_with_ssh(self._ok(""))
+        with patch.object(client, "_ssh_run", ssh):
+            client.write_remote_file("/remote/ml/marker.json", "x")
+
+        script = ssh.call_args.args[0]
+        # Everything inside the private directory is certainly ours, so every
+        # failure after it exists removes the file and then the directory:
+        # write failure, pre-rename recheck, failed rename.
+        # Rather than count call sites (brittle), pin the invariant: every
+        # deletion names the temp we created inside our own directory. Naming a
+        # path under the target is the bug this replaced — if the target was
+        # swapped for a symlink, deleting under it removes an unrelated file.
+        assert script.count("rm -f") == script.count('rm -f -- "$f"')
+        assert "/remote/ml/marker.json/" not in script
+        # And the directory is only ever removed by name, never recursively.
+        assert script.count("rmdir") == script.count('rmdir -- "$d"')
+        assert "rm -rf" not in script
+
+
+class TestRemoteCommandShell:
+    """Remote commands must not depend on the account's login shell.
+
+    OpenSSH evaluates ``ssh host "cmd"`` with the remote user's login shell.
+    The ``if ...; then ...; fi`` scripts used for the owner marker and the
+    post-sync hash check are not valid csh/tcsh — still the default on some
+    HPC accounts — and both callers downgrade failures, so the breakage would
+    be silent rather than loud.
+    """
+
+    def test_commands_are_wrapped_in_sh(self):
+        client = _make_rsync_client(hostname="h", username="u")
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client._ssh_run("if [ -f x ]; then echo y; fi")
+
+        assert mock_run.call_args[0][0][-1].startswith("sh -c ")
+
+    def test_hash_check_is_also_wrapped(self):
+        """``remote_sha256`` had the same latent problem before the wrapper."""
+        client = _make_rsync_client(hostname="h", username="u")
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout=f"{'a' * 64}  /r/x\n", stderr=""
+            )
+            client.remote_sha256("/r/x")
+
+        remote_arg = mock_run.call_args[0][0][-1]
+        assert remote_arg.startswith("sh -c ")
+        assert "sha256sum" in remote_arg
+
+    def test_hash_check_is_single_line(self):
+        """csh cannot carry a newline through single quotes.
+
+        Verified against tcsh: the multi-line form produced ``Unmatched '``,
+        ``Ambiguous output redirect`` and ``else: endif not found`` — and ran
+        part of the script as separate commands — even inside ``sh -c '...'``.
+        """
+        client = _make_rsync_client(hostname="h", username="u")
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout=f"{'a' * 64}  /r/x\n", stderr=""
+            )
+            client.remote_sha256("/r/x")
+
+        assert "\n" not in mock_run.call_args[0][0][-1]
+
+    def test_multiline_command_is_rejected(self):
+        """A newline must fail loudly rather than break only on csh accounts."""
+        client = _make_rsync_client(hostname="h", username="u")
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="single line"):
+                client._ssh_run("echo a\necho b")
+            mock_run.assert_not_called()
+
+    def test_marker_write_is_single_line(self):
+        client = _make_rsync_client(hostname="h", username="u")
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.write_remote_file("/remote/ml/.srunx-owner.json", "x")
+
+        assert "\n" not in mock_run.call_args[0][0][-1]
+
+
+class TestControlFileExcluded:
+    def test_owner_marker_is_excluded_by_default(self):
+        """Otherwise a mirror deletes it: there is no local counterpart.
+
+        Losing it silently disables the guard that stops one machine from
+        syncing over a mount another machine owns.
+        """
+        client = _make_rsync_client(hostname="h", username="u")
+        assert "/.srunx-owner.json" in client.exclude_patterns
+
+    def test_marker_survives_a_mirror(self, tmp_path: Path):
+        client = _make_rsync_client(hostname="h", username="u")
+
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push(tmp_path, "~/dst/", delete=True)
+
+        cmd = mock_run.call_args[0][0]
+        assert "--delete" in cmd
+        # An --exclude'd path is also protected from deletion.
+        idx = cmd.index("/.srunx-owner.json")
+        assert cmd[idx - 1] == "--exclude"
