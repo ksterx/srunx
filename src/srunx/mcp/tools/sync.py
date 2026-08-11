@@ -1,6 +1,19 @@
-"""MCP tool: rsync-based file sync between local + remote SLURM cluster.
+"""MCP tools: rsync-based file sync between local + remote SLURM cluster.
 
-This tool is reachable by an autonomous agent, which shapes three choices
+Two tools live here, split on purpose:
+
+* :func:`inspect_mount` — read-only. Reports what a sync *would* change,
+  including what exists only on the cluster.
+* :func:`sync_files` — performs the sync.
+
+They are separate rather than one tool with a flag because the inspection has
+to be described as unconditionally safe to be usable. Folding it into
+``sync_files`` meant one ``delete`` argument carrying both "show me what a
+mirror would remove" (harmless) and "remove it" (destructive), so the argument's
+documentation had to warn about data loss — and an agent reading that warning
+avoids the argument altogether, losing the safe inspection with it.
+
+The sync tool is reachable by an autonomous agent, which shapes three choices
 that differ from the CLI's:
 
 * **Mount-name only.** There is no free-form ``local_path`` / ``remote_path``
@@ -145,6 +158,144 @@ def _parse_itemized(
     return deleted, deleted_count, transferred
 
 
+def _resolve_mount(transport: str, mount: str) -> tuple[str, Any, Any]:
+    """Resolve ``(profile_name, profile, mount_config)`` for a tool call.
+
+    Raises :class:`ValueError` with a caller-facing message, which the tools
+    turn into their error payload — shared so that both the read-only inspect
+    tool and the sync tool reject the same inputs with the same wording.
+    """
+    from srunx.ssh.core.config import ConfigManager
+
+    pname = transport.strip() if transport else ""
+    if not pname or pname == "local":
+        raise ValueError(
+            "an SSH profile name is required (transport='<profile>'); "
+            "there is no local sync"
+        )
+
+    cm = ConfigManager()
+    profile = cm.get_profile(pname)
+    if not profile:
+        raise ValueError(f"SSH profile '{pname}' not found")
+
+    mount_cfg = next((m for m in profile.mounts if m.name == mount), None)
+    if not mount_cfg:
+        available = [m.name for m in profile.mounts]
+        raise ValueError(
+            f"Mount '{mount}' not found in profile '{pname}'. Available: {available}"
+        )
+    return pname, profile, mount_cfg
+
+
+@mcp.tool()
+def inspect_mount(
+    transport: str,
+    mount: str,
+    max_paths: int = _MAX_REPORTED_DELETIONS,
+) -> dict[str, Any]:
+    """Report what syncing a mount would change, without changing anything.
+
+    Read-only: this never transfers, deletes, or creates anything on the
+    cluster. Call it freely, including before a sync you are unsure about.
+
+    Its main job is answering a question ``sync_files`` cannot: **what is on the
+    cluster that no longer exists locally?** A sync is additive, so those files
+    stay — including code deleted in a local refactor, which a job on the
+    cluster can still import and run. They are listed here as
+    ``mirror_delete_candidate_paths``.
+
+    Those candidates mix two kinds of thing, and separating them is the caller's
+    judgement, not this tool's:
+
+    * **produced by jobs** — checkpoints, logs, outputs. Must NOT be deleted.
+    * **left over locally** — stale modules, renamed files. Usually should be.
+
+    srunx keeps no record of what it previously uploaded, so it genuinely cannot
+    tell which is which. Show the list to the user and let them decide rather
+    than inferring it from filenames.
+
+    Args:
+        transport: SSH profile name to inspect. Required — there is no local
+            inspection, and (unlike the CLI) no implicit current-profile
+            fallback. Call ``list_ssh_profiles`` for the available profiles and
+            the mounts each defines.
+        mount: Mount name from that SSH profile.
+        max_paths: Cap on how many paths to list. Counts stay exact regardless;
+            past the cap the list is omitted rather than shortened, and
+            ``mirror_delete_candidate_paths_omitted`` says so.
+
+    Returns:
+        ``files_would_transfer``, ``mirror_delete_candidates`` (a count),
+        ``mirror_delete_candidate_paths``, whether that list was omitted, and
+        ``effective_exclude_patterns``.
+
+        The exclude list matters for reading the result: excluded paths are
+        invisible to this inspection *and* protected from a mirror's deletions,
+        so something absent from the candidates may simply be excluded rather
+        than in sync.
+    """
+    try:
+        from srunx.sync.mount_helpers import build_rsync_client
+
+        if max_paths < 0:
+            raise ValueError(f"max_paths must be >= 0, got {max_paths}")
+
+        pname, profile, mount_cfg = _resolve_mount(transport, mount)
+        rsync = build_rsync_client(profile)
+
+        # One pass with --delete --dry-run reports both halves at once: what
+        # would transfer, and what a mirror would delete. A dry run changes
+        # nothing on the remote — not even a directory — so asking about
+        # deletions here carries no risk of performing any.
+        #
+        # No cap is passed: a cap exists to bound a real mirror's damage, and
+        # capping an inspection would replace the very list it was asked for
+        # with an error. No lock is taken either — this only reads, and making
+        # callers queue behind a running sync (or time out) to look at a
+        # snapshot is a worse trade than a snapshot that is a moment stale.
+        result = rsync.push(
+            mount_cfg.local,
+            mount_cfg.remote,
+            delete=True,
+            dry_run=True,
+            itemize=True,
+            exclude_patterns=mount_cfg.exclude_patterns,
+        )
+        if not result.success:
+            return err(
+                f"Inspection failed (exit {result.returncode}): "
+                f"{result.stderr[:500] if result.stderr else 'unknown error'}. "
+                f"If '{mount_cfg.remote}' does not exist on the cluster yet, "
+                f"there is nothing to inspect — sync once with "
+                f"sync_files(delete=False) to create it."
+            )
+
+        paths, candidates, transferred = _parse_itemized(
+            result.stdout or "", max_paths=max_paths + 1
+        )
+        omit = candidates > max_paths
+        return ok(
+            profile=pname,
+            mount=mount_cfg.name,
+            local=mount_cfg.local,
+            remote=mount_cfg.remote,
+            files_would_transfer=transferred,
+            mirror_delete_candidates=candidates,
+            mirror_delete_candidate_paths=[] if omit else paths,
+            mirror_delete_candidate_paths_omitted=omit,
+            # The merged view, not ``rsync.exclude_patterns``: per-call patterns
+            # are applied for the invocation without being stored, so the
+            # attribute omits exactly the mount-level patterns the user
+            # configured — the ones most likely to explain a missing candidate.
+            effective_exclude_patterns=rsync.effective_excludes(
+                mount_cfg.exclude_patterns
+            ),
+        )
+    except Exception as e:
+        return err(str(e))
+
+
 @mcp.tool()
 def sync_files(
     transport: str,
@@ -155,8 +306,13 @@ def sync_files(
 ) -> dict[str, Any]:
     """Sync a configured mount from this machine to a remote SLURM cluster.
 
-    Copies new and changed files only. Files that exist on the cluster but
-    not locally are left untouched unless ``delete=True``.
+    Copies new and changed files only. Files that exist on the cluster but not
+    locally are left untouched unless ``delete=True``.
+
+    That means a file deleted locally stays on the cluster, where a job can
+    still pick it up. This tool does not report those — call ``inspect_mount``
+    to see them. It is read-only, so it is safe to call before or after a sync;
+    reach for it rather than setting ``delete=True`` to find out what is stale.
 
     Args:
         transport: SSH profile name to sync against. Required and must name
@@ -208,16 +364,8 @@ def sync_files(
     """
     try:
         from srunx.common.config import get_config
-        from srunx.ssh.core.config import ConfigManager
         from srunx.sync.lock import SyncLockTimeoutError, acquire_sync_lock
         from srunx.sync.mount_helpers import build_rsync_client
-
-        pname = transport.strip() if transport else ""
-        if not pname or pname == "local":
-            return err(
-                "sync_files requires an SSH profile name (transport='<profile>'); "
-                "there is no local sync."
-            )
 
         if max_delete < 1:
             return err(
@@ -226,19 +374,7 @@ def sync_files(
                 "of capping deletions at zero."
             )
 
-        cm = ConfigManager()
-        profile = cm.get_profile(pname)
-        if not profile:
-            return err(f"SSH profile '{pname}' not found")
-
-        mount_cfg = next((m for m in profile.mounts if m.name == mount), None)
-        if not mount_cfg:
-            available = [m.name for m in profile.mounts]
-            return err(
-                f"Mount '{mount}' not found in profile '{pname}'. "
-                f"Available: {available}"
-            )
-
+        pname, profile, mount_cfg = _resolve_mount(transport, mount)
         rsync = build_rsync_client(profile)
         timeout = get_config().sync.lock_timeout_seconds
 
@@ -365,6 +501,11 @@ def sync_files(
             entries_deleted=deleted_count,
             deleted_paths=[] if omit_paths else deleted_paths,
             deleted_paths_omitted=omit_paths,
+            # Distinguishes "nothing to delete" from "deletions were never
+            # looked for". An additive sync does not ask rsync about them at
+            # all, so entries_deleted=0 must not be read as "nothing is stale
+            # on the cluster" — that question is what inspect_mount answers.
+            mirror_candidates_inspected=delete,
         )
 
     except Exception as e:

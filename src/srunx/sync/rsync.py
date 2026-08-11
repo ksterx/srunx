@@ -866,6 +866,24 @@ class RsyncClient:
             f"(exit {result.returncode}): {result.stderr.strip()}"
         )
 
+    def effective_excludes(
+        self, exclude_patterns: Sequence[str] | None = None
+    ) -> list[str]:
+        """Return the patterns a call passing *exclude_patterns* would filter on.
+
+        ``push`` / ``pull`` merge per-call patterns on top of the instance's for
+        that invocation only, without storing them, so
+        :attr:`exclude_patterns` alone under-reports what a given call actually
+        filtered on — it omits exactly the mount-level patterns a user
+        configured.
+
+        That matters wherever the filter is reported back to a user: an excluded
+        path is invisible to an inspection *and* protected from a mirror's
+        deletions, so a missing pattern makes the report read as "in sync" when
+        it really means "never looked at".
+        """
+        return list(self._merge_excludes(exclude_patterns))
+
     def _merge_excludes(self, extra: Sequence[str] | None) -> list[str]:
         """Merge per-call exclude patterns with instance patterns."""
         if not extra:

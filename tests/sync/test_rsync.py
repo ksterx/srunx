@@ -1327,3 +1327,55 @@ class TestControlFileExcluded:
         # An --exclude'd path is also protected from deletion.
         idx = cmd.index("/.srunx-owner.json")
         assert cmd[idx - 1] == "--exclude"
+
+
+class TestEffectiveExcludes:
+    """The merged view of what a call would actually filter on.
+
+    ``push``/``pull`` apply per-call patterns for the invocation without
+    storing them, so the instance attribute alone omits exactly the mount-level
+    patterns a user configured. Anything reporting the filter back to a user
+    needs the merge, since an excluded path is invisible to an inspection *and*
+    protected from a mirror's deletions.
+    """
+
+    def test_merges_per_call_patterns(self):
+        client = _make_rsync_client(hostname="h", username="u")
+        merged = client.effective_excludes(["data/raw/", "*.h5"])
+
+        assert "data/raw/" in merged
+        assert "*.h5" in merged
+        # Defaults are still there.
+        assert ".git/" in merged
+        # And the instance attribute is left alone.
+        assert "data/raw/" not in client.exclude_patterns
+
+    def test_no_extra_returns_the_instance_patterns(self):
+        client = _make_rsync_client(hostname="h", username="u")
+        assert client.effective_excludes() == client.exclude_patterns
+        assert client.effective_excludes(None) == client.exclude_patterns
+
+    def test_does_not_duplicate(self):
+        client = _make_rsync_client(hostname="h", username="u")
+        merged = client.effective_excludes([".git/", "data/"])
+        assert merged.count(".git/") == 1
+
+    def test_returns_a_copy(self):
+        """Mutating the result must not corrupt the client's own list."""
+        client = _make_rsync_client(hostname="h", username="u")
+        merged = client.effective_excludes()
+        merged.append("injected/")
+        assert "injected/" not in client.exclude_patterns
+
+    def test_matches_what_push_actually_passes(self):
+        """The reported merge must equal the flags rsync receives."""
+        client = _make_rsync_client(hostname="h", username="u")
+        extra = ["data/raw/", "*.h5"]
+
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.push("/tmp", "~/d/", exclude_patterns=extra)
+
+        cmd = mock_run.call_args[0][0]
+        passed = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--exclude"]
+        assert passed == client.effective_excludes(extra)

@@ -1,20 +1,26 @@
 """Tests for srunx.mcp.tools.sync.
 
-``sync_files`` takes ``transport`` (an SSH profile name — there is no
-local-to-local sync and no implicit current-profile fallback) plus ``mount``,
-which is now the *only* way to name what gets synced: the former free-form
-``local_path`` / ``remote_path`` pair was removed so an agent cannot push an
-arbitrary source to an arbitrary destination.
+Both tools take ``transport`` (an SSH profile name — there is no local-to-local
+sync and no implicit current-profile fallback) plus ``mount``, which is the
+*only* way to name what is synced: the former free-form ``local_path`` /
+``remote_path`` pair was removed so an agent cannot push an arbitrary source to
+an arbitrary destination.
 
-The remaining safety properties covered here: deletion is opt-in and capped,
-itemize is always requested so the response can report exactly what moved,
-and the per-mount sync lock is held across the transfer.
+Properties covered: deletion is opt-in and capped, itemize is always requested
+so the response can report exactly what moved, the per-mount sync lock is held
+across a transfer — and ``inspect_mount`` reports cluster-only files while
+holding no lock and changing nothing.
 """
 
 import inspect
 from unittest.mock import MagicMock, patch
 
-from srunx.mcp.tools.sync import DEFAULT_MAX_DELETE, _parse_itemized, sync_files
+from srunx.mcp.tools.sync import (
+    DEFAULT_MAX_DELETE,
+    _parse_itemized,
+    inspect_mount,
+    sync_files,
+)
 
 
 def _profile_with_mount(
@@ -36,7 +42,10 @@ def _profile_with_mount(
 
 
 def _rsync_returning(
-    stdout: str = "", returncode: int = 0, stderr: str = ""
+    stdout: str = "",
+    returncode: int = 0,
+    stderr: str = "",
+    exclude_patterns: list[str] | None = None,
 ) -> MagicMock:
     rsync = MagicMock()
     rsync.push.return_value = MagicMock(
@@ -44,6 +53,9 @@ def _rsync_returning(
         returncode=returncode,
         stdout=stdout,
         stderr=stderr,
+    )
+    rsync.exclude_patterns = (
+        exclude_patterns if exclude_patterns is not None else [".git/"]
     )
     return rsync
 
@@ -556,3 +568,157 @@ class TestSyncFilesTransfer:
         assert result["success"] is False
         assert "sync lock" in result["error"]
         rsync.push.assert_not_called()
+
+
+@patch("srunx.sync.mount_helpers.build_rsync_client")
+@patch("srunx.ssh.core.config.ConfigManager")
+class TestInspectMount:
+    """The read-only counterpart to ``sync_files``.
+
+    It exists because an additive sync leaves cluster-only files in place, and
+    ``sync_files`` cannot report them: with ``delete=False`` rsync is never asked
+    about deletions, so its result says nothing about what is stale. Asking via
+    ``delete=True`` is a preview and harmless, but the ``delete`` argument has to
+    be documented as destructive — so an agent reading that avoids it, and the
+    safe inspection with it. Hence a separate tool.
+    """
+
+    def test_is_read_only(self, mock_cm_cls, mock_build):
+        """A dry run with --delete: reports deletions, performs none."""
+        cm = MagicMock()
+        cm.get_profile.return_value = _profile_with_mount(exclude_patterns=["*.log"])
+        mock_cm_cls.return_value = cm
+        mock_build.return_value = _rsync_returning("*deleting stale.py\n")
+
+        result = inspect_mount(transport="prod", mount="ml")
+
+        assert result["success"] is True
+        kwargs = mock_build.return_value.push.call_args.kwargs
+        assert kwargs["dry_run"] is True
+        assert kwargs["delete"] is True  # asks about deletions...
+        assert kwargs["itemize"] is True
+        # ...and passes no cap: a cap bounds a real mirror's damage, and capping
+        # an inspection would replace the requested list with an error.
+        assert "max_delete" not in kwargs or kwargs["max_delete"] is None
+        assert kwargs["exclude_patterns"] == ["*.log"]
+
+    def test_reports_cluster_only_paths(self, mock_cm_cls, mock_build):
+        """The answer to "what did I delete locally that is still up there?"."""
+        cm = MagicMock()
+        cm.get_profile.return_value = _profile_with_mount()
+        mock_cm_cls.return_value = cm
+        mock_build.return_value = _rsync_returning(
+            "*deleting old_train.py\n*deleting ckpt/500.pt\n>f+++++++ train.py\n"
+        )
+
+        result = inspect_mount(transport="prod", mount="ml")
+
+        assert result["mirror_delete_candidates"] == 2
+        assert result["mirror_delete_candidate_paths"] == [
+            "old_train.py",
+            "ckpt/500.pt",
+        ]
+        assert result["mirror_delete_candidate_paths_omitted"] is False
+        assert result["files_would_transfer"] == 1
+
+    def test_reports_effective_excludes(self, mock_cm_cls, mock_build):
+        """Excluded paths are invisible here *and* safe from a mirror.
+
+        Without the list, an absent candidate is ambiguous: in sync, or merely
+        excluded?
+        """
+        cm = MagicMock()
+        cm.get_profile.return_value = _profile_with_mount()
+        mock_cm_cls.return_value = cm
+        rsync = _rsync_returning()
+        rsync.effective_excludes.return_value = [".git/", "*.pyc", "data/"]
+        mock_build.return_value = rsync
+
+        result = inspect_mount(transport="prod", mount="ml")
+        assert result["effective_exclude_patterns"] == [".git/", "*.pyc", "data/"]
+
+    def test_effective_excludes_include_the_mount_patterns(
+        self, mock_cm_cls, mock_build
+    ):
+        """The merged view, not the client attribute.
+
+        Per-call patterns are applied for the invocation without being stored,
+        so ``rsync.exclude_patterns`` omits exactly the mount-level patterns the
+        user configured — the ones most likely to explain a missing candidate.
+        Reporting those would make an excluded path read as "in sync".
+        """
+        cm = MagicMock()
+        cm.get_profile.return_value = _profile_with_mount(
+            exclude_patterns=["data/raw/", "*.h5"]
+        )
+        mock_cm_cls.return_value = cm
+        rsync = _rsync_returning()
+        mock_build.return_value = rsync
+
+        inspect_mount(transport="prod", mount="ml")
+
+        rsync.effective_excludes.assert_called_once_with(["data/raw/", "*.h5"])
+
+    def test_takes_no_lock(self, mock_cm_cls, mock_build):
+        """Reading should not queue behind a running sync, or time out on one."""
+        cm = MagicMock()
+        cm.get_profile.return_value = _profile_with_mount()
+        mock_cm_cls.return_value = cm
+        mock_build.return_value = _rsync_returning()
+
+        with patch("srunx.sync.lock.acquire_sync_lock") as mock_lock:
+            result = inspect_mount(transport="prod", mount="ml")
+
+        assert result["success"] is True
+        mock_lock.assert_not_called()
+
+    def test_large_candidate_list_is_omitted_not_shortened(
+        self, mock_cm_cls, mock_build
+    ):
+        cm = MagicMock()
+        cm.get_profile.return_value = _profile_with_mount()
+        mock_cm_cls.return_value = cm
+        stdout = "".join(f"*deleting f{i}.pt\n" for i in range(50))
+        mock_build.return_value = _rsync_returning(stdout)
+
+        result = inspect_mount(transport="prod", mount="ml", max_paths=10)
+
+        assert result["mirror_delete_candidates"] == 50  # exact
+        assert result["mirror_delete_candidate_paths"] == []
+        assert result["mirror_delete_candidate_paths_omitted"] is True
+
+    def test_negative_max_paths_rejected(self, mock_cm_cls, mock_build):
+        mock_cm_cls.return_value = MagicMock()
+        result = inspect_mount(transport="prod", mount="ml", max_paths=-1)
+        assert result["success"] is False
+        assert "max_paths" in result["error"]
+
+    def test_missing_destination_explains_itself(self, mock_cm_cls, mock_build):
+        """rsync cannot diff against a destination that does not exist yet."""
+        cm = MagicMock()
+        cm.get_profile.return_value = _profile_with_mount()
+        mock_cm_cls.return_value = cm
+        mock_build.return_value = _rsync_returning(
+            returncode=23, stderr="No such file or directory"
+        )
+
+        result = inspect_mount(transport="prod", mount="ml")
+
+        assert result["success"] is False
+        assert "nothing to inspect" in result["error"]
+        assert "delete=False" in result["error"]
+
+    def test_rejects_local_transport(self, mock_cm_cls, mock_build):
+        result = inspect_mount(transport="local", mount="ml")
+        assert result["success"] is False
+        assert "SSH profile" in result["error"]
+
+    def test_unknown_mount_lists_available(self, mock_cm_cls, mock_build):
+        cm = MagicMock()
+        cm.get_profile.return_value = _profile_with_mount(name="data")
+        mock_cm_cls.return_value = cm
+
+        result = inspect_mount(transport="prod", mount="nope")
+        assert result["success"] is False
+        assert "nope" in result["error"]
+        assert "data" in result["error"]
