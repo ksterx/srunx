@@ -2529,7 +2529,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.136.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "loguru", specifier = ">=0.7.3" },
-    { name = "mcp", extras = ["cli"], marker = "extra == 'mcp'", specifier = ">=1.27.0" },
+    { name = "mcp", extras = ["cli"], marker = "extra == 'mcp'", specifier = ">=1.27.0,<3" },
     { name = "paramiko", specifier = ">=4.0.0" },
     { name = "pydantic", specifier = ">=2.13.2" },
     { name = "pyyaml", specifier = ">=6.0.3" },

@@ -47,7 +47,12 @@ Changelog = "https://github.com/ksterx/srunx/releases"
 
 [project.optional-dependencies]
 mcp = [
-    "mcp[cli]>=1.27.0",
+    # Both majors work — ``srunx.mcp.app`` binds whichever server class the
+    # installed mcp provides. The cap is on the *next* major, because that is
+    # the failure this range exists to prevent: 2.0 renamed the class and its
+    # module with no alias, and an unbounded ``>=1.27.0`` happily resolved it,
+    # so a fresh install got an MCP server that died at import.
+    "mcp[cli]>=1.27.0,<3",
 ]
 
 [project.scripts]
