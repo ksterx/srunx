@@ -72,7 +72,9 @@ class TestEnsureMountSynced:
         # mount-resident outputs/checkpoints must survive a sync.
         # ``verbose=False`` is the default surfaced by the CLI when the
         # user did not pass ``--verbose`` (#137 part 3).
-        fake_rsync.assert_called_once_with(profile, "ml", delete=False, verbose=False)
+        fake_rsync.assert_called_once_with(
+            profile, "ml", delete=False, verbose=False, record_manifest=False
+        )
         assert outcome.performed is True
         assert outcome.warnings == ()
 
@@ -159,6 +161,7 @@ class TestEnsureMountSynced:
             *,
             delete: bool = False,
             verbose: bool = False,
+            record_manifest: bool = True,
         ) -> str:
             raise RuntimeError("rsync exited 23: permission denied")
 

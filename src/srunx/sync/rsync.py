@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -17,6 +18,71 @@ from typing import IO, ClassVar
 from srunx.common.logging import get_logger
 
 logger = get_logger(__name__)
+
+# rsync escapes a byte it will not print as ``\#`` plus three octal digits —
+# ``\#012`` for a newline, ``\#134`` for a backslash itself. Escaping the
+# backslash is what makes the encoding invertible: a file genuinely named
+# ``a\#012b`` comes back as ``a\#134#012b``, and a single left-to-right pass
+# turns that into the original rather than into a newline.
+#
+# Matched in *runs*: one character can span several groups (``データ`` is nine),
+# so whether a group is safe to restore can only be decided together with its
+# neighbours. Matching runs also leaves everything outside them — the real line
+# breaks in a multi-line preview — untouched.
+_ESCAPE_RUN_RE = re.compile(r"(?:\\#[0-7]{3})+")
+_ESCAPE_GROUP_RE = re.compile(r"\\#([0-7]{3})")
+
+# A chmod mode reaches the remote shell unquoted, so it is constrained to the
+# only shape srunx ever passes.
+_MODE_RE = re.compile(r"[0-7]{3}")
+
+
+def _C_LOCALE_ENV() -> dict[str, str]:  # noqa: N802 — reads as a constant
+    """Environment forcing rsync's output into one deterministic encoding.
+
+    Which bytes rsync escapes depends on what the locale calls printable, and
+    the two outputs this compares must agree. Verified on openrsync: under a
+    UTF-8 locale ``データ.csv`` comes back as a *mix* of raw and escaped bytes
+    (``\\ufffd\\#203\\#207\\ufffd...``) while ``LC_ALL=C`` gives the fully escaped
+    ``\\#343\\#203\\#207...``. Run the inventory one way and the deletion preview
+    the other, and a genuinely stale non-ASCII file matches nothing — it is
+    dropped from the report and the mount reads as clean.
+
+    Only output formatting is affected. rsync passes filenames through as bytes
+    unless ``--iconv`` is given, which srunx never does.
+    """
+    return {**os.environ, "LC_ALL": "C"}
+
+
+def unescape_rsync_path(path: str) -> str:
+    """Turn rsync's escaped output back into the filename it stands for.
+
+    Paths are compared in their escaped form — that is what makes an inventory
+    entry and a deletion candidate the same string — but a user reading a
+    report should see ``データ.csv``, not ``\\#343\\#203\\#207...``.
+
+    **Only printable characters are restored.** rsync escapes control bytes
+    because they are not safe to print, and this output goes to a terminal:
+    a file named ``innocent\\#033c.py`` would otherwise emit ESC-c and reset the
+    terminal, and ``\\#012`` would forge an extra line in a sync preview. Since
+    a cluster job can choose the names it writes, that is an injection an
+    attacker controls. Anything unprintable — control bytes, bidi overrides,
+    undecodable bytes left as surrogates — stays in the escaped form, which is
+    still perfectly readable and names the file unambiguously.
+
+    A run that decodes to a mix of printable and not is kept escaped whole. It
+    is the conservative direction and such names do not occur by accident.
+    """
+    if "\\#" not in path:
+        return path
+    return _ESCAPE_RUN_RE.sub(_restore_run, path)
+
+
+def _restore_run(match: re.Match[str]) -> str:
+    run = match.group(0)
+    octets = bytes(int(g, 8) for g in _ESCAPE_GROUP_RE.findall(run))
+    text = octets.decode("utf-8", "surrogateescape")
+    return text if text.isprintable() else run
 
 
 @dataclass
@@ -73,6 +139,11 @@ class RsyncClient:
         # by giving every configured-mount push one shared entry point that owns
         # the marker's lifecycle.
         "/.srunx-owner.json",
+        # Same reasoning for the upload manifest: remote-only, so without this
+        # it shows up as a deletion candidate in every preview, a mirror deletes
+        # and recreates it, and ``--pull`` copies srunx's bookkeeping into the
+        # user's project.
+        "/.srunx-manifest.json",
     ]
 
     def __init__(
@@ -363,6 +434,13 @@ class RsyncClient:
             # per file with a ``YXcstpoguax``-style flag prefix so the
             # CLI dry-run preview can render exactly what would change.
             cmd.append("-i")
+            # Deliberately *not* ``-8``. That flag prints non-ASCII names
+            # literally, and the escaped form is what makes this output
+            # unambiguous: rsync escapes a newline as ``\#012`` and a backslash
+            # as ``\#134``, so one line is always one file. The inventory in
+            # ``list_local_files`` is read from the same escaped format, which
+            # is what lets a recorded path be compared to a deletion candidate
+            # at all. :func:`unescape_rsync_path` turns it back for display.
         if verbose:
             # ``--info=progress2`` is the single-line aggregate progress
             # form that updates in place (via ``\r``). It's the only
@@ -380,7 +458,14 @@ class RsyncClient:
         """Execute an rsync command and return the result."""
         logger.debug("Running rsync: {}", shlex.join(cmd))
 
-        proc = subprocess.run(cmd, capture_output=True, text=True)  # noqa: S603
+        proc = subprocess.run(  # noqa: S603
+            cmd,
+            capture_output=True,
+            text=True,
+            # Decoding never raises on a filename byte; see ``list_local_files``.
+            errors="surrogateescape",
+            env=_C_LOCALE_ENV(),
+        )
 
         if proc.returncode != 0:
             logger.warning(
@@ -414,6 +499,8 @@ class RsyncClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            errors="surrogateescape",
+            env=_C_LOCALE_ENV(),
             bufsize=1,
         )
 
@@ -511,10 +598,29 @@ class RsyncClient:
             input=stdin,
             capture_output=True,
             text=True,
+            # Remote output can name remote files, whose bytes are equally
+            # arbitrary. Manifest JSON itself stays ASCII (``json.dumps``
+            # escapes non-ASCII by default), so this round-trips intact.
+            errors="surrogateescape",
         )
 
-    def read_remote_file(self, remote_path: str) -> str | None:
+    def read_remote_file(
+        self, remote_path: str, *, require_owned: bool = False
+    ) -> str | None:
         """Return the remote file's contents, or ``None`` if it doesn't exist.
+
+        ``require_owned=True`` additionally refuses a file belonging to another
+        account. Worth the extra check wherever the contents drive an action —
+        the upload manifest decides which paths a user is told are safe to
+        delete, so a file another account planted there must not be believed.
+        The ownership marker leaves it off: it is advisory, and refusing to read
+        a foreign one would turn a warning into a hard failure.
+
+        The check narrows that window rather than closing it: the ownership test
+        and the read are two pathname lookups, so a peer able to write the
+        directory could swap the file in between. Closing it needs the owner
+        verified on the same descriptor that is read, which a shell cannot
+        express — it would mean driving this over SFTP rather than ssh.
 
         Used by the per-machine ownership marker (#137 part 4) to read
         ``.srunx-owner.json`` before each sync. The check needs to
@@ -526,26 +632,70 @@ class RsyncClient:
         existence test wrapped in a single shell command — keeps the
         round-trip count to one per check.
         """
-        # ``test -f X && cat X`` returns:
-        #   * 0 + stdout: file exists, content returned
-        #   * 1 + empty stdout: file does not exist
-        #   * 2+ : actual error (permission denied, ssh failure, …)
-        # We disambiguate via the exit code so transient failures
-        # don't get silently treated as "no marker".
+        # A dedicated exit code for "missing", so it is never confused with a
+        # failed read. ``test -f X && cat X`` cannot do that: ``cat`` also exits
+        # 1 when it cannot open the file, so an unreadable file (bad
+        # permissions, an I/O error) looked exactly like an absent one. For the
+        # ownership marker that only meant a lost warning, but the upload
+        # manifest treats "missing" as a normal first run and rebuilds from
+        # scratch — turning an unreadable record into a confident, wrong "clean"
+        # report.
         quoted = shlex.quote(remote_path)
-        result = self._ssh_run(f"test -f {quoted} && cat -- {quoted}")
+        owner_check = (
+            # A peer able to write the mount root can also drop in a perfectly
+            # ordinary file. Refusing symlinks is not enough when the contents
+            # are acted on: a forged upload record becomes a list of paths the
+            # user is told are safe to delete. They can only create files owned
+            # by themselves, so a uid match rules it out.
+            f"if [ \"$(ls -ldn {quoted} | awk 'NR==1{{print $3}}')\" "
+            f'!= "$(id -u)" ]; then exit {self._READ_FOREIGN_EXIT}; fi; '
+            if require_owned
+            else ""
+        )
+        result = self._ssh_run(
+            # Refuse a symlink here as the writer does. Without the check the
+            # two halves disagree: writing to a planted link is rejected, but
+            # reading through one is trusted, so a peer able to write the mount
+            # root can serve arbitrary content as srunx's own control file.
+            # ``test -f`` alone follows the link.
+            f"if [ -h {quoted} ]; then exit {self._READ_SYMLINK_EXIT}; fi; "
+            f"if [ ! -f {quoted} ]; then exit {self._READ_MISSING_EXIT}; fi; "
+            f"{owner_check}"
+            f"cat -- {quoted}"
+        )
         if result.returncode == 0:
             return result.stdout
-        if result.returncode == 1:
-            # ``test -f`` returned false — file does not exist.
+        if result.returncode == self._READ_MISSING_EXIT:
             return None
+        if result.returncode == self._READ_SYMLINK_EXIT:
+            raise RuntimeError(
+                f"refusing to read {remote_path!r}: it is a symlink, so its "
+                "contents are whatever it points at rather than srunx's own "
+                "control file"
+            )
+        if result.returncode == self._READ_FOREIGN_EXIT:
+            raise RuntimeError(
+                f"refusing to read {remote_path!r}: it belongs to another "
+                "account, so it is not a control file srunx wrote and its "
+                "contents cannot be acted on"
+            )
         raise RuntimeError(
             f"ssh read of {remote_path!r} failed (exit {result.returncode}): "
             f"{result.stderr.strip()}"
         )
 
-    def write_remote_file(self, remote_path: str, content: str) -> None:
+    def write_remote_file(
+        self, remote_path: str, content: str, *, mode: str = "644"
+    ) -> None:
         """Write *content* to *remote_path* atomically (temp file + rename).
+
+        ``mode`` defaults to world-readable, which the ownership marker needs:
+        its whole job is telling *another* account that this mount is in use,
+        and a marker they cannot read is a marker that does not work. Anything
+        only its own writer reads should pass ``600`` — the upload manifest
+        does, since it enumerates a project's file names and the workstation
+        that pushed them, and a mount root is often traversable even when the
+        directories under it are not.
 
         ``mv`` within one directory is a ``rename(2)``, so a concurrent reader
         sees either the previous file or the complete new one. Writing with
@@ -579,12 +729,19 @@ class RsyncClient:
         Raises:
             ValueError: If *remote_path* is login-relative. The write anchors
                 its working directory inside a private temp directory, which
-                would change how such a path resolves.
+                would change how such a path resolves. Also if *mode* is not
+                three octal digits — it reaches a remote shell unquoted.
             RuntimeError: If the target is a symlink or a directory, if the
                 target could not be probed, or if any write / publish step
                 exits non-zero — so the caller surfaces the failure instead of
                 silently leaving a stale file behind.
         """
+        if not _MODE_RE.fullmatch(mode):
+            # Interpolated into the remote shell command below, so it is
+            # constrained here rather than quoted — a mode is three octal
+            # digits and nothing else, and anything else is a caller bug.
+            raise ValueError(f"mode must be three octal digits, got {mode!r}")
+
         if not remote_path.startswith(("/", "~")):
             # The write anchors its working directory inside a private temp
             # directory (so the directory entry cannot be swapped out from under
@@ -679,16 +836,17 @@ class RsyncClient:
             # attacker wants destroyed. ``$$`` was no good — it is already
             # exposed in the directory name.
             f'f=$(mktemp -- ./w.XXXXXX) || {{ cd /; rmdir -- "$d"; exit 5; }}; '
-            # mktemp creates 0600; the published marker must stay readable to
-            # other accounts on a shared mount, since an unreadable marker reads
-            # as "no owner" and disables the guard for them. Reopening by name is
-            # fine *inside* this directory — the risk it carried at the mount
-            # root does not exist where no one else can reach.
+            # mktemp creates 0600, which is right for a private control file and
+            # wrong for the ownership marker: an unreadable marker reads as "no
+            # owner" to the next account and disables the guard for them. Hence
+            # the caller's mode. Reopening by name is fine *inside* this
+            # directory — the risk it carried at the mount root does not exist
+            # where no one else can reach.
             # No ``--`` here: BSD chmod does not accept it and treats it as a
             # filename ("chmod: --: No such file or directory"), which failed
             # every write on macOS-family remotes. Safe to omit because mktemp's
             # template starts with "./", so the name can never look like a flag.
-            f'chmod 644 "$f" || {{ rm -f -- "$f"; cd /; rmdir -- "$d"; exit 9; }}; '
+            f'chmod {mode} "$f" || {{ rm -f -- "$f"; cd /; rmdir -- "$d"; exit 9; }}; '
             f'cat > "$f" || {{ rm -f -- "$f"; cd /; rmdir -- "$d"; exit 6; }}; '
             # Re-check right before the rename: a target swapped in after the
             # first check would otherwise be followed by ``mv``.
@@ -788,6 +946,24 @@ class RsyncClient:
     # we'd want to surface as RuntimeError.
     _SHA256_REMOTE_MISSING_EXIT = 10
     _SHA256_REMOTE_NO_TOOL_EXIT = 11
+    # "The file is not there", distinct from any exit code a failing ``cat``
+    # can produce, so a read error is never mistaken for an absent file.
+    _READ_MISSING_EXIT = 12
+    # "The path is a symlink" — refused rather than followed, matching the
+    # writer, so control files cannot be served from somewhere else.
+    _READ_SYMLINK_EXIT = 13
+    # "The file belongs to another account" — refused for control files, whose
+    # contents are acted on.
+    _READ_FOREIGN_EXIT = 14
+
+    # An itemize line: the ``YXcstpoguax`` flag block, one space, then the
+    # path. The flag block is fixed-width per rsync build (9 on openrsync, 11
+    # on GNU) but always space-free, so matching it as ``\S+`` works on both
+    # while keeping every character after the single separator — including a
+    # path's own leading spaces.
+    _ITEMIZE_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"^(?P<flags>[<>ch.*+?][fdLDS]\S*) (?P<path>.*)$"
+    )
 
     # sha256sum / shasum -a 256 prefix every output line with the 64-hex
     # digest followed by whitespace. Anchored at start of line so we
@@ -865,6 +1041,142 @@ class RsyncClient:
             f"ssh sha256 of {remote_path!r} failed "
             f"(exit {result.returncode}): {result.stderr.strip()}"
         )
+
+    def list_local_files(
+        self,
+        local_path: str | Path,
+        exclude_patterns: Sequence[str] | None = None,
+    ) -> list[str]:
+        """List the files a push of *local_path* would transfer, as relative paths.
+
+        Runs rsync with this client's binary and merged filter, so the answer
+        cannot disagree with what a real push would send. Re-implementing the
+        matching in Python would drift from rsync's actual semantics for
+        anchored patterns, directory rules and ``**``.
+
+        Paths come back in rsync's **escaped** form, the same one a deletion
+        preview prints, and that is the point: the two are compared to each
+        other. :func:`unescape_rsync_path` converts back for display.
+
+        The inventory is an itemize run against a throwaway empty directory —
+        every file is "new" against it — rather than ``--list-only``, whose
+        output cannot be parsed safely. That listing prints a newline inside a
+        filename literally, so one file becomes two lines; a name crafted to
+        look like a listing line then yields *two* paths that do not exist. A
+        directory named ``victim\\n-rw-r--r--   1 2026`` was enough to record
+        both ``victim`` and a fabricated ``output.py`` — and had a job written
+        anything by either name, the comparison would have offered live job
+        output for deletion. Itemize escapes the newline (``\\#012``) and the
+        backslash (``\\#134``), so one line is always exactly one file.
+
+        Directories are excluded from the result — callers record files.
+
+        Raises:
+            RuntimeError: If rsync exits non-zero, so a partial listing is never
+                mistaken for a complete one.
+        """
+        local = Path(local_path)
+        src = str(local)
+        if local.is_dir() and not src.endswith("/"):
+            src += "/"
+
+        # No ``--protect-args``: it exists to stop a *remote* shell re-splitting
+        # arguments, and this listing is entirely local. openrsync does not have
+        # the flag at all, so adding it would fail there for no benefit.
+        #
+        # ``-n`` keeps the destination untouched; the directory only has to be
+        # empty so that nothing is filtered out as already up to date.
+        with tempfile.TemporaryDirectory(prefix="srunx-inventory-") as empty:
+            cmd: list[str] = ["rsync", "-a", "-n", "-i"]
+            for pattern in self._merge_excludes(exclude_patterns):
+                cmd.extend(["--exclude", pattern])
+            cmd.extend(["--", src, empty + "/"])
+
+            logger.debug("Listing local files: {}", shlex.join(cmd))
+            result = subprocess.run(  # noqa: S603
+                cmd,
+                capture_output=True,
+                text=True,
+                # Escaped output is pure ASCII, so this never has to substitute
+                # anything; it is here so an undecodable byte on *stderr* from
+                # a remote can't raise in place of the real error.
+                errors="surrogateescape",
+                env=_C_LOCALE_ENV(),
+            )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"rsync inventory failed (exit {result.returncode}): "
+                f"{result.stderr.strip()}"
+            )
+        return self._parse_inventory(result.stdout)
+
+    @classmethod
+    def _parse_inventory(cls, stdout: str) -> list[str]:
+        """Extract file paths from an itemize inventory.
+
+        Each line is ``<flags> <path>``: a space-free flag block, one separator
+        space, then the name verbatim — leading spaces and all. Because rsync
+        escapes a newline as ``\\#012`` and a backslash as ``\\#134``, one line
+        is always exactly one file, which is the property the whole comparison
+        rests on.
+
+        Regular files (``f``) and symlinks (``L``) are returned; ``rsync -a``
+        uploads both, so a symlink deleted locally lingers on the remote exactly
+        like a file and has to be trackable. A symlink line carries its target
+        as ``name -> target``, and only the name is the path.
+
+        Directories are skipped: a directory that lingers because it still holds
+        job output is not itself a stale upload.
+
+        Two names are **dropped with a warning** rather than recorded
+        approximately, because the deletion preview cannot express them the same
+        way. Recording a mangled path would have a caller looking for a file
+        that does not exist under that name while the real one goes unmentioned;
+        worse, the mangled form can collide with a real remote path and get job
+        output named for deletion. Those are symlinks whose own name contains
+        ``" -> "`` (indistinguishable from the target separator), and names
+        starting with **whitespace** (the preview pads its ``*deleting`` marker
+        with the same characters, so padding and a real leading space are
+        identical there).
+        """
+        paths: list[str] = []
+        for line in stdout.splitlines():
+            match = cls._ITEMIZE_RE.match(line)
+            if match is None:
+                continue  # progress lines, stats, blank separators
+            flags = match.group("flags")
+            path = match.group("path")
+            if flags[1] not in "fL":
+                continue  # directories, devices, specials
+            if flags[1] == "L":
+                # Count separators rather than splitting at one. A link legally
+                # named ``foo -> bar`` is printed as ``foo -> bar -> target``,
+                # so partitioning at the first occurrence silently records
+                # ``foo``; checking the prefix for a separator afterwards can
+                # never fire, because the prefix is by definition what came
+                # before it. With more than one there is no way to tell name
+                # from target, so the entry is dropped.
+                separators = path.count(" -> ")
+                if separators != 1:
+                    logger.warning(
+                        "Skipping symlink entry whose name cannot be "
+                        "unambiguously read from the listing: {!r}",
+                        line,
+                    )
+                    continue
+                path = path.split(" -> ", 1)[0]
+            path = path.rstrip("/")
+            if path in (".", ""):
+                continue
+            if path[0].isspace():
+                logger.warning(
+                    "Skipping file whose name starts with whitespace; it cannot "
+                    "be matched against rsync's other output: {!r}",
+                    path,
+                )
+                continue
+            paths.append(path)
+        return paths
 
     def effective_excludes(
         self, exclude_patterns: Sequence[str] | None = None

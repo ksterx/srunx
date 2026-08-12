@@ -114,15 +114,40 @@ using it, silently.
 ```
 
 Claude Code calls `inspect_mount`, which is read-only — it reports the
-difference without transferring or deleting anything. The result lists
-cluster-only paths, but note that it mixes two kinds of file:
+difference without transferring or deleting anything. The raw list of
+cluster-only paths mixes two kinds of file:
 
 - **produced by jobs** — checkpoints, logs, outputs. Must not be deleted.
 - **left over locally** — stale modules, renamed files. Usually should be.
 
-srunx keeps no record of what it previously uploaded, so it cannot tell
-them apart; expect the list, not a verdict. Ask for it after a refactor,
-or before submitting a job you want to be sure is running current code.
+srunx records what it uploads, so it can separate them: `stale_upload_paths`
+holds only files srunx put there that are no longer on your machine. Output a
+job wrote at a path of its own was never uploaded, so it does not appear —
+**even if the mount's excludes miss an output directory**. In one real mount
+that mattered: four stale scripts were buried among 39 job artifacts because
+`dist/` had never been excluded.
+
+The record stores path names, not contents, so one case stays ambiguous: a
+job that *overwrote* a file srunx uploaded keeps the same path, and what is
+on the cluster now may be the job's version. Excluding output directories
+avoids it — and the list is there to be reviewed, not deleted unread.
+
+Ask for it after a refactor, or before submitting a job you want to be
+sure is running current code.
+
+!!! warning "Watch for "cannot tell""
+    If nothing has been synced since tracking was added, the record is
+    unreadable, or the mount's exclude patterns changed, the answer is
+    **unknown** rather than "nothing is stale". Deleting is still your call
+    — srunx reports, it does not act.
+
+    Syncing once fixes the usual cases, including a sync that failed to
+    record: that failure keeps the last good list, and the next sync builds
+    on it. The exception is a record that is damaged or was written by
+    another account, which has nothing to build on. Delete
+    `.srunx-manifest.json` at the top of the mount on the cluster and sync
+    again — files uploaded before that point stop being tracked, so the
+    answer under-reports rather than risking a job's output.
 
 ### Mirror instead
 
