@@ -163,9 +163,39 @@ because an inspection has to be documented as unconditionally safe: folding it
 into `sync_files` meant one `delete` argument carrying both "show me what a
 mirror would remove" (harmless) and "remove it" (destructive), and an agent
 reading the data-loss warning avoids the argument entirely — losing the safe
-inspection with it. srunx keeps no manifest of what it uploaded, so
-`inspect_mount` cannot separate job outputs from stale code; it reports, the
-human decides.
+inspection with it.
+
+`inspect_mount` narrows the raw candidates using a **manifest** — a record of
+what srunx uploaded, kept at `<mount.remote>/.srunx-manifest.json` (mode 0600;
+paths stored in rsync's escaped form so they compare against a deletion
+preview). A path that is in the record but no longer local is stale code;
+output a job wrote at a path of its own was never uploaded, so it is not in the
+record and cannot be reported, which holds even when the mount's excludes miss
+an output directory. That is the whole point: excludes separate the two only as
+well as they are maintained, and a real mount here had four stale scripts
+buried among 39 artifacts because `dist/` was missing from them.
+
+Only path names are recorded, not contents, so a path that is *both* recorded
+and job-written stays ambiguous — a job that overwrote a file srunx sent keeps
+its path, and a file deleted in the gap between srunx's inventory and rsync's
+own walk is recorded without having been sent. Proving otherwise needs a
+content hash per file on every sync, which is out of scope; the report is for a
+human to read, and srunx never deletes on its own.
+
+The set recorded is the inventory taken **before** the transfer, not after.
+Scanning afterwards is wrong in both directions: a file created mid-sync would
+be recorded though rsync never sent it (and could then name a job's output for
+deletion), while a file deleted mid-sync would be dropped though rsync did send
+it — leaving it on the cluster, permanently unrecordable, with the report still
+calling itself complete.
+
+The record fails **closed**: no record yet, an unreadable one, or a changed
+exclude filter all report `stale_uploads_known: false` rather than an empty
+list, because "cannot tell" presented as "clean" is how a stale module keeps
+running unnoticed. Written only after a successful sync (and after hash
+verification, like the owner marker), accumulating on an additive sync and
+replaced by a mirror. See `src/srunx/sync/manifest.py`, whose module docstring
+also records the gaps left open on purpose.
 
 ##### Account secrets (`ssh secret`)
 Secrets (API keys etc.) are stored in a single **remote** `0600` file per

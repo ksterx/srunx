@@ -722,3 +722,181 @@ class TestInspectMount:
         assert result["success"] is False
         assert "nope" in result["error"]
         assert "data" in result["error"]
+
+
+@patch("srunx.sync.mount_helpers.build_rsync_client")
+@patch("srunx.ssh.core.config.ConfigManager")
+class TestInspectMountStaleUploads:
+    """The narrowed answer: what srunx uploaded that is now gone locally.
+
+    The full candidate list mixes job output with stale code, and no exclude
+    list has to be complete for the narrowed set to be right — an artifact was
+    never uploaded, so it cannot be in the record.
+    """
+
+    def _profile(self, mock_cm_cls):
+        cm = MagicMock()
+        cm.get_profile.return_value = _profile_with_mount()
+        mock_cm_cls.return_value = cm
+
+    def test_reports_only_what_was_uploaded_and_is_gone(self, mock_cm_cls, mock_build):
+        self._profile(mock_cm_cls)
+        rsync = _rsync_returning(
+            "*deleting dist/5189188/submission.zip\n*deleting tools/probe.py\n"
+        )
+        mock_build.return_value = rsync
+
+        from srunx.sync import manifest as M
+
+        recorded = M.SyncManifest(
+            paths=frozenset({"train.py", "tools/probe.py"}),
+            exclude_fingerprint=M.exclude_fingerprint(["x"]),
+        )
+        with (
+            patch.object(M, "read", return_value=recorded),
+            patch.object(M, "local_inventory", return_value=["train.py"]),
+        ):
+            rsync.effective_excludes.return_value = ["x"]
+            result = inspect_mount(transport="prod", mount="ml")
+
+        # The raw candidates still show everything...
+        assert result["mirror_delete_candidates"] == 2
+        # ...while the narrowed set excludes the job artifact.
+        assert result["stale_uploads_known"] is True
+        assert result["stale_upload_paths"] == ["tools/probe.py"]
+        assert result["stale_upload_paths_omitted"] is False
+
+    def test_unknown_is_not_reported_as_clean(self, mock_cm_cls, mock_build):
+        """No record yet must not read as "nothing is stale"."""
+        self._profile(mock_cm_cls)
+        rsync = _rsync_returning("*deleting something.py\n")
+        mock_build.return_value = rsync
+
+        from srunx.sync import manifest as M
+
+        with (
+            patch.object(M, "read", return_value=None),
+            patch.object(M, "local_inventory", return_value=[]),
+        ):
+            result = inspect_mount(transport="prod", mount="ml")
+
+        assert result["stale_uploads_known"] is False
+        assert result["stale_uploads"] == 0
+        assert "no manifest" in result["stale_uploads_unknown_reason"]
+
+    def test_unreadable_record_degrades_instead_of_failing(
+        self, mock_cm_cls, mock_build
+    ):
+        """The inspection still reports what it can; only the narrowed set is
+        unavailable."""
+        self._profile(mock_cm_cls)
+        mock_build.return_value = _rsync_returning("*deleting a.py\n")
+
+        from srunx.sync import manifest as M
+
+        with patch.object(
+            M, "read", side_effect=M.ManifestUnavailable("corrupt record")
+        ):
+            result = inspect_mount(transport="prod", mount="ml")
+
+        assert result["success"] is True  # not a hard failure
+        assert result["mirror_delete_candidates"] == 1
+        assert result["stale_uploads_known"] is False
+        assert "corrupt record" in result["stale_uploads_unknown_reason"]
+
+    def test_large_stale_list_is_omitted_with_a_flag(self, mock_cm_cls, mock_build):
+        """Matches the mirror-candidate contract. A silently shortened list
+        would be presented as the complete set."""
+        self._profile(mock_cm_cls)
+        many = [f"tools/f{i}.py" for i in range(20)]
+        # All 20 are still on the cluster, so all 20 survive the intersection.
+        rsync = _rsync_returning("".join(f"*deleting {p}\n" for p in many))
+        mock_build.return_value = rsync
+
+        from srunx.sync import manifest as M
+
+        recorded = M.SyncManifest(
+            paths=frozenset(many), exclude_fingerprint=M.exclude_fingerprint(["x"])
+        )
+        with (
+            patch.object(M, "read", return_value=recorded),
+            patch.object(M, "local_inventory", return_value=[]),
+        ):
+            rsync.effective_excludes.return_value = ["x"]
+            result = inspect_mount(transport="prod", mount="ml", max_paths=5)
+
+        assert result["stale_uploads"] == 20  # exact
+        assert result["stale_upload_paths"] == []
+        assert result["stale_upload_paths_omitted"] is True
+
+    def test_records_inside_the_sync_lock(self, mock_cm_cls, mock_build):
+        """Recording after the lock releases lets an overlapping sync finish its
+        push and then have its record overwritten by this one's older paths."""
+        self._profile(mock_cm_cls)
+        mock_build.return_value = _rsync_returning()
+
+        order: list[str] = []
+
+        import contextlib
+
+        @contextlib.contextmanager
+        def fake_lock(*a, **kw):
+            order.append("lock")
+            yield
+            order.append("unlock")
+
+        with (
+            patch("srunx.sync.lock.acquire_sync_lock", fake_lock),
+            patch(
+                "srunx.sync.mount_helpers.record_upload",
+                side_effect=lambda *a, **kw: order.append("record"),
+            ),
+        ):
+            sync_files(transport="prod", mount="ml")
+
+        assert order == ["lock", "record", "unlock"]
+
+    def test_mirror_flag_is_passed_through(self, mock_cm_cls, mock_build):
+        """Additive accumulates, mirror replaces — passing the wrong one either
+        erases the files that just became stale or reports deleted ones."""
+        self._profile(mock_cm_cls)
+        mock_build.return_value = _rsync_returning()
+
+        with patch("srunx.sync.mount_helpers.record_upload") as rec:
+            sync_files(transport="prod", mount="ml")
+            assert rec.call_args.kwargs["mirrored"] is False
+
+        with patch("srunx.sync.mount_helpers.record_upload") as rec:
+            sync_files(transport="prod", mount="ml", delete=True)
+            assert rec.call_args.kwargs["mirrored"] is True
+
+    def test_stale_is_intersected_with_what_is_still_on_the_cluster(
+        self, mock_cm_cls, mock_build
+    ):
+        """The record says what was uploaded, not what survived.
+
+        A manual cleanup — or a mirror whose recording failed — leaves entries
+        naming files that are gone. Reporting those contradicts the documented
+        promise that this is a subset of the deletion candidates, and sends the
+        caller looking for something that is not there.
+        """
+        self._profile(mock_cm_cls)
+        # Only probe.py is still on the cluster; gone.py was removed by hand.
+        rsync = _rsync_returning("*deleting tools/probe.py\n")
+        mock_build.return_value = rsync
+
+        from srunx.sync import manifest as M
+
+        recorded = M.SyncManifest(
+            paths=frozenset({"tools/probe.py", "tools/gone.py"}),
+            exclude_fingerprint=M.exclude_fingerprint(["x"]),
+        )
+        with (
+            patch.object(M, "read", return_value=recorded),
+            patch.object(M, "local_inventory", return_value=[]),
+        ):
+            rsync.effective_excludes.return_value = ["x"]
+            result = inspect_mount(transport="prod", mount="ml")
+
+        assert result["stale_upload_paths"] == ["tools/probe.py"]
+        assert result["stale_uploads"] == 1

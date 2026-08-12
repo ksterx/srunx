@@ -28,7 +28,12 @@ from srunx.common.config import SyncDefaults
 from srunx.common.logging import get_logger
 from srunx.ssh.core.config import MountConfig, ServerProfile
 from srunx.sync.lock import acquire_sync_lock
-from srunx.sync.mount_helpers import sync_mount_by_name
+from srunx.sync.mount_helpers import (
+    build_rsync_client,
+    record_upload,
+    snapshot_local,
+    sync_mount_by_name,
+)
 from srunx.sync.owner_marker import OwnerMismatch, check_owner, write_owner_marker
 
 logger = get_logger(__name__)
@@ -194,7 +199,24 @@ def mount_sync_session(
             # delete=False (Codex blocker #4): auto-sync must not wipe
             # remote-only outputs (training checkpoints, run logs).
             # ``srunx ssh sync`` keeps the historical mirror behaviour.
-            sync_mount_by_name(profile, mount.name, delete=False, verbose=verbose)
+            # ``record_manifest=False``: the upload record is written after the
+            # hash check below, for the same reason the marker is. rsync can
+            # exit 0 while the remote copy differs, and a record written first
+            # would assert every file arrived intact just as verification is
+            # about to prove otherwise.
+            # Taken before the transfer starts and paired with the record
+            # below, so a file that appears mid-transfer is not recorded as
+            # having been uploaded. See ``snapshot_local``.
+            record_client = build_rsync_client(profile)
+            before = snapshot_local(record_client, mount)
+
+            sync_mount_by_name(
+                profile,
+                mount.name,
+                delete=False,
+                verbose=verbose,
+                record_manifest=False,
+            )
 
             # Per-script hash verification (#137 part 5) runs BEFORE
             # the marker write so a hash mismatch refuses to take
@@ -212,6 +234,10 @@ def mount_sync_session(
                 from srunx.sync.hash_verify import verify_paths_match
 
                 verify_paths_match(profile, mount, [Path(p) for p in verify_paths])
+
+            # Verification passed (or was not requested), so the remote really
+            # does hold what was sent — only now is it honest to record it.
+            record_upload(record_client, mount, mirrored=False, before=before)
 
             # Stamp the marker AFTER a successful sync so a failed
             # rsync doesn't claim ownership for a tree we couldn't

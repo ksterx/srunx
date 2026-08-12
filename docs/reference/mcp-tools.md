@@ -523,6 +523,11 @@ import and run.
   "mirror_delete_candidates": 2,
   "mirror_delete_candidate_paths": ["old_train.py", "checkpoints/500.pt"],
   "mirror_delete_candidate_paths_omitted": false,
+  "stale_uploads_known": true,
+  "stale_uploads": 1,
+  "stale_upload_paths": ["old_train.py"],
+  "stale_upload_paths_omitted": false,
+  "stale_uploads_unknown_reason": "",
   "effective_exclude_patterns": [".git/", "__pycache__/", "*.pyc"]
 }
 ```
@@ -534,8 +539,34 @@ import and run.
     - **produced by jobs** — checkpoints, logs, outputs. Must **not** be deleted.
     - **left over locally** — stale modules, renamed files. Usually should be.
 
-    srunx keeps no record of what it previously uploaded, so it cannot tell them
-    apart. Treat the list as something to show a human, not as a delete list.
+    Treat that raw list as something to show a human, not as a delete list.
+
+!!! tip "`stale_upload_paths` is the actionable subset"
+    srunx records what it uploads, at `<mount.remote>/.srunx-manifest.json`. A
+    path in that record that is no longer present locally is stale code; output
+    a job wrote at a path of its own was never uploaded, so it cannot appear —
+    which holds **even when the mount's excludes miss an output directory**,
+    the case that otherwise buries a few stale scripts among dozens of
+    artifacts.
+
+    Two cases it cannot tell apart, both about a path that is *both* uploaded
+    and job-written:
+
+    - A job **overwrote** a file srunx uploaded (or recreated it at the same
+      path). The record stores path names, not content, so what is on the
+      cluster now may be the job's version rather than the one srunx sent.
+    - Output **pulled** into the local tree with `srunx ssh sync --pull`
+      becomes a file the next push manages, so it is recorded like any other.
+
+    Excluding the output directories avoids both, and is worth doing anyway.
+    Keep reviewing the list rather than deleting it unread — srunx reports,
+    it does not act.
+
+!!! danger "Check `stale_uploads_known` first"
+    When it is `false`, `stale_uploads: 0` means **"could not tell"**, not
+    "nothing is stale" — `stale_uploads_unknown_reason` says which of: nothing
+    recorded yet, an unreadable or foreign-owned record, or a changed exclude
+    filter. Fall back to reading the raw candidate list yourself in that case.
 
 !!! note "Read the exclude list alongside the candidates"
     Excluded paths are invisible to this inspection *and* protected from a

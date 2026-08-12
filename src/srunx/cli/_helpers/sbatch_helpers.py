@@ -433,8 +433,12 @@ def _print_in_place_sync_preview(
     if not output.strip():
         console.print("    (no changes — remote already up to date)")
         return
+    # Itemize output escapes anything it will not print, so a non-ASCII name
+    # arrives as ``\#343\#203...``. Show the filename the user recognises.
+    from srunx.sync.rsync import unescape_rsync_path
+
     for line in output.splitlines():
-        console.print(f"    {line}")
+        console.print(f"    {unescape_rsync_path(line)}")
 
 
 def _parse_env_vars(env_var_list: list[str] | None) -> dict[str, str]:

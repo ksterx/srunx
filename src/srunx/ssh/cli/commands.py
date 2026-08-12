@@ -261,6 +261,7 @@ def sync_mount(
     from srunx.common.config import get_config
     from srunx.ssh.core.config import MountConfig
     from srunx.sync.lock import acquire_sync_lock
+    from srunx.sync.mount_helpers import record_upload, snapshot_local
     from srunx.sync.rsync import RsyncClient
 
     try:
@@ -378,6 +379,9 @@ def sync_mount(
                     itemize=dry_run,
                 )
             else:
+                before = (
+                    None if dry_run else snapshot_local(rsync, resolved_mount)
+                )  # paired with record_upload below
                 result = rsync.push(
                     resolved_mount.local,
                     resolved_mount.remote,
@@ -386,9 +390,24 @@ def sync_mount(
                     itemize=dry_run,
                 )
 
+            # Recorded inside the lock: releasing it first would let an
+            # overlapping sync finish its push and then have its record
+            # overwritten by this one's older path set. Push only — a pull does
+            # not change what srunx put on the cluster.
+            if result.returncode == 0 and not dry_run and not pull:
+                record_upload(rsync, resolved_mount, mirrored=delete, before=before)
+
         if result.returncode == 0:
             if dry_run:
-                console.print(result.stdout or "[dim]No changes needed[/dim]")
+                # Itemize escapes anything it will not print; show the real
+                # filename rather than ``\#343\#203...``.
+                from srunx.sync.rsync import unescape_rsync_path
+
+                console.print(
+                    unescape_rsync_path(result.stdout)
+                    if result.stdout
+                    else "[dim]No changes needed[/dim]"
+                )
             console.print(f"\n[green]Sync complete: {resolved_mount.name}[/green]")
         else:
             console.print(f"[red]rsync failed (exit code {result.returncode}):[/red]")

@@ -122,7 +122,7 @@ def test_sbatch_in_place_under_mount_calls_remote_submit(
 
     rsync_calls: list[tuple] = []
 
-    def _record_rsync(prof, name, *, delete=False, verbose=False):  # type: ignore[no-untyped-def]
+    def _record_rsync(prof, name, *, delete=False, verbose=False, record_manifest=True):  # type: ignore[no-untyped-def]
         rsync_calls.append((prof, name, delete, verbose))
 
     monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", _record_rsync)
@@ -250,7 +250,9 @@ def test_sync_failure_aborts_submission(
     profile = _stub_profile(tmp_path, mount_local=mount_local, remote="/r/ml-project")
     job_ops = _patch_transport(monkeypatch, profile)
 
-    def _boom(profile_arg, mount_name, *, delete=False, verbose=False):  # type: ignore[no-untyped-def]
+    def _boom(
+        profile_arg, mount_name, *, delete=False, verbose=False, record_manifest=True
+    ):  # type: ignore[no-untyped-def]
         raise RuntimeError("rsync exited 23: permission denied")
 
     monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", _boom)
@@ -622,7 +624,7 @@ def test_verbose_forwards_to_sync_mount_by_name(
 
     rsync_calls: list[dict[str, object]] = []
 
-    def _record(prof, name, *, delete=False, verbose=False):  # type: ignore[no-untyped-def]
+    def _record(prof, name, *, delete=False, verbose=False, record_manifest=True):  # type: ignore[no-untyped-def]
         rsync_calls.append({"name": name, "delete": delete, "verbose": verbose})
 
     monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", _record)
@@ -651,7 +653,7 @@ def test_no_verbose_keeps_quiet_default(
 
     rsync_calls: list[dict[str, object]] = []
 
-    def _record(prof, name, *, delete=False, verbose=False):  # type: ignore[no-untyped-def]
+    def _record(prof, name, *, delete=False, verbose=False, record_manifest=True):  # type: ignore[no-untyped-def]
         rsync_calls.append({"name": name, "delete": delete, "verbose": verbose})
 
     monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", _record)

@@ -35,10 +35,12 @@ from __future__ import annotations
 
 import io
 import re
+from dataclasses import replace
 from typing import Any
 
 from srunx.mcp.app import mcp
 from srunx.mcp.helpers import err, ok
+from srunx.sync.rsync import unescape_rsync_path
 
 # rsync's ``--itemize-changes`` marks a removal with the literal pseudo-flag
 # ``*deleting``; every other itemize line starts with a flag block whose first
@@ -81,6 +83,11 @@ _MAX_REPORTED_DELETIONS = 1000
 
 # rsync exits 25 (RERR_DEL_LIMIT) when --max-delete is exceeded.
 _RERR_DEL_LIMIT = 25
+
+
+def _display(paths: list[str]) -> list[str]:
+    """Escaped rsync paths → the names as they exist on disk, for reporting."""
+    return [unescape_rsync_path(p) for p in paths]
 
 
 def _parse_itemized(
@@ -188,6 +195,64 @@ def _resolve_mount(transport: str, mount: str) -> tuple[str, Any, Any]:
     return pname, profile, mount_cfg
 
 
+def _candidates_among(stdout: str, wanted: set[str]) -> set[str]:
+    """Return which of *wanted* appear as deletion candidates in *stdout*.
+
+    Retains only members of *wanted* — a set the caller already holds — instead
+    of materialising every candidate path. Parsing the full list to intersect
+    afterwards would allocate a string per deletable file on a mount with many
+    artifacts, which is the unbounded retention the parser's ``max_paths``
+    exists to avoid.
+    """
+    if not wanted:
+        return set()
+    found: set[str] = set()
+    for line in io.StringIO(stdout):
+        match = _DELETING_RE.match(line.rstrip("\r\n"))
+        if not match:
+            continue
+        raw = match.group(1) or ""
+        path = raw.lstrip() or raw
+        if path in wanted:
+            found.add(path)
+    return found
+
+
+def _stale_report(rsync: Any, mount_cfg: Any) -> Any:
+    """Compare srunx's upload record against the current local tree.
+
+    Never raises: an inspection that fails wholesale because tracking is
+    unavailable would be worse than one that reports the parts it does know.
+    Any failure becomes an "unknown" report carrying the reason, which the
+    caller must not read as "nothing is stale".
+    """
+    from srunx.sync import manifest as manifest_mod
+
+    try:
+        recorded = manifest_mod.read(rsync, mount_cfg)
+    except manifest_mod.ManifestUnavailable as exc:
+        return manifest_mod.StaleReport(known=False, reason=str(exc))
+    except Exception as exc:  # noqa: BLE001 — inspection degrades, never fails
+        return manifest_mod.StaleReport(
+            known=False, reason=f"could not read the upload record: {exc}"
+        )
+
+    try:
+        current = manifest_mod.local_inventory(
+            rsync, mount_cfg.local, exclude_patterns=mount_cfg.exclude_patterns or None
+        )
+    except Exception as exc:  # noqa: BLE001
+        return manifest_mod.StaleReport(
+            known=False, reason=f"could not list the local tree: {exc}"
+        )
+
+    return manifest_mod.find_stale(
+        recorded,
+        current,
+        rsync.effective_excludes(mount_cfg.exclude_patterns or None),
+    )
+
+
 @mcp.tool()
 def inspect_mount(
     transport: str,
@@ -205,15 +270,27 @@ def inspect_mount(
     cluster can still import and run. They are listed here as
     ``mirror_delete_candidate_paths``.
 
-    Those candidates mix two kinds of thing, and separating them is the caller's
-    judgement, not this tool's:
+    Those candidates mix two kinds of thing:
 
     * **produced by jobs** — checkpoints, logs, outputs. Must NOT be deleted.
     * **left over locally** — stale modules, renamed files. Usually should be.
 
-    srunx keeps no record of what it previously uploaded, so it genuinely cannot
-    tell which is which. Show the list to the user and let them decide rather
-    than inferring it from filenames.
+    ``stale_upload_paths`` is the second group on its own: paths srunx recorded
+    uploading that are no longer present locally. Job output was never uploaded,
+    so it does not appear there — which holds even when the mount's exclude list
+    misses an output directory, the case that otherwise buries a few stale
+    scripts among dozens of artifacts.
+
+    One exception: output pulled into the local tree with ``srunx ssh sync
+    --pull`` becomes a file the next push manages, so it is recorded like any
+    other and can be reported as stale once its local copy is removed. Excluding
+    the output directories on the mount avoids that, and is worth doing anyway.
+
+    **Check ``stale_uploads_known`` first.** When it is false the record could
+    not answer (nothing uploaded with tracking yet, an unreadable record, or a
+    changed exclude filter), and ``stale_uploads: 0`` means "could not tell",
+    not "nothing is stale" — ``stale_uploads_unknown_reason`` says which. Fall
+    back to reading the full candidate list yourself in that case.
 
     Args:
         transport: SSH profile name to inspect. Required — there is no local
@@ -227,8 +304,10 @@ def inspect_mount(
 
     Returns:
         ``files_would_transfer``, ``mirror_delete_candidates`` (a count),
-        ``mirror_delete_candidate_paths``, whether that list was omitted, and
-        ``effective_exclude_patterns``.
+        ``mirror_delete_candidate_paths``, whether that list was omitted,
+        ``effective_exclude_patterns``, and the stale-upload fields described
+        above (``stale_uploads_known`` / ``stale_uploads`` /
+        ``stale_upload_paths`` / ``stale_uploads_unknown_reason``).
 
         The exclude list matters for reading the result: excluded paths are
         invisible to this inspection *and* protected from a mirror's deletions,
@@ -275,6 +354,26 @@ def inspect_mount(
             result.stdout or "", max_paths=max_paths + 1
         )
         omit = candidates > max_paths
+
+        # Narrow the candidates to what srunx itself uploaded and is now gone
+        # locally. That is the actionable subset: everything else on the cluster
+        # was produced there, and no exclude list has to be complete for this to
+        # hold. Reported separately rather than filtered in, so the caller still
+        # sees the full picture.
+        stale = _stale_report(rsync, mount_cfg)
+        if stale.known and stale.paths:
+            # Intersect with what rsync says is actually still there. The record
+            # says what was uploaded, not what survived: a manual cleanup, or a
+            # mirror whose recording failed, leaves entries naming files that no
+            # longer exist. Reporting those contradicts the documented promise
+            # that this is a subset of the deletion candidates.
+            #
+            # Scanned against the recorded set rather than by collecting every
+            # candidate first, so the retained data stays bounded by the record
+            # instead of by how much output the cluster holds.
+            on_remote = _candidates_among(result.stdout or "", set(stale.paths))
+            stale = replace(stale, paths=[p for p in stale.paths if p in on_remote])
+
         return ok(
             profile=pname,
             mount=mount_cfg.name,
@@ -282,8 +381,20 @@ def inspect_mount(
             remote=mount_cfg.remote,
             files_would_transfer=transferred,
             mirror_delete_candidates=candidates,
-            mirror_delete_candidate_paths=[] if omit else paths,
+            # Unescaped only here, at the boundary. Paths are matched in
+            # rsync's escaped form — that is what makes an inventory entry and
+            # a deletion candidate the same string — but a caller acting on
+            # this list needs the name as it exists on disk.
+            mirror_delete_candidate_paths=[] if omit else _display(paths),
             mirror_delete_candidate_paths_omitted=omit,
+            stale_uploads_known=stale.known,
+            stale_uploads=stale.count,
+            # Omitted wholesale past the cap, matching the mirror-candidate
+            # contract. Returning a silently shortened list would let a caller
+            # present it as the complete set.
+            stale_upload_paths=[] if stale.count > max_paths else _display(stale.paths),
+            stale_upload_paths_omitted=stale.count > max_paths,
+            stale_uploads_unknown_reason=stale.reason,
             # The merged view, not ``rsync.exclude_patterns``: per-call patterns
             # are applied for the invocation without being stored, so the
             # attribute omits exactly the mount-level patterns the user
@@ -449,6 +560,12 @@ def sync_files(
                             f"deletions are expected."
                         )
 
+                from srunx.sync.mount_helpers import record_upload, snapshot_local
+
+                before = (
+                    None if dry_run else snapshot_local(rsync, mount_cfg)
+                )  # paired with record_upload below
+
                 result = rsync.push(
                     mount_cfg.local,
                     mount_cfg.remote,
@@ -464,6 +581,13 @@ def sync_files(
                     max_delete=max_delete if (delete and not dry_run) else None,
                     exclude_patterns=mount_cfg.exclude_patterns,
                 )
+
+                if result.success and not dry_run:
+                    # Inside the lock, deliberately. Recording after releasing it
+                    # lets an overlapping sync finish its push and then have its
+                    # record overwritten by this one's older path set, leaving
+                    # the manifest describing neither tree.
+                    record_upload(rsync, mount_cfg, mirrored=delete, before=before)
         except SyncLockTimeoutError as exc:
             return err(str(exc))
 
@@ -499,7 +623,7 @@ def sync_files(
             # Named "entries" because rsync emits (and caps) one deletion per
             # filesystem entry, directories included.
             entries_deleted=deleted_count,
-            deleted_paths=[] if omit_paths else deleted_paths,
+            deleted_paths=[] if omit_paths else _display(deleted_paths),
             deleted_paths_omitted=omit_paths,
             # Distinguishes "nothing to delete" from "deletions were never
             # looked for". An additive sync does not ask rsync about them at
