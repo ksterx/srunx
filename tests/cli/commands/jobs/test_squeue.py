@@ -1,10 +1,10 @@
 """Tests for ``srunx squeue`` (active-jobs listing).
 
 The command now mirrors native ``squeue`` semantics: all users' jobs by
-default, User/Partition/CPUs/GPUs/NodeList columns, ``-u/--user`` to
-filter. The previous ``--show-gpus`` flag is gone — GPUs are always
-shown because the user explicitly asked for a combined CPU + GPU +
-NODELIST view.
+default, User/Status/CPUs/GPUs/NodeList columns, ``-u/--user`` to
+filter. The previous ``--show-gpus`` / ``--show-cpus`` flags are gone —
+CPUs and GPUs are always shown because the user explicitly asked for a
+combined CPU + GPU + NODELIST view.
 """
 
 from __future__ import annotations
@@ -95,8 +95,8 @@ def mock_jobs() -> list[BaseJob]:
 
 class TestSqueueTable:
     def test_default_columns(self, runner: CliRunner, mock_jobs) -> None:
-        """Default view: Job ID / User / Name / Status / GPUs / Elapsed /
-        NodeList. Partition / CPUs / Limit / Nodes are opt-in."""
+        """Default view: Job ID / User / Name / Status / CPUs / GPUs /
+        Elapsed / NodeList. Partition / Limit / Nodes are opt-in."""
         with patch("srunx.slurm.local.Slurm") as mock_slurm:
             client = MagicMock()
             client.queue.return_value = mock_jobs
@@ -112,13 +112,14 @@ class TestSqueueTable:
             "User",
             "Name",
             "Status",
+            "CPUs",
             "GPUs",
             "Elapsed",
             "NodeList",
         ):
             assert shown in result.stdout, f"default column missing: {shown}"
         # Opt-in columns must not appear by default.
-        for hidden in ("Partition", "CPUs", "Limit", "Nodes"):
+        for hidden in ("Partition", "Limit", "Nodes"):
             assert hidden not in result.stdout, f"opt-in column leaked: {hidden}"
         # Default-set values still surface.
         assert "alice" in result.stdout
@@ -160,16 +161,15 @@ class TestSqueueTable:
             mock_slurm.return_value = client
             result = runner.invoke(
                 app,
-                ["squeue", "--local", "--show-partition", "--show-cpus"],
+                ["squeue", "--local", "--show-partition", "--show-nodes"],
                 env={"COLUMNS": "200"},
             )
 
         assert result.exit_code == 0
         assert "Partition" in result.stdout
-        assert "CPUs" in result.stdout
-        # The two NOT requested remain hidden.
+        assert "Nodes" in result.stdout
+        # The one NOT requested remains hidden.
         assert "Limit" not in result.stdout
-        assert "Nodes" not in result.stdout
 
     def test_empty_queue(self, runner: CliRunner) -> None:
         with patch("srunx.slurm.local.Slurm") as mock_slurm:
