@@ -25,10 +25,10 @@ srunx-specific commands that don't map to a SLURM binary:
 - `uv run srunx sbatch <script>` - Submit a sbatch script (positional, like real sbatch)
 - `uv run srunx sbatch --wrap "cmd ..."` - Wrap a command into a SLURM job (mutually exclusive with the positional script)
 - `uv run srunx sbatch --profile <name> ...` - Submit over SSH to a configured profile
-- `uv run srunx squeue` - List active jobs (all users by default — matches native `squeue`). Default columns: Job ID, User, Name, Status, GPUs, Elapsed, NodeList
+- `uv run srunx squeue` - List active jobs (all users by default — matches native `squeue`). Default columns: Job ID, User, Name, Status, CPUs, GPUs, Elapsed, NodeList
 - `uv run srunx squeue -j <job_id>` - Filter to a specific job (replaces the old `srunx status` for active jobs)
 - `uv run srunx squeue -u <user>` - Filter to a single user
-- `uv run srunx squeue --show-partition --show-cpus --show-limit --show-nodes` - Opt-in columns (each flag adds one)
+- `uv run srunx squeue --show-partition --show-limit --show-nodes` - Opt-in columns (each flag adds one)
 - `uv run srunx squeue -a` - Shortcut for all opt-in columns at once
 - `uv run srunx squeue -i <seconds>` - Live refresh: re-query and redraw in place every N seconds (like native `squeue -i`). Ctrl+C exits
 - `uv run srunx squeue --format json` - JSON always includes every field regardless of show flags

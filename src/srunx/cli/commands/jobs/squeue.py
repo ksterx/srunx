@@ -55,10 +55,6 @@ def squeue(
         bool,
         typer.Option("--show-partition", help="Add the Partition column."),
     ] = False,
-    show_cpus: Annotated[
-        bool,
-        typer.Option("--show-cpus", help="Add the CPUs column."),
-    ] = False,
     show_limit: Annotated[
         bool,
         typer.Option("--show-limit", help="Add the time-limit column."),
@@ -72,7 +68,7 @@ def squeue(
         typer.Option(
             "--all",
             "-a",
-            help="Shortcut for --show-partition --show-cpus --show-limit --show-nodes.",
+            help="Shortcut for --show-partition --show-limit --show-nodes.",
         ),
     ] = False,
     format: Annotated[
@@ -87,12 +83,11 @@ def squeue(
 
     Shows all users' jobs by default (matching native ``squeue``).
 
-    Default columns: Job ID, User, Name, Status, GPUs, Elapsed,
-    NodeList. Use ``--show-partition`` / ``--show-cpus`` /
-    ``--show-limit`` / ``--show-nodes`` (or ``-a`` / ``--all``) to
-    surface the remaining SLURM fields. ``--format json`` always
-    emits every field regardless of these flags — scripts can pick
-    what they need.
+    Default columns: Job ID, User, Name, Status, CPUs, GPUs,
+    Elapsed, NodeList. Use ``--show-partition`` / ``--show-limit`` /
+    ``--show-nodes`` (or ``-a`` / ``--all``) to surface the remaining
+    SLURM fields. ``--format json`` always emits every field
+    regardless of these flags — scripts can pick what they need.
 
     ``-i N`` / ``--iterate N`` re-queries the queue every ``N``
     seconds and redraws the table in place (like native
@@ -128,12 +123,11 @@ def squeue(
             )
             raise typer.Exit(code=2)
 
-    # Column-visibility flags — the four SLURM fields flagged as
+    # Column-visibility flags — the three SLURM fields flagged as
     # "useful but not always needed" are hidden by default; ``--show-X``
     # (or ``-a``) surfaces them.
     visibility = _SqueueColumnVisibility(
         partition=show_partition or show_all,
-        cpus=show_cpus or show_all,
         limit=show_limit or show_all,
         nodes=show_nodes or show_all,
     )
@@ -185,7 +179,6 @@ class _SqueueColumnVisibility:
     """Which opt-in columns the squeue table should render."""
 
     partition: bool
-    cpus: bool
     limit: bool
     nodes: bool
 
@@ -206,8 +199,7 @@ def _render_squeue_table(jobs: list[Any], v: _SqueueColumnVisibility) -> Table:
     table.add_column("Status")
     if v.nodes:
         table.add_column("Nodes", justify="right")
-    if v.cpus:
-        table.add_column("CPUs", justify="right")
+    table.add_column("CPUs", justify="right", style="green")
     table.add_column("GPUs", justify="right", style="yellow")
     table.add_column("Elapsed", justify="right")
     if v.limit:
@@ -226,8 +218,7 @@ def _render_squeue_table(jobs: list[Any], v: _SqueueColumnVisibility) -> Table:
         row.append(colorize_state(status_name))
         if v.nodes:
             row.append(str(getattr(job, "nodes", None) or "N/A"))
-        if v.cpus:
-            row.append(str(getattr(job, "cpus", None) or 0))
+        row.append(str(getattr(job, "cpus", None) or 0))
         row.append(str(getattr(job, "gpus", None) or 0))
         row.append(getattr(job, "elapsed_time", None) or "N/A")
         if v.limit:

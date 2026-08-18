@@ -169,10 +169,12 @@ Live in-place refresh (like native `squeue -i`; Ctrl+C to exit):
 srunx squeue -i 5
 ```
 
-Show additional columns (each `--show-*` flag adds one; `-a` enables all):
+Default columns are Job ID, User, Name, Status, CPUs, GPUs, Elapsed and
+NodeList. Show additional columns (each `--show-*` flag adds one; `-a`
+enables all):
 
 ``` bash
-srunx squeue --show-partition --show-cpus --show-limit --show-nodes
+srunx squeue --show-partition --show-limit --show-nodes
 srunx squeue -a
 ```
 
