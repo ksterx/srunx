@@ -277,6 +277,7 @@ def _patch_sweep_transport(
         callbacks=None,
         submission_source="web",
         mount_name=None,
+        allow_cwd_mount=False,
         pool_size=2,
     ):
         return handle, MagicMock(name="pool")

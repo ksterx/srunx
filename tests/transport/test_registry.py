@@ -451,3 +451,108 @@ class TestSSHBannerBody:
             source_display="via --profile",
         )
         assert "SSH profile: ghost" in body
+
+
+class TestSubmissionContextMountSelection:
+    """Mount auto-selection for :func:`_resolve_submission_context`."""
+
+    class _FakeMount:
+        def __init__(self, name: str, local: str) -> None:
+            self.name = name
+            self.local = local
+            self.remote = f"/remote/{name}"
+
+    def _resolve(self, mounts, mount_name=None, allow_cwd_mount=True):
+        return _registry._resolve_submission_context(
+            profile_name="gmo",
+            profile_mounts=mounts,
+            mount_name=mount_name,
+            allow_cwd_mount=allow_cwd_mount,
+        )
+
+    def test_no_mounts_returns_none(self):
+        assert self._resolve([]) is None
+
+    def test_single_mount_auto_selected_regardless_of_cwd(self, tmp_path, monkeypatch):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        monkeypatch.chdir(outside)
+        mount = self._FakeMount("only", str(tmp_path / "proj"))
+        ctx = self._resolve([mount])
+        assert ctx is not None
+        assert ctx.mount_name == "only"
+
+    def test_explicit_mount_name_wins_over_cwd(self, tmp_path, monkeypatch):
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        monkeypatch.chdir(a)
+        ctx = self._resolve(
+            [self._FakeMount("a", str(a)), self._FakeMount("b", str(b))],
+            mount_name="b",
+        )
+        assert ctx is not None
+        assert ctx.mount_name == "b"
+
+    def test_cwd_selects_the_owning_mount(self, tmp_path, monkeypatch):
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        (a / "sub" / "deeper").mkdir(parents=True)
+        b.mkdir()
+        monkeypatch.chdir(a / "sub" / "deeper")
+        ctx = self._resolve(
+            [self._FakeMount("a", str(a)), self._FakeMount("b", str(b))]
+        )
+        assert ctx is not None
+        assert ctx.mount_name == "a"
+
+    def test_nested_mounts_resolve_to_the_deepest(self, tmp_path, monkeypatch):
+        outer = tmp_path / "outer"
+        inner = outer / "inner"
+        inner.mkdir(parents=True)
+        monkeypatch.chdir(inner)
+        ctx = self._resolve(
+            [self._FakeMount("outer", str(outer)), self._FakeMount("inner", str(inner))]
+        )
+        assert ctx is not None
+        assert ctx.mount_name == "inner"
+
+    def test_cwd_outside_every_mount_disables_translation_quietly(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        outside = tmp_path / "outside"
+        for d in (a, b, outside):
+            d.mkdir()
+        monkeypatch.chdir(outside)
+        with caplog.at_level("WARNING"):
+            ctx = self._resolve(
+                [self._FakeMount("a", str(a)), self._FakeMount("b", str(b))]
+            )
+        assert ctx is not None
+        assert ctx.mount_name is None
+        # Read-only commands (squeue / sinfo / tail) build a handle too;
+        # the no-translation fallback must not shout at them.
+        assert "path translation" not in caplog.text
+
+    def test_cwd_fallback_is_off_by_default(self, tmp_path, monkeypatch):
+        """Long-lived callers (Web app, MCP) must not inherit the cwd.
+
+        Their working directory is an accident of how the process was
+        launched, so honouring it would make identical requests resolve
+        to different remote paths on two machines.
+        """
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        monkeypatch.chdir(a)
+        ctx = _registry._resolve_submission_context(
+            profile_name="gmo",
+            profile_mounts=[self._FakeMount("a", str(a)), self._FakeMount("b", str(b))],
+            mount_name=None,
+        )
+        assert ctx is not None
+        assert ctx.mount_name is None

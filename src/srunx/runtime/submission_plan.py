@@ -23,6 +23,7 @@ test.
 from __future__ import annotations
 
 import enum
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -80,20 +81,32 @@ class SubmissionPlan:
 
 
 def resolve_mount_for_path(path: Path, profile: ServerProfile) -> MountConfig | None:
-    """Return the profile mount whose ``local`` root contains *path*.
+    """Return the profile mount whose ``local`` root contains *path*."""
+    return resolve_mount_among(path, profile.mounts)
+
+
+def resolve_mount_among(
+    path: Path, mounts: Sequence[MountConfig]
+) -> MountConfig | None:
+    """Return the mount in *mounts* whose ``local`` root contains *path*.
 
     Uses longest-prefix match so nested mounts (unusual but legal)
     resolve to the deepest one. Resolves symlinks on *path* first to
     avoid leaking outside the mount via symlink traversal — the same
     convention the web router's shell-script guard uses.
+
+    Takes a bare mount sequence rather than a ``ServerProfile`` so
+    callers that only hold the mounts (the transport registry's cwd
+    auto-selection) share this matching policy instead of reimplementing
+    it.
     """
-    if not profile.mounts:
+    if not mounts:
         return None
 
     resolved = path.resolve()
     best: MountConfig | None = None
     best_len = -1
-    for mount in profile.mounts:
+    for mount in mounts:
         mount_root = Path(mount.local).expanduser().resolve()
         try:
             resolved.relative_to(mount_root)
