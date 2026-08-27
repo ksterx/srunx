@@ -60,14 +60,21 @@ def resolve_transport(
     callbacks: Sequence[Callback] | None = None,
     submission_source: str = "cli",
     mount_name: str | None = None,
+    allow_cwd_mount: bool = True,
     pool_size: int = 2,
     policy: TransportPolicy = DEFAULT_POLICY,
 ) -> Iterator[ResolvedTransport]:
     """:func:`srunx.transport.registry.resolve_transport` for CLI callers.
 
-    Identical behaviour, except a :class:`TransportSelectionError` raised
-    while resolving the transport is re-raised as ``typer.BadParameter`` so
-    Typer renders it as a normal flag error instead of a traceback.
+    Two differences from the registry function:
+
+    * A :class:`TransportSelectionError` raised while resolving the
+      transport is re-raised as ``typer.BadParameter`` so Typer renders
+      it as a normal flag error instead of a traceback.
+    * ``allow_cwd_mount`` defaults to ``True``. The CLI has no
+      ``--mount`` flag, and a one-shot CLI process's cwd is a direct
+      expression of user intent — unlike a long-lived Web / MCP server,
+      whose cwd is an accident of how it was launched.
     """
     try:
         with registry.resolve_transport(
@@ -78,6 +85,7 @@ def resolve_transport(
             callbacks=callbacks,
             submission_source=submission_source,
             mount_name=mount_name,
+            allow_cwd_mount=allow_cwd_mount,
             pool_size=pool_size,
             policy=policy,
         ) as resolved:

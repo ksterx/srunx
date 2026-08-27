@@ -42,6 +42,7 @@ import threading
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from rich.console import Console
@@ -454,11 +455,27 @@ def _build_local_handle(slurm: Slurm | None = None) -> TransportHandle:
     )
 
 
+def _select_mount_for_cwd(mounts: Sequence[Any]) -> Any | None:
+    """Return the mount owning the current working directory, if any.
+
+    Returns ``None`` when the cwd sits outside every mount, or when the
+    cwd cannot be read at all (it was deleted underneath the process).
+    """
+    from srunx.runtime.submission_plan import resolve_mount_among
+
+    try:
+        cwd = Path.cwd()
+    except OSError:
+        return None
+    return resolve_mount_among(cwd, mounts)
+
+
 def _resolve_submission_context(
     *,
     profile_name: str,
     profile_mounts: Sequence[Any] | None,
     mount_name: str | None,
+    allow_cwd_mount: bool = False,
 ) -> SubmissionRenderContext | None:
     """Decide the ``SubmissionRenderContext`` for an SSH profile.
 
@@ -468,9 +485,22 @@ def _resolve_submission_context(
     Returns ``None`` when the profile has no mounts at all (no
     translation possible). Otherwise returns a context with
     ``mount_name`` set to either the caller's explicit choice, the
-    single mount's name (auto-selection), or ``None`` when the profile
-    declares multiple mounts and the caller did not pick one (logs a
-    warning so the silent no-translation fallback is visible).
+    single mount's name, the mount that owns the current working
+    directory (only when *allow_cwd_mount*), or ``None`` when none of
+    those apply.
+
+    The cwd fallback exists because the CLI has no ``--mount`` flag —
+    ``mount_name`` is only ever passed by the Web and MCP surfaces, so
+    without it a multi-mount profile could never get path translation
+    from the CLI at all. Mount ``local`` roots are unique per profile
+    (enforced in ``ConfigManager.add_profile_mount``) and matching is
+    longest-prefix, so the cwd picks out at most one mount.
+
+    It is opt-in because cwd only carries user intent for a one-shot
+    CLI process. For a long-lived server (Web app, MCP) the cwd is
+    wherever the process happened to be launched, so honouring it there
+    would make identical requests render different remote paths on two
+    machines.
     """
     from srunx.runtime.rendering import SubmissionRenderContext
 
@@ -483,13 +513,22 @@ def _resolve_submission_context(
         if len(mounts) == 1:
             resolved_mount_name = mounts[0].name
         else:
-            logger.warning(
-                "SSH profile {!r} declares {} mounts; no mount selected "
-                "so path translation is disabled. Pass mount_name "
-                "explicitly to enable translation.",
-                profile_name,
-                len(mounts),
-            )
+            cwd_mount = _select_mount_for_cwd(mounts) if allow_cwd_mount else None
+            if cwd_mount is not None:
+                resolved_mount_name = cwd_mount.name
+            else:
+                # Not a warning: read-only commands (squeue / sinfo /
+                # tail) build a handle too and never translate a path,
+                # so this is only interesting when debugging a
+                # submission that skipped translation.
+                logger.debug(
+                    "SSH profile {!r} declares {} mounts and none was "
+                    "selected (cwd fallback {}); path translation is "
+                    "disabled.",
+                    profile_name,
+                    len(mounts),
+                    "missed" if allow_cwd_mount else "off",
+                )
     return SubmissionRenderContext(
         mount_name=resolved_mount_name,
         mounts=mounts,
@@ -503,6 +542,7 @@ def _build_ssh_handle(
     submission_source: str,
     callbacks: Sequence[Callback] | None = None,
     mount_name: str | None = None,
+    allow_cwd_mount: bool = False,
     pool_size: int = 2,
 ) -> tuple[TransportHandle, Any]:
     """Build an SSH :class:`TransportHandle` and its backing executor pool.
@@ -525,9 +565,11 @@ def _build_ssh_handle(
         mount_name: Explicit mount selection for path translation. When
             ``None`` and the profile declares exactly one mount we
             auto-select it so ``flow run --profile`` gets mount
-            translation out of the box. Multi-mount profiles with no
-            explicit ``mount_name`` fall back to "no translation" and
-            emit a warning.
+            translation out of the box. Multi-mount profiles fall back
+            to ``allow_cwd_mount``, then to "no translation".
+        allow_cwd_mount: Let a multi-mount profile fall back to the
+            mount owning the current working directory. CLI-only —
+            see :func:`_resolve_submission_context`.
         pool_size: Number of pooled SSH adapters. Default ``2`` for
             single-shot CLI / MCP. Long-lived callers (Web app lifespan)
             should pass a higher value (e.g. 8) to handle concurrent
@@ -586,6 +628,7 @@ def _build_ssh_handle(
             profile_name=profile_name,
             profile_mounts=profile.mounts,
             mount_name=mount_name,
+            allow_cwd_mount=allow_cwd_mount,
         )
 
         handle = TransportHandle(
@@ -658,6 +701,7 @@ def resolve_transport(
     callbacks: Sequence[Callback] | None = None,
     submission_source: str = "cli",
     mount_name: str | None = None,
+    allow_cwd_mount: bool = False,
     pool_size: int = 2,
     policy: TransportPolicy = DEFAULT_POLICY,
 ) -> Iterator[ResolvedTransport]:
@@ -692,6 +736,10 @@ def resolve_transport(
         mount_name: Explicit mount selection forwarded to the SSH
             handle builder for path translation. ``None`` triggers
             single-mount auto-selection.
+        allow_cwd_mount: Forwarded to the SSH handle builder. Defaults
+            to ``False`` so long-lived callers (Web app, MCP server)
+            stay deterministic; the CLI wrapper in
+            ``srunx.cli._helpers.transport`` turns it on.
         pool_size: Pool size forwarded to the SSH executor pool. Default
             ``2`` matches single-shot CLI usage; long-lived callers pass
             a larger value.
@@ -725,6 +773,7 @@ def resolve_transport(
             callbacks=callbacks,
             submission_source=submission_source,
             mount_name=mount_name,
+            allow_cwd_mount=allow_cwd_mount,
             pool_size=pool_size,
         )
     else:
