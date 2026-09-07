@@ -107,7 +107,11 @@ class RsyncClient:
     """
 
     DEFAULT_EXCLUDES: ClassVar[list[str]] = [
-        ".git/",
+        # No trailing slash: a trailing slash matches only directories, so a
+        # worktree's or submodule's `.git` (a *file* containing a local
+        # absolute `gitdir:` path) would sync anyway and break git on the
+        # remote with a confusing "fatal: not a git repository: <local path>".
+        ".git",
         "__pycache__/",
         ".venv/",
         "*.pyc",
