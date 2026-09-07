@@ -75,17 +75,17 @@ class TestRsyncClientInit:
 
     def test_default_excludes(self):
         client = _make_rsync_client(hostname="h", username="u")
-        assert ".git/" in client.exclude_patterns
+        assert ".git" in client.exclude_patterns
         assert "__pycache__/" in client.exclude_patterns
         assert ".venv/" in client.exclude_patterns
 
     def test_custom_excludes_merged(self):
         client = _make_rsync_client(
-            hostname="h", username="u", exclude_patterns=["data/", ".git/"]
+            hostname="h", username="u", exclude_patterns=["data/", ".git"]
         )
         assert "data/" in client.exclude_patterns
-        # .git/ should not be duplicated
-        assert client.exclude_patterns.count(".git/") == 1
+        # .git should not be duplicated
+        assert client.exclude_patterns.count(".git") == 1
 
     def test_detects_gnu_rsync_capabilities(self):
         client = _make_rsync_client(hostname="h", username="u")
@@ -517,7 +517,7 @@ class TestPushWithExcludePatterns:
         ]
         assert "data/" in exclude_values
         assert "*.log" in exclude_values
-        assert ".git/" in exclude_values
+        assert ".git" in exclude_values
 
     def test_pull_per_call_excludes(self, tmp_path: Path):
         client = _make_rsync_client(hostname="h", username="u")
@@ -531,7 +531,7 @@ class TestPushWithExcludePatterns:
             call_args[i + 1] for i, v in enumerate(call_args) if v == "--exclude"
         ]
         assert "artifacts/" in exclude_values
-        assert ".git/" in exclude_values
+        assert ".git" in exclude_values
 
     def test_constructor_excludes_merged_with_defaults(self):
         """Exclude patterns passed at construction are merged with DEFAULT_EXCLUDES."""
@@ -541,15 +541,15 @@ class TestPushWithExcludePatterns:
         assert "data/" in client.exclude_patterns
         assert "*.bin" in client.exclude_patterns
         # Defaults still present
-        assert ".git/" in client.exclude_patterns
+        assert ".git" in client.exclude_patterns
         assert "__pycache__/" in client.exclude_patterns
 
     def test_constructor_excludes_no_duplicates(self):
         """Passing a pattern already in DEFAULT_EXCLUDES doesn't create duplicates."""
         client = _make_rsync_client(
-            hostname="h", username="u", exclude_patterns=[".git/", "data/"]
+            hostname="h", username="u", exclude_patterns=[".git", "data/"]
         )
-        assert client.exclude_patterns.count(".git/") == 1
+        assert client.exclude_patterns.count(".git") == 1
         assert "data/" in client.exclude_patterns
 
     def test_constructor_and_per_call_excludes_combined(self, tmp_path: Path):
@@ -568,7 +568,7 @@ class TestPushWithExcludePatterns:
         ]
         assert "weights/" in exclude_values  # from constructor
         assert "logs/" in exclude_values  # from per-call
-        assert ".git/" in exclude_values  # from defaults
+        assert ".git" in exclude_values  # from defaults
 
 
 class TestMkpath:
@@ -1346,7 +1346,7 @@ class TestEffectiveExcludes:
         assert "data/raw/" in merged
         assert "*.h5" in merged
         # Defaults are still there.
-        assert ".git/" in merged
+        assert ".git" in merged
         # And the instance attribute is left alone.
         assert "data/raw/" not in client.exclude_patterns
 
@@ -1357,8 +1357,8 @@ class TestEffectiveExcludes:
 
     def test_does_not_duplicate(self):
         client = _make_rsync_client(hostname="h", username="u")
-        merged = client.effective_excludes([".git/", "data/"])
-        assert merged.count(".git/") == 1
+        merged = client.effective_excludes([".git", "data/"])
+        assert merged.count(".git") == 1
 
     def test_returns_a_copy(self):
         """Mutating the result must not corrupt the client's own list."""
