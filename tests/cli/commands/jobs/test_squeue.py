@@ -115,7 +115,8 @@ class TestSqueueTable:
             "CPUs",
             "GPUs",
             "Elapsed",
-            "NodeList",
+            "NodeList / Reason",
+            "Requested NodeList",
         ):
             assert shown in result.stdout, f"default column missing: {shown}"
         # Opt-in columns must not appear by default.
@@ -125,6 +126,7 @@ class TestSqueueTable:
         assert "alice" in result.stdout
         assert "dgx-node[1-2]" in result.stdout
         assert "RUNNING" in result.stdout
+        assert "unspecified" in result.stdout
 
     def test_show_all_flag_reveals_every_column(
         self, runner: CliRunner, mock_jobs
@@ -215,6 +217,7 @@ class TestSqueueJson:
         assert first["cpus"] == 32
         assert first["gpus"] == 8
         assert first["nodelist"] == "dgx-node[1-2]"
+        assert first["requested_nodelist"] is None
 
     def test_empty_queue_emits_empty_list(self, runner: CliRunner) -> None:
         """Pre-existing regression — ``--format json`` on empty queue
@@ -255,6 +258,48 @@ class TestSqueueUserFilter:
 
         assert result.exit_code == 0
         client.queue.assert_called_once_with(user=None)
+
+    def test_me_flag_uses_native_scheduler_filter(
+        self, runner: CliRunner, mock_jobs
+    ) -> None:
+        with patch("srunx.slurm.local.Slurm") as mock_slurm:
+            client = MagicMock()
+            client.queue.return_value = mock_jobs
+            mock_slurm.return_value = client
+            result = runner.invoke(app, ["squeue", "--local", "--me", "--format", "json"])
+
+        assert result.exit_code == 0
+        client.queue.assert_called_once_with(me=True)
+
+    def test_me_and_user_are_incompatible(self, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["squeue", "--local", "--me", "--user", "alice"])
+
+        assert result.exit_code == 2
+        assert "cannot be used" in result.output
+
+
+class TestSqueueRegexFilters:
+    def test_include_and_exclude_match_all_queue_location_fields(
+        self, runner: CliRunner, mock_jobs
+    ) -> None:
+        mock_jobs[1].requested_nodelist = "gpu-special-01"
+        with patch("srunx.slurm.local.Slurm") as mock_slurm:
+            client = MagicMock()
+            client.queue.return_value = mock_jobs
+            mock_slurm.return_value = client
+            result = runner.invoke(
+                app,
+                ["squeue", "--local", "--format", "json", "-I", "gpu", "-x", "multi_gpu"],
+            )
+
+        assert result.exit_code == 0
+        assert [job["job_id"] for job in json.loads(result.stdout)] == [12345, 12346]
+
+    def test_invalid_regex_has_usage_exit_code(self, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["squeue", "--local", "--include", "["])
+
+        assert result.exit_code == 2
+        assert "invalid regular expression" in result.output.lower()
 
 
 class TestSqueueJobIdFilter:

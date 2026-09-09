@@ -29,7 +29,7 @@ logger = get_logger(__name__)
 
 
 def list_active_jobs(
-    client: SlurmSSHClient, user: str | None = None
+    client: SlurmSSHClient, user: str | None = None, me: bool = False
 ) -> tuple[list[dict[str, Any]], set[int]]:
     """Return active (PENDING / RUNNING / ...) jobs from ``squeue`` only.
 
@@ -48,7 +48,7 @@ def list_active_jobs(
     ``%i`` job_id | ``%P`` partition | ``%j`` name | ``%u`` user |
     ``%T`` state (long) | ``%M`` elapsed | ``%l`` time_limit |
     ``%D`` nodes | ``%C`` total CPUs | ``%R`` nodelist-or-reason |
-    ``%b`` TRES_PER_NODE (for GPU extraction).
+    ``%n`` requested nodelist and ``%b`` TRES_PER_NODE (for GPU extraction).
 
     Returns ``(entries, seen_ids)`` so the merging caller can
     dedup sacct rows against active IDs without re-scanning.
@@ -57,11 +57,13 @@ def list_active_jobs(
     # parens (e.g. "(Resources, Priority)"), so splitting on
     # whitespace with maxsplit is fragile. Pipe is the safe
     # separator — SLURM fields never contain it.
-    fmt = "%i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%b"
+    fmt = "%i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%n|%b"
     cmd = f'squeue --format "{fmt}" --noheader'
     if user:
         _validate_identifier(user, "user")
         cmd += f" --user {user}"
+    elif me:
+        cmd += " --me"
 
     output = _run_slurm_cmd(client, cmd)
     jobs: list[dict[str, Any]] = []
@@ -75,7 +77,7 @@ def list_active_jobs(
         # subsequent indexing would silently misalign every column
         # downstream of the embedded pipe. Better to drop the row
         # than render corrupted data in an admin's queue listing.
-        if len(parts) != 11:
+        if len(parts) != 12:
             continue
 
         try:
@@ -92,7 +94,10 @@ def list_active_jobs(
         nodes_str = parts[7].strip()
         cpus_str = parts[8].strip()
         nodelist = parts[9].strip()
-        tres = parts[10].strip()
+        requested_nodelist = parts[10].strip() or None
+        if requested_nodelist in {"(null)", "None assigned"}:
+            requested_nodelist = None
+        tres = parts[11].strip()
 
         num_nodes = int(nodes_str) if nodes_str.isdigit() else 1
         try:
@@ -124,6 +129,7 @@ def list_active_jobs(
                 "cpus": cpus_total,
                 "gpus": gpus_per_node * num_nodes,
                 "nodelist": nodelist,
+                "requested_nodelist": requested_nodelist,
                 "elapsed_time": elapsed,
                 "time_limit": time_limit,
             }

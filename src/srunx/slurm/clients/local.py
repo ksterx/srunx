@@ -431,11 +431,11 @@ class LocalClient:
             logger.error(f"Failed to cancel job {job_id}: {e}")
             raise
 
-    def queue(self, user: str | None = None) -> list[BaseJob]:
+    def queue(self, user: str | None = None, me: bool = False) -> list[BaseJob]:
         """List active jobs.
 
         ``user=None`` shows all users' jobs (matches native ``squeue``).
-        Pass a username to filter.
+        Pass a username to filter, or ``me=True`` for native ``squeue --me``.
 
         Returns: list of :class:`BaseJob` populated with the same
         field set as the SSH adapter's :meth:`~srunx.slurm.clients.ssh.SlurmSSHClient.queue`
@@ -443,17 +443,19 @@ class LocalClient:
         """
         # Pipe-delimited format — nodelist/reason (%R) can contain
         # whitespace + parens, so space-splitting is fragile.
-        # Fields: %i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%b
+        # Fields: %i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%n|%b
         # (job_id, partition, name, user, state, elapsed, limit, nodes,
-        # total_cpus, nodelist_or_reason, TRES_PER_NODE)
+        # total_cpus, nodelist_or_reason, requested_nodelist, TRES_PER_NODE)
         cmd = [
             "squeue",
             "--format",
-            "%i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%b",
+            "%i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%n|%b",
             "--noheader",
         ]
         if user:
             cmd.extend(["--user", user])
+        elif me:
+            cmd.append("--me")
 
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
 
@@ -463,7 +465,7 @@ class LocalClient:
                 continue
 
             parts = line.split("|")
-            if len(parts) < 11:
+            if len(parts) < 12:
                 continue
 
             try:
@@ -480,7 +482,10 @@ class LocalClient:
             nodes_str = parts[7].strip()
             cpus_str = parts[8].strip()
             nodelist = parts[9].strip() or None
-            tres = parts[10].strip()
+            requested_nodelist = parts[10].strip() or None
+            if requested_nodelist in {"(null)", "None assigned"}:
+                requested_nodelist = None
+            tres = parts[11].strip()
 
             try:
                 status = JobStatus(status_str)
@@ -518,6 +523,7 @@ class LocalClient:
                 cpus=cpus,
                 gpus=gpus_per_node * nodes,
                 nodelist=nodelist,
+                requested_nodelist=requested_nodelist,
             )
             job.status = status
             jobs.append(job)
