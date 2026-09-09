@@ -47,11 +47,15 @@ def squeue(
     ] = False,
     include: Annotated[
         list[str] | None,
-        typer.Option("-I", "--include", help="Keep jobs matching this regex (repeatable)."),
+        typer.Option(
+            "-I", "--include", help="Keep jobs matching this regex (repeatable)."
+        ),
     ] = None,
     exclude: Annotated[
         list[str] | None,
-        typer.Option("-x", "--exclude", help="Hide jobs matching this regex (repeatable)."),
+        typer.Option(
+            "-x", "--exclude", help="Hide jobs matching this regex (repeatable)."
+        ),
     ] = None,
     iterate: Annotated[
         float | None,
@@ -164,7 +168,9 @@ def squeue(
                     client = _slurm_local.Slurm()
                     jobs = client.queue(me=True) if me else client.queue(user=user)
                 else:
-                    jobs = rt.job_ops.queue(me=True) if me else rt.job_ops.queue(user=user)
+                    jobs = (
+                        rt.job_ops.queue(me=True) if me else rt.job_ops.queue(user=user)
+                    )
                 if job_filter:
                     wanted = {int(j) for j in job_filter}
                     jobs = [j for j in jobs if j.job_id in wanted]
@@ -284,9 +290,12 @@ def _squeue_json(jobs: list[Any]) -> list[dict[str, Any]]:
 
 
 def _filter_squeue_jobs(
-    jobs: list[Any], include_patterns: list[re.Pattern[str]], exclude_patterns: list[re.Pattern[str]]
+    jobs: list[Any],
+    include_patterns: list[re.Pattern[str]],
+    exclude_patterns: list[re.Pattern[str]],
 ) -> list[Any]:
     """Apply repeatable regex filters across the queue's useful location fields."""
+
     def matches(job: Any, patterns: list[re.Pattern[str]]) -> bool:
         values = (
             getattr(job, "name", None),
@@ -294,7 +303,12 @@ def _filter_squeue_jobs(
             getattr(job, "nodelist", None),
             getattr(job, "requested_nodelist", None),
         )
-        return any(pattern.search(str(value)) for pattern in patterns for value in values if value)
+        return any(
+            pattern.search(str(value))
+            for pattern in patterns
+            for value in values
+            if value
+        )
 
     return [
         job

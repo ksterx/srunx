@@ -266,7 +266,9 @@ class TestSqueueUserFilter:
             client = MagicMock()
             client.queue.return_value = mock_jobs
             mock_slurm.return_value = client
-            result = runner.invoke(app, ["squeue", "--local", "--me", "--format", "json"])
+            result = runner.invoke(
+                app, ["squeue", "--local", "--me", "--format", "json"]
+            )
 
         assert result.exit_code == 0
         client.queue.assert_called_once_with(me=True)
@@ -289,7 +291,16 @@ class TestSqueueRegexFilters:
             mock_slurm.return_value = client
             result = runner.invoke(
                 app,
-                ["squeue", "--local", "--format", "json", "-I", "gpu", "-x", "multi_gpu"],
+                [
+                    "squeue",
+                    "--local",
+                    "--format",
+                    "json",
+                    "-I",
+                    "gpu",
+                    "-x",
+                    "multi_gpu",
+                ],
             )
 
         assert result.exit_code == 0
