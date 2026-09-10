@@ -1,5 +1,6 @@
 """``srunx squeue`` — list active jobs on the cluster."""
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -38,6 +39,22 @@ def squeue(
                 "Filter to a single username (like ``squeue --user <name>``). "
                 "Default is all users."
             ),
+        ),
+    ] = None,
+    me: Annotated[
+        bool,
+        typer.Option("--me", help="Show only your jobs (native squeue --me)."),
+    ] = False,
+    include: Annotated[
+        list[str] | None,
+        typer.Option(
+            "-I", "--include", help="Keep jobs matching this regex (repeatable)."
+        ),
+    ] = None,
+    exclude: Annotated[
+        list[str] | None,
+        typer.Option(
+            "-x", "--exclude", help="Hide jobs matching this regex (repeatable)."
         ),
     ] = None,
     iterate: Annotated[
@@ -107,6 +124,17 @@ def squeue(
     """
     import json
 
+    if me and user:
+        typer.secho("--me cannot be used with --user.", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+
+    try:
+        include_patterns = [re.compile(pattern) for pattern in include or []]
+        exclude_patterns = [re.compile(pattern) for pattern in exclude or []]
+    except re.error as exc:
+        typer.secho(f"Invalid regular expression: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=2) from None
+
     if iterate is not None:
         if iterate <= 0:
             typer.secho(
@@ -138,12 +166,15 @@ def squeue(
             def fetch() -> list[Any]:
                 if rt.transport_type == "local":
                     client = _slurm_local.Slurm()
-                    jobs = client.queue(user=user)
+                    jobs = client.queue(me=True) if me else client.queue(user=user)
                 else:
-                    jobs = rt.job_ops.queue(user=user)
+                    jobs = (
+                        rt.job_ops.queue(me=True) if me else rt.job_ops.queue(user=user)
+                    )
                 if job_filter:
                     wanted = {int(j) for j in job_filter}
                     jobs = [j for j in jobs if j.job_id in wanted]
+                jobs = _filter_squeue_jobs(jobs, include_patterns, exclude_patterns)
                 return jobs
 
             if iterate is not None:
@@ -204,7 +235,8 @@ def _render_squeue_table(jobs: list[Any], v: _SqueueColumnVisibility) -> Table:
     table.add_column("Elapsed", justify="right")
     if v.limit:
         table.add_column("Limit", justify="right")
-    table.add_column("NodeList", overflow="fold")
+    table.add_column("NodeList / Reason", overflow="fold")
+    table.add_column("Requested NodeList", overflow="fold")
 
     for job in jobs:
         status_name = job.status.name if hasattr(job, "status") else "UNKNOWN"
@@ -224,6 +256,7 @@ def _render_squeue_table(jobs: list[Any], v: _SqueueColumnVisibility) -> Table:
         if v.limit:
             row.append(getattr(job, "time_limit", None) or "N/A")
         row.append(getattr(job, "nodelist", None) or "N/A")
+        row.append(getattr(job, "requested_nodelist", None) or "unspecified")
         table.add_row(*row)
 
     return table
@@ -248,10 +281,40 @@ def _squeue_json(jobs: list[Any]) -> list[dict[str, Any]]:
             "cpus": getattr(job, "cpus", None),
             "gpus": getattr(job, "gpus", None),
             "nodelist": getattr(job, "nodelist", None),
+            "requested_nodelist": getattr(job, "requested_nodelist", None),
             "elapsed_time": getattr(job, "elapsed_time", None),
             "time_limit": getattr(job, "time_limit", None),
         }
         for job in jobs
+    ]
+
+
+def _filter_squeue_jobs(
+    jobs: list[Any],
+    include_patterns: list[re.Pattern[str]],
+    exclude_patterns: list[re.Pattern[str]],
+) -> list[Any]:
+    """Apply repeatable regex filters across the queue's useful location fields."""
+
+    def matches(job: Any, patterns: list[re.Pattern[str]]) -> bool:
+        values = (
+            getattr(job, "name", None),
+            getattr(job, "partition", None),
+            getattr(job, "nodelist", None),
+            getattr(job, "requested_nodelist", None),
+        )
+        return any(
+            pattern.search(str(value))
+            for pattern in patterns
+            for value in values
+            if value
+        )
+
+    return [
+        job
+        for job in jobs
+        if (not include_patterns or matches(job, include_patterns))
+        and not matches(job, exclude_patterns)
     ]
 
 

@@ -108,13 +108,13 @@ class TestUnavailableStates:
 class TestListJobsParsing:
     """Test the list_jobs parsing logic by mocking _run_slurm_cmd."""
 
-    # Pipe-delimited format: %i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%b
-    # (job_id|partition|name|user|state|elapsed|time_limit|nodes|cpus|nodelist_or_reason|TRES_PER_NODE)
+    # Pipe-delimited format: %i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%n|%b
+    # (job_id|partition|name|user|state|elapsed|time_limit|nodes|cpus|nodelist_or_reason|requested_nodelist|TRES_PER_NODE)
     SAMPLE_SQUEUE = """\
-18431|defq|qwen3-tts|ksterx|RUNNING|1-00:03:20|UNLIMITED|1|16|dgx-node1|gpu:8
-18477|defq|cosy|ksterx|RUNNING|12:30:45|UNLIMITED|1|32|dgx-node2|gpu:NVIDIA-A100:8
-18490|defq|gemma3-cpt|alice|RUNNING|5:15:00|UNLIMITED|2|64|dgx-node[3-4]|gpu:4
-18500|defq|pending|bob|PENDING|0:00|UNLIMITED|1|8|(Priority)|(null)
+18431|defq|qwen3-tts|ksterx|RUNNING|1-00:03:20|UNLIMITED|1|16|dgx-node1|dgx-node1|gpu:8
+18477|defq|cosy|ksterx|RUNNING|12:30:45|UNLIMITED|1|32|dgx-node2||gpu:NVIDIA-A100:8
+18490|defq|gemma3-cpt|alice|RUNNING|5:15:00|UNLIMITED|2|64|dgx-node[3-4]|dgx-node[3-4]|gpu:4
+18500|defq|pending|bob|PENDING|0:00|UNLIMITED|1|8|(Priority)||(null)
 """
 
     def test_parse_running_jobs(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -255,6 +255,8 @@ class TestListJobsParsing:
         assert jobs[0]["nodelist"] == "dgx-node1"
         assert jobs[2]["nodelist"] == "dgx-node[3-4]"
         assert jobs[3]["nodelist"] == "(Priority)"
+        assert jobs[0]["requested_nodelist"] == "dgx-node1"
+        assert jobs[3]["requested_nodelist"] is None
 
     def test_empty_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
@@ -263,6 +265,23 @@ class TestListJobsParsing:
         )
         adapter = object.__new__(SlurmSSHClient)
         assert adapter.list_jobs() == []
+
+    def test_queue_with_me_uses_native_scheduler_filter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        commands: list[str] = []
+
+        def run(_adapter, command: str) -> str:
+            commands.append(command)
+            return ""
+
+        monkeypatch.setattr("srunx.slurm.clients._ssh_queries._run_slurm_cmd", run)
+        adapter = object.__new__(SlurmSSHClient)
+
+        assert adapter.queue(me=True) == []
+        assert commands == [
+            'squeue --format "%i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%n|%b" --noheader --me'
+        ]
 
     def test_required_frontend_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Every job dict must have command and resources for frontend type."""
@@ -288,9 +307,9 @@ class TestListJobsParsing:
         """
         bogus = (
             "18431|defq|qwen3-tts|ksterx|RUNNING|1-00:03:20|"
-            "UNLIMITED|1|8|dgx-node1|gpu:8\n"
+            "UNLIMITED|1|8|dgx-node1||gpu:8\n"
             "18432|defq|mal|icious|name|alice|RUNNING|"
-            "0:05|1:00:00|1|8|dgx-node2|gpu:8\n"  # 13 fields (bad)
+            "0:05|1:00:00|1|8|dgx-node2||gpu:8\n"  # 14 fields (bad)
         )
         monkeypatch.setattr(
             "srunx.slurm.clients._ssh_queries._run_slurm_cmd",

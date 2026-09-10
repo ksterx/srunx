@@ -138,11 +138,12 @@ class JobOperations(Protocol):
         """
         ...
 
-    def queue(self, user: str | None = None) -> list[BaseJob]:
+    def queue(self, user: str | None = None, me: bool = False) -> list[BaseJob]:
         """List active jobs.
 
         ``user=None`` means "all users", matching native SLURM
-        ``squeue`` semantics. Pass a username to filter. Empty list
+        ``squeue`` semantics. Pass a username to filter, or ``me=True`` to
+        use native scheduler-side current-user filtering. Empty list
         if there are no active jobs; never raises.
         """
         ...

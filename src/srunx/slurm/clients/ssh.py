@@ -839,7 +839,7 @@ class SlurmSSHClient:
         job._last_refresh = _time.time() + 10**9
         return job
 
-    def queue(self, user: str | None = None) -> list[BaseJob]:
+    def queue(self, user: str | None = None, me: bool = False) -> list[BaseJob]:
         """List *active* jobs (all users by default).
 
         Adapts :func:`srunx.slurm.clients._ssh_queries.list_active_jobs`
@@ -853,11 +853,11 @@ class SlurmSSHClient:
         ``user=None`` shows **all users' jobs**, matching native
         ``squeue`` and the local :meth:`~srunx.slurm.local.Slurm.queue`.
         Pass a username explicitly (e.g. from ``-u`` / ``--user``) to
-        filter to that user.
+        filter to that user. Pass ``me=True`` for native ``squeue --me``.
         """
         from srunx.domain import BaseJob, JobStatus
 
-        raw_entries, _ = _list_active_jobs_impl(self, user=user)
+        raw_entries, _ = _list_active_jobs_impl(self, user=user, me=me)
         out: list[BaseJob] = []
         for entry in raw_entries:
             status_str = str(entry.get("status", "UNKNOWN"))
@@ -878,6 +878,7 @@ class SlurmSSHClient:
                 cpus=entry.get("cpus"),
                 gpus=entry.get("gpus"),
                 nodelist=entry.get("nodelist") or None,
+                requested_nodelist=entry.get("requested_nodelist") or None,
                 elapsed_time=entry.get("elapsed_time"),
                 time_limit=entry.get("time_limit"),
             )
