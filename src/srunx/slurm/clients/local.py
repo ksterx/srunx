@@ -441,15 +441,15 @@ class LocalClient:
         field set as the SSH adapter's :meth:`~srunx.slurm.clients.ssh.SlurmSSHClient.queue`
         so CLI callers see a consistent shape regardless of transport.
         """
-        # Pipe-delimited format — nodelist/reason (%R) can contain
+        # Pipe-delimited format — node lists/reasons can contain
         # whitespace + parens, so space-splitting is fragile.
-        # Fields: %i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%n|%b
+        # Fields: %i|%P|%j|%u|%T|%M|%l|%D|%C|%N|%R|%b
         # (job_id, partition, name, user, state, elapsed, limit, nodes,
-        # total_cpus, nodelist_or_reason, requested_nodelist, TRES_PER_NODE)
+        # total_cpus, assigned_nodelist, pending_reason, TRES_PER_NODE)
         cmd = [
             "squeue",
             "--format",
-            "%i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%n|%b",
+            "%i|%P|%j|%u|%T|%M|%l|%D|%C|%N|%R|%b",
             "--noheader",
         ]
         if user:
@@ -482,9 +482,11 @@ class LocalClient:
             nodes_str = parts[7].strip()
             cpus_str = parts[8].strip()
             nodelist = parts[9].strip() or None
-            requested_nodelist = parts[10].strip() or None
-            if requested_nodelist in {"(null)", "None assigned"}:
-                requested_nodelist = None
+            if nodelist in {"(null)", "None assigned"}:
+                nodelist = None
+            reason = parts[10].strip() or None
+            if status_str != "PENDING" or reason in {"(null)", "None assigned"}:
+                reason = None
             tres = parts[11].strip()
 
             try:
@@ -523,7 +525,7 @@ class LocalClient:
                 cpus=cpus,
                 gpus=gpus_per_node * nodes,
                 nodelist=nodelist,
-                requested_nodelist=requested_nodelist,
+                reason=reason,
             )
             job.status = status
             jobs.append(job)

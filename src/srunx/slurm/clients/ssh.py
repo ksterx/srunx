@@ -878,7 +878,7 @@ class SlurmSSHClient:
                 cpus=entry.get("cpus"),
                 gpus=entry.get("gpus"),
                 nodelist=entry.get("nodelist") or None,
-                requested_nodelist=entry.get("requested_nodelist") or None,
+                reason=entry.get("reason") or None,
                 elapsed_time=entry.get("elapsed_time"),
                 time_limit=entry.get("time_limit"),
             )
