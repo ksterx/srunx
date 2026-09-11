@@ -101,7 +101,7 @@ def squeue(
     Shows all users' jobs by default (matching native ``squeue``).
 
     Default columns: Job ID, User, Name, Status, CPUs, GPUs,
-    Elapsed, NodeList. Use ``--show-partition`` / ``--show-limit`` /
+    Elapsed, Assigned Node, Reason. Use ``--show-partition`` / ``--show-limit`` /
     ``--show-nodes`` (or ``-a`` / ``--all``) to surface the remaining
     SLURM fields. ``--format json`` always emits every field
     regardless of these flags — scripts can pick what they need.
@@ -235,8 +235,8 @@ def _render_squeue_table(jobs: list[Any], v: _SqueueColumnVisibility) -> Table:
     table.add_column("Elapsed", justify="right")
     if v.limit:
         table.add_column("Limit", justify="right")
-    table.add_column("NodeList / Reason", overflow="fold")
-    table.add_column("Requested NodeList", overflow="fold")
+    table.add_column("Assigned Node", overflow="fold")
+    table.add_column("Reason", overflow="fold")
 
     for job in jobs:
         status_name = job.status.name if hasattr(job, "status") else "UNKNOWN"
@@ -255,8 +255,8 @@ def _render_squeue_table(jobs: list[Any], v: _SqueueColumnVisibility) -> Table:
         row.append(getattr(job, "elapsed_time", None) or "N/A")
         if v.limit:
             row.append(getattr(job, "time_limit", None) or "N/A")
-        row.append(getattr(job, "nodelist", None) or "N/A")
-        row.append(getattr(job, "requested_nodelist", None) or "unspecified")
+        row.append(getattr(job, "nodelist", None) or "unassigned")
+        row.append(getattr(job, "reason", None) or "N/A")
         table.add_row(*row)
 
     return table
@@ -281,7 +281,7 @@ def _squeue_json(jobs: list[Any]) -> list[dict[str, Any]]:
             "cpus": getattr(job, "cpus", None),
             "gpus": getattr(job, "gpus", None),
             "nodelist": getattr(job, "nodelist", None),
-            "requested_nodelist": getattr(job, "requested_nodelist", None),
+            "reason": getattr(job, "reason", None),
             "elapsed_time": getattr(job, "elapsed_time", None),
             "time_limit": getattr(job, "time_limit", None),
         }
@@ -301,7 +301,7 @@ def _filter_squeue_jobs(
             getattr(job, "name", None),
             getattr(job, "partition", None),
             getattr(job, "nodelist", None),
-            getattr(job, "requested_nodelist", None),
+            getattr(job, "reason", None),
         )
         return any(
             pattern.search(str(value))

@@ -108,13 +108,13 @@ class TestUnavailableStates:
 class TestListJobsParsing:
     """Test the list_jobs parsing logic by mocking _run_slurm_cmd."""
 
-    # Pipe-delimited format: %i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%n|%b
-    # (job_id|partition|name|user|state|elapsed|time_limit|nodes|cpus|nodelist_or_reason|requested_nodelist|TRES_PER_NODE)
+    # Pipe-delimited format: %i|%P|%j|%u|%T|%M|%l|%D|%C|%N|%R|%b
+    # (job_id|partition|name|user|state|elapsed|time_limit|nodes|cpus|assigned_nodelist|pending_reason|TRES_PER_NODE)
     SAMPLE_SQUEUE = """\
-18431|defq|qwen3-tts|ksterx|RUNNING|1-00:03:20|UNLIMITED|1|16|dgx-node1|dgx-node1|gpu:8
-18477|defq|cosy|ksterx|RUNNING|12:30:45|UNLIMITED|1|32|dgx-node2||gpu:NVIDIA-A100:8
-18490|defq|gemma3-cpt|alice|RUNNING|5:15:00|UNLIMITED|2|64|dgx-node[3-4]|dgx-node[3-4]|gpu:4
-18500|defq|pending|bob|PENDING|0:00|UNLIMITED|1|8|(Priority)||(null)
+18431|defq|qwen3-tts|ksterx|RUNNING|1-00:03:20|UNLIMITED|1|16|dgx-node1|None assigned|gpu:8
+18477|defq|cosy|ksterx|RUNNING|12:30:45|UNLIMITED|1|32|dgx-node2|None assigned|gpu:NVIDIA-A100:8
+18490|defq|gemma3-cpt|alice|RUNNING|5:15:00|UNLIMITED|2|64|dgx-node[3-4]|None assigned|gpu:4
+18500|defq|pending|bob|PENDING|0:00|UNLIMITED|1|8|None assigned|Priority|(null)
 """
 
     def test_parse_running_jobs(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -241,10 +241,10 @@ class TestListJobsParsing:
         assert jobs[0]["cpus"] == 16
         assert jobs[2]["cpus"] == 64
 
-    def test_parse_nodelist_running_vs_pending(
+    def test_parse_assigned_nodelist_and_pending_reason(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """%R is the nodelist for running jobs and the reason for pending ones."""
+        """%N is assigned nodes while %R is a reason only for pending jobs."""
         monkeypatch.setattr(
             "srunx.slurm.clients._ssh_queries._run_slurm_cmd",
             lambda _a, _c: self.SAMPLE_SQUEUE,
@@ -254,9 +254,9 @@ class TestListJobsParsing:
 
         assert jobs[0]["nodelist"] == "dgx-node1"
         assert jobs[2]["nodelist"] == "dgx-node[3-4]"
-        assert jobs[3]["nodelist"] == "(Priority)"
-        assert jobs[0]["requested_nodelist"] == "dgx-node1"
-        assert jobs[3]["requested_nodelist"] is None
+        assert jobs[3]["nodelist"] is None
+        assert jobs[0]["reason"] is None
+        assert jobs[3]["reason"] == "Priority"
 
     def test_empty_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
@@ -280,7 +280,7 @@ class TestListJobsParsing:
 
         assert adapter.queue(me=True) == []
         assert commands == [
-            'squeue --format "%i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%n|%b" --noheader --me'
+            'squeue --format "%i|%P|%j|%u|%T|%M|%l|%D|%C|%N|%R|%b" --noheader --me'
         ]
 
     def test_required_frontend_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -300,7 +300,7 @@ class TestListJobsParsing:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """SLURM lets users pick job names containing ``|`` (e.g.
-        ``#SBATCH --job-name=foo|bar``). Such a row splits into 12
+        ``#SBATCH --job-name=foo|bar``). Such a row splits into 13
         fields; a lenient ``< 11`` check would pass and then every
         column downstream of the name would silently shift. Guards
         that we drop those rows instead of rendering misaligned data.

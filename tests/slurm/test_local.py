@@ -258,13 +258,13 @@ class TestSlurm:
     def test_queue_with_jobs(self, mock_run):
         """Test queue with jobs.
 
-        Format: %i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%n|%b — new pipe-delimited
+        Format: %i|%P|%j|%u|%T|%M|%l|%D|%C|%N|%R|%b — new pipe-delimited
         shape gained when squeue started surfacing user/CPUs/NodeList
         alongside the original columns.
         """
         mock_run.return_value.stdout = (
-            "12345|gpu|test_job1|user|RUNNING|5:00|1:00:00|1|8|node1|node1|gpu:4\n"
-            "12346|cpu|test_job2|user|PENDING|0:00|30:00|1|4|(Priority)||(null)\n"
+            "12345|gpu|test_job1|user|RUNNING|5:00|1:00:00|1|8|node1|None assigned|gpu:4\n"
+            "12346|cpu|test_job2|user|PENDING|0:00|30:00|1|4|None assigned|Priority|(null)\n"
         )
 
         client = Slurm()
@@ -278,12 +278,12 @@ class TestSlurm:
         assert jobs[0].cpus == 8
         assert jobs[0].gpus == 4  # gpu:4 per node * 1 node
         assert jobs[0].nodelist == "node1"
-        assert jobs[0].requested_nodelist == "node1"
+        assert jobs[0].reason is None
         assert jobs[1].job_id == 12346
         assert jobs[1].name == "test_job2"
         assert jobs[1]._status == JobStatus.PENDING
-        assert jobs[1].nodelist == "(Priority)"
-        assert jobs[1].requested_nodelist is None
+        assert jobs[1].nodelist is None
+        assert jobs[1].reason == "Priority"
 
     @patch("subprocess.run")
     def test_queue_with_user(self, mock_run):

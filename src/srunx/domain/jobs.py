@@ -337,9 +337,9 @@ class BaseJob(BaseModel):
         default=None,
         description="Comma-separated list of nodes (e.g., 'node[01-04]')",
     )
-    requested_nodelist: str | None = Field(
+    reason: str | None = Field(
         default=None,
-        description="Node list explicitly requested at submission, if any",
+        description="SLURM pending reason, if the job is waiting",
     )
     cpus: int | None = Field(
         default=None, ge=0, description="Total CPU count allocated to job"

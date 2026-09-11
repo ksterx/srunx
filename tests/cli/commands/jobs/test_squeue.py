@@ -1,7 +1,7 @@
 """Tests for ``srunx squeue`` (active-jobs listing).
 
 The command now mirrors native ``squeue`` semantics: all users' jobs by
-default, User/Status/CPUs/GPUs/NodeList columns, ``-u/--user`` to
+default, User/Status/CPUs/GPUs/Assigned Node/Reason columns, ``-u/--user`` to
 filter. The previous ``--show-gpus`` / ``--show-cpus`` flags are gone —
 CPUs and GPUs are always shown because the user explicitly asked for a
 combined CPU + GPU + NODELIST view.
@@ -35,6 +35,7 @@ def _make_job(
     cpus: int,
     gpus: int,
     nodelist: str,
+    reason: str | None = None,
     elapsed: str = "0:05",
     time_limit: str = "UNLIMITED",
 ) -> BaseJob:
@@ -47,6 +48,7 @@ def _make_job(
         cpus=cpus,
         gpus=gpus,
         nodelist=nodelist,
+        reason=reason,
         elapsed_time=elapsed,
         time_limit=time_limit,
     )
@@ -77,7 +79,8 @@ def mock_jobs() -> list[BaseJob]:
             nodes=1,
             cpus=4,
             gpus=0,
-            nodelist="(Priority)",
+            nodelist=None,
+            reason="Priority",
         ),
         _make_job(
             job_id=12347,
@@ -96,7 +99,7 @@ def mock_jobs() -> list[BaseJob]:
 class TestSqueueTable:
     def test_default_columns(self, runner: CliRunner, mock_jobs) -> None:
         """Default view: Job ID / User / Name / Status / CPUs / GPUs /
-        Elapsed / NodeList. Partition / Limit / Nodes are opt-in."""
+        Elapsed / Assigned Node / Reason. Partition / Limit / Nodes are opt-in."""
         with patch("srunx.slurm.local.Slurm") as mock_slurm:
             client = MagicMock()
             client.queue.return_value = mock_jobs
@@ -115,8 +118,8 @@ class TestSqueueTable:
             "CPUs",
             "GPUs",
             "Elapsed",
-            "NodeList / Reason",
-            "Requested NodeList",
+            "Assigned Node",
+            "Reason",
         ):
             assert shown in result.stdout, f"default column missing: {shown}"
         # Opt-in columns must not appear by default.
@@ -126,7 +129,8 @@ class TestSqueueTable:
         assert "alice" in result.stdout
         assert "dgx-node[1-2]" in result.stdout
         assert "RUNNING" in result.stdout
-        assert "unspecified" in result.stdout
+        assert "unassigned" in result.stdout
+        assert "Priority" in result.stdout
 
     def test_show_all_flag_reveals_every_column(
         self, runner: CliRunner, mock_jobs
@@ -151,7 +155,8 @@ class TestSqueueTable:
             "GPUs",
             "Elapsed",
             "Limit",
-            "NodeList",
+            "Assigned Node",
+            "Reason",
         ):
             assert header in result.stdout, f"column missing under -a: {header}"
 
@@ -217,7 +222,8 @@ class TestSqueueJson:
         assert first["cpus"] == 32
         assert first["gpus"] == 8
         assert first["nodelist"] == "dgx-node[1-2]"
-        assert first["requested_nodelist"] is None
+        assert first["reason"] is None
+        assert "requested_nodelist" not in first
 
     def test_empty_queue_emits_empty_list(self, runner: CliRunner) -> None:
         """Pre-existing regression — ``--format json`` on empty queue
@@ -284,7 +290,7 @@ class TestSqueueRegexFilters:
     def test_include_and_exclude_match_all_queue_location_fields(
         self, runner: CliRunner, mock_jobs
     ) -> None:
-        mock_jobs[1].requested_nodelist = "gpu-special-01"
+        mock_jobs[1].reason = "gpu-special-01"
         with patch("srunx.slurm.local.Slurm") as mock_slurm:
             client = MagicMock()
             client.queue.return_value = mock_jobs

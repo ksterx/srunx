@@ -47,8 +47,8 @@ def list_active_jobs(
     Format fields (all surfaced by :meth:`SlurmSSHClient.queue`):
     ``%i`` job_id | ``%P`` partition | ``%j`` name | ``%u`` user |
     ``%T`` state (long) | ``%M`` elapsed | ``%l`` time_limit |
-    ``%D`` nodes | ``%C`` total CPUs | ``%R`` nodelist-or-reason |
-    ``%n`` requested nodelist and ``%b`` TRES_PER_NODE (for GPU extraction).
+    ``%D`` nodes | ``%C`` total CPUs | ``%N`` assigned nodelist |
+    ``%R`` pending reason and ``%b`` TRES_PER_NODE (for GPU extraction).
 
     Returns ``(entries, seen_ids)`` so the merging caller can
     dedup sacct rows against active IDs without re-scanning.
@@ -57,7 +57,7 @@ def list_active_jobs(
     # parens (e.g. "(Resources, Priority)"), so splitting on
     # whitespace with maxsplit is fragile. Pipe is the safe
     # separator — SLURM fields never contain it.
-    fmt = "%i|%P|%j|%u|%T|%M|%l|%D|%C|%R|%n|%b"
+    fmt = "%i|%P|%j|%u|%T|%M|%l|%D|%C|%N|%R|%b"
     cmd = f'squeue --format "{fmt}" --noheader'
     if user:
         _validate_identifier(user, "user")
@@ -93,10 +93,12 @@ def list_active_jobs(
         time_limit = parts[6].strip()
         nodes_str = parts[7].strip()
         cpus_str = parts[8].strip()
-        nodelist = parts[9].strip()
-        requested_nodelist = parts[10].strip() or None
-        if requested_nodelist in {"(null)", "None assigned"}:
-            requested_nodelist = None
+        nodelist = parts[9].strip() or None
+        if nodelist in {"(null)", "None assigned"}:
+            nodelist = None
+        reason = parts[10].strip() or None
+        if state != "PENDING" or reason in {"(null)", "None assigned"}:
+            reason = None
         tres = parts[11].strip()
 
         num_nodes = int(nodes_str) if nodes_str.isdigit() else 1
@@ -129,7 +131,7 @@ def list_active_jobs(
                 "cpus": cpus_total,
                 "gpus": gpus_per_node * num_nodes,
                 "nodelist": nodelist,
-                "requested_nodelist": requested_nodelist,
+                "reason": reason,
                 "elapsed_time": elapsed,
                 "time_limit": time_limit,
             }
