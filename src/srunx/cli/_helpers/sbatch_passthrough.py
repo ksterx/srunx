@@ -2,6 +2,17 @@
 
 Reference: SLURM 24.11 ``sbatch(1)``.
 
+Verified against a live ``sbatch`` (SLURM 23.11.6) by diffing this table
+against ``sbatch --help``: zero mismatches on ``takes_value`` and zero on
+short spellings — the two properties that would misparse an argument if
+wrong. Nine entries are absent from that build's ``--help``; eight of them
+(``--network``, ``--kill-on-invalid-dep``, ``--open-mode``,
+``--acctg-freq``, ``--batch``, ``--extra-node-info``, ``--wait-all-nodes``,
+``--prefer``) exist anyway and are merely omitted from its condensed help
+text. ``--export-file`` is genuinely unknown to 23.11.6 and is kept here
+for newer builds: an older sbatch answers "unrecognized option" and stops,
+which is a clean failure, not a silent misparse.
+
 Known limitation (not fixed here): array job IDs (``123_4``) are parsed
 with ``int()`` in ``srunx.slurm.clients._ssh_queries`` — ``int("123_4")``
 is 1234 (Python's numeric-literal digit separator), so array jobs are
