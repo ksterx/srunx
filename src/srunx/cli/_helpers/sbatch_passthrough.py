@@ -221,25 +221,6 @@ _OWN_SHORT_TAKES_VALUE: dict[str, bool] = {
 }
 
 
-# The long counterparts of the value-taking entries above. Same reason
-# they are needed: a raw ``--sbatch-arg=--job-name`` is handed straight to
-# sbatch, where it takes a mandatory value — so the missing-value check
-# (which prevents sbatch from eating the script path and then reading the
-# batch script from stdin) has to know about them even though srunx models
-# them itself and they are therefore absent from SBATCH_OPTIONS.
-_OWN_LONG_TAKES_VALUE: frozenset[str] = frozenset(
-    {
-        "--chdir",
-        "--job-name",
-        "--nodes",
-        "--cpus-per-task",
-        "--partition",
-        "--time",
-        "--nodelist",
-    }
-)
-
-
 def _all_short_takes_value() -> dict[str, bool]:
     merged = dict(_OWN_SHORT_TAKES_VALUE)
     for _long, (short, takes_value) in SBATCH_OPTIONS.items():
@@ -472,8 +453,19 @@ def _short_cluster_rejected_letter(body: str) -> str | None:
     return None
 
 
-def validate_passthrough_args(tokens: Sequence[str]) -> list[str]:
+def validate_passthrough_args(
+    tokens: Sequence[str],
+    own: Sequence[OwnOptionSpec] = (),
+) -> list[str]:
     """Validate ``--sbatch-arg`` values: format (R2.6) then reject list (R2.5).
+
+    ``own`` is the live :func:`own_option_specs` view of the command's own
+    options. It is needed because srunx models some sbatch options itself
+    (``--job-name``, ``--mem``, ``--gres``, ...), so they are absent from
+    :data:`SBATCH_OPTIONS` — yet a raw ``--sbatch-arg=--job-name`` still
+    reaches sbatch, where it takes a mandatory value. Deriving the set from
+    Click rather than listing it here keeps it from drifting as options are
+    added (a hand-written list was missing 16 of them).
 
     Called once, from ``sbatch()`` after Click parsing, against the final
     ``--sbatch-arg`` list — whichever combination of rewrite-generated and
@@ -509,9 +501,12 @@ def validate_passthrough_args(tokens: Sequence[str]) -> list[str]:
             # supported way to opt into an abbreviation, so a bare ``--arr``
             # is an expected input, not an exotic one.
             canonical = _canonical_long(head)
+            own_long_takes_value = any(
+                head in spec.spellings and spec.takes_value for spec in own
+            )
             needs_value = (
                 canonical is not None and SBATCH_OPTIONS[canonical][1]
-            ) or head in _OWN_LONG_TAKES_VALUE
+            ) or own_long_takes_value
             if needs_value and "=" not in tok:
                 raise typer.BadParameter(
                     f"sbatch option {head!r} requires a value (use {head}=<value>).",

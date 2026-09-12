@@ -20,6 +20,7 @@ from srunx.cli._helpers.sbatch_helpers import (
 )
 from srunx.cli._helpers.sbatch_passthrough import (
     SBATCH_ARG_OPT,
+    own_option_specs,
     validate_passthrough_args,
 )
 from srunx.cli._helpers.transport import resolve_transport
@@ -255,7 +256,9 @@ def sbatch(
     # R2.5) once, here, before any I/O. Tokens may have arrived either
     # hand-typed or normalized by SbatchCommand.parse_args's native-option
     # rewrite (main.py registers ``sbatch`` with ``cls=SbatchCommand``).
-    passthrough = validate_passthrough_args(sbatch_arg or [])
+    passthrough = validate_passthrough_args(
+        sbatch_arg or [], own_option_specs(ctx.command.get_params(ctx))
+    )
 
     # SLURM ``--gres=gpu:N`` overrides ``--gpus-per-node`` so callers
     # can paste sbatch lines verbatim. Explicit ``--gpus-per-node`` wins

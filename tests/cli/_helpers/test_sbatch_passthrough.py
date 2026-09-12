@@ -141,18 +141,47 @@ class TestRejectBareValueTakingOption:
             validate_passthrough_args([tok])
 
     @pytest.mark.parametrize(
-        "tok", ["--job-name", "--chdir", "--nodes", "--time", "--partition"]
+        "tok", ["--job-name", "--chdir", "--nodes", "--time", "--partition", "--mem"]
     )
     def test_bare_modeled_long_option_rejected(self, tok):
         """Options srunx models itself are absent from SBATCH_OPTIONS, but a
         raw ``--sbatch-arg=--job-name`` still reaches sbatch, where it takes
         a mandatory value — so the same stdin-fallback hazard applies."""
         with pytest.raises(typer.BadParameter, match="requires a value"):
-            validate_passthrough_args([tok])
+            validate_passthrough_args([tok], _own())
 
     @pytest.mark.parametrize("tok", ["--job-name=x", "--chdir=/tmp"])
     def test_modeled_long_option_with_value_accepted(self, tok):
-        assert validate_passthrough_args([tok]) == [tok]
+        assert validate_passthrough_args([tok], _own()) == [tok]
+
+    def test_every_own_value_taking_long_is_guarded(self):
+        """Mechanical completeness check.
+
+        The set is derived from Click at call time rather than listed by
+        hand precisely so it cannot drift; a hand-written list was missing
+        16 of these. This test fails if the derivation regresses to a
+        partial source.
+        """
+        guarded = []
+        for spec in _own():
+            if not spec.takes_value:
+                continue
+            for spelling in spec.spellings:
+                if not spelling.startswith("--"):
+                    continue
+                try:
+                    validate_passthrough_args([spelling], _own())
+                except typer.BadParameter:
+                    guarded.append(spelling)
+        # Every value-taking long srunx defines must be caught when bare.
+        expected = {
+            s
+            for spec in _own()
+            if spec.takes_value
+            for s in spec.spellings
+            if s.startswith("--")
+        }
+        assert set(guarded) == expected
 
     @pytest.mark.parametrize("tok", ["--arr", "--depend", "--comm"])
     def test_bare_abbreviated_value_option_rejected(self, tok):
