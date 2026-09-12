@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Sequence
 from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -35,7 +36,9 @@ logger = get_logger(__name__)
 
 
 def _sbatch_invocation(
-    script_path: str, env_vars: dict[str, str]
+    script_path: str,
+    env_vars: dict[str, str],
+    extra_sbatch_args: Sequence[str] | None = None,
 ) -> tuple[list[str], dict[str, str] | None]:
     """Build the local ``sbatch`` argv + subprocess environment.
 
@@ -52,12 +55,26 @@ def _sbatch_invocation(
     *launcher's* PATH up front, so a job-level ``PATH`` override (which we
     still propagate to the job via ``--export=ALL``) can't hide the ``sbatch``
     executable from the launcher itself.
+
+    ``extra_sbatch_args`` (CLI-forwarded flags, e.g. ``-t`` / ``--array``)
+    are inserted after srunx's own automatic flags and before the script
+    path, matching real ``sbatch``'s "later wins" precedence. ``subprocess.run``
+    takes a list, not a shell string, so no quoting is needed here.
     """
+    extra = list(extra_sbatch_args or ())
+    if extra and any(
+        a == "--export" or a.startswith("--export=") for a in extra
+    ) and env_vars:
+        logger.warning(
+            "--export passed through overrides srunx's --export=ALL; "
+            "job env vars ({}) may not reach the job",
+            list(env_vars),
+        )
     if not env_vars:
-        return ["sbatch", "--parsable", script_path], None
+        return ["sbatch", "--parsable", *extra, script_path], None
     sbatch_bin = shutil.which("sbatch") or "sbatch"
     return (
-        [sbatch_bin, "--parsable", "--export=ALL", script_path],
+        [sbatch_bin, "--parsable", "--export=ALL", *extra, script_path],
         {**os.environ, **env_vars},
     )
 
@@ -97,6 +114,7 @@ class LocalClient:
         *,
         submission_context: SubmissionRenderContext | None = None,
         inject_job_name: bool = True,
+        extra_sbatch_args: list[str] | None = None,
     ) -> RunnableJobType:
         """Submit a job to SLURM.
 
@@ -125,6 +143,10 @@ class LocalClient:
                 conformance and ignored — the local path never injects a
                 ``--job-name`` flag (a ShellJob's own ``#SBATCH`` directives
                 always win), so there is nothing to suppress.
+            extra_sbatch_args: CLI-forwarded ``sbatch`` flags, appended to
+                the local ``sbatch`` argv after srunx's own automatic
+                flags and before the script path. See
+                :meth:`~srunx.slurm.protocols.JobOperations.submit`.
 
         Returns:
             Job instance with updated job_id and status.
@@ -153,7 +175,7 @@ class LocalClient:
                 # job env vars are present, so plain submits keep the script's
                 # / site's export policy (see _sbatch_invocation).
                 sbatch_cmd, proc_env = _sbatch_invocation(
-                    script_path, job.environment.env_vars
+                    script_path, job.environment.env_vars, extra_sbatch_args
                 )
                 if job.environment.container:
                     logger.debug(f"Using container: {job.environment.container}")
@@ -184,7 +206,7 @@ class LocalClient:
                 # --export=ALL + composed env only when env vars are present
                 # (see _sbatch_invocation) — Job branch documents the rationale.
                 sbatch_cmd, proc_env = _sbatch_invocation(
-                    script_path, job.environment.env_vars
+                    script_path, job.environment.env_vars, extra_sbatch_args
                 )
                 try:
                     result = subprocess.run(

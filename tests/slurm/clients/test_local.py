@@ -151,3 +151,102 @@ class TestLocalSubmitNoEnvPreservesExportPolicy:
         # The job still receives the overridden PATH via --export=ALL.
         assert kwargs["env"]["PATH"] == "/custom/bin"
         assert "--export=ALL" in args[0]
+
+
+class TestExtraSbatchArgs:
+    """extra_sbatch_args must reach the local sbatch argv (fixes the bug
+    where ``srunx sbatch --local script.sh -t 5:00`` silently dropped -t)."""
+
+    def test_sbatch_invocation_extra_sbatch_args_order_with_env(self):
+        from srunx.slurm.clients.local import _sbatch_invocation
+
+        with patch(
+            "srunx.slurm.clients.local.shutil.which",
+            return_value="/opt/slurm/bin/sbatch",
+        ):
+            argv, env = _sbatch_invocation(
+                "/tmp/s.sh",
+                {"FOO": "bar"},
+                ["--time=5:00", "--array=1-10"],
+            )
+
+        assert argv == [
+            "/opt/slurm/bin/sbatch",
+            "--parsable",
+            "--export=ALL",
+            "--time=5:00",
+            "--array=1-10",
+            "/tmp/s.sh",
+        ]
+        assert env is not None and env["FOO"] == "bar"
+
+    def test_sbatch_invocation_extra_sbatch_args_order_without_env(self):
+        from srunx.slurm.clients.local import _sbatch_invocation
+
+        argv, env = _sbatch_invocation(
+            "/tmp/s.sh", {}, ["--time=5:00", "--array=1-10"]
+        )
+
+        assert argv == [
+            "sbatch",
+            "--parsable",
+            "--time=5:00",
+            "--array=1-10",
+            "/tmp/s.sh",
+        ]
+        assert env is None
+
+    def test_submit_forwards_extra_sbatch_args_job(self, client):
+        job = Job(
+            name="job_extra_test",
+            command=["echo", "hi"],
+            log_dir="",
+            work_dir="",
+        )
+        with patch(
+            "srunx.slurm.clients.local.subprocess.run",
+            return_value=_fake_run_result(),
+        ) as mock_run:
+            client.submit(job, extra_sbatch_args=["--time=5:00", "--array=1-10"])
+
+        args, _kwargs = mock_run.call_args
+        argv = args[0]
+        assert "--time=5:00" in argv
+        assert "--array=1-10" in argv
+        assert argv.index("--time=5:00") < argv.index("--array=1-10") < argv.index(
+            argv[-1]
+        )
+
+    def test_submit_forwards_extra_sbatch_args_shell_job(self, client, tmp_path):
+        user_script = tmp_path / "run.sh"
+        user_script.write_text("#!/bin/bash\necho hi\n")
+        job = ShellJob(name="shell_extra_test", script_path=str(user_script))
+        with patch(
+            "srunx.slurm.clients.local.subprocess.run",
+            return_value=_fake_run_result(),
+        ) as mock_run:
+            client.submit(job, extra_sbatch_args=["--time=5:00", "--array=1-10"])
+
+        args, _kwargs = mock_run.call_args
+        argv = args[0]
+        assert "--time=5:00" in argv
+        assert "--array=1-10" in argv
+
+    def test_export_warning_when_env_present(self, client):
+        job = Job(
+            name="job_export_warn",
+            command=["echo", "hi"],
+            environment=JobEnvironment(env_vars={"FOO": "bar"}),
+            log_dir="",
+            work_dir="",
+        )
+        with (
+            patch(
+                "srunx.slurm.clients.local.subprocess.run",
+                return_value=_fake_run_result(),
+            ),
+            patch("srunx.slurm.clients.local.logger") as mock_logger,
+        ):
+            client.submit(job, extra_sbatch_args=["--export=NONE"])
+
+        assert mock_logger.warning.called

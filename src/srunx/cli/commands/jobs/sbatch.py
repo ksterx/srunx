@@ -447,35 +447,50 @@ def sbatch(
         if ctx.get_parameter_source("log_dir") == ParameterSource.COMMANDLINE
         else None
     )
-    extra_sbatch_args = _build_extra_sbatch_args(
-        ctx,
-        values={
-            "nodes": nodes,
-            "gpus_per_node": gpus_per_node,
-            "ntasks_per_node": ntasks_per_node,
-            "cpus_per_task": cpus_per_task,
-            "memory": memory,
-            "time": time,
-            "nodelist": nodelist,
-            "partition": partition,
-            "work_dir": work_dir,
-        },
-        log_dir_user=log_dir_user,
-    )
 
-    # ``--gres=gpu:N`` was parsed earlier into ``gpus_per_node``; if
-    # the user typed ``--gres`` (not ``--gpus-per-node``) we still
-    # need to forward the resulting value as ``--gpus-per-node=N``,
-    # because ParameterSource for ``gpus_per_node`` shows DEFAULT in
-    # that path. Avoid duplication by stripping any earlier entry.
-    if (
-        ctx.get_parameter_source("gres") == ParameterSource.COMMANDLINE
-        and gres is not None
-    ):
-        extra_sbatch_args = [
-            a for a in extra_sbatch_args if not a.startswith("--gpus-per-node")
-        ]
-        extra_sbatch_args.append(f"--gpus-per-node={gpus_per_node}")
+    # R2.8: the two job sources need different treatment here.
+    #
+    # * ShellJob (positional script): resource flags never reach the
+    #   script otherwise (no render step), so we forward everything the
+    #   user typed on the command line + the --log-dir expansion.
+    # * Job (--wrap): the rendered template already emits #SBATCH
+    #   --nodes / --cpus-per-task / --mem / --time / --output etc. from
+    #   ``job.resources`` / ``job.log_dir``. Forwarding the same values
+    #   again on the command line would just duplicate the directive —
+    #   nothing to gain and one more place to drift. Only a future
+    #   passthrough token (Phase 3) belongs here.
+    if script is not None:
+        extra_sbatch_args = _build_extra_sbatch_args(
+            ctx,
+            values={
+                "nodes": nodes,
+                "gpus_per_node": gpus_per_node,
+                "ntasks_per_node": ntasks_per_node,
+                "cpus_per_task": cpus_per_task,
+                "memory": memory,
+                "time": time,
+                "nodelist": nodelist,
+                "partition": partition,
+                "work_dir": work_dir,
+            },
+            log_dir_user=log_dir_user,
+        )
+
+        # ``--gres=gpu:N`` was parsed earlier into ``gpus_per_node``; if
+        # the user typed ``--gres`` (not ``--gpus-per-node``) we still
+        # need to forward the resulting value as ``--gpus-per-node=N``,
+        # because ParameterSource for ``gpus_per_node`` shows DEFAULT in
+        # that path. Avoid duplication by stripping any earlier entry.
+        if (
+            ctx.get_parameter_source("gres") == ParameterSource.COMMANDLINE
+            and gres is not None
+        ):
+            extra_sbatch_args = [
+                a for a in extra_sbatch_args if not a.startswith("--gpus-per-node")
+            ]
+            extra_sbatch_args.append(f"--gpus-per-node={gpus_per_node}")
+    else:
+        extra_sbatch_args = []
 
     with resolve_transport(
         profile=profile,

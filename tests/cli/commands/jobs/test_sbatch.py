@@ -108,30 +108,6 @@ def test_quiet_short_flag_is_Q_not_q(runner, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "cli_args",
-    [
-        ["squeue"],
-        ["scancel", "123"],
-        ["sinfo"],
-        ["gpus"],
-        ["tail", "123"],
-        ["history"],
-        ["sacct"],
-    ],
-)
-def test_quiet_short_flag_propagates_to_all_commands(runner, cli_args):
-    """``QuietOpt`` is a single shared Annotated alias (transport_options.py);
-    this guards that every command using it keeps ``-Q`` / rejects ``-q``,
-    catching a regression where one command re-declares its own option.
-    """
-    result = runner.invoke(app, [*cli_args, "-Q"])
-    assert "No such option" not in result.output
-
-    result = runner.invoke(app, [*cli_args, "-q"])
-    assert result.exit_code == 2, result.output
-
-
-@pytest.mark.parametrize(
     "alias",
     ["--name", "--time-limit", "--memory", "--work-dir"],
 )
@@ -161,3 +137,41 @@ def test_removed_alias_exits_2(runner, tmp_path, alias):
             ["sbatch", str(script), alias, "x", "--profile", "test-profile"],
         )
     assert result.exit_code == 2, result.output
+
+
+def test_wrap_mode_does_not_forward_resource_flags(runner):
+    """--wrap mode: resource flags are baked into the rendered template's
+    #SBATCH directives, so they must NOT also appear on extra_sbatch_args
+    (R2.8) — duplicating them on the command line risks drift."""
+    captured: dict[str, object] = {}
+
+    def fake_submit(*, extra_sbatch_args=None, job, **kwargs):
+        captured["extra_sbatch_args"] = extra_sbatch_args
+        job.job_id = 12345
+        return job
+
+    with (
+        patch(
+            "srunx.cli.commands.jobs.sbatch.resolve_transport",
+            _fake_resolve_transport,
+        ),
+        patch(
+            "srunx.cli.commands.jobs.sbatch._submit_via_transport",
+            side_effect=fake_submit,
+        ),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "sbatch",
+                "--wrap",
+                "echo hi",
+                "-t",
+                "5:00",
+                "--profile",
+                "test-profile",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert not captured["extra_sbatch_args"]

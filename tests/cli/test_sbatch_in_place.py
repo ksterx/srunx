@@ -300,9 +300,45 @@ def test_extra_sbatch_args_forwarded_in_place(
 
     assert result.exit_code == 0, result.stdout + result.stderr
     extra = job_ops.submit_remote_sbatch.call_args.kwargs["extra_sbatch_args"]
-    assert "--nodes=4" in extra
-    assert "--gpus-per-node=2" in extra  # --gres parsed into gpus_per_node
-    assert "--time=1:00:00" in extra
+    # Exact order: native flags in _SBATCH_FLAG_BY_PARAM definition order
+    # (nodes before time), then the --gres-derived gpus-per-node correction
+    # appended last (R2.3).
+    assert extra == ["--nodes=4", "--time=1:00:00", "--gpus-per-node=2"]
+
+
+def test_extra_sbatch_args_forwarded_temp_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI resource flags reach sbatch on the TEMP_UPLOAD path too (the bug
+    this feature fixes: they used to be silently dropped there)."""
+    mount_local = tmp_path / "ml-project"
+    mount_local.mkdir()
+    outside_script = tmp_path / "scratch" / "throwaway.sbatch"
+    outside_script.parent.mkdir()
+    outside_script.write_text("#!/bin/bash\necho hi\n")
+
+    profile = _stub_profile(
+        tmp_path, mount_local=mount_local, remote="/cluster/share/ml-project"
+    )
+    job_ops = _patch_transport(monkeypatch, profile)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "sbatch",
+            str(outside_script),
+            "--profile",
+            "ml-cluster",
+            "-t",
+            "5:00",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    job_ops.submit.assert_called_once()
+    extra = job_ops.submit.call_args.kwargs["extra_sbatch_args"]
+    assert extra == ["--time=5:00"]
 
 
 def test_lock_is_held_during_submit(

@@ -92,7 +92,12 @@ class TestSSHAdapterRun:
         submit_calls: list[dict[str, object]] = []
 
         def fake_submit(
-            script_content: str, *, job_name=None, dependency=None, job_env_vars=None
+            script_content: str,
+            *,
+            job_name=None,
+            dependency=None,
+            job_env_vars=None,
+            extra_sbatch_args=None,
         ):
             submit_calls.append({"content": script_content, "name": job_name})
             sj = MagicMock()
@@ -605,7 +610,12 @@ class TestSSHAdapterRunSubmissionContext:
         captured: dict[str, object] = {}
 
         def fake_submit(
-            script_content: str, *, job_name=None, dependency=None, job_env_vars=None
+            script_content: str,
+            *,
+            job_name=None,
+            dependency=None,
+            job_env_vars=None,
+            extra_sbatch_args=None,
         ):
             captured["content"] = script_content
             sj = MagicMock()
@@ -665,7 +675,12 @@ class TestSSHAdapterRunSubmissionContext:
         captured: dict[str, object] = {}
 
         def fake_submit(
-            script_content: str, *, job_name=None, dependency=None, job_env_vars=None
+            script_content: str,
+            *,
+            job_name=None,
+            dependency=None,
+            job_env_vars=None,
+            extra_sbatch_args=None,
         ):
             captured["content"] = script_content
             sj = MagicMock()
@@ -714,7 +729,12 @@ class TestSSHAdapterRunSubmissionContext:
         captured: dict[str, object] = {}
 
         def fake_submit(
-            script_content: str, *, job_name=None, dependency=None, job_env_vars=None
+            script_content: str,
+            *,
+            job_name=None,
+            dependency=None,
+            job_env_vars=None,
+            extra_sbatch_args=None,
         ):
             captured["content"] = script_content
             sj = MagicMock()
@@ -764,7 +784,12 @@ class TestSSHAdapterRunSubmissionContext:
         )
 
         def fake_submit(
-            script_content: str, *, job_name=None, dependency=None, job_env_vars=None
+            script_content: str,
+            *,
+            job_name=None,
+            dependency=None,
+            job_env_vars=None,
+            extra_sbatch_args=None,
         ):
             sj = MagicMock()
             sj.job_id = "4242"
@@ -904,7 +929,12 @@ class TestSubmitForwardsJobEnv:
         captured: dict[str, object] = {}
 
         def fake_submit(
-            script_content: str, *, job_name=None, dependency=None, job_env_vars=None
+            script_content: str,
+            *,
+            job_name=None,
+            dependency=None,
+            job_env_vars=None,
+            extra_sbatch_args=None,
         ):
             captured["job_env_vars"] = job_env_vars
             sj = MagicMock()
@@ -922,3 +952,43 @@ class TestSubmitForwardsJobEnv:
         adapter.submit(job)
 
         assert captured["job_env_vars"] == {"FOO": "bar"}
+
+    def test_submit_forwards_extra_sbatch_args_to_submit_sbatch_job(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """CLI resource flags must reach sbatch on the TEMP_UPLOAD path too
+        (fixes the bug where they silently no-op'd here)."""
+        from srunx.domain import ShellJob
+
+        script = tmp_path / "train.sh"
+        script.write_text("#!/bin/bash\necho hi\n")
+
+        adapter = _bare_adapter()
+        job = ShellJob(name="train", script_path=str(script))
+
+        captured: dict[str, object] = {}
+
+        def fake_submit(
+            script_content: str,
+            *,
+            job_name=None,
+            dependency=None,
+            job_env_vars=None,
+            extra_sbatch_args=None,
+        ):
+            captured["extra_sbatch_args"] = extra_sbatch_args
+            sj = MagicMock()
+            sj.job_id = "9"
+            sj.name = job_name
+            return sj
+
+        adapter._client.slurm.submit_sbatch_job = fake_submit  # type: ignore[method-assign,assignment]
+        monkeypatch.setattr(
+            SlurmSSHClient,
+            "_record_job_submission",
+            staticmethod(lambda *a, **k: None),
+        )
+
+        adapter.submit(job, extra_sbatch_args=["--time=5:00", "--array=1-10"])
+
+        assert captured["extra_sbatch_args"] == ["--time=5:00", "--array=1-10"]

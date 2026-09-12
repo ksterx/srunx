@@ -638,6 +638,7 @@ class SlurmSSHClient:
         *,
         submission_context: SubmissionRenderContext | None = None,
         inject_job_name: bool = True,
+        extra_sbatch_args: list[str] | None = None,
     ) -> RunnableJobType:
         """Submit *job* over SSH and return it with ``job_id`` populated.
 
@@ -659,6 +660,9 @@ class SlurmSSHClient:
         profile>``, ``scheduler_key='ssh:<profile>'``) triple so the
         poller can look the job up under the right transport. DB writes
         are best-effort and never mask an sbatch success.
+
+        ``extra_sbatch_args`` are forwarded to
+        ``submit_sbatch_job`` verbatim (TEMP_UPLOAD path).
         """
         import tempfile as _tempfile
 
@@ -722,6 +726,7 @@ class SlurmSSHClient:
                     script_content,
                     job_name=job.name if inject_job_name else None,
                     job_env_vars=job.environment.env_vars,
+                    extra_sbatch_args=extra_sbatch_args,
                 )
         except paramiko.AuthenticationException as exc:
             raise TransportAuthError(f"SSH authentication failed: {exc}") from exc
