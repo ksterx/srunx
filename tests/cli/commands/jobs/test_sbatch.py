@@ -65,3 +65,67 @@ def test_positional_script_forwards_env_to_shell_job(runner, tmp_path):
     built = captured["job"]
     assert isinstance(built, ShellJob)
     assert built.environment.env_vars == {"FOO": "bar"}
+
+
+def test_quiet_short_flag_is_Q_not_q(runner, tmp_path):
+    """``-q`` is real SLURM's short form of ``--qos`` (a value option), so
+    srunx's own ``--quiet`` must not shadow it. ``-Q`` is the real sbatch
+    short form of ``--quiet``.
+
+    NOTE: this will be rewritten in Phase 3 to assert
+    ``-q normal`` -> ``extra_sbatch_args == ["--qos=normal"]`` once ``-q``
+    is repurposed as a passthrough for real sbatch ``--qos``.
+    """
+    script = tmp_path / "run.sh"
+    script.write_text("#!/bin/bash\necho hi\n")
+
+    def fake_submit(*, job, **kwargs):
+        job.job_id = 12345
+        return job
+
+    with (
+        patch(
+            "srunx.cli.commands.jobs.sbatch.resolve_transport",
+            _fake_resolve_transport,
+        ),
+        patch(
+            "srunx.cli.commands.jobs.sbatch._submit_via_transport",
+            side_effect=fake_submit,
+        ),
+    ):
+        result = runner.invoke(
+            app,
+            ["sbatch", str(script), "-Q", "--profile", "test-profile"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "No such option" not in result.output
+
+        result = runner.invoke(
+            app,
+            ["sbatch", str(script), "-q", "--profile", "test-profile"],
+        )
+        assert result.exit_code == 2, result.output
+
+
+@pytest.mark.parametrize(
+    "cli_args",
+    [
+        ["squeue"],
+        ["scancel", "123"],
+        ["sinfo"],
+        ["gpus"],
+        ["tail", "123"],
+        ["history"],
+        ["sacct"],
+    ],
+)
+def test_quiet_short_flag_propagates_to_all_commands(runner, cli_args):
+    """``QuietOpt`` is a single shared Annotated alias (transport_options.py);
+    this guards that every command using it keeps ``-Q`` / rejects ``-q``,
+    catching a regression where one command re-declares its own option.
+    """
+    result = runner.invoke(app, [*cli_args, "-Q"])
+    assert "No such option" not in result.output
+
+    result = runner.invoke(app, [*cli_args, "-q"])
+    assert result.exit_code == 2, result.output

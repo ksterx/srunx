@@ -95,6 +95,10 @@ Per-invocation overrides:
 - `SRUNX_SYNC_AUTO=0` / `SRUNX_SYNC_REQUIRE_CLEAN=1` etc.
 
 ##### Transport Selection (unified CLI)
+`--quiet`'s short flag is `-Q` (not `-q`) to match real sbatch/squeue/scancel,
+where `-q` is short for `--qos` (a value-taking option); `-q` therefore exits 2
+today and is reserved for a future `--qos` passthrough.
+
 All job-management commands above accept `--profile <name>` / `--local` /
 `--quiet`. Resolution order:
 1. `--profile <name>` (explicit)
