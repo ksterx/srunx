@@ -10,6 +10,7 @@ from typing import Annotated
 
 import typer
 
+from srunx.cli._helpers.sbatch_passthrough import SbatchCommand
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.cli.commands.config import config_app
 from srunx.cli.commands.jobs.gpus import gpus
@@ -75,7 +76,7 @@ app.add_typer(template_app, name="template")
 # Register root-level commands (moved into commands/*; wire them up here
 # so ``srunx.cli.main.app`` keeps its historical surface).
 app.command()(ui)
-app.command("sbatch")(sbatch)
+app.command("sbatch", cls=SbatchCommand)(sbatch)
 app.command("squeue")(squeue)
 app.command("scancel")(scancel)
 app.command("sinfo")(sinfo)

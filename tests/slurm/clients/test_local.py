@@ -183,9 +183,7 @@ class TestExtraSbatchArgs:
     def test_sbatch_invocation_extra_sbatch_args_order_without_env(self):
         from srunx.slurm.clients.local import _sbatch_invocation
 
-        argv, env = _sbatch_invocation(
-            "/tmp/s.sh", {}, ["--time=5:00", "--array=1-10"]
-        )
+        argv, env = _sbatch_invocation("/tmp/s.sh", {}, ["--time=5:00", "--array=1-10"])
 
         assert argv == [
             "sbatch",
@@ -213,8 +211,10 @@ class TestExtraSbatchArgs:
         argv = args[0]
         assert "--time=5:00" in argv
         assert "--array=1-10" in argv
-        assert argv.index("--time=5:00") < argv.index("--array=1-10") < argv.index(
-            argv[-1]
+        assert (
+            argv.index("--time=5:00")
+            < argv.index("--array=1-10")
+            < argv.index(argv[-1])
         )
 
     def test_submit_forwards_extra_sbatch_args_shell_job(self, client, tmp_path):

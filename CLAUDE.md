@@ -48,11 +48,58 @@ srunx-specific commands that don't map to a SLURM binary:
 - `uv run srunx tail <job_id>` - Show the last 10 lines of the job log (matches native `tail`; use `-n N` for a different cap, `--all` to dump the whole file)
 - `uv run srunx tail <job_id> --follow` - Stream job logs. Works over SSH via periodic `tail_log_incremental` polls; tune with `--interval <seconds>` (default 2s). Ctrl+C exits
 
-`sbatch` accepts the standard SLURM short flags (`-J` / `-N` / `-n` / `-c` /
-`-t` / `-p` / `-w` / `-D`) and `--gres=gpu:N`. srunx-specific extensions
+`sbatch` accepts the standard SLURM short flags (`-J` / `-N` / `-c` /
+`-t` / `-p` / `-w` / `-D`) and `--gres=gpu:N`. `-n` is also accepted, but
+(per the parity section below) as a real-sbatch passthrough for
+`--ntasks`, not a modeled srunx option. srunx-specific extensions
 (`--profile` / `--conda` / `--venv` / `--container` / `--template` / etc.)
 layer on top. `status` was intentionally dropped — use `squeue -j <id>` for
 active jobs or `history -j <id>` for finished jobs.
+
+##### `sbatch` flag parity with real SLURM
+
+`srunx sbatch`'s own flag spellings now match real `sbatch` exactly — same
+spelling, same meaning, everywhere:
+
+- **`-Q` is `--quiet`, `-q` is `--qos`** (a value option), matching real
+  `sbatch`/`squeue`/`scancel`. srunx never defines its own `-q`.
+- **Native sbatch options srunx doesn't model itself pass straight
+  through** — `--array`, `--qos`, `--dependency`, `--output`, `--error`,
+  `--exclusive`, `--mail-type`, and the rest of the table in
+  `src/srunx/cli/_helpers/sbatch_passthrough.py` (`SBATCH_OPTIONS`) are
+  recognized in all their real forms (`--array=1-10`, `--array 1-10`,
+  `-a 1-10`, `-a1-10`) and forwarded to the actual `sbatch` invocation.
+  Options with an *optional* argument (`--exclusive`, `--nice`, ...) only
+  accept a value via `=` (matching `getopt_long`'s optional-argument
+  rule) — a bare `--exclusive script.sh` cannot swallow the script path.
+  **Long-option abbreviations are not recognized here** (unlike real
+  `sbatch`'s `getopt_long`) — use `--sbatch-arg=--arr=1-10` to opt in to
+  an abbreviation explicitly.
+- **`--sbatch-arg <token>`** is the escape hatch for any sbatch option
+  the table above doesn't cover yet — pass one raw `-`-prefixed token,
+  repeatable.
+- **A handful of sbatch spellings are rejected outright** (via the table
+  or `--sbatch-arg`, exact match or true `getopt_long`-style abbreviation):
+  `--parsable`, `--test-only`, `--quiet`/`-Q`, `--wrap`, `--help`/`-h`,
+  `--usage`, `--version`/`-V`. These would either corrupt srunx's job-ID
+  parsing (`--test-only`, `--parsable`), silently swallow the job-ID
+  output (`--quiet`), or bypass srunx's own script/`--wrap` handling.
+- **Passthrough always wins over srunx's own generated flags** — e.g.
+  `--log-dir L --output O` expands to
+  `--output=L/... --error=L/... --output=O`; sbatch's own "last wins"
+  rule means the user's `--output=O` sticks (and `--error` still comes
+  from `--log-dir`). Same precedence applies against `--wrap`'s
+  template-rendered `#SBATCH` directives.
+- **`-v`/`--verbose` and `-W`/`--wait` are srunx's own flags**, not real
+  sbatch's `--verbose`/`--wait` — `srunx sbatch -v` controls srunx's own
+  output, and sbatch's `-W`/`--wait` (block until the job completes,
+  scheduler-side) isn't exposed at all (different meaning from srunx's
+  own `--wait`, which polls after submission).
+- **Known limitation**: array job IDs (e.g. `123_4`) are parsed with
+  `int()` in `srunx.slurm.clients._ssh_queries`, which silently drops the
+  `_4` suffix (`int("123_4")` is `1234`, Python's digit-separator
+  syntax) — `squeue`/`history` mis-track array jobs submitted via
+  `--array`. Not fixed by this passthrough; tracked separately.
 
 ##### Auto-sync + in-place execution
 

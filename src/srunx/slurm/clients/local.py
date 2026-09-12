@@ -62,9 +62,11 @@ def _sbatch_invocation(
     takes a list, not a shell string, so no quoting is needed here.
     """
     extra = list(extra_sbatch_args or ())
-    if extra and any(
-        a == "--export" or a.startswith("--export=") for a in extra
-    ) and env_vars:
+    if (
+        extra
+        and any(a == "--export" or a.startswith("--export=") for a in extra)
+        and env_vars
+    ):
         logger.warning(
             "--export passed through overrides srunx's --export=ALL; "
             "job env vars ({}) may not reach the job",

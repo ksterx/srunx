@@ -18,6 +18,7 @@ from srunx.cli._helpers.sbatch_helpers import (
     _resolve_job_name,
     _submit_via_transport,
 )
+from srunx.cli._helpers.sbatch_passthrough import validate_passthrough_args
 from srunx.cli._helpers.transport import resolve_transport
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.common.config import get_config
@@ -67,9 +68,7 @@ def sbatch(
     ] = None,
     work_dir: Annotated[
         str | None,
-        typer.Option(
-            "-D", "--chdir", help="Working directory for the job"
-        ),
+        typer.Option("-D", "--chdir", help="Working directory for the job"),
     ] = None,
     # Resource options
     nodes: Annotated[int, typer.Option("-N", "--nodes", help="Number of nodes")] = 1,
@@ -210,6 +209,19 @@ def sbatch(
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Show verbose output")
     ] = False,
+    sbatch_arg: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--sbatch-arg",
+            help=(
+                "Pass one raw sbatch option token through verbatim "
+                "(repeatable). Escape hatch for sbatch options srunx does "
+                "not model directly; most native SLURM spellings "
+                "(--array, --qos, -d ...) are recognized and routed here "
+                "automatically without needing this flag."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Submit a SLURM job (matches the SLURM ``sbatch`` invocation shape).
 
@@ -235,6 +247,12 @@ def sbatch(
             "Missing job source. Provide a script path or use --wrap <command>.",
             param_hint="<script> / --wrap",
         )
+
+    # Validate the final --sbatch-arg list (format R2.6 + reject list
+    # R2.5) once, here, before any I/O. Tokens may have arrived either
+    # hand-typed or normalized by SbatchCommand.parse_args's native-option
+    # rewrite (main.py registers ``sbatch`` with ``cls=SbatchCommand``).
+    passthrough = validate_passthrough_args(sbatch_arg or [])
 
     # SLURM ``--gres=gpu:N`` overrides ``--gpus-per-node`` so callers
     # can paste sbatch lines verbatim. Explicit ``--gpus-per-node`` wins
@@ -452,13 +470,14 @@ def sbatch(
     #
     # * ShellJob (positional script): resource flags never reach the
     #   script otherwise (no render step), so we forward everything the
-    #   user typed on the command line + the --log-dir expansion.
+    #   user typed on the command line + the --log-dir expansion, then
+    #   the passthrough tokens last (so passthrough wins ties per R5).
     # * Job (--wrap): the rendered template already emits #SBATCH
     #   --nodes / --cpus-per-task / --mem / --time / --output etc. from
     #   ``job.resources`` / ``job.log_dir``. Forwarding the same values
     #   again on the command line would just duplicate the directive —
-    #   nothing to gain and one more place to drift. Only a future
-    #   passthrough token (Phase 3) belongs here.
+    #   nothing to gain and one more place to drift. Only the passthrough
+    #   tokens belong here.
     if script is not None:
         extra_sbatch_args = _build_extra_sbatch_args(
             ctx,
@@ -489,8 +508,10 @@ def sbatch(
                 a for a in extra_sbatch_args if not a.startswith("--gpus-per-node")
             ]
             extra_sbatch_args.append(f"--gpus-per-node={gpus_per_node}")
+
+        extra_sbatch_args += passthrough
     else:
-        extra_sbatch_args = []
+        extra_sbatch_args = list(passthrough)
 
     with resolve_transport(
         profile=profile,
