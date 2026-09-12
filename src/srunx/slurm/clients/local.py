@@ -169,6 +169,7 @@ class LocalClient:
                     job,
                     temp_dir,
                     verbose,
+                    extra_sbatch_args=extra_sbatch_args,
                 )
                 logger.debug(f"Generated SLURM script at: {script_path}")
 

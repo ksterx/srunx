@@ -221,6 +221,25 @@ _OWN_SHORT_TAKES_VALUE: dict[str, bool] = {
 }
 
 
+# The long counterparts of the value-taking entries above. Same reason
+# they are needed: a raw ``--sbatch-arg=--job-name`` is handed straight to
+# sbatch, where it takes a mandatory value — so the missing-value check
+# (which prevents sbatch from eating the script path and then reading the
+# batch script from stdin) has to know about them even though srunx models
+# them itself and they are therefore absent from SBATCH_OPTIONS.
+_OWN_LONG_TAKES_VALUE: frozenset[str] = frozenset(
+    {
+        "--chdir",
+        "--job-name",
+        "--nodes",
+        "--cpus-per-task",
+        "--partition",
+        "--time",
+        "--nodelist",
+    }
+)
+
+
 def _all_short_takes_value() -> dict[str, bool]:
     merged = dict(_OWN_SHORT_TAKES_VALUE)
     for _long, (short, takes_value) in SBATCH_OPTIONS.items():
@@ -490,11 +509,10 @@ def validate_passthrough_args(tokens: Sequence[str]) -> list[str]:
             # supported way to opt into an abbreviation, so a bare ``--arr``
             # is an expected input, not an exotic one.
             canonical = _canonical_long(head)
-            if (
-                canonical is not None
-                and SBATCH_OPTIONS[canonical][1]
-                and "=" not in tok
-            ):
+            needs_value = (
+                canonical is not None and SBATCH_OPTIONS[canonical][1]
+            ) or head in _OWN_LONG_TAKES_VALUE
+            if needs_value and "=" not in tok:
                 raise typer.BadParameter(
                     f"sbatch option {head!r} requires a value (use {head}=<value>).",
                     param_hint=SBATCH_ARG_OPT,

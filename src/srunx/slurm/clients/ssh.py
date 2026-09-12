@@ -703,7 +703,12 @@ class SlurmSSHClient:
         with _tempfile.TemporaryDirectory() as tmpdir:
             if isinstance(job, Job):
                 assert template_path is not None  # narrow for mypy
-                script_path = render_job_script(template_path, job, output_dir=tmpdir)
+                script_path = render_job_script(
+                    template_path,
+                    job,
+                    output_dir=tmpdir,
+                    extra_sbatch_args=extra_sbatch_args,
+                )
             else:  # ShellJob — narrowed by the elif above
                 script_path = render_shell_job_script(job.script_path, job, tmpdir)
             with open(script_path, encoding="utf-8") as f:

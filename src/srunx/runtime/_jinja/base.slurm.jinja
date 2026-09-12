@@ -6,7 +6,9 @@
 #SBATCH --gpus-per-node={{ gpus_per_node }}
 {% endif -%}
 #SBATCH --ntasks-per-node={{ ntasks_per_node }}
+{% if not suppress_cpus_per_task -%}
 #SBATCH --cpus-per-task={{ cpus_per_task }}
+{% endif -%}
 {% if memory_per_node -%}
 #SBATCH --mem={{ memory_per_node }}
 {% endif -%}

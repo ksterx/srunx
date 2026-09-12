@@ -1021,3 +1021,48 @@ class TestShellInjectionPrevention:
         content = Path(script_path).read_text()
         assert "conda activate 'my_env; echo pwned'" in content
         assert "conda activate my_env;" not in content
+
+
+class TestCpusPerTaskSuppression:
+    """The packaged template's ``--cpus-per-task`` default must yield to a
+    conflicting passthrough option.
+
+    Real sbatch refuses the combination outright::
+
+        sbatch: fatal: --cpus-per-task, --tres-per-task=cpu:#, and
+                --cpus-per-gpu are mutually exclusive
+
+    Since the template emits ``--cpus-per-task`` from a default the user
+    never asked for, leaving it in makes a valid ``--cpus-per-gpu`` request
+    unsubmittable. Verified against a live SLURM 23.11.6 cluster: the
+    rendered script is rejected with that fatal before this suppression and
+    accepted after it.
+    """
+
+    def _render(self, temp_dir, extra):
+        from srunx.runtime.templates import get_template_path
+
+        job = Job.model_validate({"name": "cpg", "command": ["bash", "-c", "echo hi"]})
+        path = render_job_script(
+            get_template_path("base"), job, temp_dir, extra_sbatch_args=extra
+        )
+        return Path(path).read_text()
+
+    def test_emitted_without_conflicting_passthrough(self, temp_dir):
+        assert "--cpus-per-task=" in self._render(temp_dir, None)
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            ["--gpus=1", "--cpus-per-gpu=4"],
+            ["--tres-per-task=cpu:4"],
+        ],
+    )
+    def test_suppressed_by_conflicting_passthrough(self, temp_dir, extra):
+        assert "--cpus-per-task=" not in self._render(temp_dir, extra)
+
+    def test_non_cpu_tres_per_task_does_not_suppress(self, temp_dir):
+        # Only a cpu: spec conflicts; gres/gpu does not.
+        assert "--cpus-per-task=" in self._render(
+            temp_dir, ["--tres-per-task=gres/gpu:1"]
+        )

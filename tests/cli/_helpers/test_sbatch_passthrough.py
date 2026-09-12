@@ -140,6 +140,20 @@ class TestRejectBareValueTakingOption:
         with pytest.raises(typer.BadParameter, match="requires a value"):
             validate_passthrough_args([tok])
 
+    @pytest.mark.parametrize(
+        "tok", ["--job-name", "--chdir", "--nodes", "--time", "--partition"]
+    )
+    def test_bare_modeled_long_option_rejected(self, tok):
+        """Options srunx models itself are absent from SBATCH_OPTIONS, but a
+        raw ``--sbatch-arg=--job-name`` still reaches sbatch, where it takes
+        a mandatory value — so the same stdin-fallback hazard applies."""
+        with pytest.raises(typer.BadParameter, match="requires a value"):
+            validate_passthrough_args([tok])
+
+    @pytest.mark.parametrize("tok", ["--job-name=x", "--chdir=/tmp"])
+    def test_modeled_long_option_with_value_accepted(self, tok):
+        assert validate_passthrough_args([tok]) == [tok]
+
     @pytest.mark.parametrize("tok", ["--arr", "--depend", "--comm"])
     def test_bare_abbreviated_value_option_rejected(self, tok):
         """The module docstring advertises ``--sbatch-arg=--arr=1-10`` as the
