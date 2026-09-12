@@ -129,3 +129,35 @@ def test_quiet_short_flag_propagates_to_all_commands(runner, cli_args):
 
     result = runner.invoke(app, [*cli_args, "-q"])
     assert result.exit_code == 2, result.output
+
+
+@pytest.mark.parametrize(
+    "alias",
+    ["--name", "--time-limit", "--memory", "--work-dir"],
+)
+def test_removed_alias_exits_2(runner, tmp_path, alias):
+    """These long-form aliases duplicated a shorter/native flag
+    (--job-name, --time, --mem, --chdir respectively) and are removed to
+    match real sbatch's option surface (R4)."""
+    script = tmp_path / "run.sh"
+    script.write_text("#!/bin/bash\necho hi\n")
+
+    def fake_submit(*, job, **kwargs):
+        job.job_id = 12345
+        return job
+
+    with (
+        patch(
+            "srunx.cli.commands.jobs.sbatch.resolve_transport",
+            _fake_resolve_transport,
+        ),
+        patch(
+            "srunx.cli.commands.jobs.sbatch._submit_via_transport",
+            side_effect=fake_submit,
+        ),
+    ):
+        result = runner.invoke(
+            app,
+            ["sbatch", str(script), alias, "x", "--profile", "test-profile"],
+        )
+    assert result.exit_code == 2, result.output

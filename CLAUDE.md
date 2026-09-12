@@ -289,7 +289,7 @@ without grep:
 ### Direct Usage Examples
 
 #### Job Submission
-- `uv run srunx sbatch --wrap "python train.py" --name ml_job --gpus-per-node 1`
+- `uv run srunx sbatch --wrap "python train.py" --job-name ml_job --gpus-per-node 1`
 - `uv run srunx sbatch train.sh --conda ml_env --nodes 2`
 - `uv run srunx sbatch --wrap "python eval.py" --gres=gpu:4`  # SLURM-native --gres form
 
@@ -317,7 +317,7 @@ uv run srunx sinfo --partition gpu
 ```
 
 #### SSH Integration
-- `uv run srunx sbatch train.sh --profile dgx-server --name remote_training`
+- `uv run srunx sbatch train.sh --profile dgx-server --job-name remote_training`
 - `uv run srunx ssh add --profile myserver --hostname dgx.example.com --username researcher`
 
 #### Workflows

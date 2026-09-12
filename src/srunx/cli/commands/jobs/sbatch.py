@@ -60,7 +60,7 @@ def sbatch(
     quiet: QuietOpt = False,
     name: Annotated[
         str,
-        typer.Option("-J", "--name", "--job-name", help="Job name (sbatch -J)"),
+        typer.Option("-J", "--job-name", help="Job name (sbatch -J)"),
     ] = "job",
     log_dir: Annotated[
         str | None, typer.Option("--log-dir", help="Log directory")
@@ -68,7 +68,7 @@ def sbatch(
     work_dir: Annotated[
         str | None,
         typer.Option(
-            "-D", "--work-dir", "--chdir", help="Working directory for the job"
+            "-D", "--chdir", help="Working directory for the job"
         ),
     ] = None,
     # Resource options
@@ -95,14 +95,13 @@ def sbatch(
     ] = 1,
     memory: Annotated[
         str | None,
-        typer.Option("--mem", "--memory", help="Memory per node (e.g., '32GB', '1TB')"),
+        typer.Option("--mem", help="Memory per node (e.g., '32GB', '1TB')"),
     ] = None,
     time: Annotated[
         str | None,
         typer.Option(
             "-t",
             "--time",
-            "--time-limit",
             help="Time limit (e.g., '1:00:00', '30:00', '1-12:00:00')",
         ),
     ] = None,

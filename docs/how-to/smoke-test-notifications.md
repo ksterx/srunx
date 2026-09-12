@@ -55,7 +55,7 @@ Estimated wall time: **~15 minutes**.
    ```bash
    uv run srunx sbatch --wrap "\"
      bash -c 'echo hi && sleep 10' \
-     --name smoke --endpoint smoke --preset all
+     --job-name smoke --endpoint smoke --preset all
    ```
    Verify in the server logs that
    `Starting 2 background poller(s)` appeared at startup.
@@ -65,7 +65,7 @@ Estimated wall time: **~15 minutes**.
    ```bash
    # 4a. Submit with the legacy --slack flag (uses SLACK_WEBHOOK_URL env)
    SLACK_WEBHOOK_URL='<YOUR_URL>' uv run srunx sbatch --wrap "\"
-     bash -c 'echo hi && sleep 10' --name smoke --slack
+     bash -c 'echo hi && sleep 10' --job-name smoke --slack
    # 4b. Grab the returned SLURM job id and create a watch+sub:
    curl -s http://127.0.0.1:8000/api/watches \
      -H 'content-type: application/json' \

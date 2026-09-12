@@ -17,13 +17,13 @@ srunx sbatch --wrap "python my_script.py"
 Submit with specific resources:
 
 ``` bash
-srunx sbatch --wrap "python train.py" --name ml_job --gpus-per-node 1 --nodes 2
+srunx sbatch --wrap "python train.py" --job-name ml_job --gpus-per-node 1 --nodes 2
 ```
 
 Submit with conda environment:
 
 ``` bash
-srunx sbatch --wrap "python process.py" --conda ml_env --memory 32GB
+srunx sbatch --wrap "python process.py" --conda ml_env --mem 32GB
 ```
 
 ## Job Management
