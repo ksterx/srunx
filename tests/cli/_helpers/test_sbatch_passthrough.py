@@ -132,13 +132,13 @@ class TestRejectBareValueTakingOption:
     @pytest.mark.parametrize("tok", ["--array", "--comment", "--account"])
     def test_bare_value_option_rejected(self, tok):
         with pytest.raises(typer.BadParameter, match="requires a value"):
-            validate_passthrough_args([tok])
+            validate_passthrough_args([tok], _own())
 
     @pytest.mark.parametrize("tok", ["-a", "-t", "-d", "-o"])
     def test_bare_short_value_option_rejected(self, tok):
         """Same hazard via the short spelling."""
         with pytest.raises(typer.BadParameter, match="requires a value"):
-            validate_passthrough_args([tok])
+            validate_passthrough_args([tok], _own())
 
     @pytest.mark.parametrize(
         "tok", ["--job-name", "--chdir", "--nodes", "--time", "--partition", "--mem"]
@@ -189,11 +189,11 @@ class TestRejectBareValueTakingOption:
         way to opt into an abbreviation, so a bare abbreviation is an
         expected input and must be caught the same way."""
         with pytest.raises(typer.BadParameter, match="requires a value"):
-            validate_passthrough_args([tok])
+            validate_passthrough_args([tok], _own())
 
     @pytest.mark.parametrize("tok", ["-aH", "-a1-10", "--arr=1-10"])
     def test_short_and_abbreviated_with_value_accepted(self, tok):
-        assert validate_passthrough_args([tok]) == [tok]
+        assert validate_passthrough_args([tok], _own()) == [tok]
 
     @pytest.mark.parametrize("tok", ["-Ateam", "-Jtrain", "-olog.out", "-C gpu"])
     def test_attached_value_ending_in_option_letter_accepted(self, tok):
@@ -205,20 +205,20 @@ class TestRejectBareValueTakingOption:
         in ``n`` = ``--ntasks``, ``-olog.out`` in ``t`` = ``--time``).
         Checking the last character instead rejects all three.
         """
-        assert validate_passthrough_args([tok]) == [tok]
+        assert validate_passthrough_args([tok], _own()) == [tok]
 
     def test_value_taking_letter_mid_cluster_without_value_rejected(self):
         # -v takes no value, -t does and ends the cluster.
         with pytest.raises(typer.BadParameter, match="requires a value"):
-            validate_passthrough_args(["-vt"])
+            validate_passthrough_args(["-vt"], _own())
 
     @pytest.mark.parametrize("tok", ["--array=1-10", "--comment=hi"])
     def test_with_value_accepted(self, tok):
-        assert validate_passthrough_args([tok]) == [tok]
+        assert validate_passthrough_args([tok], _own()) == [tok]
 
     @pytest.mark.parametrize("tok", ["--exclusive", "--hold", "--requeue"])
     def test_valueless_options_still_accepted(self, tok):
-        assert validate_passthrough_args([tok]) == [tok]
+        assert validate_passthrough_args([tok], _own()) == [tok]
 
 
 class TestShortClusterRewrite:
@@ -274,28 +274,28 @@ class TestRejectExactAndPrefix:
     )
     def test_reject_exact_and_prefix(self, token):
         with pytest.raises(typer.BadParameter):
-            validate_passthrough_args([token])
+            validate_passthrough_args([token], _own())
 
 
 class TestRejectNonOptionToken:
     @pytest.mark.parametrize("token", ["foo", "-", "--"])
     def test_reject_non_option_token(self, token):
         with pytest.raises(typer.BadParameter):
-            validate_passthrough_args([token])
+            validate_passthrough_args([token], _own())
 
 
 def test_validate_accepts_normal_tokens():
     tokens = ["--array=1-10", "--exclusive", "--qos=normal"]
-    assert validate_passthrough_args(tokens) == tokens
+    assert validate_passthrough_args(tokens, _own()) == tokens
 
 
 def test_short_cluster_rejects_hq_and_qh_but_not_jq():
     with pytest.raises(typer.BadParameter):
-        validate_passthrough_args(["-HQ"])
+        validate_passthrough_args(["-HQ"], _own())
     with pytest.raises(typer.BadParameter):
-        validate_passthrough_args(["-QH"])
+        validate_passthrough_args(["-QH"], _own())
     # -J takes a value; "Q" here is -J's value, not a real -Q flag.
-    assert validate_passthrough_args(["-JQ"]) == ["-JQ"]
+    assert validate_passthrough_args(["-JQ"], _own()) == ["-JQ"]
 
 
 class TestTableInvariants:

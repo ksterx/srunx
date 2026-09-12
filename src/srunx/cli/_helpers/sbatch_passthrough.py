@@ -455,12 +455,16 @@ def _short_cluster_rejected_letter(body: str) -> str | None:
 
 def validate_passthrough_args(
     tokens: Sequence[str],
-    own: Sequence[OwnOptionSpec] = (),
+    own: Sequence[OwnOptionSpec],
 ) -> list[str]:
     """Validate ``--sbatch-arg`` values: format (R2.6) then reject list (R2.5).
 
     ``own`` is the live :func:`own_option_specs` view of the command's own
-    options. It is needed because srunx models some sbatch options itself
+    options. It is **required**, with no default: an omitted-argument
+    default would silently skip every srunx-own option — the same
+    "quietly partial source" failure this signature exists to prevent,
+    just moved one level up from a hand-written list to a forgotten
+    argument. It is needed because srunx models some sbatch options itself
     (``--job-name``, ``--mem``, ``--gres``, ...), so they are absent from
     :data:`SBATCH_OPTIONS` — yet a raw ``--sbatch-arg=--job-name`` still
     reaches sbatch, where it takes a mandatory value. Deriving the set from
