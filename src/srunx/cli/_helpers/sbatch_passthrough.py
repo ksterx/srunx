@@ -413,6 +413,22 @@ def _canonical_long(head: str) -> str | None:
     return matches[0] if len(matches) == 1 else None
 
 
+def _short_cluster_missing_value(body: str) -> str | None:
+    """Return the letter of a value-taking short option left without a value.
+
+    Scans a raw short-option cluster body (no leading ``-``) the way
+    getopt does: letter by letter until the first option that takes a
+    mandatory value, at which point the remainder of the cluster *is*
+    that value. Returns the offending letter only when that option ends
+    the cluster (``-a``, ``-vt``), and ``None`` otherwise — including
+    when a value is attached (``-a1-10``, ``-Ateam``).
+    """
+    for pos, c in enumerate(body):
+        if _ALL_SHORT_TAKES_VALUE.get(c, False):
+            return c if pos + 1 == len(body) else None
+    return None
+
+
 def _short_cluster_rejected_letter(body: str) -> str | None:
     """Scan a raw short-option cluster body (no leading ``-``) letter by
     letter, stopping at the first value-taking option (the remainder is
@@ -480,15 +496,18 @@ def validate_passthrough_args(tokens: Sequence[str]) -> list[str]:
                     f"(contains rejected short option '-{rejected_letter}').",
                     param_hint=SBATCH_ARG_OPT,
                 )
-            # Same stdin-fallback hazard via the short spelling: a cluster
-            # whose last letter takes a mandatory value with nothing after
-            # it (``-a``, ``-t``, ``-aH`` is fine because ``H`` is the value)
-            # would eat the script path.
-            body = head[1:]
-            if body and _ALL_SHORT_TAKES_VALUE.get(body[-1], False) and "=" not in tok:
+            # Same stdin-fallback hazard via the short spelling. Scan from
+            # the START and stop at the first value-taking letter: every
+            # character after it is that option's attached value, not more
+            # option letters. Looking at the LAST character instead would
+            # reject ``-Ateam`` / ``-Jtrain`` / ``-olog.out``, whose values
+            # merely happen to end in a letter that names a value-taking
+            # option (``m``, ``n``, ``t``).
+            missing_value_letter = _short_cluster_missing_value(head[1:])
+            if missing_value_letter is not None and "=" not in tok:
                 raise typer.BadParameter(
-                    f"sbatch option '-{body[-1]}' requires a value "
-                    f"(use -{body[-1]}<value>).",
+                    f"sbatch option '-{missing_value_letter}' requires a value "
+                    f"(use -{missing_value_letter}<value>).",
                     param_hint=SBATCH_ARG_OPT,
                 )
 

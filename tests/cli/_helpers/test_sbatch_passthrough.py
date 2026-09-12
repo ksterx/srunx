@@ -152,6 +152,23 @@ class TestRejectBareValueTakingOption:
     def test_short_and_abbreviated_with_value_accepted(self, tok):
         assert validate_passthrough_args([tok]) == [tok]
 
+    @pytest.mark.parametrize("tok", ["-Ateam", "-Jtrain", "-olog.out", "-C gpu"])
+    def test_attached_value_ending_in_option_letter_accepted(self, tok):
+        """The scan must stop at the first value-taking letter.
+
+        Everything after it is that option's attached value — even when the
+        value happens to end in a letter that names another value-taking
+        option (``-Ateam`` ends in ``m`` = ``--distribution``, ``-Jtrain``
+        in ``n`` = ``--ntasks``, ``-olog.out`` in ``t`` = ``--time``).
+        Checking the last character instead rejects all three.
+        """
+        assert validate_passthrough_args([tok]) == [tok]
+
+    def test_value_taking_letter_mid_cluster_without_value_rejected(self):
+        # -v takes no value, -t does and ends the cluster.
+        with pytest.raises(typer.BadParameter, match="requires a value"):
+            validate_passthrough_args(["-vt"])
+
     @pytest.mark.parametrize("tok", ["--array=1-10", "--comment=hi"])
     def test_with_value_accepted(self, tok):
         assert validate_passthrough_args([tok]) == [tok]
