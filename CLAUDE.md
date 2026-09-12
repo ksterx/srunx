@@ -78,8 +78,11 @@ spelling, same meaning, everywhere:
 - **`--sbatch-arg <token>`** is the escape hatch for any sbatch option
   the table above doesn't cover yet — pass one raw `-`-prefixed token,
   repeatable.
-- **A handful of sbatch spellings are rejected outright** (via the table
-  or `--sbatch-arg`, exact match or true `getopt_long`-style abbreviation):
+- **A handful of sbatch spellings are rejected outright**, by exact match
+  and by prefix-match *within the reject list* (so a hand-written
+  `--sbatch-arg=--pars` is caught too; an abbreviation typed directly as
+  `srunx sbatch --pars` is never recognized by the table in the first place
+  and Click rejects it as an unknown option — same exit 2, different message):
   `--parsable`, `--test-only`, `--quiet`/`-Q`, `--wrap`, `--help`/`-h`,
   `--usage`, `--version`/`-V`. These would either corrupt srunx's job-ID
   parsing (`--test-only`, `--parsable`), silently swallow the job-ID
@@ -90,7 +93,7 @@ spelling, same meaning, everywhere:
   rule means the user's `--output=O` sticks (and `--error` still comes
   from `--log-dir`). Same precedence applies against `--wrap`'s
   template-rendered `#SBATCH` directives.
-- **`-v`/`--verbose` and `-W`/`--wait` are srunx's own flags**, not real
+- **`-v`/`--verbose` and `--wait` are srunx's own flags**, not real
   sbatch's `--verbose`/`--wait` — `srunx sbatch -v` controls srunx's own
   output, and sbatch's `-W`/`--wait` (block until the job completes,
   scheduler-side) isn't exposed at all (different meaning from srunx's
@@ -143,8 +146,10 @@ Per-invocation overrides:
 
 ##### Transport Selection (unified CLI)
 `--quiet`'s short flag is `-Q` (not `-q`) to match real sbatch/squeue/scancel,
-where `-q` is short for `--qos` (a value-taking option); `-q` therefore exits 2
-today and is reserved for a future `--qos` passthrough.
+where `-q` is short for `--qos` (a value-taking option). On `sbatch`, `-q <value>`
+already works as the `--qos` passthrough (see the sbatch section above). On the
+other commands (`squeue` / `scancel` / `sinfo` / …), which have no `--qos`, `-q`
+is simply an unknown option and exits 2.
 
 All job-management commands above accept `--profile <name>` / `--local` /
 `--quiet`. Resolution order:

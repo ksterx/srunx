@@ -17,9 +17,8 @@ Design (see plan.md for the full rationale):
   spellings by construction (tested in
   ``tests/cli/_helpers/test_sbatch_passthrough.py``).
 * :data:`REJECTED_SBATCH_OPTIONS` — sbatch options rejected outright
-  because they would corrupt job-ID parsing (``--test-only``), silently
-  swallow output (``--quiet``/``-Q``), or bypass srunx's own script/wrap
-  handling (``--wrap``). See module-level rationale table below.
+  because they would break srunx's reading of the submission result. The
+  per-option reason is recorded in a comment directly above the table.
 * :func:`rewrite_sbatch_argv` — pure ``argv -> argv`` rewrite run *before*
   Click parses ``sbatch``'s arguments (:class:`SbatchCommand`). Recognized
   sbatch spellings are normalized into ``--sbatch-arg=<token>``; srunx's
@@ -36,10 +35,13 @@ Long-option abbreviations (``getopt_long`` style, e.g. ``--arr=1-10`` for
 any entry in :data:`SBATCH_OPTIONS` / :data:`REJECTED_SBATCH_OPTIONS`
 falls through untouched and Click reports "No such option" (simple and
 safe; use ``--sbatch-arg=--arr=1-10`` to opt in to an abbreviation
-explicitly). :func:`validate_passthrough_args` *does* honor abbreviations,
-but only for the reject list (real sbatch would resolve a rejected
-option's abbreviation the same way, so refusing to recognize it here would
-let a rejected option slip through under a shortened spelling).
+explicitly). :func:`validate_passthrough_args` *does* resolve abbreviations
+for the tokens it is handed, in two places: the reject list (real sbatch
+would resolve a rejected option's abbreviation the same way, so refusing to
+recognize it here would let a rejected option slip through under a shortened
+spelling) and the "value-taking option left bare" check (since the
+``--sbatch-arg=--arr=1-10`` form above is the advertised way to use an
+abbreviation, a bare ``--arr`` is an expected input).
 
 Table scope (R3.1b) — explicitly excluded:
 
@@ -51,8 +53,9 @@ Table scope (R3.1b) — explicitly excluded:
   completion; sbatch's ``-W``/``--wait`` has the scheduler itself block
   until the job completes. Different meanings, so the sbatch spelling is
   not exposed (a bare ``-W`` on the srunx CLI is just unknown -> exit 2).
-* ``--wait-all-nodes`` is a *different* sbatch option (delays job start
-  until all allocated nodes are booted) and is included.
+  (Note: ``--wait-all-nodes`` is a *different* sbatch option — it delays
+  job start until all allocated nodes are booted — and **is** in the
+  table; only ``-W``/``--wait`` itself is excluded.)
 * ``-v`` / ``--verbose`` is srunx's own verbose flag (own always wins —
   see :func:`rewrite_sbatch_argv`), so ``srunx sbatch -v`` controls
   srunx's own output, not sbatch's ``-v``/``--verbose``.
@@ -154,8 +157,26 @@ SBATCH_OPTIONS: dict[str, tuple[str | None, bool]] = {
     "--tres-bind": (None, True),
 }
 
-# long -> short | None. Rejected outright by validate_passthrough_args
-# (R2.5) — see the module docstring for why.
+# long -> short | None. Rejected outright by validate_passthrough_args (R2.5).
+#
+# Every entry breaks srunx's reading of the submission result. That matters
+# more than it sounds: the local path parses the job ID with
+# ``int(stdout.split(";")[0])`` and the SSH paths with
+# ``re.search(r"Submitted batch job (\d+)")``. When either fails on a job
+# that *was* submitted, srunx reports a failure the user then retries —
+# double-submitting to the cluster.
+#
+#   --parsable   srunx already passes it on the local path; a second one is
+#                harmless to sbatch but makes the intent ambiguous, and the
+#                SSH paths parse the *human* "Submitted batch job N" line,
+#                which --parsable replaces with a bare ID.
+#   --test-only  exits 0 without submitting and prints no job ID.
+#   --quiet/-Q   suppresses the job-ID output entirely.
+#   --wrap       srunx has its own --wrap; a second one bypasses the
+#                script/--wrap mutual-exclusion check.
+#   --help/-h    prints help instead of submitting.
+#   --usage      same.
+#   --version/-V same.
 REJECTED_SBATCH_OPTIONS: dict[str, str | None] = {
     "--parsable": None,
     "--test-only": None,
@@ -343,19 +364,21 @@ def rewrite_sbatch_argv(args: Sequence[str], own: Sequence[OwnOptionSpec]) -> li
                     out.append(f"-{body[pos:]}")
                     pos = body_len
                     break
+                if not takes_value:
+                    # A valueless flag does NOT swallow the rest of the
+                    # cluster: getopt_long keeps scanning, so ``-HO`` is
+                    # ``--hold --overcommit``, not ``--hold=O``.
+                    out.append(f"{SBATCH_ARG_OPT}={long_name}")
+                    pos += 1
+                    continue
                 if pos + 1 < body_len:
                     out.append(f"{SBATCH_ARG_OPT}={long_name}={body[pos + 1 :]}")
-                    pos = body_len
-                elif takes_value:
-                    if i + 1 < n:
-                        out.append(f"{SBATCH_ARG_OPT}={long_name}={args[i + 1]}")
-                        consumed_next = True
-                    else:
-                        out.append(f"{SBATCH_ARG_OPT}={long_name}")
-                    pos = body_len
+                elif i + 1 < n:
+                    out.append(f"{SBATCH_ARG_OPT}={long_name}={args[i + 1]}")
+                    consumed_next = True
                 else:
                     out.append(f"{SBATCH_ARG_OPT}={long_name}")
-                    pos = body_len
+                pos = body_len
                 break
 
             i += 2 if consumed_next else 1
@@ -374,6 +397,20 @@ def _rejected_reason(head: str) -> str | None:
         if rejected_long.startswith(head):
             return rejected_long
     return None
+
+
+def _canonical_long(head: str) -> str | None:
+    """Resolve a passthrough long name to its :data:`SBATCH_OPTIONS` key,
+    accepting a unique ``getopt_long``-style abbreviation.
+
+    Returns ``None`` when ``head`` matches no table entry, or when an
+    abbreviation is ambiguous (real sbatch errors on those too, so leaving
+    it unresolved and letting sbatch report it is the honest outcome).
+    """
+    if head in SBATCH_OPTIONS:
+        return head
+    matches = [long for long in SBATCH_OPTIONS if long.startswith(head)]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _short_cluster_rejected_letter(body: str) -> str | None:
@@ -414,12 +451,44 @@ def validate_passthrough_args(tokens: Sequence[str]) -> list[str]:
                     f"(resolves to rejected option {rejected!r}).",
                     param_hint=SBATCH_ARG_OPT,
                 )
+            # A value-taking option left bare must be rejected HERE, before
+            # any transport or sync work. Passing it on is not a harmless
+            # "sbatch will complain" case: sbatch consumes the following
+            # script path as the option's value, is left with no batch
+            # script, and falls back to reading one from stdin — which
+            # hangs an interactive shell or submits whatever is piped in.
+            #
+            # Resolve abbreviations first (``--arr`` -> ``--array``): the
+            # module docstring advertises ``--sbatch-arg=--arr=1-10`` as the
+            # supported way to opt into an abbreviation, so a bare ``--arr``
+            # is an expected input, not an exotic one.
+            canonical = _canonical_long(head)
+            if (
+                canonical is not None
+                and SBATCH_OPTIONS[canonical][1]
+                and "=" not in tok
+            ):
+                raise typer.BadParameter(
+                    f"sbatch option {head!r} requires a value (use {head}=<value>).",
+                    param_hint=SBATCH_ARG_OPT,
+                )
         else:
             rejected_letter = _short_cluster_rejected_letter(head[1:])
             if rejected_letter is not None:
                 raise typer.BadParameter(
                     f"sbatch option {tok!r} is not allowed via --sbatch-arg "
                     f"(contains rejected short option '-{rejected_letter}').",
+                    param_hint=SBATCH_ARG_OPT,
+                )
+            # Same stdin-fallback hazard via the short spelling: a cluster
+            # whose last letter takes a mandatory value with nothing after
+            # it (``-a``, ``-t``, ``-aH`` is fine because ``H`` is the value)
+            # would eat the script path.
+            body = head[1:]
+            if body and _ALL_SHORT_TAKES_VALUE.get(body[-1], False) and "=" not in tok:
+                raise typer.BadParameter(
+                    f"sbatch option '-{body[-1]}' requires a value "
+                    f"(use -{body[-1]}<value>).",
                     param_hint=SBATCH_ARG_OPT,
                 )
 

@@ -18,7 +18,10 @@ from srunx.cli._helpers.sbatch_helpers import (
     _resolve_job_name,
     _submit_via_transport,
 )
-from srunx.cli._helpers.sbatch_passthrough import validate_passthrough_args
+from srunx.cli._helpers.sbatch_passthrough import (
+    SBATCH_ARG_OPT,
+    validate_passthrough_args,
+)
 from srunx.cli._helpers.transport import resolve_transport
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.common.config import get_config
@@ -212,7 +215,7 @@ def sbatch(
     sbatch_arg: Annotated[
         list[str] | None,
         typer.Option(
-            "--sbatch-arg",
+            SBATCH_ARG_OPT,
             help=(
                 "Pass one raw sbatch option token through verbatim "
                 "(repeatable). Escape hatch for sbatch options srunx does "

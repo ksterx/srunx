@@ -113,8 +113,82 @@ def test_rewrite_required_value_may_start_with_dash():
 
 
 def test_rewrite_trailing_value_option_left_bare():
+    """The rewrite leaves a bare value-taking option alone; rejecting it is
+    :func:`validate_passthrough_args`' job (see
+    ``TestRejectBareValueTakingOption``)."""
     result = rewrite_sbatch_argv(["s.sh", "--array"], _own())
     assert result == ["s.sh", "--sbatch-arg=--array"]
+
+
+class TestRejectBareValueTakingOption:
+    """A value-taking option left bare must be rejected before submission.
+
+    Letting it through is not a harmless "sbatch will complain" case:
+    sbatch consumes the following script path as the option's value, is
+    left with no batch script, and falls back to reading one from stdin —
+    hanging an interactive shell or submitting whatever is piped in.
+    """
+
+    @pytest.mark.parametrize("tok", ["--array", "--comment", "--account"])
+    def test_bare_value_option_rejected(self, tok):
+        with pytest.raises(typer.BadParameter, match="requires a value"):
+            validate_passthrough_args([tok])
+
+    @pytest.mark.parametrize("tok", ["-a", "-t", "-d", "-o"])
+    def test_bare_short_value_option_rejected(self, tok):
+        """Same hazard via the short spelling."""
+        with pytest.raises(typer.BadParameter, match="requires a value"):
+            validate_passthrough_args([tok])
+
+    @pytest.mark.parametrize("tok", ["--arr", "--depend", "--comm"])
+    def test_bare_abbreviated_value_option_rejected(self, tok):
+        """The module docstring advertises ``--sbatch-arg=--arr=1-10`` as the
+        way to opt into an abbreviation, so a bare abbreviation is an
+        expected input and must be caught the same way."""
+        with pytest.raises(typer.BadParameter, match="requires a value"):
+            validate_passthrough_args([tok])
+
+    @pytest.mark.parametrize("tok", ["-aH", "-a1-10", "--arr=1-10"])
+    def test_short_and_abbreviated_with_value_accepted(self, tok):
+        assert validate_passthrough_args([tok]) == [tok]
+
+    @pytest.mark.parametrize("tok", ["--array=1-10", "--comment=hi"])
+    def test_with_value_accepted(self, tok):
+        assert validate_passthrough_args([tok]) == [tok]
+
+    @pytest.mark.parametrize("tok", ["--exclusive", "--hold", "--requeue"])
+    def test_valueless_options_still_accepted(self, tok):
+        assert validate_passthrough_args([tok]) == [tok]
+
+
+class TestShortClusterRewrite:
+    """A valueless short flag does not swallow the rest of its cluster.
+
+    getopt_long keeps scanning after a flag that takes no argument, so
+    ``-HO`` is ``--hold --overcommit``, never ``--hold=O``.
+    """
+
+    def test_valueless_flags_decompose(self):
+        assert rewrite_sbatch_argv(["-HO", "s.sh"], _own()) == [
+            "--sbatch-arg=--hold",
+            "--sbatch-arg=--overcommit",
+            "s.sh",
+        ]
+
+    def test_valueless_flags_then_value_taking_tail(self):
+        assert rewrite_sbatch_argv(["-HOa", "1-5", "s.sh"], _own()) == [
+            "--sbatch-arg=--hold",
+            "--sbatch-arg=--overcommit",
+            "--sbatch-arg=--array=1-5",
+            "s.sh",
+        ]
+
+    def test_value_taking_short_still_consumes_remainder(self):
+        # -a takes a value, so the rest of the cluster IS its value.
+        assert rewrite_sbatch_argv(["-aH", "s.sh"], _own()) == [
+            "--sbatch-arg=--array=H",
+            "s.sh",
+        ]
 
 
 class TestRejectExactAndPrefix:

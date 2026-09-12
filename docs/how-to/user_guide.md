@@ -22,7 +22,7 @@ A job in srunx represents a computational task that will be executed on a SLURM 
 srunx provides fine-grained control over resource allocation:
 
 - `--nodes`: Number of compute nodes
-- `--tasks-per-node`: Tasks per node
+- `--ntasks-per-node`: Tasks per node
 - `--cpus-per-task`: CPUs per task
 - `--gpus-per-node`: GPUs per node
 - `--mem`: Memory per node
@@ -439,7 +439,7 @@ srunx sbatch --wrap "python script.py"
 Preview job submission (show summary without submitting):
 
 ``` bash
-srunx sbatch --dry-run python script.py
+srunx sbatch --dry-run --wrap "python script.py"
 ```
 
 View rendered SLURM scripts:

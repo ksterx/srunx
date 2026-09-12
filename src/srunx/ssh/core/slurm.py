@@ -10,11 +10,13 @@ import re
 import shlex
 import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from srunx.common.logging import get_logger
 
 if TYPE_CHECKING:
+    from loguru._logger import Logger
+
     from .connection import SSHConnection
     from .file_manager import RemoteFileManager
 
@@ -39,7 +41,7 @@ def _redact_exports(command: str) -> str:
 
 
 def _warn_if_export_overrides(
-    logger: Any, extra_sbatch_args: list[str] | None, export_all_applied: bool
+    logger: Logger, extra_sbatch_args: list[str] | None, export_all_applied: bool
 ) -> None:
     """Warn when a passthrough ``--export`` collides with srunx's own
     ``--export=ALL`` auto-injection (R2.7).
