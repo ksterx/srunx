@@ -638,6 +638,7 @@ class SlurmSSHClient:
         *,
         submission_context: SubmissionRenderContext | None = None,
         inject_job_name: bool = True,
+        extra_sbatch_args: list[str] | None = None,
     ) -> RunnableJobType:
         """Submit *job* over SSH and return it with ``job_id`` populated.
 
@@ -659,6 +660,9 @@ class SlurmSSHClient:
         profile>``, ``scheduler_key='ssh:<profile>'``) triple so the
         poller can look the job up under the right transport. DB writes
         are best-effort and never mask an sbatch success.
+
+        ``extra_sbatch_args`` are forwarded to
+        ``submit_sbatch_job`` verbatim (TEMP_UPLOAD path).
         """
         import tempfile as _tempfile
 
@@ -699,7 +703,12 @@ class SlurmSSHClient:
         with _tempfile.TemporaryDirectory() as tmpdir:
             if isinstance(job, Job):
                 assert template_path is not None  # narrow for mypy
-                script_path = render_job_script(template_path, job, output_dir=tmpdir)
+                script_path = render_job_script(
+                    template_path,
+                    job,
+                    output_dir=tmpdir,
+                    extra_sbatch_args=extra_sbatch_args,
+                )
             else:  # ShellJob — narrowed by the elif above
                 script_path = render_shell_job_script(job.script_path, job, tmpdir)
             with open(script_path, encoding="utf-8") as f:
@@ -722,6 +731,7 @@ class SlurmSSHClient:
                     script_content,
                     job_name=job.name if inject_job_name else None,
                     job_env_vars=job.environment.env_vars,
+                    extra_sbatch_args=extra_sbatch_args,
                 )
         except paramiko.AuthenticationException as exc:
             raise TransportAuthError(f"SSH authentication failed: {exc}") from exc

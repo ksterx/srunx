@@ -50,8 +50,8 @@ uv add "srunx[mcp]"
 Submit a job, wait for it, and view the logs — end to end:
 
 ```bash
-# 1. Submit (use -- to separate srunx flags from the command)
-$ srunx sbatch --name training --gpus-per-node 2 --conda ml_env -- python train.py
+# 1. Submit
+$ srunx sbatch --job-name training --gpus-per-node 2 --conda ml_env --wrap "python train.py"
 ✅ Submitted job training (id=847291)
 
 # 2. Follow until completion
@@ -73,7 +73,7 @@ srunx flow run workflow.yaml
 Every command above accepts `--profile <name>` and dispatches transparently over SSH — same syntax, same output, same feel as local:
 
 ```bash
-srunx sbatch --profile dgx --name training --gpus-per-node 2 --conda ml_env -- python train.py
+srunx sbatch --profile dgx --job-name training --gpus-per-node 2 --conda ml_env --wrap "python train.py"
 srunx squeue --profile dgx
 srunx tail   --profile dgx 847291 --follow
 srunx flow run pipeline.yaml --profile dgx

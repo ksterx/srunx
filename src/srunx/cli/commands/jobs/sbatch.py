@@ -18,6 +18,11 @@ from srunx.cli._helpers.sbatch_helpers import (
     _resolve_job_name,
     _submit_via_transport,
 )
+from srunx.cli._helpers.sbatch_passthrough import (
+    SBATCH_ARG_OPT,
+    own_option_specs,
+    validate_passthrough_args,
+)
 from srunx.cli._helpers.transport import resolve_transport
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.common.config import get_config
@@ -60,16 +65,14 @@ def sbatch(
     quiet: QuietOpt = False,
     name: Annotated[
         str,
-        typer.Option("-J", "--name", "--job-name", help="Job name (sbatch -J)"),
+        typer.Option("-J", "--job-name", help="Job name (sbatch -J)"),
     ] = "job",
     log_dir: Annotated[
         str | None, typer.Option("--log-dir", help="Log directory")
     ] = None,
     work_dir: Annotated[
         str | None,
-        typer.Option(
-            "-D", "--work-dir", "--chdir", help="Working directory for the job"
-        ),
+        typer.Option("-D", "--chdir", help="Working directory for the job"),
     ] = None,
     # Resource options
     nodes: Annotated[int, typer.Option("-N", "--nodes", help="Number of nodes")] = 1,
@@ -95,14 +98,13 @@ def sbatch(
     ] = 1,
     memory: Annotated[
         str | None,
-        typer.Option("--mem", "--memory", help="Memory per node (e.g., '32GB', '1TB')"),
+        typer.Option("--mem", help="Memory per node (e.g., '32GB', '1TB')"),
     ] = None,
     time: Annotated[
         str | None,
         typer.Option(
             "-t",
             "--time",
-            "--time-limit",
             help="Time limit (e.g., '1:00:00', '30:00', '1-12:00:00')",
         ),
     ] = None,
@@ -211,6 +213,19 @@ def sbatch(
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Show verbose output")
     ] = False,
+    sbatch_arg: Annotated[
+        list[str] | None,
+        typer.Option(
+            SBATCH_ARG_OPT,
+            help=(
+                "Pass one raw sbatch option token through verbatim "
+                "(repeatable). Escape hatch for sbatch options srunx does "
+                "not model directly; most native SLURM spellings "
+                "(--array, --qos, -d ...) are recognized and routed here "
+                "automatically without needing this flag."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Submit a SLURM job (matches the SLURM ``sbatch`` invocation shape).
 
@@ -236,6 +251,14 @@ def sbatch(
             "Missing job source. Provide a script path or use --wrap <command>.",
             param_hint="<script> / --wrap",
         )
+
+    # Validate the final --sbatch-arg list (format R2.6 + reject list
+    # R2.5) once, here, before any I/O. Tokens may have arrived either
+    # hand-typed or normalized by SbatchCommand.parse_args's native-option
+    # rewrite (main.py registers ``sbatch`` with ``cls=SbatchCommand``).
+    passthrough = validate_passthrough_args(
+        sbatch_arg or [], own_option_specs(ctx.command.get_params(ctx))
+    )
 
     # SLURM ``--gres=gpu:N`` overrides ``--gpus-per-node`` so callers
     # can paste sbatch lines verbatim. Explicit ``--gpus-per-node`` wins
@@ -448,35 +471,53 @@ def sbatch(
         if ctx.get_parameter_source("log_dir") == ParameterSource.COMMANDLINE
         else None
     )
-    extra_sbatch_args = _build_extra_sbatch_args(
-        ctx,
-        values={
-            "nodes": nodes,
-            "gpus_per_node": gpus_per_node,
-            "ntasks_per_node": ntasks_per_node,
-            "cpus_per_task": cpus_per_task,
-            "memory": memory,
-            "time": time,
-            "nodelist": nodelist,
-            "partition": partition,
-            "work_dir": work_dir,
-        },
-        log_dir_user=log_dir_user,
-    )
 
-    # ``--gres=gpu:N`` was parsed earlier into ``gpus_per_node``; if
-    # the user typed ``--gres`` (not ``--gpus-per-node``) we still
-    # need to forward the resulting value as ``--gpus-per-node=N``,
-    # because ParameterSource for ``gpus_per_node`` shows DEFAULT in
-    # that path. Avoid duplication by stripping any earlier entry.
-    if (
-        ctx.get_parameter_source("gres") == ParameterSource.COMMANDLINE
-        and gres is not None
-    ):
-        extra_sbatch_args = [
-            a for a in extra_sbatch_args if not a.startswith("--gpus-per-node")
-        ]
-        extra_sbatch_args.append(f"--gpus-per-node={gpus_per_node}")
+    # R2.8: the two job sources need different treatment here.
+    #
+    # * ShellJob (positional script): resource flags never reach the
+    #   script otherwise (no render step), so we forward everything the
+    #   user typed on the command line + the --log-dir expansion, then
+    #   the passthrough tokens last (so passthrough wins ties per R5).
+    # * Job (--wrap): the rendered template already emits #SBATCH
+    #   --nodes / --cpus-per-task / --mem / --time / --output etc. from
+    #   ``job.resources`` / ``job.log_dir``. Forwarding the same values
+    #   again on the command line would just duplicate the directive —
+    #   nothing to gain and one more place to drift. Only the passthrough
+    #   tokens belong here.
+    if script is not None:
+        extra_sbatch_args = _build_extra_sbatch_args(
+            ctx,
+            values={
+                "nodes": nodes,
+                "gpus_per_node": gpus_per_node,
+                "ntasks_per_node": ntasks_per_node,
+                "cpus_per_task": cpus_per_task,
+                "memory": memory,
+                "time": time,
+                "nodelist": nodelist,
+                "partition": partition,
+                "work_dir": work_dir,
+            },
+            log_dir_user=log_dir_user,
+        )
+
+        # ``--gres=gpu:N`` was parsed earlier into ``gpus_per_node``; if
+        # the user typed ``--gres`` (not ``--gpus-per-node``) we still
+        # need to forward the resulting value as ``--gpus-per-node=N``,
+        # because ParameterSource for ``gpus_per_node`` shows DEFAULT in
+        # that path. Avoid duplication by stripping any earlier entry.
+        if (
+            ctx.get_parameter_source("gres") == ParameterSource.COMMANDLINE
+            and gres is not None
+        ):
+            extra_sbatch_args = [
+                a for a in extra_sbatch_args if not a.startswith("--gpus-per-node")
+            ]
+            extra_sbatch_args.append(f"--gpus-per-node={gpus_per_node}")
+
+        extra_sbatch_args += passthrough
+    else:
+        extra_sbatch_args = list(passthrough)
 
     with resolve_transport(
         profile=profile,

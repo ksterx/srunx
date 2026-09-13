@@ -519,7 +519,7 @@ srunx watch resources --min-gpus 8 --timeout 7200
 
 # Submit batch of jobs
 for experiment in exp1 exp2 exp3; do
-    srunx sbatch --wrap "python train.py" --name $experiment
+    srunx sbatch --wrap "python train.py" --job-name $experiment
 done
 
 # Monitor all submitted jobs

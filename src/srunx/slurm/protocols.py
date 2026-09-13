@@ -61,6 +61,7 @@ class JobOperations(Protocol):
         *,
         submission_context: SubmissionRenderContext | None = None,
         inject_job_name: bool = True,
+        extra_sbatch_args: list[str] | None = None,
     ) -> RunnableJobType:
         """Submit *job* to SLURM and return the populated job object.
 
@@ -84,6 +85,16 @@ class JobOperations(Protocol):
         workflow / Web / MCP callers keep naming their jobs. Local
         implementations accept it for conformance and ignore it (the local
         path never injects ``--job-name``).
+
+        ``extra_sbatch_args`` are appended to the final ``sbatch`` command
+        line, in the order given, after any srunx-automatic flags
+        (``--parsable`` / ``--export=ALL`` / etc.) and before the script
+        path. Each element MUST be a single token (e.g. ``"--time=5:00"``
+        or ``"--array=1-10"``) — implementations do not re-split them.
+        Because ``sbatch`` lets a later occurrence of an option win, a
+        user-supplied value here overrides srunx's own automatic flags
+        and any ``#SBATCH`` directive in the script, matching real
+        ``sbatch``'s precedence.
         """
         ...
 

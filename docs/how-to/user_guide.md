@@ -22,11 +22,11 @@ A job in srunx represents a computational task that will be executed on a SLURM 
 srunx provides fine-grained control over resource allocation:
 
 - `--nodes`: Number of compute nodes
-- `--tasks-per-node`: Tasks per node
+- `--ntasks-per-node`: Tasks per node
 - `--cpus-per-task`: CPUs per task
 - `--gpus-per-node`: GPUs per node
-- `--memory` / `--mem`: Memory per node
-- `--time-limit`: Maximum execution time
+- `--mem`: Memory per node
+- `--time`: Maximum execution time
 
 ### Environment Management
 
@@ -129,11 +129,11 @@ With resource specification:
 
 ``` bash
 srunx sbatch --wrap "python train.py \"
-  --name "training_job" \
+  --job-name "training_job" \
   --nodes 2 \
   --gpus-per-node 2 \
-  --memory "64GB" \
-  --time-limit "8:00:00" \
+  --mem "64GB" \
+  --time "8:00:00" \
   --conda ml_env
 ```
 
@@ -439,7 +439,7 @@ srunx sbatch --wrap "python script.py"
 Preview job submission (show summary without submitting):
 
 ``` bash
-srunx sbatch --dry-run python script.py
+srunx sbatch --dry-run --wrap "python script.py"
 ```
 
 View rendered SLURM scripts:

@@ -45,13 +45,21 @@ QuietOpt = Annotated[
     bool,
     typer.Option(
         "--quiet",
-        "-q",
+        "-Q",
         help=(
             "Suppress the transport banner on stderr. Only meaningful "
             "when an explicit transport source is selected "
             "(--profile / --local / $SRUNX_SSH_PROFILE); the default "
-            "local path never prints a banner."
+            "local path never prints a banner. Uses -Q (not -q) to match "
+            "real sbatch/squeue/scancel, where -q is the short form of "
+            "--qos (a value-taking option), not --quiet."
         ),
     ),
 ]
-"""``--quiet`` / ``-q``: suppress the transport banner (REQ-7)."""
+"""``--quiet`` / ``-Q``: suppress the transport banner (REQ-7).
+
+Real SLURM reserves ``-q`` for ``--qos``; its own short flag for
+``--quiet`` is ``-Q``. srunx used to squat on ``-q``; this alias now
+matches upstream so a future ``-q`` can be reintroduced as a passthrough
+for ``--qos`` without breaking existing muscle memory.
+"""

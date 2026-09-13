@@ -60,10 +60,11 @@ def _submit_via_transport(
 
     ``extra_sbatch_args`` are CLI-side resource flags (``-N`` /
     ``--gres=gpu:N`` / etc.) that need to reach the cluster's
-    ``sbatch`` command line in IN_PLACE mode. SLURM treats them as
-    overrides of the script's ``#SBATCH`` directives, matching real
-    sbatch's precedence. Closes Codex blocker #1: previously these
-    flags silently no-op'd in ShellJob (positional-script) mode.
+    ``sbatch`` command line. Forwarded on all three submit routes
+    (local / SSH TEMP_UPLOAD / SSH IN_PLACE) so they never silently
+    no-op regardless of transport or in-place vs tmp-upload mode.
+    SLURM treats them as overrides of the script's ``#SBATCH``
+    directives, matching real sbatch's precedence.
 
     ``inject_job_name`` controls whether ``--job-name`` reaches the
     remote sbatch command line. It is ``False`` when the user did not
@@ -85,7 +86,12 @@ def _submit_via_transport(
 
     if rt.transport_type == "local":
         client = _slurm_local.Slurm(callbacks=callbacks)
-        return client.submit(job, template_path=template, verbose=verbose)
+        return client.submit(
+            job,
+            template_path=template,
+            verbose=verbose,
+            extra_sbatch_args=extra_sbatch_args or None,
+        )
 
     # --- SSH transport ---
     sub_ctx = rt.submission_context
@@ -108,7 +114,10 @@ def _submit_via_transport(
 
     if plan.mode == SubmissionMode.TEMP_UPLOAD:
         return rt.job_ops.submit(
-            job, submission_context=sub_ctx, inject_job_name=inject_job_name
+            job,
+            submission_context=sub_ctx,
+            inject_job_name=inject_job_name,
+            extra_sbatch_args=extra_sbatch_args or None,
         )
 
     # IN_PLACE branch: hold the per-(profile,mount) lock across the

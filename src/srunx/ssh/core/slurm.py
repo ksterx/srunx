@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 from srunx.common.logging import get_logger
 
 if TYPE_CHECKING:
+    from loguru._logger import Logger
+
     from .connection import SSHConnection
     from .file_manager import RemoteFileManager
 
@@ -36,6 +38,27 @@ _EXPORT_REDACT_RE = re.compile(r"(export\s+[A-Za-z_][A-Za-z0-9_]*=')(?:[^']|'\\'
 def _redact_exports(command: str) -> str:
     """Mask inline ``export KEY='...'`` values for safe logging."""
     return _EXPORT_REDACT_RE.sub(r"\1***'", command)
+
+
+def _warn_if_export_overrides(
+    logger: Logger, extra_sbatch_args: list[str] | None, export_all_applied: bool
+) -> None:
+    """Warn when a passthrough ``--export`` collides with srunx's own
+    ``--export=ALL`` auto-injection (R2.7).
+
+    Detection is a plain-text match on ``--export`` / ``--export=`` only —
+    getopt abbreviations like ``--exp=NONE`` are not detected; the warning
+    is advisory, not a hard guarantee.
+    """
+    if not export_all_applied:
+        return
+    for arg in extra_sbatch_args or ():
+        if arg == "--export" or arg.startswith("--export="):
+            logger.warning(
+                "--export passed through overrides srunx's --export=ALL; "
+                "job env vars / secrets may not reach the job"
+            )
+            return
 
 
 class SlurmRemoteClient:
@@ -338,8 +361,15 @@ class SlurmRemoteClient:
         dependency: str | None = None,
         *,
         job_env_vars: dict[str, str] | None = None,
+        extra_sbatch_args: list[str] | None = None,
     ) -> SlurmJob | None:
-        """Submit an sbatch job with script content."""
+        """Submit an sbatch job with script content.
+
+        ``extra_sbatch_args`` are CLI-forwarded resource flags (``-N`` /
+        ``-t`` / ``--array`` / etc.), appended after ``--dependency`` and
+        before the script path, each individually ``shlex.quote``'d since
+        this method builds the remote command as a shell string.
+        """
         try:
             unique_id = str(uuid.uuid4())[:8]
             remote_script_path = f"{self._conn.temp_dir}/job_{unique_id}.sh"
@@ -377,6 +407,16 @@ class SlurmRemoteClient:
                 if not re.fullmatch(r"[a-z]+:\d+(,[a-z]+:\d+)*", dependency):
                     raise ValueError(f"Invalid dependency format: {dependency!r}")
                 cmd += f" --dependency={dependency}"
+            # ``extra_sbatch_args`` come from the CLI's resource flags
+            # (-N / -t / --gres=gpu:4 / etc.). SLURM's command-line
+            # flags override matching ``#SBATCH`` directives in the
+            # script — same precedence as real ``sbatch``. Quoted
+            # individually so values containing spaces survive.
+            _warn_if_export_overrides(
+                self.logger, extra_sbatch_args, bool(job_env_vars) or secret_present
+            )
+            for arg in extra_sbatch_args or ():
+                cmd += f" {shlex.quote(arg)}"
             cmd += f" {quote_shell_path(remote_script_path)}"
 
             stdout, stderr, exit_code = self.execute_slurm_command(
@@ -534,6 +574,9 @@ class SlurmRemoteClient:
             # flags override matching ``#SBATCH`` directives in the
             # script — same precedence as real ``sbatch``. Quoted
             # individually so values containing spaces survive.
+            _warn_if_export_overrides(
+                self.logger, extra_sbatch_args, bool(job_env_vars) or secret_present
+            )
             for arg in extra_sbatch_args or ():
                 cmd_parts.append(shlex.quote(arg))
             cmd_parts.append(shlex.quote(remote_path))

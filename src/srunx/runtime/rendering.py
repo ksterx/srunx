@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import shlex
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -529,6 +530,28 @@ def _render_base_script(
         return ""
 
 
+def _conflicts_with_cpus_per_task(extra_sbatch_args: Sequence[str] | None) -> bool:
+    """Whether a passthrough option rules out the template's ``--cpus-per-task``.
+
+    Real sbatch refuses the combination outright::
+
+        sbatch: fatal: --cpus-per-task, --tres-per-task=cpu:#, and
+                --cpus-per-gpu are mutually exclusive
+
+    The template emits ``--cpus-per-task`` from a default the user never
+    asked for, so a perfectly valid ``--cpus-per-gpu`` request would be
+    rejected at submission. Drop the generated directive instead; the
+    user's own option is the one they meant.
+    """
+    for arg in extra_sbatch_args or ():
+        head, _, value = arg.partition("=")
+        if head == "--cpus-per-gpu":
+            return True
+        if head == "--tres-per-task" and "cpu:" in value:
+            return True
+    return False
+
+
 def render_job_script(
     template_path: Path | str,
     job: Job,
@@ -536,6 +559,7 @@ def render_job_script(
     verbose: bool = False,
     extra_srun_args: str | None = None,
     extra_launch_prefix: str | None = None,
+    extra_sbatch_args: Sequence[str] | None = None,
 ) -> str:
     """Render a SLURM job script from a template.
 
@@ -594,6 +618,7 @@ def render_job_script(
         "srun_args": srun_args,
         "launch_prefix": launch_prefix,
         "container": job.environment.container,
+        "suppress_cpus_per_task": _conflicts_with_cpus_per_task(extra_sbatch_args),
         **job.resources.model_dump(),
     }
 

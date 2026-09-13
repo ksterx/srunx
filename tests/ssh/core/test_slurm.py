@@ -119,6 +119,116 @@ class TestSubmitSbatchJob:
         assert job is None
 
 
+class TestExtraSbatchArgsWiring:
+    """extra_sbatch_args must reach both submit paths, quoted, in the
+    right position (after --dependency, before the script path)."""
+
+    def _capture(self, client):
+        captured: dict[str, str] = {}
+
+        def fake_execute(cmd, **_kw):
+            captured["cmd"] = cmd
+            return ("Submitted batch job 12345", "", 0)
+
+        client.connection.execute_command = Mock(return_value=("", "", 0))
+        client.slurm.execute_slurm_command = Mock(side_effect=fake_execute)
+        client.slurm._get_slurm_command = Mock(return_value="sbatch")
+        return captured
+
+    def test_temp_upload_extra_sbatch_args_order(self, client):
+        client.files.write_remote_file = Mock()
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = self._capture(client)
+
+        client.slurm.submit_sbatch_job(
+            "#!/bin/bash\necho hi",
+            job_name="test_job",
+            dependency="afterok:5",
+            extra_sbatch_args=["--time=5:00", "--array=1-10"],
+        )
+
+        tokens = shlex.split(captured["cmd"])
+        dep_idx = next(i for i, t in enumerate(tokens) if t.startswith("--dependency"))
+        script_idx = len(tokens) - 1
+        assert tokens[dep_idx + 1] == "--time=5:00"
+        assert tokens[dep_idx + 2] == "--array=1-10"
+        assert dep_idx + 2 < script_idx
+
+    def test_in_place_extra_sbatch_args_order(self, client):
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = self._capture(client)
+
+        client.slurm.submit_remote_sbatch_file(
+            "/remote/run.sh",
+            job_name="test_job",
+            dependency="afterok:5",
+            extra_sbatch_args=["--time=5:00", "--array=1-10"],
+        )
+
+        tokens = shlex.split(captured["cmd"])
+        dep_idx = next(i for i, t in enumerate(tokens) if t.startswith("--dependency"))
+        script_idx = len(tokens) - 1
+        assert tokens[dep_idx + 1] == "--time=5:00"
+        assert tokens[dep_idx + 2] == "--array=1-10"
+        assert dep_idx + 2 < script_idx
+
+    def test_extra_sbatch_args_shell_metachars_quoted(self, client):
+        client.files.write_remote_file = Mock()
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = self._capture(client)
+
+        client.slurm.submit_sbatch_job(
+            "#!/bin/bash\necho hi",
+            job_name="test_job",
+            extra_sbatch_args=["--comment=hello world; $(rm -rf /)"],
+        )
+
+        tokens = shlex.split(captured["cmd"])
+        assert "--comment=hello world; $(rm -rf /)" in tokens
+
+    def test_extra_sbatch_args_shell_metachars_quoted_in_place(self, client):
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = self._capture(client)
+
+        client.slurm.submit_remote_sbatch_file(
+            "/remote/run.sh",
+            job_name="test_job",
+            extra_sbatch_args=["--comment=hello world; $(rm -rf /)"],
+        )
+
+        tokens = shlex.split(captured["cmd"])
+        assert "--comment=hello world; $(rm -rf /)" in tokens
+
+    def test_export_warning_temp_upload(self, client):
+        client.files.write_remote_file = Mock()
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        self._capture(client)
+
+        with patch.object(client.slurm, "logger") as mock_logger:
+            client.slurm.submit_sbatch_job(
+                "#!/bin/bash\necho hi",
+                job_name="test_job",
+                job_env_vars={"FOO": "bar"},
+                extra_sbatch_args=["--export=NONE"],
+            )
+
+        assert mock_logger.warning.called
+
+    def test_export_warning_in_place(self, client):
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        self._capture(client)
+
+        with patch.object(client.slurm, "logger") as mock_logger:
+            client.slurm.submit_remote_sbatch_file(
+                "/remote/run.sh",
+                job_name="test_job",
+                job_env_vars={"FOO": "bar"},
+                extra_sbatch_args=["--export=NONE"],
+            )
+
+        assert mock_logger.warning.called
+
+
 class TestJobEnvPropagation:
     """AC-7: job env_vars ride into the remote env prefix + --export=ALL.
 
