@@ -401,6 +401,60 @@ class TestTyperCLI:
         assert "Configuration file paths" in result.stdout
         mock_get_config_paths.assert_called_once()
 
+    @patch("srunx.cli.commands.config.get_config_paths")
+    def test_config_init_writes_user_config_path(
+        self, mock_get_config_paths, tmp_path
+    ):
+        """``srunx config init`` must write the *user* config file.
+
+        :func:`srunx.common.config.get_config_paths` returns the three
+        config locations in **lowest → highest** precedence order:
+
+        0. system — ``/etc/srunx/config.json``
+        1. user   — ``$XDG_CONFIG_HOME/srunx/config.json``
+        2. project — ``./srunx.json``
+
+        ``config init`` picked ``paths[0]``, i.e. the system-wide file
+        that a normal (non-root) account cannot write to. The command
+        therefore died with ``Permission denied: '/etc/srunx'`` and
+        created no config file at all — and even when it did succeed
+        (as root) the file it wrote was the *lowest*-precedence layer,
+        so any user- or project-level config shadowed the file the
+        command had just created.
+        """
+        system_path = tmp_path / "etc" / "srunx" / "config.json"
+        user_path = tmp_path / "xdg" / "srunx" / "config.json"
+        project_path = tmp_path / "project" / "srunx.json"
+        mock_get_config_paths.return_value = [system_path, user_path, project_path]
+
+        result = self.runner.invoke(app, ["config", "init"])
+
+        assert result.exit_code == 0, result.output
+        assert user_path.exists(), "config init must write the user config file"
+        assert not system_path.exists(), "config init must not write /etc/srunx"
+        assert not project_path.exists(), "config init must not write a project file"
+
+    @patch("srunx.cli.commands.config.get_config_paths")
+    def test_config_init_creates_valid_example_config(
+        self, mock_get_config_paths, tmp_path
+    ):
+        """The file ``config init`` writes must be the parseable example config."""
+        import json
+
+        user_path = tmp_path / "xdg" / "srunx" / "config.json"
+        mock_get_config_paths.return_value = [
+            tmp_path / "etc" / "srunx" / "config.json",
+            user_path,
+            tmp_path / "project" / "srunx.json",
+        ]
+
+        result = self.runner.invoke(app, ["config", "init"])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(user_path.read_text(encoding="utf-8"))
+        assert "resources" in data
+        assert "log_dir" in data
+
     def test_sbatch_missing_job_source(self):
         """sbatch requires either a positional script or --wrap."""
         result = self.runner.invoke(app, ["sbatch"])
