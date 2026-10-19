@@ -67,7 +67,14 @@ def config_init(
 ) -> None:
     """Initialize configuration file."""
     paths = get_config_paths()
-    config_path = paths[0]  # Use the first (highest precedence) path
+    # ``get_config_paths()`` returns the locations in *lowest -> highest*
+    # precedence order (system ``/etc/srunx/config.json``, user
+    # ``$XDG_CONFIG_HOME/srunx/config.json``, project ``./srunx.json``).
+    # The user-wide file is the one a regular account can write and the
+    # one ``save_user_config()`` / the Settings UI already use, so it is
+    # the right target here -- index 0 is the system-wide file, which
+    # needs root and is shadowed by the user- and project-level ones.
+    config_path = paths[1]  # The user-wide config path (second in the list)
 
     if config_path.exists() and not force:
         console = Console()

@@ -402,9 +402,7 @@ class TestTyperCLI:
         mock_get_config_paths.assert_called_once()
 
     @patch("srunx.cli.commands.config.get_config_paths")
-    def test_config_init_writes_user_config_path(
-        self, mock_get_config_paths, tmp_path
-    ):
+    def test_config_init_writes_user_config_path(self, mock_get_config_paths, tmp_path):
         """``srunx config init`` must write the *user* config file.
 
         :func:`srunx.common.config.get_config_paths` returns the three
