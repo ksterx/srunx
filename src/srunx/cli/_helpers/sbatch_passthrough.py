@@ -76,9 +76,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import Any, cast
 
-import click
 import typer
+
+from srunx.cli._helpers.click_compat import OPTION_CLASSES, OptionLike
 
 SBATCH_ARG_OPT = "--sbatch-arg"
 
@@ -243,21 +245,34 @@ class OwnOptionSpec:
     takes_value: bool
 
 
-def own_option_specs(params: Iterable[click.Parameter]) -> tuple[OwnOptionSpec, ...]:
+def own_option_specs(params: Iterable[Any]) -> tuple[OwnOptionSpec, ...]:
     """Derive :class:`OwnOptionSpec` entries from a command's Click params.
 
-    Only :class:`click.Option` instances contribute (the positional
-    ``script`` :class:`click.Argument` is excluded — it's not a flag
-    spelling to protect). ``takes_value`` mirrors Click's own notion of
-    "does this option consume the next token": true unless the option is
-    a flag or a counter.
+    ``params`` is deliberately untyped: the concrete parameter class
+    depends on which Click the installed typer builds its commands from
+    (see :mod:`srunx.cli._helpers.click_compat`), so no single annotation
+    is correct across supported typer versions.
+
+    Only option parameters contribute (the positional ``script``
+    argument is excluded — it's not a flag spelling to protect).
+    ``takes_value`` mirrors Click's own notion of "does this option
+    consume the next token": true unless the option is a flag or a
+    counter.
+
+    The isinstance test goes through
+    :data:`~srunx.cli._helpers.click_compat.OPTION_CLASSES` rather than
+    naming ``click.Option`` directly: from typer 0.26 on, typer builds
+    commands from its own vendored Click, and a bare ``click.Option``
+    test matches none of them — leaving this function empty and handing
+    every srunx-native flag to the sbatch passthrough rewrite.
     """
     specs: list[OwnOptionSpec] = []
     for param in params:
-        if not isinstance(param, click.Option):
+        if not isinstance(param, OPTION_CLASSES):
             continue
-        spellings = frozenset((*param.opts, *param.secondary_opts))
-        takes_value = not param.is_flag and not getattr(param, "count", False)
+        option = cast(OptionLike, param)
+        spellings = frozenset((*option.opts, *option.secondary_opts))
+        takes_value = not option.is_flag and not getattr(option, "count", False)
         specs.append(OwnOptionSpec(spellings=spellings, takes_value=takes_value))
     return tuple(specs)
 
@@ -551,6 +566,6 @@ class SbatchCommand(typer.core.TyperCommand):
     ``main()`` and ``CliRunner.invoke`` on the exact same code path (R3.4).
     """
 
-    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+    def parse_args(self, ctx: Any, args: list[str]) -> list[str]:  # noqa: ANN401 — ctx's class tracks the installed typer's Click (see click_compat)
         own = own_option_specs(self.get_params(ctx))
         return super().parse_args(ctx, rewrite_sbatch_argv(args, own))

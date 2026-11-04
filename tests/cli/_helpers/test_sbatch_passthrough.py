@@ -330,3 +330,34 @@ class TestTableInvariants:
             "--help",
             "-h",
         }
+
+
+class TestOwnOptionsDiscovered:
+    """Regression guard for typer's vendored-Click split (typer >= 0.26).
+
+    :func:`own_option_specs` selects option parameters with an isinstance
+    test. When that test stopped matching typer's option class, the set
+    came back *empty* — no own spelling left to protect, so every
+    srunx-native flag was handed to the native-sbatch rewrite and
+    ``srunx sbatch --wrap "cmd"`` died with "sbatch option '--wrap' is
+    not allowed via --sbatch-arg" (and ``--help`` with "Missing job
+    source"). The breakage is silent at the filter itself, so assert the
+    discovery directly rather than only its downstream effects.
+    """
+
+    def test_own_specs_not_empty(self):
+        assert _own()
+
+    @pytest.mark.parametrize(
+        "spelling",
+        ["--wrap", "-J", "--job-name", "-N", "--nodes", "--sbatch-arg", "--help", "-h"],
+    )
+    def test_native_spelling_discovered(self, spelling):
+        assert any(spelling in spec.spellings for spec in _own())
+
+    def test_wrap_command_not_rewritten_to_passthrough(self):
+        # The exact user-facing symptom of an empty own set.
+        assert rewrite_sbatch_argv(["--wrap", "sleep 60"], _own()) == [
+            "--wrap",
+            "sleep 60",
+        ]

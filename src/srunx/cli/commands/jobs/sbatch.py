@@ -9,6 +9,7 @@ from rich.console import Console
 
 import srunx.slurm.local as _slurm_local  # noqa: E402,I001 — kept so ``patch("srunx.slurm.local.Slurm")`` intercepts all call sites
 from srunx.callbacks import Callback
+from srunx.cli._helpers.click_compat import is_commandline
 from srunx.cli._helpers.sbatch_helpers import (
     _build_extra_sbatch_args,
     _parse_container_args,
@@ -335,9 +336,7 @@ def sbatch(
     # to "job"; only an explicit value may override a script's own
     # ``#SBATCH --job-name``. Same ParameterSource pattern as the resource
     # flags below.
-    from click.core import ParameterSource
-
-    name_explicit = ctx.get_parameter_source("name") == ParameterSource.COMMANDLINE
+    name_explicit = is_commandline(ctx.get_parameter_source("name"))
 
     # ``inject_job_name`` = should ``--job-name`` go on the sbatch command
     # line? Default True; only a positional script that declares its own
@@ -467,9 +466,7 @@ def sbatch(
     # values, so the on-disk ``#SBATCH`` directives stay authoritative
     # for anything the user did not explicitly override.
     log_dir_user = (
-        log_dir
-        if ctx.get_parameter_source("log_dir") == ParameterSource.COMMANDLINE
-        else None
+        log_dir if is_commandline(ctx.get_parameter_source("log_dir")) else None
     )
 
     # R2.8: the two job sources need different treatment here.
@@ -506,10 +503,7 @@ def sbatch(
         # need to forward the resulting value as ``--gpus-per-node=N``,
         # because ParameterSource for ``gpus_per_node`` shows DEFAULT in
         # that path. Avoid duplication by stripping any earlier entry.
-        if (
-            ctx.get_parameter_source("gres") == ParameterSource.COMMANDLINE
-            and gres is not None
-        ):
+        if is_commandline(ctx.get_parameter_source("gres")) and gres is not None:
             extra_sbatch_args = [
                 a for a in extra_sbatch_args if not a.startswith("--gpus-per-node")
             ]
