@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srunx.callbacks import Callback
+from srunx.common.exceptions import SbatchIndeterminateError
 from srunx.common.logging import get_logger
 
 # Imported at runtime (not under TYPE_CHECKING) because the literal types
@@ -489,7 +490,9 @@ class SlurmSSHClient:
         )
         with self._io_lock:
             self._ensure_connected()
-            result = self._client.slurm.submit_remote_sbatch_file(
+            # Checked variant: raises SbatchRejectedError / SbatchIndeterminateError
+            # (both RuntimeError) so callers can tell "no job" from "maybe a job".
+            result = self._client.slurm.submit_remote_sbatch_file_checked(
                 remote_path,
                 submit_cwd=submit_cwd,
                 job_name=job_name,
@@ -498,7 +501,9 @@ class SlurmSSHClient:
                 job_env_vars=job_env_vars,
             )
         if result is None or not result.job_id:
-            raise RuntimeError("remote sbatch submission failed")
+            raise SbatchIndeterminateError(
+                "remote sbatch submission failed: no job id returned"
+            )
         job_id = int(result.job_id)
 
         # Bind the result to a Job-shaped object so DB recording +

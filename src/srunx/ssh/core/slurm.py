@@ -12,6 +12,11 @@ import time
 import uuid
 from typing import TYPE_CHECKING
 
+from srunx.common.exceptions import (
+    SbatchIndeterminateError,
+    SbatchRejectedError,
+    SbatchSubmitError,
+)
 from srunx.common.logging import get_logger
 
 if TYPE_CHECKING:
@@ -517,6 +522,34 @@ class SlurmRemoteClient:
         extra_sbatch_args: list[str] | None = None,
         job_env_vars: dict[str, str] | None = None,
     ) -> SlurmJob | None:
+        """Like :meth:`submit_remote_sbatch_file_checked` but returns ``None`` on failure.
+
+        Kept for callers that only care about success; the failure reason is
+        logged.
+        """
+        try:
+            return self.submit_remote_sbatch_file_checked(
+                remote_path,
+                submit_cwd=submit_cwd,
+                job_name=job_name,
+                dependency=dependency,
+                extra_sbatch_args=extra_sbatch_args,
+                job_env_vars=job_env_vars,
+            )
+        except SbatchSubmitError as e:
+            self.logger.error(f"Remote sbatch submission failed: {e}")
+            return None
+
+    def submit_remote_sbatch_file_checked(
+        self,
+        remote_path: str,
+        *,
+        submit_cwd: str | None = None,
+        job_name: str | None = None,
+        dependency: str | None = None,
+        extra_sbatch_args: list[str] | None = None,
+        job_env_vars: dict[str, str] | None = None,
+    ) -> SlurmJob:
         """Submit a script that already exists on the remote cluster.
 
         Distinct from :meth:`submit_sbatch_file` so the in-place
@@ -539,12 +572,20 @@ class SlurmRemoteClient:
         directives (e.g. ``--output=./logs/%j.out``) only resolve the
         way the user expects when we ``cd`` somewhere meaningful
         first. Pass ``None`` to keep the default.
+
+        Raises:
+            SbatchRejectedError: Confirmed rejection (nothing was sent, or
+                sbatch exited non-zero with a real status and no job id).
+            SbatchIndeterminateError: A job may exist (no exit status, exit 0
+                without a parsable job id, a job id with a non-zero exit, or
+                any failure after the command was sent).
         """
         try:
             valid, validation_msg = self._files.validate_remote_script(remote_path)
             if not valid:
-                self.logger.error(f"Remote script validation failed: {validation_msg}")
-                return None
+                raise SbatchRejectedError(
+                    f"Remote script validation failed: {validation_msg}"
+                )
 
             # Probe the secret file exactly once and reuse the result for both
             # the --export=ALL decision here and the ``source`` prefix inside
@@ -584,31 +625,52 @@ class SlurmRemoteClient:
             cmd = " ".join(cmd_parts)
             if submit_cwd:
                 cmd = f"cd {shlex.quote(submit_cwd)} && {cmd}"
+        except SbatchSubmitError:
+            raise
+        except Exception as e:
+            # Nothing has been sent to the cluster yet.
+            raise SbatchRejectedError(f"Remote sbatch was not sent: {e}") from e
 
+        # From here on the command may have reached the cluster, so every
+        # failure that is not a clear non-zero rejection is indeterminate.
+        try:
             stdout, stderr, exit_code = self.execute_slurm_command(
                 cmd, job_env_vars=job_env_vars, source_secret=secret_present
             )
-            if exit_code == 0:
-                match = re.search(r"Submitted batch job (\d+)", stdout)
-                if match:
-                    job_id = match.group(1)
-                    resolved_name = (
-                        re.sub(r"[^a-zA-Z0-9_.-]", "_", job_name)
-                        if job_name
-                        else f"job_{job_id}"
-                    )
-                    job = SlurmJob(job_id=job_id, name=resolved_name)
-                    job.script_path = remote_path
-                    return job
-
-            self.logger.error(
-                f"Failed to submit remote sbatch. stdout: {stdout}, "
-                f"stderr: {stderr}, exit_code: {exit_code}"
-            )
-            return None
         except Exception as e:
-            self.logger.error(f"Remote sbatch submission failed: {e}")
-            return None
+            raise SbatchIndeterminateError(
+                f"Remote sbatch outcome unknown (connection or execution error): {e}"
+            ) from e
+
+        match = re.search(r"Submitted batch job (\d+)", stdout or "")
+        detail = f"stdout: {stdout}, stderr: {stderr}, exit_code: {exit_code}"
+        # paramiko's recv_exit_status() returns -1 when the channel closed
+        # without an exit status; treat that (and None) as "no status".
+        if exit_code is None or exit_code == -1:
+            raise SbatchIndeterminateError(
+                f"Remote sbatch returned no exit status; a job may exist. {detail}"
+            )
+        if exit_code == 0:
+            if not match:
+                raise SbatchIndeterminateError(
+                    f"Remote sbatch exited 0 without a job id; a job may exist. "
+                    f"{detail}"
+                )
+            job_id = match.group(1)
+            resolved_name = (
+                re.sub(r"[^a-zA-Z0-9_.-]", "_", job_name)
+                if job_name
+                else f"job_{job_id}"
+            )
+            job = SlurmJob(job_id=job_id, name=resolved_name)
+            job.script_path = remote_path
+            return job
+        if match:
+            raise SbatchIndeterminateError(
+                f"Remote sbatch exited non-zero but reported job {match.group(1)}. "
+                f"{detail}"
+            )
+        raise SbatchRejectedError(f"Failed to submit remote sbatch. {detail}")
 
     # ------------------------------------------------------------------
     # Job status / monitoring
