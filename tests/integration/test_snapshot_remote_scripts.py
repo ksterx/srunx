@@ -338,7 +338,7 @@ def test_leases_dir_symlink_exits_31(env: Env) -> None:
     leases.rmdir()
     leases.symlink_to(elsewhere)
     proc = env.shell.run_script(_commit_script(env, probe, env.new_lease(probe)))
-    assert proc.returncode == 31, proc.stderr
+    assert proc.returncode in (31, 32), proc.stderr
     assert list(elsewhere.iterdir()) == []
 
 
@@ -591,3 +591,104 @@ def test_no_git_exits_20_and_creates_nothing(env: Env) -> None:
     assert proc.returncode == 20
     assert "git" in proc.stderr
     assert not env.root.exists()
+
+
+# ------------------------------------------------- private store directories
+
+
+def test_new_store_dirs_are_mode_700(env: Env) -> None:
+    probe = env.store().probe(repo_id="proj-0123456789ab", sha=env.sha)
+    repo = Path(probe.repo_dir)
+    for d in (env.root, repo, repo / "trees", repo / "leases"):
+        assert stat.S_IMODE(d.stat().st_mode) == 0o700, d
+
+
+def test_group_writable_repo_dir_rejected_by_locked_scripts(env: Env) -> None:
+    probe = env.store().probe(repo_id="proj-0123456789ab", sha=env.sha)
+    repo = Path(probe.repo_dir)
+    repo.chmod(0o770)
+    lease = env.new_lease(probe)
+    proc = env.shell.run_script(_commit_script(env, probe, lease))
+    assert proc.returncode == 32 and str(repo) in proc.stderr, proc.stderr
+    assert "chmod go-w" in proc.stderr
+    assert not (repo / ".lock").exists()
+    assert not (repo / "trees" / env.sha).exists()
+
+
+def test_group_writable_repo_dir_rejected_by_probe(env: Env) -> None:
+    probe = env.store().probe(repo_id="proj-0123456789ab", sha=env.sha)
+    repo = Path(probe.repo_dir)
+    repo.chmod(0o770)
+    proc = env.shell.run_script(env.probe_script())
+    assert proc.returncode == 32, proc.stderr
+    assert str(repo) in proc.stderr
+
+
+def test_other_writable_root_rejected_by_probe(env: Env) -> None:
+    env.store().probe(repo_id="proj-0123456789ab", sha=env.sha)
+    env.root.chmod(0o757)
+    proc = env.shell.run_script(env.probe_script())
+    assert proc.returncode == 32 and str(env.root) in proc.stderr, proc.stderr
+
+
+def test_symlinked_trees_dir_rejected(env: Env) -> None:
+    probe = env.store().probe(repo_id="proj-0123456789ab", sha=env.sha)
+    trees = Path(probe.repo_dir) / "trees"
+    elsewhere = env.tmp / "elsewhere"
+    elsewhere.mkdir()
+    trees.rmdir()
+    trees.symlink_to(elsewhere)
+    proc = env.shell.run_script(_commit_script(env, probe, None))
+    assert proc.returncode == 32 and str(trees) in proc.stderr, proc.stderr
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_symlinked_repo_dir_rejected_by_bind_and_delete(env: Env) -> None:
+    probe = env.store().probe(repo_id="proj-0123456789ab", sha=env.sha)
+    repo = Path(probe.repo_dir)
+    moved = env.tmp / "moved"
+    repo.rename(moved)
+    repo.symlink_to(moved)
+    lease = env.new_lease(probe)
+    bind = remote.build_bind_script(
+        repo_dir=probe.repo_dir,
+        sha=env.sha,
+        lease_json=lease.to_json(),
+        lease_id=lease.lease_id,
+        lock_wait=5,
+        **OWNER,
+    )
+    assert env.shell.run_script(bind).returncode == 32
+    delete = remote.build_delete_lease_script(
+        repo_dir=probe.repo_dir, lease_id=lease.lease_id, lock_wait=5, **OWNER
+    )
+    assert env.shell.run_script(delete).returncode == 32
+    assert not list((moved / "leases").iterdir())
+
+
+def test_symlinked_root_final_component_rejected(env: Env) -> None:
+    real = env.tmp / "real-root"
+    real.mkdir()
+    env.root.symlink_to(real, target_is_directory=True)
+    proc = env.shell.run_script(env.probe_script())
+    assert proc.returncode == 32 and str(env.root) in proc.stderr, proc.stderr
+    assert list(real.iterdir()) == []
+
+
+def test_foreign_owner_is_rejected_by_the_uid_comparison() -> None:
+    """``/usr`` is root-owned and 0755: only the owner check can reject it."""
+    preamble = remote._lock_preamble(
+        client_host="h", client_pid=1, token=TOKEN, lock_wait=1
+    )
+    proc = REAL_RUN(
+        ["/bin/sh", "-s"],
+        input=preamble + "check_private_dir /usr\necho ok\n",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if os.getuid() == 0:
+        assert proc.returncode == 0, proc.stderr
+    else:
+        assert proc.returncode == 32, (proc.returncode, proc.stderr)
+        assert "owned by uid 0" in proc.stderr and "/usr" in proc.stderr

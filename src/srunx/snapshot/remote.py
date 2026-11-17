@@ -64,6 +64,7 @@ class RemoteExit(IntEnum):
     MARKER = 29
     LOCK_TIMEOUT = 30
     LEASE_WRITE = 31
+    DIR_UNSAFE = 32
 
 
 _PLACEHOLDER_RE = re.compile(r"@[A-Z][A-Z_]*@")
@@ -181,11 +182,41 @@ trap 'exit 129' HUP
 trap 'exit 141' PIPE
 trap 'exit 130' INT
 trap 'exit 143' TERM
+check_private_dir() {
+  cpd_p=$1
+  if [ -L "$cpd_p" ] || [ ! -d "$cpd_p" ]; then
+    echo "snapshot directory is missing or a symlink: $cpd_p (it must be a real directory; remove the symlink or choose a private snapshot_root)" >&2
+    exit @EXIT_DIR_UNSAFE@
+  fi
+  cpd_l=$(ls -ldn "$cpd_p" 2>/dev/null | awk 'NR==1{print $1, $3}')
+  cpd_mode=${cpd_l% *}
+  cpd_owner=${cpd_l#* }
+  [ -n "${SNAP_UID:-}" ] || SNAP_UID=$(id -u)
+  cpd_uid=$SNAP_UID
+  if [ -z "$cpd_mode" ] || [ "$cpd_owner" != "$cpd_uid" ]; then
+    echo "snapshot directory $cpd_p is owned by uid ${cpd_owner:-unknown} (mode ${cpd_mode:-unknown}), not by you (uid $cpd_uid); choose a private snapshot_root or have the owner hand it over" >&2
+    exit @EXIT_DIR_UNSAFE@
+  fi
+  case $cpd_mode in
+    ?????w*|????????w*)
+      echo "snapshot directory $cpd_p is group- or other-writable (mode $cpd_mode); another user could swap its contents. Fix: chmod go-w $cpd_p, or choose a private snapshot_root" >&2
+      exit @EXIT_DIR_UNSAFE@
+      ;;
+  esac
+}
+check_store_dirs() {
+  [ -n "${REPO:-}" ] || return 0
+  check_private_dir "${REPO%/*}"
+  check_private_dir "$REPO"
+  check_private_dir "$REPO/trees"
+  check_private_dir "$REPO/leases"
+}
 acquire() {
   if [ ! -d "${LOCKDIR%/*}" ]; then
     echo "directory for lock does not exist: ${LOCKDIR%/*}" >&2
     exit @EXIT_ROOT_INVALID@
   fi
+  check_store_dirs
   waited=0
   until mkdir "$LOCKDIR" 2>/dev/null; do
     if [ "$waited" -ge @WAIT@ ]; then
@@ -197,6 +228,7 @@ acquire() {
     waited=$((waited + 1))
   done
   held=1
+  check_store_dirs
   {
     printf 'host=%s\n' @HOST@
     printf 'pid=%s\n' @PID@
@@ -306,19 +338,28 @@ if [ "$gv_major" -lt @MIN_MAJOR@ ] || { [ "$gv_major" -eq @MIN_MAJOR@ ] && [ "$g
   exit @EXIT_GIT_TOO_OLD@
 fi
 ROOT_IN=@ROOT_EXPR@
+if [ -L "${ROOT_IN%/}" ]; then
+  echo "snapshot root is a symlink: $ROOT_IN (it must be a real directory; remove the symlink or choose a private snapshot_root). Fix: choose a private snapshot_root" >&2
+  exit @EXIT_DIR_UNSAFE@
+fi
 resolve_path "$ROOT_IN" || { echo "snapshot root cannot be resolved: $ROOT_IN" >&2; exit @EXIT_ROOT_INVALID@; }
 ROOT=$RESOLVED
 check_mounts || exit @EXIT_ROOT_OVERLAP@
-mkdir -p "$ROOT" || { echo "cannot create snapshot root: $ROOT" >&2; exit @EXIT_ROOT_INVALID@; }
+(umask 077; mkdir -p "$ROOT") || { echo "cannot create snapshot root: $ROOT" >&2; exit @EXIT_ROOT_INVALID@; }
 resolve_path "$ROOT" || { echo "snapshot root cannot be resolved: $ROOT" >&2; exit @EXIT_ROOT_INVALID@; }
 ROOT=$RESOLVED
 case $ROOT in
   *[!A-Za-z0-9._/+-]*) echo "snapshot root has characters outside [A-Za-z0-9._/+-]: $ROOT" >&2; exit @EXIT_ROOT_INVALID@ ;;
 esac
 check_mounts || exit @EXIT_ROOT_OVERLAP@
+check_private_dir "$ROOT"
 REPO=$ROOT/@REPO_ID@
-mkdir -p "$REPO/trees" || { echo "cannot create $REPO/trees" >&2; exit @EXIT_ROOT_INVALID@; }
-mkdir -p -m 700 "$REPO/leases" || { echo "cannot create $REPO/leases" >&2; exit @EXIT_ROOT_INVALID@; }
+for sd in "$REPO" "$REPO/trees" "$REPO/leases"; do
+  if [ ! -e "$sd" ] && [ ! -L "$sd" ]; then
+    mkdir -m 700 "$sd" || { echo "cannot create $sd" >&2; exit @EXIT_ROOT_INVALID@; }
+  fi
+done
+check_store_dirs
 LOCKDIR=$REPO/.lock
 if [ ! -d "$REPO/repo.git" ]; then
   acquire
@@ -570,6 +611,7 @@ _EXIT_MESSAGES: dict[RemoteExit, str] = {
     RemoteExit.WORKTREE_ADD: "git worktree add failed on the remote",
     RemoteExit.CHMOD: "chmod -R a-w failed on the remote snapshot",
     RemoteExit.MARKER: "could not create the snapshot completion marker",
+    RemoteExit.DIR_UNSAFE: "a snapshot directory is not private (must be a real directory owned by you and not group/other-writable)",
     RemoteExit.LEASE_WRITE: "could not write the lease (refused or failed)",
 }
 
