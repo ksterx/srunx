@@ -200,6 +200,10 @@ def submit_via_snapshot(
     try:
         with service.leased_snapshot(plan) as handle:
             prepared = handle.prepared
+            typer.echo(
+                f"Snapshot {plan.sha[:12]} {prepared.status}: {prepared.path}",
+                err=True,
+            )
             script_path = prepared.script_path
             if script_path is None:  # plan always carries a script in sbatch mode
                 raise SnapshotValidationError("snapshot plan has no script")

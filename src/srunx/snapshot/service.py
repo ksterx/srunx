@@ -175,7 +175,8 @@ class SnapshotService:
             path=result.path,
             status=result.status,
         )
-        logger.info("Snapshot {} {} at {}", plan.sha[:12], result.status, result.path)
+        # The CLI prints the user-facing status line; keep this for --verbose.
+        logger.debug("Snapshot {} {} at {}", plan.sha[:12], result.status, result.path)
         return prepared, result, lease
 
     def _check_root(self) -> None:

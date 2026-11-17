@@ -68,7 +68,10 @@ def remote_root(tmp_path: Path) -> Iterator[Path]:
 
 
 def test_submit_via_snapshot_creates_readonly_tree_and_binds_lease(
-    monkeypatch: pytest.MonkeyPatch, repo: Path, remote_root: Path
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    repo: Path,
+    remote_root: Path,
 ) -> None:
     monkeypatch.setattr(subprocess, "run", REAL_RUN)  # conftest stubs it per test
     profile = ServerProfile(
@@ -116,6 +119,7 @@ def test_submit_via_snapshot_creates_readonly_tree_and_binds_lease(
     )
 
     tree = next(remote_root.glob(f"*/trees/{plan.sha}"))
+    assert f"Snapshot {plan.sha[:12]} created: {tree}" in capsys.readouterr().err
     assert (tree / "jobs" / "train.sbatch").read_text() == "#!/bin/bash\necho hi\n"
     assert not os.access(tree / "README", os.W_OK)  # read-only snapshot
     assert (tree.parent / f"{plan.sha}.complete").exists()

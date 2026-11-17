@@ -90,7 +90,7 @@ def test_snapshot_create_stdout_is_exactly_the_path(env: dict[str, Any]) -> None
     result = CliRunner().invoke(app, ["snapshot", "create", "v1", "--profile", "p"])
     assert result.exit_code == 0, result.output
     assert result.stdout == PATH + "\n"
-    assert "Snapshot" in result.stderr
+    assert result.stderr.count("Snapshot ") == 1  # status line once, not also logged
     assert "untracked" in result.stderr
     assert env["plan_kw"]["rev"] == "v1"
     assert env["plan_kw"]["script"] is None
