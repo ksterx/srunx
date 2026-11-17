@@ -276,18 +276,53 @@ def _job_name_from_tokens(tokens: list[str]) -> str | None:
     return result or None
 
 
-def _script_job_name(script_path: Path | str) -> str | None:
-    """Return the job name declared by a script's ``#SBATCH`` directives.
+def _script_sbatch_tokens(text: str) -> list[list[str]]:
+    """Tokenise each ``#SBATCH`` directive line at the top of a script's text.
 
     Mirrors ``sbatch``'s own directive scan: read ``#SBATCH`` lines from the
-    top of the file, stop at the first non-blank, non-comment line (the first
-    executable command), and honour the LAST ``--job-name`` / ``-J`` seen.
-    Returns ``None`` when no such directive exists or the file can't be read
-    — callers fall back to SLURM's default naming.
+    top, stop at the first non-blank, non-comment line (the first executable
+    command). Returns one token list per directive line, in file order. A line
+    that cannot be shell-split is skipped.
+    """
+    lines: list[list[str]] = []
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#SBATCH"):
+            try:
+                lines.append(shlex.split(stripped[len("#SBATCH") :]))
+            except ValueError:
+                continue
+            continue
+        if stripped.startswith("#"):
+            continue  # shebang / comment line — keep scanning
+        break  # first executable line ends #SBATCH processing
+    return lines
+
+
+def _script_job_name_from_text(text: str) -> str | None:
+    """Return the job name declared by ``#SBATCH`` directives in script text.
+
+    Honours the LAST ``--job-name`` / ``-J`` seen. ``None`` when absent.
 
     Only the job-name option is parsed (not a general ``#SBATCH`` grammar);
     a ``%x`` / env-expansion inside a name is returned verbatim (best-effort
     — the value is used only for srunx's own display, never re-injected).
+    """
+    found: str | None = None
+    for tokens in _script_sbatch_tokens(text):
+        name = _job_name_from_tokens(tokens)
+        if name is not None:
+            found = name  # last directive wins, matching SLURM
+    return found
+
+
+def _script_job_name(script_path: Path | str) -> str | None:
+    """Return the job name declared by a script file's ``#SBATCH`` directives.
+
+    Returns ``None`` when no such directive exists or the file can't be read
+    — callers fall back to SLURM's default naming.
     """
     try:
         # ``errors="replace"`` so a non-UTF-8 byte anywhere in the script
@@ -299,29 +334,15 @@ def _script_job_name(script_path: Path | str) -> str | None:
         text = Path(script_path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-
-    found: str | None = None
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("#SBATCH"):
-            try:
-                tokens = shlex.split(stripped[len("#SBATCH") :])
-            except ValueError:
-                continue
-            name = _job_name_from_tokens(tokens)
-            if name is not None:
-                found = name  # last directive wins, matching SLURM
-            continue
-        if stripped.startswith("#"):
-            continue  # shebang / comment line — keep scanning
-        break  # first executable line ends #SBATCH processing
-    return found
+    return _script_job_name_from_text(text)
 
 
 def _resolve_job_name(
-    script: Path | str, cli_name: str, *, cli_name_explicit: bool
+    script: Path | str,
+    cli_name: str,
+    *,
+    cli_name_explicit: bool,
+    script_text: str | None = None,
 ) -> tuple[str, bool]:
     """Resolve ``(logical job name, inject-as---job-name?)`` for a positional script.
 
@@ -338,10 +359,17 @@ def _resolve_job_name(
     with srunx; this is essential on the temp-upload path, where the script
     is uploaded to a random ``job_<uuid>.sh`` and SLURM's *default* name
     would be that opaque temp filename rather than the source basename.
+
+    ``script_text`` (snapshot mode) supplies the script's content from the
+    commit, so the local file is neither read nor required to exist.
     """
     if cli_name_explicit:
         return cli_name, True
-    directive = _script_job_name(script)
+    directive = (
+        _script_job_name_from_text(script_text)
+        if script_text is not None
+        else _script_job_name(script)
+    )
     if directive is not None:
         return directive, False
     return Path(script).name, True
