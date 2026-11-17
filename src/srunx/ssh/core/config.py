@@ -126,7 +126,7 @@ class ServerProfile(BaseModel):
     snapshot_root: str | None = Field(
         None,
         description="Remote directory holding read-only per-commit snapshots "
-        "(default ~/.srunx/snapshots)",
+        "(default ~/.local/share/srunx/snapshots)",
     )
 
     @field_validator("snapshot_root")

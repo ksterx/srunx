@@ -91,7 +91,7 @@ def delete_script(*, repo_dir: str = "/r/x", lease_id: str = LEASE_ID) -> str:
 
 class TestRootExpr:
     def test_default_is_home_relative(self) -> None:
-        assert root_expr(None) == '"$HOME"/.srunx/snapshots'
+        assert root_expr(None) == '"$HOME"/.local/share/srunx/snapshots'
 
     def test_home_only(self) -> None:
         assert root_expr("~") == '"$HOME"'

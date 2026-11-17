@@ -460,7 +460,7 @@ class TestServerProfileSnapshotRoot:
         assert self._profile().snapshot_root is None
 
     @pytest.mark.parametrize(
-        "value", ["/data/snap", "~", "~/.srunx/snapshots", "/a/b.c_d+e-f"]
+        "value", ["/data/snap", "~", "~/.local/share/srunx/snapshots", "/a/b.c_d+e-f"]
     )
     def test_snapshot_root_accepts_valid(self, value):
         assert self._profile(snapshot_root=value).snapshot_root == value

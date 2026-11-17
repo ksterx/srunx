@@ -38,7 +38,7 @@ from srunx.snapshot.lease import Lease
 from srunx.snapshot.local_git import REPO_ID_RE, SHA_RE
 from srunx.ssh.core.config import validate_snapshot_root
 
-DEFAULT_SNAPSHOT_ROOT = "~/.srunx/snapshots"
+DEFAULT_SNAPSHOT_ROOT = "~/.local/share/srunx/snapshots"
 MIN_REMOTE_GIT = (2, 17)
 LOCK_WAIT_SECONDS = 120
 PROBE_TIMEOUT = LOCK_WAIT_SECONDS + 60

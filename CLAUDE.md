@@ -189,7 +189,7 @@ mount names via `--mount` (no `profile` / `mount` positional sub-noun).
 - `uv run srunx ssh show [--profile <name>]` - Show a profile (current if omitted)
 - `uv run srunx ssh remove --profile <name>` - Remove a profile
 - `uv run srunx ssh update --profile <name> ...` - Update profile fields
-- `uv run srunx ssh update --profile <name> --snapshot-root <path>` - Set where `--snapshot` stores per-commit snapshots on the cluster (absolute or `~`-relative, charset `[A-Za-z0-9._/~+-]`, no `..`; empty string resets to the default `~/.srunx/snapshots`). Must lie outside every mount (`ssh sync --delete` mirrors mounts)
+- `uv run srunx ssh update --profile <name> --snapshot-root <path>` - Set where `--snapshot` stores per-commit snapshots on the cluster (absolute or `~`-relative, charset `[A-Za-z0-9._/~+-]`, no `..`; empty string resets to the default `~/.local/share/srunx/snapshots`). Must lie outside every mount (`ssh sync --delete` mirrors mounts)
 - `uv run srunx ssh mount add --profile <profile> --mount <name> --local <path> --remote <path>` - Add mount point
 - `uv run srunx ssh mount list --profile <profile>` - List mount points
 - `uv run srunx ssh mount remove --profile <profile> --mount <name>` - Remove mount point
