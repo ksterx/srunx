@@ -131,19 +131,89 @@ def _list_tree(top: Path, sha: str, *, names_only: bool = False) -> list[str]:
     return [e for e in out.split("\0") if e]
 
 
+def _symlink_targets(top: Path, entries: list[str]) -> dict[str, str]:
+    """Map path -> target for every committed symlink (one ``cat-file --batch``)."""
+    links: list[tuple[str, str]] = []
+    for entry in entries:
+        meta, _, name = entry.partition("\t")
+        parts = meta.split(" ")
+        if parts[0] == "120000":
+            links.append((name, parts[2]))
+    if not links:
+        return {}
+    stdin = "".join(f"{oid}\n" for _, oid in links).encode()
+    try:
+        proc = subprocess.run(  # noqa: S603
+            ["git", "cat-file", "--batch"],  # noqa: S607
+            cwd=top,
+            input=stdin,
+            capture_output=True,
+            timeout=GIT_TIMEOUT,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"},
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SnapshotValidationError(f"cannot read symlink targets: {exc}") from exc
+    if proc.returncode != 0:
+        raise SnapshotValidationError(
+            "cannot read symlink targets: "
+            + (proc.stderr.decode(errors="replace").strip() or "git cat-file failed")
+        )
+    out, pos, result = proc.stdout, 0, {}
+    for name, oid in links:
+        nl = out.find(b"\n", pos)
+        header = out[pos:nl].decode(errors="replace").split(" ") if nl >= 0 else []
+        if len(header) != 3 or header[0] != oid or not header[2].isdigit():
+            raise SnapshotValidationError(f"cannot read symlink target of {name!r}")
+        size = int(header[2])
+        result[name] = out[nl + 1 : nl + 1 + size].decode(errors="replace")
+        pos = nl + 1 + size + 1
+    return result
+
+
+def _symlink_escapes(link: str, target: str) -> bool:
+    if target.startswith("/") or not target:
+        return True
+    depth = len(PurePosixPath(link).parts) - 1
+    for part in target.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            depth -= 1
+            if depth < 0:
+                return True
+        else:
+            depth += 1
+    return False
+
+
 def ensure_supported_tree(top: Path, sha: str) -> None:
-    """Reject shallow clones, submodules and Git LFS-filtered paths."""
+    """Reject shallow clones, submodules, Git LFS paths and escaping symlinks."""
     shallow = run_git(["rev-parse", "--is-shallow-repository"], cwd=top).strip()
     if shallow != "false":
         raise SnapshotValidationError(
             "shallow clones are not supported for snapshots; run `git fetch --unshallow`"
         )
-    for entry in _list_tree(top, sha):
+    entries = _list_tree(top, sha)
+    for entry in entries:
         meta, _, name = entry.partition("\t")
         if meta.split(" ", 1)[0] == "160000":
             raise SnapshotValidationError(
                 f"submodules are not supported for snapshots (found {name!r})"
             )
+    bad = [
+        f"{name} -> {target}"
+        for name, target in _symlink_targets(top, entries).items()
+        if _symlink_escapes(name, target)
+    ]
+    if bad:
+        shown = "\n".join(f"  {b}" for b in bad[:10])
+        more = f"\n  ... and {len(bad) - 10} more" if len(bad) > 10 else ""
+        raise SnapshotValidationError(
+            "symlinks pointing outside the snapshot (absolute, or escaping the "
+            "repo root) would let the job read mutable code; remove them or "
+            f"make them in-repo relative links:\n{shown}{more}"
+        )
     for name in _list_tree(top, sha, names_only=True):
         if PurePosixPath(name).name == ".gitattributes":
             if "filter=lfs" in read_blob(top, sha, name):

@@ -258,3 +258,26 @@ def test_physical_dir_nonexistent_tail(tmp_path: Path) -> None:
     real.mkdir()
     (tmp_path / "ln").symlink_to(real, target_is_directory=True)
     assert physical_dir(tmp_path / "ln" / "a" / "b") == real.resolve() / "a" / "b"
+
+
+def test_symlink_absolute_target_rejected(repo: Path) -> None:
+    (repo / "lib").symlink_to("/home/u/live-lib")
+    commit_all(repo)
+    with pytest.raises(SnapshotValidationError, match="symlink") as ei:
+        ensure_supported_tree(repo, head_commit(repo))
+    assert "lib" in str(ei.value) and "/home/u/live-lib" in str(ei.value)
+
+
+def test_symlink_escaping_repo_rejected(repo: Path) -> None:
+    (repo / "sub" / "up").symlink_to("../../x")
+    commit_all(repo)
+    with pytest.raises(SnapshotValidationError, match="symlink") as ei:
+        ensure_supported_tree(repo, head_commit(repo))
+    assert "sub/up" in str(ei.value) and "../../x" in str(ei.value)
+
+
+def test_symlink_in_repo_relative_accepted(repo: Path) -> None:
+    (repo / "sub" / "to_readme").symlink_to("../README")
+    (repo / "alias.sbatch").symlink_to("sub/../job.sbatch")
+    commit_all(repo)
+    ensure_supported_tree(repo, head_commit(repo))
