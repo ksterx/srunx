@@ -124,9 +124,10 @@ def print_snapshot_dry_run(
     console.print(f"    Script (in commit): {plan.script_rel}")
     console.print(f"    Job cwd (in snapshot): {plan.cwd_rel or '<snapshot top>'}")
     warnings = list(plan.warnings)
-    output_warn = output_warning(plan.script_text, extra_sbatch_args)
-    if output_warn:
-        warnings.append(output_warn)
+    if plan.script_text is not None:
+        output_warn = output_warning(plan.script_text, extra_sbatch_args)
+        if output_warn:
+            warnings.append(output_warn)
     for w in warnings:
         console.print(f"    [yellow]warning: {w}[/yellow]")
 
