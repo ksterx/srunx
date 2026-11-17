@@ -43,8 +43,8 @@ class FakeExecute:
 
 
 def test_cluster_name_is_returned() -> None:
-    ex = FakeExecute("gpucloud2\n")
-    assert query_job_cluster(5, ex) == "gpucloud2"
+    ex = FakeExecute("clusterA\n")
+    assert query_job_cluster(5, ex) == "clusterA"
     assert len(ex.commands) == 1
 
 
@@ -69,20 +69,20 @@ def test_cluster_invalid_name_is_none() -> None:
 
 
 def test_cluster_timeout_rc_124_is_none() -> None:
-    assert query_job_cluster(5, FakeExecute("gpucloud2\n", rc=124)) is None
+    assert query_job_cluster(5, FakeExecute("clusterA\n", rc=124)) is None
 
 
 def test_cluster_nonzero_exit_is_none() -> None:
-    assert query_job_cluster(5, FakeExecute("gpucloud2\n", code=1)) is None
+    assert query_job_cluster(5, FakeExecute("clusterA\n", code=1)) is None
 
 
 def test_cluster_missing_marker_is_none() -> None:
-    assert query_job_cluster(5, lambda cmd: ("gpucloud2\nRC 0\n", "", 0)) is None
+    assert query_job_cluster(5, lambda cmd: ("clusterA\nRC 0\n", "", 0)) is None
 
 
 def test_cluster_missing_rc_line_is_none() -> None:
     def ex(cmd: str) -> tuple[str, str, int]:
-        return f"__SRUNX_{_nonce(cmd)}_CLUSTER__\ngpucloud2\n", "", 0
+        return f"__SRUNX_{_nonce(cmd)}_CLUSTER__\nclusterA\n", "", 0
 
     assert query_job_cluster(5, ex) is None
 
@@ -146,7 +146,7 @@ def round1(
     return out
 
 
-SACCT_DONE = "40070|COMPLETED|1794900000|1794904226|gpucloud2"
+SACCT_DONE = "40070|COMPLETED|1794900000|1794904226|clusterA"
 
 
 class FakeCluster:
@@ -162,7 +162,9 @@ class FakeCluster:
         scontrol: dict[int, tuple[str, int]] | None = None,
         squeue_rc: int = 0,
         code: int = 0,
+        stderr: str = "warning: some noise on stderr",
     ) -> None:
+        self.stderr = stderr
         self.squeue, self.sacct, self.sacct_rc = squeue, sacct, sacct_rc
         self.config, self.scontrol = config, scontrol or {}
         self.squeue_rc, self.code = squeue_rc, code
@@ -192,7 +194,7 @@ class FakeCluster:
                 body, rc = self.scontrol.get(int(name[8:]), ("", 1))
                 out += section(name, body, rc, nonce)
         # stderr is noise the parser must never look at
-        return out, "slurm_load_partitions: Access/permission denied", self.code
+        return out, self.stderr, self.code
 
 
 class TestCommands:
@@ -292,11 +294,20 @@ class TestSqueue:
         rep, _ = parse_queue_output(section("DATE", "1"), [5], NONCE)
         assert rep.error
 
-    def test_permission_denied_on_stderr_with_exit_zero_is_a_success(self) -> None:
-        cluster = FakeCluster(sq(5, 5, "RUNNING"))
+    @pytest.mark.parametrize(
+        "stderr", ["", "warning: some noise on stderr", "error: x"]
+    )
+    def test_stderr_is_never_judged_only_stdout_and_exit_codes(
+        self, stderr: str
+    ) -> None:
+        cluster = FakeCluster(sq(5, 5, "RUNNING"), stderr=stderr)
         rep = query_job_states([5], cluster)
         assert rep.error is None
         assert rep.states[5].kind == "active"
+
+    def test_stderr_text_cannot_rescue_a_failed_squeue(self) -> None:
+        cluster = FakeCluster("", squeue_rc=1, stderr="")
+        assert query_job_states([5], cluster).error
 
     def test_execute_raising_is_error(self) -> None:
         def boom(cmd: str) -> tuple[str, str, int]:
@@ -331,18 +342,18 @@ class TestSacct:
         assert st.kind == "terminal" and st.state == "COMPLETED"
         assert st.submitted_at == 1794900000
         assert st.ended_at == 1794904226
-        assert st.cluster == "gpucloud2"
+        assert st.cluster == "clusterA"
         assert st.source == "sacct"
         assert unresolved == []
 
     def test_non_integer_end_gives_none(self) -> None:
-        rep, _ = self._rep("40070|COMPLETED|1794900000|Unknown|gpucloud2")
+        rep, _ = self._rep("40070|COMPLETED|1794900000|Unknown|clusterA")
         assert rep.states[40070].kind == "terminal"
         assert rep.states[40070].ended_at is None
 
     @pytest.mark.parametrize("submit", ["", "Unknown", "2026-01-01T00:00:00"])
     def test_missing_or_non_integer_submit_gives_none(self, submit: str) -> None:
-        rep, _ = self._rep(f"40070|COMPLETED|{submit}|1794904226|gpucloud2")
+        rep, _ = self._rep(f"40070|COMPLETED|{submit}|1794904226|clusterA")
         assert rep.states[40070].submitted_at is None
 
     def test_cancelled_by_and_plus_suffix(self) -> None:
@@ -384,7 +395,7 @@ class TestSacct:
         assert rep.states[40070].source == "squeue"
 
     def test_row_with_wrong_field_count_is_ignored_and_unresolved(self) -> None:
-        rep, unresolved = self._rep("40070|COMPLETED|1794904226|gpucloud2")
+        rep, unresolved = self._rep("40070|COMPLETED|1794904226|clusterA")
         assert rep.states[40070].kind == "unknown"
         assert unresolved == [40070]
 
@@ -423,6 +434,26 @@ class TestScontrolAndMinJobAge:
         assert st.kind == "active" and st.state == "COMPLETED"
         assert st.source == "scontrol" and "slurmctld" in st.detail
         assert len(cluster.commands) == 2
+
+    @pytest.mark.parametrize("rc", [127, 126, 1])
+    def test_sacct_absent_or_failing_leaves_job_unknown_never_terminal(
+        self, rc: int
+    ) -> None:
+        cluster = FakeCluster(sacct=SACCT_DONE, sacct_rc=rc, scontrol={})
+        rep = query_job_states([40070], cluster)
+        assert rep.error is None and rep.states[40070].kind == "unknown"
+
+    def test_scontrol_available_and_denied_both_follow_the_rules(self) -> None:
+        known = FakeCluster(sacct_rc=1, scontrol={5: ("JobState=PENDING", 0)})
+        assert query_job_states([5], known).states[5].kind == "active"
+        denied = FakeCluster(sacct_rc=1, scontrol={5: ("", 126)}, config=None)
+        rep = query_job_states([5], denied)
+        assert rep.states[5].kind == "unknown" and rep.min_job_age is None
+
+    def test_min_job_age_readable_and_unreadable_via_query(self) -> None:
+        ok = FakeCluster(config="MinJobAge = 600 sec\n")
+        assert query_job_states([], ok).min_job_age == 600
+        assert query_job_states([], FakeCluster()).min_job_age is None
 
     def test_scontrol_not_knowing_the_job_is_unknown(self) -> None:
         cluster = FakeCluster(sacct_rc=1, scontrol={5: ("slurm_load_jobs error", 1)})

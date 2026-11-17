@@ -69,10 +69,10 @@ def test_cluster_defaults_to_none_and_is_always_emitted() -> None:
 
 
 def test_bound_stores_cluster_and_roundtrips() -> None:
-    bound = _lease().bound(7, cluster="gpucloud2")
-    assert bound.cluster == "gpucloud2"
+    bound = _lease().bound(7, cluster="clusterA")
+    assert bound.cluster == "clusterA"
     again = Lease.from_json(bound.to_json())
-    assert again.cluster == "gpucloud2" and again.job_id == 7
+    assert again.cluster == "clusterA" and again.job_id == 7
 
 
 def test_bound_without_cluster_is_none() -> None:

@@ -14,13 +14,27 @@ listing without its ``END`` line is rejected as truncated.
 from __future__ import annotations
 
 import re
+import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from srunx.snapshot.errors import SnapshotRemoteError
 from srunx.snapshot.lease import Lease
 from srunx.snapshot.local_git import REPO_ID_RE, SHA_RE
-from srunx.snapshot.remote import _REPO_DIR_RE
+from srunx.snapshot.remote import (
+    _MTIME_OF,
+    _REPO_DIR_RE,
+    _RESOLVE_PATH,
+    _TREE_INTACT,
+    INVENTORY_TIMEOUT,
+    LOCK_WAIT_SECONDS,
+    PRUNE_TIMEOUT,
+    RemoteSnapshotStore,
+    _check,
+    _fill,
+    _lock_preamble,
+    _repo_vars,
+)
 
 _LEASE_ID = r"[0-9a-f]{32}"
 FINGERPRINT_RE = re.compile(
@@ -322,3 +336,377 @@ def parse_prune_output(stdout: str, targets: Sequence[PruneTarget]) -> PruneRepo
         trash_left=trash_left,
         trash_skipped=tuple(skipped),
     )
+
+
+# --------------------------------------------------------------------- scripts
+
+# Shared by the inventory and the prune script so the fingerprint cannot drift.
+# ``snap_fp <sha>`` prints ``m<marker mtime|->.t<tree mtime|->.i<0|1>.l<list>``;
+# the lease list is ``id:mtime`` of every lease file that mentions the sha, or
+# ``!`` when it cannot be attributed. It never hands an unexpanded glob to a
+# command: an empty ``leases/`` leaves the pattern, which fails ``[ -f ]`` and
+# is dropped.
+_GC_HELPERS = r"""is_plain() {
+  case $1 in
+    ''|*[!A-Za-z0-9._+-]*) return 1 ;;
+  esac
+  return 0
+}
+is_sha_name() {
+  [ "${#1}" = 40 ] || return 1
+  case $1 in
+    *[!0-9a-f]*) return 1 ;;
+  esac
+  return 0
+}
+is_trash_name() {
+  is_plain "$1" || return 1
+  printf '%s\n' "$1" | grep -Eqx '\.trash\.[0-9a-f]{40}\.[0-9a-f]{32}'
+}
+is_owned_trash() {
+  is_trash_name "${1##*/}" && [ ! -L "$1" ] && [ -d "$1" ] && [ -O "$1" ]
+}
+shown_name() {
+  if is_plain "$1"; then printf '%s' "$1"; else printf '%s' '(unprintable name)'; fi
+}
+snap_fp() {
+  SHA=$1
+  TREE=$REPO/trees/$SHA
+  MARK=$TREE.complete
+  sf_m=-
+  sf_t=-
+  sf_i=0
+  if [ -f "$MARK" ] && [ ! -L "$MARK" ]; then sf_m=$(mtime_of "$MARK"); fi
+  if [ -d "$TREE" ] && [ ! -L "$TREE" ]; then sf_t=$(mtime_of "$TREE"); fi
+  if tree_intact; then sf_i=1; fi
+  set --
+  for sf_f in "$REPO"/leases/*.json; do
+    if [ -f "$sf_f" ] && [ ! -L "$sf_f" ]; then set -- "$@" "$sf_f"; fi
+  done
+  sf_list=
+  if [ $# -gt 0 ]; then
+    sf_hits=$(grep -lF -- "$SHA" "$@" 2>/dev/null </dev/null)
+    sf_rc=$?
+    if [ "$sf_rc" -ge 2 ]; then
+      sf_list='!'
+    elif [ "$sf_rc" -eq 0 ]; then
+      sf_acc=
+      while IFS= read -r sf_h; do
+        [ -n "$sf_h" ] || continue
+        sf_b=${sf_h##*/}
+        sf_id=${sf_b%.json}
+        if [ "${#sf_id}" != 32 ] || [ "$sf_id.json" != "$sf_b" ]; then sf_list='!'; break; fi
+        case $sf_id in
+          *[!0-9a-f]*) sf_list='!'; break ;;
+        esac
+        sf_acc="$sf_acc$sf_id:$(mtime_of "$sf_h")
+"
+      done <<SFEOF
+$sf_hits
+SFEOF
+      if [ "$sf_list" != '!' ]; then
+        sf_list=$(printf '%s' "$sf_acc" | LC_ALL=C sort | tr '\n' ',')
+        sf_list=${sf_list%,}
+      fi
+    fi
+  fi
+  printf 'm%s.t%s.i%s.l%s\n' "$sf_m" "$sf_t" "$sf_i" "$sf_list"
+}
+"""
+
+_INVENTORY_BODY = r"""GIT=$(command -v git 2>/dev/null || true)
+case $GIT in
+  /*) ;;
+  *) echo "git was not found on the remote PATH" >&2; exit @EXIT_GIT_MISSING@ ;;
+esac
+ROOT_IN=@ROOT_EXPR@
+if [ -L "${ROOT_IN%/}" ]; then
+  echo "snapshot root is a symlink: $ROOT_IN (it must be a real directory; remove the symlink or choose a private snapshot_root)" >&2
+  exit @EXIT_DIR_UNSAFE@
+fi
+resolve_path "$ROOT_IN" || { echo "snapshot root cannot be resolved: $ROOT_IN" >&2; exit @EXIT_ROOT_INVALID@; }
+ROOT=$RESOLVED
+case $ROOT in
+  *[!A-Za-z0-9._/+-]*) echo "snapshot root has characters outside [A-Za-z0-9._/+-]: $ROOT" >&2; exit @EXIT_ROOT_INVALID@ ;;
+esac
+if [ -d "$ROOT" ]; then
+  check_ancestors "$ROOT"
+  check_private_dir "$ROOT"
+fi
+NOW=$(date +%s)
+case $NOW in
+  ''|*[!0-9]*) NOW=- ;;
+esac
+echo BEGIN
+printf 'NOW %s\n' "$NOW"
+printf 'ROOT %s\n' "$ROOT"
+if [ ! -d "$ROOT" ]; then
+  echo 'EXISTS 0'
+  echo END
+  exit 0
+fi
+echo 'EXISTS 1'
+printf 'GIT %s\n' "$GIT"
+emit_stray() {
+  printf 'STRAY %s %s%s\n' "$1" "$2" "$(shown_name "$3")"
+}
+inventory_repo() {
+  ir_n=$1
+  REPO=$ROOT/$ir_n
+  if ir_msg=$(check_private_dir "$REPO" "$REPO/trees" "$REPO/leases" 2>&1); then
+    :
+  else
+    ir_msg=$(printf '%s' "$ir_msg" | tr '\n' ' ')
+    printf 'SKIP %s %s\n' "$ir_n" "${ir_msg:-directory is not private}"
+    return 0
+  fi
+  printf 'REPO %s\n' "$ir_n"
+  if [ -e "$REPO/.lock" ] || [ -L "$REPO/.lock" ]; then
+    printf 'LOCK %s %s\n' "$ir_n" "$(mtime_of "$REPO/.lock")"
+  fi
+  ir_shas=$(
+    for ir_t in "$REPO"/trees/*; do
+      if [ -e "$ir_t" ] || [ -L "$ir_t" ]; then
+        ir_h=${ir_t##*/}
+        ir_h=${ir_h%.complete}
+        if is_sha_name "$ir_h"; then echo "$ir_h"; fi
+      fi
+    done
+    set --
+    for ir_l in "$REPO"/leases/*.json; do
+      if [ -f "$ir_l" ] && [ ! -L "$ir_l" ]; then set -- "$@" "$ir_l"; fi
+    done
+    if [ $# -gt 0 ]; then
+      sed -n 's/.*"sha":"\([0-9a-f]\{40\}\)".*/\1/p' "$@" 2>/dev/null </dev/null
+    fi
+  )
+  ir_shas=$(printf '%s\n' "$ir_shas" | LC_ALL=C sort -u)
+  for ir_sha in $ir_shas; do
+    is_sha_name "$ir_sha" || continue
+    ir_fp=$(snap_fp "$ir_sha")
+    ir_tf=0
+    ir_mf=0
+    if [ -e "$REPO/trees/$ir_sha" ] || [ -L "$REPO/trees/$ir_sha" ]; then ir_tf=1; fi
+    if [ -e "$REPO/trees/$ir_sha.complete" ] || [ -L "$REPO/trees/$ir_sha.complete" ]; then ir_mf=1; fi
+    ir_size=-
+    if [ "$WITH_SIZE" = 1 ] && [ -d "$REPO/trees/$ir_sha" ] && [ ! -L "$REPO/trees/$ir_sha" ]; then
+      ir_size=$(du -sk "$REPO/trees/$ir_sha" 2>/dev/null </dev/null | cut -f1)
+      case $ir_size in
+        ''|*[!0-9]*) ir_size=- ;;
+      esac
+    fi
+    printf 'SNAP %s %s %s %s %s%s\n' "$ir_n" "$ir_sha" "$ir_fp" "$ir_size" "$ir_tf" "$ir_mf"
+  done
+  for ir_l in "$REPO"/leases/*.json; do
+    if [ ! -e "$ir_l" ] && [ ! -L "$ir_l" ]; then continue; fi
+    ir_b=${ir_l##*/}
+    ir_lm=$(mtime_of "$ir_l")
+    if ! is_plain "$ir_b"; then
+      printf 'LEASEBAD %s %s %s %s\n' "$ir_n" '?' "$ir_lm" 'unusual file name'
+      continue
+    fi
+    if [ -L "$ir_l" ] || [ ! -f "$ir_l" ]; then
+      printf 'LEASEBAD %s %s %s %s\n' "$ir_n" "$ir_b" "$ir_lm" 'not a regular file'
+      continue
+    fi
+    ir_sz=$(wc -c < "$ir_l" 2>/dev/null | tr -d ' ')
+    case $ir_sz in
+      ''|*[!0-9]*) printf 'LEASEBAD %s %s %s %s\n' "$ir_n" "$ir_b" "$ir_lm" 'cannot be read'; continue ;;
+    esac
+    if [ "$ir_sz" -eq 0 ]; then
+      printf 'LEASEBAD %s %s %s %s\n' "$ir_n" "$ir_b" "$ir_lm" 'empty'
+    elif [ "$ir_sz" -gt 4096 ]; then
+      printf 'LEASEBAD %s %s %s %s\n' "$ir_n" "$ir_b" "$ir_lm" 'larger than 4096 bytes'
+    else
+      ir_json=$(head -n 1 "$ir_l" 2>/dev/null)
+      printf 'LEASE %s %s %s %s\n' "$ir_n" "$ir_b" "$ir_lm" "$ir_json"
+    fi
+  done
+  for ir_t in "$REPO"/trees/* "$REPO"/trees/.[!.]*; do
+    if [ ! -e "$ir_t" ] && [ ! -L "$ir_t" ]; then continue; fi
+    ir_b=${ir_t##*/}
+    ir_h=${ir_b%.complete}
+    if is_sha_name "$ir_h"; then continue; fi
+    if is_owned_trash "$ir_t"; then
+      printf 'TRASH %s %s\n' "$ir_n" "$ir_b"
+    else
+      emit_stray "$ir_n" trees/ "$ir_b"
+    fi
+  done
+  for ir_t in "$REPO"/* "$REPO"/.[!.]*; do
+    if [ ! -e "$ir_t" ] && [ ! -L "$ir_t" ]; then continue; fi
+    ir_b=${ir_t##*/}
+    case $ir_b in
+      repo.git|trees|leases|.lock) continue ;;
+    esac
+    emit_stray "$ir_n" '' "$ir_b"
+  done
+}
+for ent in "$ROOT"/* "$ROOT"/.[!.]*; do
+  if [ ! -e "$ent" ] && [ ! -L "$ent" ]; then continue; fi
+  ent_n=${ent##*/}
+  case $ent_n in
+    .*|*[!A-Za-z0-9._-]*) emit_stray - '' "$ent_n"; continue ;;
+  esac
+  if [ -L "$ent" ] || [ ! -d "$ent" ] || [ ! -d "$ent/repo.git" ]; then
+    emit_stray - '' "$ent_n"
+    continue
+  fi
+  inventory_repo "$ent_n"
+done
+echo END
+"""
+
+
+def build_inventory_script(*, root_expr: str, with_size: bool = False) -> str:
+    """Read-only inventory of the whole root; takes no lock."""
+    # The preamble's ``acquire`` is never called; the owner is a placeholder.
+    preamble = _lock_preamble(
+        client_host="inventory", client_pid=0, token="0" * 32, lock_wait=0
+    )
+    body = _fill(_INVENTORY_BODY, ROOT_EXPR=root_expr)
+    return (
+        preamble
+        + _RESOLVE_PATH
+        + _MTIME_OF
+        + _TREE_INTACT
+        + _GC_HELPERS
+        + f"WITH_SIZE={1 if with_size else 0}\n"
+        + body
+    )
+
+
+_PRUNE_BODY = r"""RESULTS=
+prune_one() {
+  po_sha=$1
+  po_fp=$2
+  po_ids=$3
+  SHA=$po_sha
+  TREE=$REPO/trees/$SHA
+  MARK=$TREE.complete
+  po_cur=$(snap_fp "$po_sha")
+  if [ "$po_cur" != "$po_fp" ]; then
+    RESULTS="${RESULTS}CHANGED $po_sha
+"
+    return 0
+  fi
+  if [ ! -L "$TREE" ] && [ -e "$TREE" ] && [ ! -O "$TREE" ]; then
+    RESULTS="${RESULTS}FAILED $po_sha not-owned
+"
+    return 0
+  fi
+  rm -rf "$MARK"
+  if [ -L "$TREE" ]; then
+    rm -f "$TREE"
+  elif [ -d "$TREE" ]; then
+    chmod u+w "$TREE" 2>/dev/null
+    if ! mv "$TREE" "$REPO/trees/.trash.$po_sha.@TOKEN@" 2>/dev/null; then
+      RESULTS="${RESULTS}FAILED $po_sha rename
+"
+      return 0
+    fi
+  elif [ -e "$TREE" ]; then
+    rm -f "$TREE"
+  fi
+  "$GIT" --git-dir="$GITDIR" update-ref -d "refs/srunx/snapshots/$po_sha" >/dev/null 2>&1 </dev/null
+  for po_id in $(printf '%s' "$po_ids" | tr ',' ' '); do
+    rm -f "$REPO/leases/$po_id.json"
+  done
+  RESULTS="${RESULTS}REMOVED $po_sha
+"
+}
+acquire
+@PRUNE_CALLS@"$GIT" --git-dir="$GITDIR" worktree prune --expire=now >/dev/null 2>&1 </dev/null
+release
+printf '%s' "$RESULTS"
+TRASH_LEFT=0
+for tr_e in "$REPO"/trees/.trash*; do
+  if [ ! -e "$tr_e" ] && [ ! -L "$tr_e" ]; then continue; fi
+  if is_owned_trash "$tr_e"; then
+    chmod -R u+w "$tr_e" 2>/dev/null
+    rm -rf "$tr_e" 2>/dev/null
+    if [ -e "$tr_e" ] || [ -L "$tr_e" ]; then TRASH_LEFT=$((TRASH_LEFT + 1)); fi
+  else
+    printf 'TRASHSKIP %s\n' "$(shown_name "${tr_e##*/}")"
+  fi
+done
+printf 'TRASHLEFT %s\n' "$TRASH_LEFT"
+echo END
+"""
+
+
+def build_prune_script(
+    *,
+    repo_dir: str,
+    git: str,
+    targets: Sequence[PruneTarget],
+    client_host: str,
+    client_pid: int,
+    token: str,
+    lock_wait: int = LOCK_WAIT_SECONDS,
+) -> str:
+    """Remove the unchanged *targets* of one repo under its lock, then sweep trash.
+
+    The token doubles as the suffix of the trash directory names; it is unique
+    per call. *targets* may be empty (a trash-only run).
+    """
+    calls = ""
+    for t in targets:
+        _check(SHA_RE, t.sha, "sha")
+        _check(FINGERPRINT_RE, t.fingerprint, "fingerprint")
+        listed = FINGERPRINT_RE.fullmatch(t.fingerprint)
+        assert listed is not None
+        if listed.group(4) == "!":
+            raise ValueError(
+                f"fingerprint cannot be attributed to leases: {t.fingerprint!r}"
+            )
+        ids = [_check(_LEASE_ID, i, "lease id") for i in t.lease_ids]
+        fp_ids = {item.split(":", 1)[0] for item in listed.group(4).split(",") if item}
+        if set(ids) != fp_ids:
+            raise ValueError("lease ids differ from the ones in the fingerprint")
+        calls += (
+            f"prune_one {t.sha} {shlex.quote(t.fingerprint)} "
+            f"{shlex.quote(','.join(ids))}\n"
+        )
+    return (
+        _lock_preamble(
+            client_host=client_host,
+            client_pid=client_pid,
+            token=token,
+            lock_wait=lock_wait,
+        )
+        + _repo_vars(repo_dir, git, None)
+        + _MTIME_OF
+        + _TREE_INTACT
+        + _GC_HELPERS
+        + _fill(_PRUNE_BODY, PRUNE_CALLS=calls, TOKEN=token)
+    )
+
+
+class InventoryStore:
+    """Runs the inventory and prune scripts through a :class:`RemoteSnapshotStore`."""
+
+    def __init__(self, store: RemoteSnapshotStore) -> None:
+        self._store = store
+
+    def read(self, *, with_size: bool = False) -> Inventory:
+        script = build_inventory_script(
+            root_expr=self._store.root_expr, with_size=with_size
+        )
+        out = self._store.run(
+            script, timeout=INVENTORY_TIMEOUT, what="snapshot inventory"
+        )
+        return parse_inventory(out)
+
+    def prune_repo(
+        self, *, repo_dir: str, git: str, targets: Sequence[PruneTarget]
+    ) -> PruneRepoResult:
+        script = build_prune_script(
+            repo_dir=repo_dir,
+            git=git,
+            targets=targets,
+            lock_wait=self._store.lock_wait,
+            **self._store.owner(),
+        )
+        out = self._store.run(script, timeout=PRUNE_TIMEOUT, what="snapshot prune")
+        return parse_prune_output(out, targets)

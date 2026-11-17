@@ -3,19 +3,28 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
-from srunx.snapshot.errors import SnapshotRemoteError
+from srunx.snapshot.errors import SnapshotLockTimeoutError, SnapshotRemoteError
 from srunx.snapshot.inventory import (
     FINGERPRINT_RE,
     TRASH_NAME_RE,
+    InventoryStore,
     LeaseRecord,
     PruneTarget,
+    build_inventory_script,
+    build_prune_script,
     parse_inventory,
     parse_prune_output,
 )
 from srunx.snapshot.lease import Lease
+from srunx.snapshot.remote import (
+    INVENTORY_TIMEOUT,
+    PRUNE_TIMEOUT,
+    RemoteSnapshotStore,
+)
 
 REPO = "proj-0123456789ab"
 SHA = "a" * 40
@@ -190,10 +199,10 @@ class TestLeaseRecords:
         return rec
 
     def test_valid_bound_lease(self) -> None:
-        text = lease_json(state="bound", job_id=7, cluster="gpucloud2")
+        text = lease_json(state="bound", job_id=7, cluster="clusterA")
         rec = self._one(f"LEASE {REPO} {LID}.json 60 {text}")
         assert rec.lease is not None and rec.lease.job_id == 7
-        assert rec.lease.cluster == "gpucloud2"
+        assert rec.lease.cluster == "clusterA"
 
     def test_garbage_is_unreadable(self) -> None:
         rec = self._one(f"LEASE {REPO} {LID}.json 60 not json {{")
@@ -254,3 +263,177 @@ class TestParsePruneOutput:
     def test_unknown_sha_is_ignored_and_empty_targets_work(self) -> None:
         res = parse_prune_output(f"REMOVED {SHA}\nTRASHLEFT 0\nEND\n", [])
         assert res.removed == () and res.failed == ()
+
+
+TOKEN = "e" * 32
+REPO_DIR = f"{ROOT}/{REPO}"
+
+
+def prune_script(targets: list[PruneTarget] | None = None) -> str:
+    return build_prune_script(
+        repo_dir=REPO_DIR,
+        git="/usr/bin/git",
+        targets=targets or [],
+        client_host="h",
+        client_pid=1,
+        token=TOKEN,
+    )
+
+
+class TestBuilders:
+    def test_prune_script_embeds_targets_and_token(self) -> None:
+        t = PruneTarget(SHA, fp(leases=f"{LID}:5"), (LID,))
+        script = prune_script([t])
+        assert f"prune_one {SHA} " in script
+        assert f".trash.$po_sha.{TOKEN}" in script
+
+    def test_prune_script_with_no_targets_still_locks_and_sweeps(self) -> None:
+        script = prune_script([])
+        assert "\nacquire\n" in script and "worktree prune" in script
+        assert "TRASHSKIP" in script
+        calls = script.split("\nacquire\n", 1)[1].split('"$GIT"')[0]
+        assert "prune_one" not in calls
+
+    def test_prune_script_never_runs_gc(self) -> None:
+        script = prune_script([PruneTarget(SHA, fp(), ())])
+        assert " gc" not in script
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            PruneTarget("short", fp(), ()),
+            PruneTarget(SHA, "m1.t2", ()),
+            PruneTarget(SHA, fp(leases="!"), ()),  # cannot be attributed
+            PruneTarget(SHA, fp(leases=f"{LID}:5"), ("zz",)),
+            PruneTarget(SHA, fp(leases=f"{LID}:5"), ()),  # ids differ from the fp
+            PruneTarget(SHA, fp(), (LID,)),
+            PruneTarget(SHA + "; true", fp(), ()),
+        ],
+    )
+    def test_prune_script_rejects_bad_targets(self, target: PruneTarget) -> None:
+        with pytest.raises(ValueError):
+            prune_script([target])
+
+    def test_prune_script_rejects_bad_repo_dir_token_and_git(self) -> None:
+        with pytest.raises(ValueError):
+            build_prune_script(
+                repo_dir="/a b",
+                git="/usr/bin/git",
+                targets=[],
+                client_host="h",
+                client_pid=1,
+                token=TOKEN,
+            )
+        with pytest.raises(ValueError):
+            build_prune_script(
+                repo_dir=REPO_DIR,
+                git="git",
+                targets=[],
+                client_host="h",
+                client_pid=1,
+                token=TOKEN,
+            )
+        with pytest.raises(ValueError):
+            build_prune_script(
+                repo_dir=REPO_DIR,
+                git="/usr/bin/git",
+                targets=[],
+                client_host="h",
+                client_pid=1,
+                token="nothex",
+            )
+
+    def test_inventory_script_takes_no_lock(self) -> None:
+        script = build_inventory_script(root_expr="/r/snap")
+        assert "ROOT_IN=/r/snap" in script
+        assert "\nacquire\n" not in script
+        assert "WITH_SIZE=0" in script
+        assert "WITH_SIZE=1" in build_inventory_script(root_expr="/r", with_size=True)
+
+    def test_scripts_share_the_fingerprint_function(self) -> None:
+        inv = build_inventory_script(root_expr="/r/snap")
+        pr = prune_script([])
+        start = inv.index("snap_fp() {")
+        end = inv.index("\n}\n", start)
+        assert inv[start:end] in pr
+
+
+class StubShell:
+    def __init__(self, result: subprocess.CompletedProcess[str]) -> None:
+        self.result = result
+        self.calls: list[tuple[str, float | None]] = []
+
+    def run_script(
+        self, script: str, *, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        self.calls.append((script, timeout))
+        return self.result
+
+    def ssh_command(self) -> list[str]:
+        return ["ssh"]
+
+    def remote_spec(self, path: str) -> str:
+        return path
+
+
+def store_for(
+    result: subprocess.CompletedProcess[str],
+) -> tuple[InventoryStore, StubShell]:
+    shell = StubShell(result)
+    raw = RemoteSnapshotStore(shell, snapshot_root=ROOT, mounts=[], lock_wait=7)
+    return InventoryStore(raw), shell
+
+
+def done(
+    stdout: str = "", rc: int = 0, stderr: str = ""
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess([], rc, stdout, stderr)
+
+
+class TestInventoryStore:
+    def test_read_uses_inventory_timeout_and_parses(self) -> None:
+        store, shell = store_for(done(listing(f"REPO {REPO}")))
+        inv = store.read()
+        assert [r.repo_id for r in inv.repos] == [REPO]
+        assert shell.calls[0][1] == INVENTORY_TIMEOUT
+
+    def test_read_rejects_truncated_output(self) -> None:
+        store, _ = store_for(done("BEGIN\nNOW 1\nROOT /r\nEXISTS 1\n"))
+        with pytest.raises(SnapshotRemoteError, match="truncated"):
+            store.read()
+
+    def test_read_maps_unsafe_root_exit_code(self) -> None:
+        store, _ = store_for(done(rc=32, stderr="group-writable"))
+        with pytest.raises(SnapshotRemoteError, match="not private"):
+            store.read()
+
+    def test_prune_repo_uses_prune_timeout_and_lock_wait(self) -> None:
+        store, shell = store_for(done(f"REMOVED {SHA}\nTRASHLEFT 0\nEND\n"))
+        res = store.prune_repo(
+            repo_dir=REPO_DIR, git="/usr/bin/git", targets=[PruneTarget(SHA, fp(), ())]
+        )
+        assert res.removed == (SHA,)
+        script, timeout = shell.calls[0]
+        assert timeout == PRUNE_TIMEOUT
+        assert '"$waited" -ge 7 ]' in script  # lock_wait of the underlying store
+
+    def test_prune_repo_lock_timeout_maps_to_lock_error(self) -> None:
+        store, _ = store_for(done(rc=30, stderr=f"LOCK={REPO_DIR}/.lock\nhost=h\n"))
+        with pytest.raises(SnapshotLockTimeoutError):
+            store.prune_repo(repo_dir=REPO_DIR, git="/usr/bin/git", targets=[])
+
+    def test_prune_repo_without_end_is_an_error(self) -> None:
+        store, _ = store_for(done(f"REMOVED {SHA}\n"))
+        with pytest.raises(SnapshotRemoteError):
+            store.prune_repo(
+                repo_dir=REPO_DIR,
+                git="/usr/bin/git",
+                targets=[PruneTarget(SHA, fp(), ())],
+            )
+
+    def test_prune_repo_target_without_result_counts_as_failed(self) -> None:
+        store, _ = store_for(done("TRASHLEFT 0\nEND\n"))
+        res = store.prune_repo(
+            repo_dir=REPO_DIR, git="/usr/bin/git", targets=[PruneTarget(SHA, fp(), ())]
+        )
+        assert res.failed == ((SHA, "no result"),)

@@ -333,9 +333,9 @@ class TestBindCluster:
     def test_cluster_is_stored_when_found(self) -> None:
         store = FakeStore()
         calls: list[str] = []
-        self._bind(store, _sacct_runner("gpucloud2\n", calls=calls))
+        self._bind(store, _sacct_runner("clusterA\n", calls=calls))
         assert store.bound_lease is not None
-        assert store.bound_lease.cluster == "gpucloud2"
+        assert store.bound_lease.cluster == "clusterA"
         assert len(calls) == 1
 
     def test_cluster_none_when_lookup_returns_nothing(self) -> None:
@@ -362,7 +362,7 @@ class TestBindCluster:
 
     def test_cluster_none_on_timeout_exit(self) -> None:
         store = FakeStore()
-        self._bind(store, _sacct_runner("gpucloud2\n", rc=124))
+        self._bind(store, _sacct_runner("clusterA\n", rc=124))
         assert store.bound_lease is not None
         assert store.bound_lease.cluster is None
 
