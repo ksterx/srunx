@@ -102,7 +102,11 @@ def build_snapshot_plan(
 
 
 def print_snapshot_dry_run(
-    console: Console, plan: SnapshotPlan, *, profile_name: str | None
+    console: Console,
+    plan: SnapshotPlan,
+    *,
+    profile_name: str | None,
+    extra_sbatch_args: Sequence[str] = (),
 ) -> None:
     from srunx.ssh.core.config import ConfigManager
 
@@ -113,9 +117,17 @@ def print_snapshot_dry_run(
     console.print(f"    Commit: {plan.sha}")
     console.print(f"    Repo id: {plan.repo_id}")
     console.print(f"    Snapshot root: {root}")
+    console.print(
+        f"    Snapshot path: {snapshot_root or DEFAULT_SNAPSHOT_ROOT}"
+        f"/{plan.repo_id}/trees/{plan.sha}"
+    )
     console.print(f"    Script (in commit): {plan.script_rel}")
     console.print(f"    Job cwd (in snapshot): {plan.cwd_rel or '<snapshot top>'}")
-    for w in plan.warnings:
+    warnings = list(plan.warnings)
+    output_warn = output_warning(plan.script_text, extra_sbatch_args)
+    if output_warn:
+        warnings.append(output_warn)
+    for w in warnings:
         console.print(f"    [yellow]warning: {w}[/yellow]")
 
 

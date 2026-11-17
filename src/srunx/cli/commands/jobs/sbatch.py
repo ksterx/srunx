@@ -472,41 +472,6 @@ def sbatch(
     else:
         callbacks = []
 
-    if dry_run:
-        console = Console()
-        console.print("🔍 Dry run mode - would submit job:")
-        console.print(f"  Name: {job.name}")
-        if isinstance(job, Job):
-            command_str = (
-                job.command
-                if isinstance(job.command, str)
-                else " ".join(job.command or [])
-            )
-            console.print(f"  Command: {command_str}")
-            console.print(f"  Nodes: {job.resources.nodes}")
-            console.print(f"  GPUs: {job.resources.gpus_per_node}")
-        elif isinstance(job, ShellJob):
-            console.print(f"  Script: {job.script_path}")
-        # #137 part 2: when the dry run targets an SSH in-place
-        # candidate (positional script under a profile mount), also
-        # show rsync's preview of what *would* transfer. Lets the user
-        # spot a stray ``build/`` or ``.cache/`` they forgot to
-        # gitignore before they trigger an actual sync.
-        if snapshot_plan is not None:
-            print_snapshot_dry_run(
-                console, snapshot_plan, profile_name=snapshot_profile_name
-            )
-        else:
-            _print_in_place_sync_preview(
-                console=console,
-                script=script,
-                profile_name=profile,
-                local=local,
-                sync_flag=sync,
-                config=config,
-            )
-        return
-
     # Submit job through the resolved transport.
     #
     # Local path keeps the richer ``Slurm.submit`` signature (accepts
@@ -573,6 +538,44 @@ def sbatch(
         extra_sbatch_args += passthrough
     else:
         extra_sbatch_args = list(passthrough)
+
+    if dry_run:
+        console = Console()
+        console.print("🔍 Dry run mode - would submit job:")
+        console.print(f"  Name: {job.name}")
+        if isinstance(job, Job):
+            command_str = (
+                job.command
+                if isinstance(job.command, str)
+                else " ".join(job.command or [])
+            )
+            console.print(f"  Command: {command_str}")
+            console.print(f"  Nodes: {job.resources.nodes}")
+            console.print(f"  GPUs: {job.resources.gpus_per_node}")
+        elif isinstance(job, ShellJob):
+            console.print(f"  Script: {job.script_path}")
+        # #137 part 2: when the dry run targets an SSH in-place
+        # candidate (positional script under a profile mount), also
+        # show rsync's preview of what *would* transfer. Lets the user
+        # spot a stray ``build/`` or ``.cache/`` they forgot to
+        # gitignore before they trigger an actual sync.
+        if snapshot_plan is not None:
+            print_snapshot_dry_run(
+                console,
+                snapshot_plan,
+                profile_name=snapshot_profile_name,
+                extra_sbatch_args=extra_sbatch_args,
+            )
+        else:
+            _print_in_place_sync_preview(
+                console=console,
+                script=script,
+                profile_name=profile,
+                local=local,
+                sync_flag=sync,
+                config=config,
+            )
+        return
 
     with resolve_transport(
         profile=profile,

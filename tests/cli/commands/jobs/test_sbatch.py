@@ -591,3 +591,30 @@ def test_snapshot_dry_run_makes_no_remote_call(runner, snapshot_env, tmp_path):
     assert snapshot_env["service_calls"] == 0
     assert "b" * 40 in result.output
     assert "/snaps" in result.output
+    assert "/trees/" + "b" * 40 in result.output
+    # The plan's script has no --output/--chdir, so the dry run must warn
+    # that the job would write into the read-only snapshot (REQ-16).
+    assert "read-only" in result.output
+
+
+def test_snapshot_dry_run_no_output_warning_with_absolute_output(
+    runner, snapshot_env, tmp_path
+):
+    script = tmp_path / "job.sbatch"
+    script.write_text("echo\n")
+
+    with patch("srunx.cli.commands.jobs.sbatch.resolve_transport"):
+        result = runner.invoke(
+            app,
+            [
+                "sbatch",
+                "--snapshot",
+                "--dry-run",
+                str(script),
+                "--profile",
+                "test-profile",
+                "--output=/abs/logs/%j.out",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    assert "read-only" not in result.output
