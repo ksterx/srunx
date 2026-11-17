@@ -361,6 +361,22 @@ def test_bind_marker_present_then_removed_then_delete_lease(env: Env) -> None:
     data = json.loads(path.read_text())
     assert data["state"] == "bound" and data["job_id"] == 78
 
+    # marker back but the tree swapped for a symlink between commit and bind:
+    # not a snapshot any more, so it is reported missing (loud warning path)
+    marker = Path(probe.repo_dir) / "trees" / f"{env.sha}.complete"
+    marker.touch()
+    assert store.bind(repo_dir=probe.repo_dir, lease=lease.bound(79)) is True
+    tree = Path(res.path)
+    moved = env.tmp / "moved-tree"
+    _u_w(tree)
+    tree.rename(moved)
+    tree.symlink_to(moved, target_is_directory=True)
+    assert store.bind(repo_dir=probe.repo_dir, lease=lease.bound(80)) is False
+    data = json.loads(path.read_text())
+    assert data["job_id"] == 80
+    tree.unlink()
+    moved.rename(tree)
+
     # delete is idempotent and leaves the snapshot alone
     store.delete_lease(repo_dir=probe.repo_dir, lease_id=lease.lease_id)
     assert not Path(res.lease_path or "").exists()

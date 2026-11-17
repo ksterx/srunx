@@ -496,15 +496,20 @@ def _lease_vars(lease_json: str | None, lease_id: str | None) -> str:
     return out
 
 
+# A snapshot is intact only when the marker is a regular file, the tree a real
+# directory (-f / -d follow symlinks) and the tree really is at the commit.
+_TREE_INTACT = r"""tree_intact() {
+  [ -f "$MARK" ] && [ ! -L "$MARK" ] && [ -d "$TREE" ] && [ ! -L "$TREE" ] \
+    && [ "$("$GIT" -C "$TREE" rev-parse HEAD 2>/dev/null)" = "$SHA" ]
+}
+"""
+
 _COMMIT_BODY = r"""acquire
 if ! "$GIT" --git-dir="$GITDIR" cat-file -e "$SHA^{commit}" 2>/dev/null; then
   echo "commit $SHA is not in $GITDIR" >&2
   exit @EXIT_COMMIT_MISSING@
 fi
-# -f / -d follow symlinks: a link planted at the marker or tree path must not
-# pass for a complete snapshot, and the tree must really be at the commit.
-if [ -f "$MARK" ] && [ ! -L "$MARK" ] && [ -d "$TREE" ] && [ ! -L "$TREE" ] \
-  && [ "$("$GIT" -C "$TREE" rev-parse HEAD 2>/dev/null)" = "$SHA" ]; then
+if tree_intact; then
   STATUS=reused
 else
   STATUS=created
@@ -558,12 +563,13 @@ def build_commit_script(
         + _repo_vars(repo_dir, git, sha)
         + _lease_vars(lease_json, lease_id)
         + _fill(_WRITE_LEASE)
+        + _TREE_INTACT
         + _fill(_COMMIT_BODY, WRITE_LEASE_CALL=call)
     )
 
 
 _BIND_BODY = r"""acquire
-if [ -f "$MARK" ] && [ ! -L "$MARK" ]; then SNAPSHOT=present; else SNAPSHOT=missing; fi
+if tree_intact; then SNAPSHOT=present; else SNAPSHOT=missing; fi
 write_lease
 release
 printf 'SNAPSHOT=%s\n' "$SNAPSHOT"
@@ -573,6 +579,7 @@ printf 'SNAPSHOT=%s\n' "$SNAPSHOT"
 def build_bind_script(
     *,
     repo_dir: str,
+    git: str | None = None,
     sha: str,
     lease_json: str,
     lease_id: str,
@@ -581,7 +588,12 @@ def build_bind_script(
     token: str,
     lock_wait: int = LOCK_WAIT_SECONDS,
 ) -> str:
-    """Rewrite the lease as bound; report whether the snapshot marker still exists."""
+    """Rewrite the lease as bound; report whether the snapshot is still intact.
+
+    *git* is the probed absolute path (as in the commit script); without it the
+    remote ``PATH`` lookup is used.
+    """
+    fallback = "" if git else "GIT=$(command -v git 2>/dev/null || true)\n"
     return (
         _lock_preamble(
             client_host=client_host,
@@ -589,9 +601,11 @@ def build_bind_script(
             token=token,
             lock_wait=lock_wait,
         )
-        + _repo_vars(repo_dir, None, sha)
+        + _repo_vars(repo_dir, git, sha)
+        + fallback
         + _lease_vars(lease_json, lease_id)
         + _fill(_WRITE_LEASE)
+        + _TREE_INTACT
         + _fill(_BIND_BODY)
     )
 
@@ -692,6 +706,7 @@ class RemoteSnapshotStore:
         self._shell = shell
         self._mounts = list(mounts)
         self._lock_wait = lock_wait
+        self._git: str | None = None  # probed path, remembered for bind
         try:
             self._root_expr = root_expr(snapshot_root)
         except ValueError as exc:
@@ -842,6 +857,7 @@ class RemoteSnapshotStore:
             lock_wait=self._lock_wait,
             **self._owner(),
         )
+        self._git = probe.git
         out = self._run(script, timeout=COMMIT_TIMEOUT, what="snapshot commit")
         self._need(out, "STATUS", "PATH", what="snapshot commit")
         status = out["STATUS"]
@@ -857,6 +873,7 @@ class RemoteSnapshotStore:
         """Rewrite the lease; False when the snapshot's marker is gone."""
         script = build_bind_script(
             repo_dir=repo_dir,
+            git=self._git,
             sha=lease.sha,
             lease_json=lease.to_json(),
             lease_id=lease.lease_id,
