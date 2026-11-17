@@ -20,6 +20,7 @@ from srunx.cli.commands.jobs.sinfo import sinfo
 from srunx.cli.commands.jobs.squeue import squeue
 from srunx.cli.commands.jobs.tail import tail
 from srunx.cli.commands.reports import history, sacct
+from srunx.cli.commands.snapshot import snapshot_app
 from srunx.cli.commands.templates import template_app
 from srunx.cli.commands.ui import ui
 from srunx.cli.watch import watch_app
@@ -72,6 +73,7 @@ app.add_typer(config_app, name="config")
 app.add_typer(watch_app, name="watch")
 app.add_typer(ssh_app, name="ssh")
 app.add_typer(template_app, name="template")
+app.add_typer(snapshot_app, name="snapshot")
 
 # Register root-level commands (moved into commands/*; wire them up here
 # so ``srunx.cli.main.app`` keeps its historical surface).

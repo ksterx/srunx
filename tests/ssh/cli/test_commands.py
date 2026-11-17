@@ -489,3 +489,54 @@ class TestSyncHelp:
         result = runner.invoke(ssh_app, ["sync", "--help"])
         assert result.exit_code == 0
         assert "--pull" in _strip_ansi(result.output)
+
+
+class TestUpdateSnapshotRoot:
+    def _seed(self, tmp_path: Path) -> str:
+        cfg = _cfg(tmp_path)
+        ConfigManager(cfg).add_profile(
+            "p", ServerProfile(hostname="h", username="u", key_filename="/k")
+        )
+        return cfg
+
+    def _update(self, cfg: str, value: str):
+        return runner.invoke(
+            ssh_app,
+            ["update", "--profile", "p", "--snapshot-root", value, "--config", cfg],
+        )
+
+    def test_update_snapshot_root_sets_value(self, tmp_path: Path):
+        cfg = self._seed(tmp_path)
+        result = self._update(cfg, "~/snaps")
+        assert result.exit_code == 0, result.output
+        profile = ConfigManager(cfg).get_profile("p")
+        assert profile is not None
+        assert profile.snapshot_root == "~/snaps"
+
+    def test_show_displays_snapshot_root(self, tmp_path: Path):
+        cfg = self._seed(tmp_path)
+        assert self._update(cfg, "/data/s").exit_code == 0
+        shown = runner.invoke(ssh_app, ["show", "--profile", "p", "--config", cfg])
+        assert shown.exit_code == 0, shown.output
+        assert "Snapshot Root: /data/s" in shown.output
+
+    def test_update_snapshot_root_empty_clears(self, tmp_path: Path):
+        cfg = self._seed(tmp_path)
+        assert self._update(cfg, "/data/s").exit_code == 0
+        assert self._update(cfg, "").exit_code == 0
+        profile = ConfigManager(cfg).get_profile("p")
+        assert profile is not None
+        assert profile.snapshot_root is None
+
+    @pytest.mark.parametrize(
+        "value", ["has space", "it's", "$HOME/x", "/a;b", "/a/../b", "rel/path"]
+    )
+    def test_update_snapshot_root_rejects_invalid(self, tmp_path: Path, value: str):
+        cfg = self._seed(tmp_path)
+        result = self._update(cfg, value)
+        assert result.exit_code == 2
+        # CI forces colour, and rich splits the option name with ANSI codes.
+        assert "--snapshot-root" in re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        profile = ConfigManager(cfg).get_profile("p")
+        assert profile is not None
+        assert profile.snapshot_root is None

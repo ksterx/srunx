@@ -167,3 +167,17 @@ def test_slurm_satisfies_protocol() -> None:
     client = Slurm()
     # runtime_checkable — covers structural subtyping.
     assert isinstance(client, Client)
+
+
+def test_submit_remote_sbatch_signatures_accept_metadata() -> None:
+    """Protocol and both clients take an optional keyword-only ``metadata``."""
+    import inspect
+
+    from srunx.slurm.clients.local import LocalClient
+    from srunx.slurm.clients.ssh import SlurmSSHClient
+    from srunx.slurm.protocols import JobOperations
+
+    for cls in (JobOperations, LocalClient, SlurmSSHClient):
+        param = inspect.signature(cls.submit_remote_sbatch).parameters["metadata"]
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY
+        assert param.default is None

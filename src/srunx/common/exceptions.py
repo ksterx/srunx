@@ -85,3 +85,24 @@ class SubmissionError(Exception):
     The sbatch process started (so transport succeeded) but sbatch
     itself rejected the script (syntax error, quota, etc.).
     """
+
+
+# ---------------------------------------------------------------------------
+# Remote sbatch outcome (typed so callers can tell "no job exists" from "a job
+# may exist"). Both subclass RuntimeError so existing ``except RuntimeError``
+# call sites keep working.
+# ---------------------------------------------------------------------------
+
+
+class SbatchSubmitError(RuntimeError):
+    """Base class for a failed remote ``sbatch`` submission."""
+
+
+class SbatchRejectedError(SbatchSubmitError):
+    """Confirmed rejection: the command was never sent, or sbatch exited
+    non-zero with a real exit status and printed no job id. No job exists."""
+
+
+class SbatchIndeterminateError(SbatchSubmitError):
+    """Outcome unknown: the channel was lost, the output was unparsable, or a
+    job id appeared alongside a failure. A job may exist."""

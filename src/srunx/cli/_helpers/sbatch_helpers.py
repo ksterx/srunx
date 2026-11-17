@@ -5,9 +5,12 @@ These were siblings of ``sbatch`` in the old monolithic ``main.py``; they live
 here so ``commands/jobs.py`` only holds Typer command functions.
 """
 
+from __future__ import annotations
+
 import shlex
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.console import Console
@@ -17,6 +20,9 @@ from srunx.callbacks import Callback
 from srunx.cli._helpers.click_compat import is_commandline
 from srunx.common.logging import get_logger
 from srunx.domain import ContainerResource
+
+if TYPE_CHECKING:
+    from srunx.snapshot import SnapshotPlan
 
 logger = get_logger(__name__)
 
@@ -35,6 +41,7 @@ def _submit_via_transport(
     extra_sbatch_args: list[str] | None = None,
     force_sync: bool = False,
     inject_job_name: bool = True,
+    snapshot: SnapshotPlan | None = None,
 ) -> Any:
     """Dispatch a submit to the right adapter method + optional mount sync.
 
@@ -67,6 +74,11 @@ def _submit_via_transport(
     SLURM treats them as overrides of the script's ``#SBATCH``
     directives, matching real sbatch's precedence.
 
+    ``snapshot`` (a ``SnapshotPlan``) switches the SSH path to snapshot
+    submission: the job runs from a read-only per-commit snapshot, with no
+    mount sync, no mount lock, and no requirement that the script sit under a
+    mount.
+
     ``inject_job_name`` controls whether ``--job-name`` reaches the
     remote sbatch command line. It is ``False`` when the user did not
     type ``-J`` on a positional script, so the script's own ``#SBATCH
@@ -92,6 +104,19 @@ def _submit_via_transport(
             template_path=template,
             verbose=verbose,
             extra_sbatch_args=extra_sbatch_args or None,
+        )
+
+    if snapshot is not None:
+        from srunx.cli._helpers.snapshot_submit import submit_via_snapshot
+
+        assert profile_name is not None  # snapshot mode is SSH-only (checked upstream)
+        return submit_via_snapshot(
+            rt=rt,
+            job=job,
+            plan=snapshot,
+            profile_name=profile_name,
+            extra_sbatch_args=extra_sbatch_args,
+            inject_job_name=inject_job_name,
         )
 
     # --- SSH transport ---
@@ -252,41 +277,82 @@ def _build_extra_sbatch_args(
     return args
 
 
-def _job_name_from_tokens(tokens: list[str]) -> str | None:
-    """Extract ``--job-name`` / ``-J`` from one ``#SBATCH`` line's tokens.
+def last_option_value(tokens: Sequence[str], short: str, long: str) -> str | None:
+    """Value of the LAST ``-s V`` / ``-sV`` / ``--long V`` / ``--long=V`` in *tokens*.
 
-    Handles the four sbatch spellings — ``--job-name=X`` / ``--job-name X``
-    / ``-J X`` / ``-JX`` — and returns the LAST one on the line (matching
-    SLURM's last-wins semantics within a directive line). ``None`` when the
-    line carries no job-name option.
+    Last-wins matches SLURM's semantics within a directive line. A trailing
+    option with no value is ignored. ``None`` when the option is absent.
     """
     result: str | None = None
     i = 0
     while i < len(tokens):
         tok = tokens[i]
-        if tok.startswith("--job-name="):
+        if tok.startswith(f"{long}="):
             result = tok.split("=", 1)[1]
-        elif tok in ("--job-name", "-J") and i + 1 < len(tokens):
+        elif tok in (long, short) and i + 1 < len(tokens):
             result = tokens[i + 1]
             i += 1
-        elif tok.startswith("-J") and len(tok) > 2:
+        elif tok.startswith(short) and not tok.startswith("--") and len(tok) > 2:
             result = tok[2:]
         i += 1
-    return result or None
+    return result
 
 
-def _script_job_name(script_path: Path | str) -> str | None:
-    """Return the job name declared by a script's ``#SBATCH`` directives.
+def _job_name_from_tokens(tokens: list[str]) -> str | None:
+    """Extract ``--job-name`` / ``-J`` from one ``#SBATCH`` line's tokens.
+
+    ``None`` when the line carries no (or an empty) job-name option.
+    """
+    return last_option_value(tokens, "-J", "--job-name") or None
+
+
+def script_sbatch_tokens(text: str) -> list[list[str]]:
+    """Tokenise each ``#SBATCH`` directive line at the top of a script's text.
 
     Mirrors ``sbatch``'s own directive scan: read ``#SBATCH`` lines from the
-    top of the file, stop at the first non-blank, non-comment line (the first
-    executable command), and honour the LAST ``--job-name`` / ``-J`` seen.
-    Returns ``None`` when no such directive exists or the file can't be read
-    — callers fall back to SLURM's default naming.
+    top, stop at the first non-blank, non-comment line (the first executable
+    command). Returns one token list per directive line, in file order. A line
+    that cannot be shell-split is skipped.
+    """
+    lines: list[list[str]] = []
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#SBATCH"):
+            try:
+                lines.append(shlex.split(stripped[len("#SBATCH") :]))
+            except ValueError:
+                continue
+            continue
+        if stripped.startswith("#"):
+            continue  # shebang / comment line — keep scanning
+        break  # first executable line ends #SBATCH processing
+    return lines
+
+
+def _script_job_name_from_text(text: str) -> str | None:
+    """Return the job name declared by ``#SBATCH`` directives in script text.
+
+    Honours the LAST ``--job-name`` / ``-J`` seen. ``None`` when absent.
 
     Only the job-name option is parsed (not a general ``#SBATCH`` grammar);
     a ``%x`` / env-expansion inside a name is returned verbatim (best-effort
     — the value is used only for srunx's own display, never re-injected).
+    """
+    found: str | None = None
+    for tokens in script_sbatch_tokens(text):
+        name = _job_name_from_tokens(tokens)
+        if name is not None:
+            found = name  # last directive wins, matching SLURM
+    return found
+
+
+def _script_job_name(script_path: Path | str) -> str | None:
+    """Return the job name declared by a script file's ``#SBATCH`` directives.
+
+    Returns ``None`` when no such directive exists or the file can't be read
+    — callers fall back to SLURM's default naming.
     """
     try:
         # ``errors="replace"`` so a non-UTF-8 byte anywhere in the script
@@ -298,29 +364,15 @@ def _script_job_name(script_path: Path | str) -> str | None:
         text = Path(script_path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-
-    found: str | None = None
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("#SBATCH"):
-            try:
-                tokens = shlex.split(stripped[len("#SBATCH") :])
-            except ValueError:
-                continue
-            name = _job_name_from_tokens(tokens)
-            if name is not None:
-                found = name  # last directive wins, matching SLURM
-            continue
-        if stripped.startswith("#"):
-            continue  # shebang / comment line — keep scanning
-        break  # first executable line ends #SBATCH processing
-    return found
+    return _script_job_name_from_text(text)
 
 
 def _resolve_job_name(
-    script: Path | str, cli_name: str, *, cli_name_explicit: bool
+    script: Path | str,
+    cli_name: str,
+    *,
+    cli_name_explicit: bool,
+    script_text: str | None = None,
 ) -> tuple[str, bool]:
     """Resolve ``(logical job name, inject-as---job-name?)`` for a positional script.
 
@@ -337,10 +389,17 @@ def _resolve_job_name(
     with srunx; this is essential on the temp-upload path, where the script
     is uploaded to a random ``job_<uuid>.sh`` and SLURM's *default* name
     would be that opaque temp filename rather than the source basename.
+
+    ``script_text`` (snapshot mode) supplies the script's content from the
+    commit, so the local file is neither read nor required to exist.
     """
     if cli_name_explicit:
         return cli_name, True
-    directive = _script_job_name(script)
+    directive = (
+        _script_job_name_from_text(script_text)
+        if script_text is not None
+        else _script_job_name(script)
+    )
     if directive is not None:
         return directive, False
     return Path(script).name, True

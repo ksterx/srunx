@@ -8,7 +8,7 @@ catches is the documented behaviour, not a deferral.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from srunx.common.logging import get_logger
 from srunx.observability.storage.models import SubmissionSource, TransportType
@@ -28,6 +28,7 @@ def record_job_submission(
     profile_name: str | None = None,
     scheduler_key: str | None = None,
     submission_source: SubmissionSource | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     """Insert a ``jobs`` row for an SSH-submitted job.
 
@@ -45,15 +46,13 @@ def record_job_submission(
         )
 
         if profile_name is None:
-            # Legacy callsite (pre-V5 style) — pass only the two
-            # original kwargs so tests that mock
-            # ``record_submission_from_job`` with the original
-            # signature (``(job, *, workflow_name, workflow_run_id)``)
-            # keep working. The DB default is local anyway.
+            # Legacy callsite (pre-V5 style): no SSH triple; the DB default
+            # is local.
             record_submission_from_job(
                 job,
                 workflow_name=workflow_name,
                 workflow_run_id=workflow_run_id,
+                metadata=metadata,
             )
         else:
             resolved_scheduler_key = (
@@ -67,6 +66,7 @@ def record_job_submission(
                 profile_name=profile_name,
                 scheduler_key=resolved_scheduler_key,
                 submission_source=submission_source,
+                metadata=metadata,
             )
     except Exception as exc:  # noqa: BLE001
         # Best-effort by design: DB unavailability must never block

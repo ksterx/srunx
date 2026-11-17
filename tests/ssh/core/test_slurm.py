@@ -10,11 +10,17 @@ graph for us) but exercises the slurm component directly via
   file ops the slurm component calls back into.
 """
 
+import re
 import shlex
 from unittest.mock import Mock, patch
 
 import pytest
 
+from srunx.common.exceptions import (
+    SbatchIndeterminateError,
+    SbatchRejectedError,
+    SbatchSubmitError,
+)
 from srunx.ssh.core.client import SSHSlurmClient
 from srunx.ssh.core.client_types import SlurmJob
 
@@ -128,7 +134,12 @@ class TestExtraSbatchArgsWiring:
 
         def fake_execute(cmd, **_kw):
             captured["cmd"] = cmd
-            return ("Submitted batch job 12345", "", 0)
+            out = "Submitted batch job 12345"
+            nonce = re.search(r"__SRUNX_SBATCH_BEGIN_([0-9a-f]+)__", cmd)
+            if nonce:  # the checked in-place path brackets sbatch's own output
+                n = nonce.group(1)
+                out = f"__SRUNX_SBATCH_BEGIN_{n}__\n{out}\n__SRUNX_SBATCH_END_{n}__ 0\n"
+            return (out, "", 0)
 
         client.connection.execute_command = Mock(return_value=("", "", 0))
         client.slurm.execute_slurm_command = Mock(side_effect=fake_execute)
@@ -252,7 +263,12 @@ class TestJobEnvPropagation:
                 captured["inner"] = parts[-1] if parts else cmd
             except ValueError:
                 captured["inner"] = cmd
-            return ("Submitted batch job 12345", "", 0)
+            out = "Submitted batch job 12345"
+            nonce = re.search(r"__SRUNX_SBATCH_BEGIN_([0-9a-f]+)__", cmd)
+            if nonce:  # the checked in-place path brackets sbatch's own output
+                n = nonce.group(1)
+                out = f"__SRUNX_SBATCH_BEGIN_{n}__\n{out}\n__SRUNX_SBATCH_END_{n}__ 0\n"
+            return (out, "", 0)
 
         client.connection.execute_command = Mock(side_effect=fake_execute)
         client.slurm._get_slurm_command = Mock(return_value="sbatch")
@@ -491,3 +507,218 @@ class TestEnvVarSecurity:
         # The (buggy) log path: quote then redact — secret would survive.
         buggy = _redact_exports(f"bash -l -c {shlex.quote(final_command)}")
         assert "sk-secret" in buggy
+
+
+class TestRemoteSbatchOutcomeClassification:
+    """One test per row of the plan's sbatch outcome classification table."""
+
+    @staticmethod
+    def _markers(cmd: str) -> tuple[str, str]:
+        m = re.search(r"__SRUNX_SBATCH_BEGIN_([0-9a-f]+)__", cmd)
+        assert m, f"command has no BEGIN marker: {cmd}"
+        return (
+            f"__SRUNX_SBATCH_BEGIN_{m.group(1)}__",
+            f"__SRUNX_SBATCH_END_{m.group(1)}__",
+        )
+
+    @classmethod
+    def _prep(cls, client, result=None, *, side_effect=None, noise=""):
+        """Simulate the remote shell around the bracketed sbatch invocation.
+
+        ``result`` is what sbatch itself produced: (stdout, stderr, exit). The
+        wrapper merges the streams (``2>&1``) between the markers and reports
+        the exit code in the END line; ``noise`` is profile output before BEGIN.
+        A status of ``-1`` / ``None`` is passed through raw (lost channel).
+        """
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        client.slurm._get_slurm_command = Mock(return_value="sbatch")
+        client.slurm._secret_file_exists = Mock(return_value=False)
+        if result is not None and result[2] in (-1, None):
+            client.slurm.execute_slurm_command = Mock(return_value=result)
+            return
+
+        def fake(cmd, *a, **kw):
+            if side_effect is not None:
+                raise side_effect
+            begin, end = cls._markers(cmd)
+            out, err, rc = result
+            return f"{noise}{begin}\n{out}{err}\n{end} {rc}\n", "", 0
+
+        client.slurm.execute_slurm_command = Mock(side_effect=fake)
+
+    @classmethod
+    def _prep_raw(cls, client, stdout_fn):
+        cls._prep(client, ("", "", 0))
+        client.slurm.execute_slurm_command = Mock(
+            side_effect=lambda cmd, *a, **kw: (stdout_fn(*cls._markers(cmd)), "", 0)
+        )
+
+    def test_command_brackets_sbatch_between_markers(self, client):
+        self._prep(client, ("Submitted batch job 1", "", 0))
+        client.slurm.submit_remote_sbatch_file_checked("/r/x.sh", submit_cwd="/w d")
+        cmd = client.slurm.execute_slurm_command.call_args[0][0]
+        begin, end = self._markers(cmd)
+        assert cmd.index(begin) < cmd.index("sbatch ") < cmd.index(end)
+        assert "2>&1" in cmd and "cd '/w d' && " in cmd
+
+    def test_profile_noise_with_sbatch_error_is_not_a_rejection(self, client):
+        self._prep(
+            client,
+            ("", "", 1),
+            noise="sbatch: error: from a profile script\n",
+        )
+        with pytest.raises(SbatchIndeterminateError):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+
+    def test_missing_end_marker_is_indeterminate(self, client):
+        self._prep_raw(client, lambda b, e: f"{b}\nsbatch: error: x\n")
+        with pytest.raises(SbatchIndeterminateError, match="end marker|marker"):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+
+    def test_missing_begin_marker_is_indeterminate(self, client):
+        self._prep_raw(client, lambda b, e: f"sbatch: error: x\n{e} 1\n")
+        with pytest.raises(SbatchIndeterminateError):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+
+    def test_job_id_outside_markers_is_ignored(self, client):
+        self._prep(
+            client, ("", "sbatch: error: bad", 1), noise="Submitted batch job 9\n"
+        )
+        with pytest.raises(SbatchRejectedError):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+
+    def test_rejected_when_remote_script_validation_fails(self, client):
+        client.files.validate_remote_script = Mock(return_value=(False, "missing"))
+        client.slurm.execute_slurm_command = Mock()
+
+        with pytest.raises(SbatchRejectedError, match="missing"):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+        client.slurm.execute_slurm_command.assert_not_called()
+
+    def test_rejected_when_dependency_format_is_bad(self, client):
+        self._prep(client, ("", "", 0))
+
+        with pytest.raises(SbatchRejectedError, match="dependency"):
+            client.slurm.submit_remote_sbatch_file_checked(
+                "/r/x.sh", dependency="bogus"
+            )
+        client.slurm.execute_slurm_command.assert_not_called()
+
+    def test_rejected_when_exception_before_command_is_sent(self, client):
+        client.files.validate_remote_script = Mock(side_effect=OSError("boom"))
+        client.slurm.execute_slurm_command = Mock()
+
+        with pytest.raises(SbatchRejectedError, match="boom"):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+        client.slurm.execute_slurm_command.assert_not_called()
+
+    def test_rejected_on_nonzero_exit_without_job_id(self, client):
+        self._prep(client, ("", "sbatch: error: invalid partition", 1))
+
+        with pytest.raises(SbatchRejectedError, match="invalid partition"):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            ("", "", 1),  # wrapper / transport failure: no evidence sbatch ran
+            ("", "bash: sbatch: command not found", 127),
+            ("", "Connection reset by peer", 255),
+            ("some stdout", "ssh: warning", 1),
+        ],
+    )
+    def test_indeterminate_on_nonzero_exit_without_sbatch_error_text(
+        self, client, result
+    ):
+        self._prep(client, result)
+
+        with pytest.raises(SbatchIndeterminateError):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+
+    def test_rejected_when_sbatch_error_text_is_in_stdout_stream(self, client):
+        self._prep(client, ("sbatch: error: Batch job submission failed", "", 1))
+
+        with pytest.raises(SbatchRejectedError, match="submission failed"):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+
+    def test_indeterminate_on_exit_zero_without_job_id(self, client):
+        self._prep(client, ("weird output", "", 0))
+
+        with pytest.raises(SbatchIndeterminateError):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+
+    def test_indeterminate_on_nonzero_exit_with_job_id(self, client):
+        self._prep(client, ("Submitted batch job 4242", "warn", 1))
+
+        with pytest.raises(SbatchIndeterminateError, match="4242"):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+
+    @pytest.mark.parametrize("status", [-1, None])
+    def test_indeterminate_when_channel_reports_no_exit_status(self, client, status):
+        # paramiko's recv_exit_status() returns -1 on a closed channel.
+        self._prep(client, ("", "", status))
+
+        with pytest.raises(SbatchIndeterminateError, match="no exit status"):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+
+    def test_indeterminate_when_exception_after_command_is_sent(self, client):
+        self._prep(client, side_effect=EOFError("channel closed"))
+
+        with pytest.raises(SbatchIndeterminateError, match="channel closed"):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+
+    def test_lost_channel_through_real_connection_is_indeterminate(self, client):
+        """End to end through ``SSHConnection.execute_command``: a channel that
+        closed without a status makes paramiko return -1."""
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        client.slurm._get_slurm_command = Mock(return_value="sbatch")
+        client.slurm._secret_file_exists = Mock(return_value=False)
+        stdout = Mock()
+        stdout.read.return_value = b""
+        stdout.channel.recv_exit_status.return_value = -1
+        stderr = Mock()
+        stderr.read.return_value = b""
+        client.connection.ssh_client.exec_command = Mock(
+            return_value=(Mock(), stdout, stderr)
+        )
+
+        with pytest.raises(SbatchIndeterminateError):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+
+    def test_success_returns_job(self, client):
+        self._prep(client, ("Submitted batch job 77", "", 0))
+
+        job = client.slurm.submit_remote_sbatch_file_checked(
+            "/r/x.sh", job_name="train"
+        )
+
+        assert job.job_id == "77"
+        assert job.name == "train"
+        assert job.script_path == "/r/x.sh"
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            ("", "err", 1),
+            ("odd", "", 0),
+            ("", "", -1),
+            ("Submitted batch job 1", "", 2),
+        ],
+    )
+    def test_none_returning_wrapper_swallows_every_failure(self, client, result):
+        self._prep(client, result)
+
+        assert client.slurm.submit_remote_sbatch_file("/r/x.sh") is None
+
+    def test_none_returning_wrapper_returns_job_on_success(self, client):
+        self._prep(client, ("Submitted batch job 5", "", 0))
+
+        job = client.slurm.submit_remote_sbatch_file("/r/x.sh")
+
+        assert job is not None
+        assert job.job_id == "5"
+
+    def test_typed_errors_share_a_base_and_runtime_error(self):
+        assert issubclass(SbatchRejectedError, SbatchSubmitError)
+        assert issubclass(SbatchIndeterminateError, SbatchSubmitError)
+        assert issubclass(SbatchSubmitError, RuntimeError)

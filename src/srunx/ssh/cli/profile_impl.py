@@ -11,7 +11,12 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from ..core.config import ConfigManager, ServerProfile, validate_profile_name
+from ..core.config import (
+    ConfigManager,
+    ServerProfile,
+    validate_profile_name,
+    validate_snapshot_root,
+)
 
 console = Console()
 
@@ -281,6 +286,9 @@ def show_profile_impl(name: str | None = None, config: str | None = None):
             details.append(f"  Key File: {profile.key_filename}")
             details.append(f"  Port: {profile.port}")
 
+        if profile.snapshot_root:
+            details.append(f"  Snapshot Root: {profile.snapshot_root}")
+
         if profile.description:
             details.append("\n[bold green]Description:[/bold green]")
             details.append(f"  {profile.description}")
@@ -313,8 +321,18 @@ def update_profile_impl(
     proxy_jump: str | None = None,
     description: str | None = None,
     config: str | None = None,
+    snapshot_root: str | None = None,
 ):
     """Implementation for updating an existing profile."""
+    # Validated outside the broad ``try`` below so a bad value is a usage error
+    # (exit 2) rather than a generic failure (exit 1). Empty string clears.
+    validated_snapshot_root: str | None = None
+    if snapshot_root is not None:
+        try:
+            validated_snapshot_root = validate_snapshot_root(snapshot_root)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--snapshot-root") from exc
+
     try:
         config_manager = ConfigManager(config)
 
@@ -342,6 +360,8 @@ def update_profile_impl(
             update_params["proxy_jump"] = proxy_jump
         if description is not None:
             update_params["description"] = description
+        if snapshot_root is not None:
+            update_params["snapshot_root"] = validated_snapshot_root
 
         if not update_params:
             console.print("[yellow]No updates provided[/yellow]")

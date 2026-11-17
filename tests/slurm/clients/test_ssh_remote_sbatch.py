@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from srunx.callbacks import Callback
+from srunx.common.exceptions import SbatchIndeterminateError, SbatchRejectedError
 from srunx.domain import ShellJob
 from srunx.slurm.clients.ssh import SlurmSSHClient
 
@@ -55,7 +56,7 @@ class _RecordingCallback(Callback):
 
 
 def _stub_inner_submit(adapter: SlurmSSHClient, *, job_id: str, name: str) -> None:
-    """Wire ``adapter._client.slurm.submit_remote_sbatch_file`` to a MagicMock.
+    """Wire ``adapter._client.slurm.submit_remote_sbatch_file_checked`` to a MagicMock.
 
     The class-level ``_client`` is typed as :class:`SSHSlurmClient`,
     so mypy refuses ``return_value =`` on a real-typed method. The
@@ -67,7 +68,7 @@ def _stub_inner_submit(adapter: SlurmSSHClient, *, job_id: str, name: str) -> No
     submitted_inner.job_id = job_id
     submitted_inner.name = name
     mock_method.return_value = submitted_inner
-    adapter._client.slurm.submit_remote_sbatch_file = mock_method  # type: ignore[method-assign]
+    adapter._client.slurm.submit_remote_sbatch_file_checked = mock_method  # type: ignore[method-assign]
 
 
 def test_submit_remote_sbatch_fires_on_job_submitted_callback(
@@ -165,16 +166,25 @@ def test_submit_remote_sbatch_no_profile_falls_back_to_default_record(
     assert "scheduler_key" not in record_calls[0]
 
 
-def test_submit_remote_sbatch_raises_when_inner_returns_none(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Inner failure surfaces as RuntimeError so the CLI catches it cleanly."""
+def test_submit_remote_sbatch_propagates_rejected_error() -> None:
+    """The typed rejection reaches the caller unchanged (still a RuntimeError)."""
     adapter = _bare_adapter()
-    fail_method = MagicMock(return_value=None)
-    adapter._client.slurm.submit_remote_sbatch_file = fail_method  # type: ignore[method-assign]
-    monkeypatch.setattr(adapter, "_record_job_submission", lambda *a, **kw: None)
+    adapter._client.slurm.submit_remote_sbatch_file_checked = MagicMock(  # type: ignore[method-assign]
+        side_effect=SbatchRejectedError("sbatch: invalid partition")
+    )
 
-    with pytest.raises(RuntimeError, match="remote sbatch submission failed"):
+    with pytest.raises(SbatchRejectedError, match="invalid partition") as excinfo:
+        adapter.submit_remote_sbatch("/r/x.sh")
+    assert isinstance(excinfo.value, RuntimeError)
+
+
+def test_submit_remote_sbatch_propagates_indeterminate_error() -> None:
+    adapter = _bare_adapter()
+    adapter._client.slurm.submit_remote_sbatch_file_checked = MagicMock(  # type: ignore[method-assign]
+        side_effect=SbatchIndeterminateError("channel lost")
+    )
+
+    with pytest.raises(SbatchIndeterminateError, match="channel lost"):
         adapter.submit_remote_sbatch("/r/x.sh")
 
 
@@ -188,7 +198,7 @@ def test_submit_remote_sbatch_forwards_extra_args() -> None:
     inner_result.job_id = "7"
     inner_result.name = "j"
     inner.return_value = inner_result
-    adapter._client.slurm.submit_remote_sbatch_file = inner  # type: ignore[method-assign]
+    adapter._client.slurm.submit_remote_sbatch_file_checked = inner  # type: ignore[method-assign]
 
     adapter.submit_remote_sbatch(
         "/r/x.sh",
@@ -210,7 +220,7 @@ def test_submit_remote_sbatch_forwards_job_env_vars(
 
     The IN_PLACE CLI path goes through ``submit_remote_sbatch`` (it passes
     ``callbacks_job=job``); the job's ``environment.env_vars`` must be forwarded
-    to ``submit_remote_sbatch_file`` or ``--env`` is silently dropped on the
+    to ``submit_remote_sbatch_file_checked`` or ``--env`` is silently dropped on the
     primary CLI SSH path.
     """
     from srunx.domain import JobEnvironment
@@ -221,7 +231,7 @@ def test_submit_remote_sbatch_forwards_job_env_vars(
     inner_result.job_id = "55"
     inner_result.name = "train"
     inner.return_value = inner_result
-    adapter._client.slurm.submit_remote_sbatch_file = inner  # type: ignore[method-assign]
+    adapter._client.slurm.submit_remote_sbatch_file_checked = inner  # type: ignore[method-assign]
     monkeypatch.setattr(adapter, "_record_job_submission", lambda *a, **kw: None)
 
     job = ShellJob(
@@ -249,9 +259,62 @@ def test_submit_remote_sbatch_no_job_forwards_none_env(
     inner_result.job_id = "56"
     inner_result.name = "x"
     inner.return_value = inner_result
-    adapter._client.slurm.submit_remote_sbatch_file = inner  # type: ignore[method-assign]
+    adapter._client.slurm.submit_remote_sbatch_file_checked = inner  # type: ignore[method-assign]
     monkeypatch.setattr(adapter, "_record_job_submission", lambda *a, **kw: None)
 
     adapter.submit_remote_sbatch("/r/x.sh")
 
     assert inner.call_args.kwargs["job_env_vars"] is None
+
+
+def test_submit_remote_sbatch_forwards_metadata_to_recorder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _bare_adapter(profile_name="ml-cluster")
+    _stub_inner_submit(adapter, job_id="11", name="train")
+    record_calls: list[dict] = []
+    monkeypatch.setattr(
+        adapter,
+        "_record_job_submission",
+        lambda job, **kw: record_calls.append(kw),
+    )
+
+    meta = {"snapshot": {"repo_id": "r-1", "sha": "a" * 40}}
+    adapter.submit_remote_sbatch(
+        "/x/train.sh",
+        callbacks_job=ShellJob(name="train", script_path="/x/train.sh"),
+        metadata=meta,
+    )
+
+    assert record_calls[0]["metadata"] == meta
+
+
+def test_submit_remote_sbatch_passes_metadata_none_when_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``metadata`` is always forwarded, as None when the caller gave none."""
+    for profile in ("ml-cluster", None):
+        adapter = _bare_adapter(profile_name=profile)
+        _stub_inner_submit(adapter, job_id="12", name="train")
+        record_calls: list[dict] = []
+        monkeypatch.setattr(
+            adapter,
+            "_record_job_submission",
+            lambda job, _c=record_calls, **kw: _c.append(kw),
+        )
+
+        adapter.submit_remote_sbatch(
+            "/x/train.sh",
+            callbacks_job=ShellJob(name="train", script_path="/x/train.sh"),
+        )
+
+        assert record_calls[0]["metadata"] is None
+
+
+def test_submit_remote_sbatch_connect_failure_is_a_confirmed_rejection() -> None:
+    """No connection means nothing was sent, so no job exists."""
+    adapter = _bare_adapter()
+    adapter._client.connection.ssh_client = None
+    adapter._client.connect = MagicMock(return_value=False)  # type: ignore[method-assign]
+    with pytest.raises(SbatchRejectedError, match="SSH connection failed"):
+        adapter.submit_remote_sbatch("/x/train.sh")

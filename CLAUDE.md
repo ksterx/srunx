@@ -189,6 +189,7 @@ mount names via `--mount` (no `profile` / `mount` positional sub-noun).
 - `uv run srunx ssh show [--profile <name>]` - Show a profile (current if omitted)
 - `uv run srunx ssh remove --profile <name>` - Remove a profile
 - `uv run srunx ssh update --profile <name> ...` - Update profile fields
+- `uv run srunx ssh update --profile <name> --snapshot-root <path>` - Set where `--snapshot` stores per-commit snapshots on the cluster (absolute or `~`-relative, charset `[A-Za-z0-9._/~+-]`, no `..`; empty string resets to the default `~/.local/share/srunx/snapshots`). Must lie outside every mount (`ssh sync --delete` mirrors mounts)
 - `uv run srunx ssh mount add --profile <profile> --mount <name> --local <path> --remote <path>` - Add mount point
 - `uv run srunx ssh mount list --profile <profile>` - List mount points
 - `uv run srunx ssh mount remove --profile <profile> --mount <name>` - Remove mount point
@@ -252,6 +253,27 @@ running unnoticed. Written only after a successful sync (and after hash
 verification, like the owner marker), accumulating on an additive sync and
 replaced by a mirror. See `src/srunx/sync/manifest.py`, whose module docstring
 also records the gaps left open on purpose.
+
+##### Commit snapshots (`sbatch --snapshot`, `snapshot create`)
+Auto-sync runs the script from a mutable mount at job *start*, so a later sync
+changes the code under pending, running, and requeued jobs. `--snapshot` runs
+the job from a read-only, per-commit git worktree on the cluster instead
+(SSH profiles only; issue #247).
+
+- `uv run srunx sbatch --snapshot job.sbatch --profile <name>` - Snapshot HEAD of the repo in cwd and submit the script from it
+- `uv run srunx sbatch --snapshot-rev <REV> job.sbatch --profile <name>` - Snapshot another revision (implies `--snapshot`)
+- `uv run srunx snapshot create [REV] --profile <name>` - Ensure the snapshot exists; stdout is only the absolute snapshot path (status on stderr), no lease is written
+
+Behaviour:
+- Layout: `<snapshot_root>/<repo_id>/{repo.git, trees/<sha>/, trees/<sha>.complete, leases/<id>.json, .lock}`. `repo_id` is `<repo name>-<12 hex of the root commit>`, shared by every linked worktree of one repo. The commit is pushed (only missing objects) to the bare repo with the remote git binary the probe validated (>= 2.17); the cluster needs no GitHub access.
+- The script path is the one in the commit (the local file need not exist, and job name / `#SBATCH` directives are read from the commit). Default job cwd is the snapshot dir matching your local cwd, else the snapshot top; `-D/--chdir` still wins. Job env gains `SRUNX_CODE_DIR` (snapshot path) and `SRUNX_SNAPSHOT_SHA`; these override a same-named `--env`. `jobs.metadata` records `{"snapshot": {repo_id, sha, path, lease_id}}`.
+- No auto-sync, no mount lock, the script need not be under a mount. Rejected with exit 2: `--wrap`, `--template`, `--local` / a transport that resolves to local, an explicit `--sync`, `--force-sync`, a missing positional script. `--no-sync` is accepted. `--dry-run` validates locally and prints the plan with no remote call.
+- Local validation fails closed (exit 2): not a git repo, shallow clone, submodule, LFS filter, script missing / symlink / directory in the commit, and tracked changes whenever the commit equals HEAD (untracked files only warn). Remote, push, lock, and sbatch errors exit 1.
+- Lease: a `provisional` lease is written before `sbatch` and rewritten as `bound` (with the job id) after. It is deleted only on a confirmed sbatch rejection (non-zero exit, no job id, and an `sbatch: error:` line in the output; a bare non-zero exit is not evidence); any indeterminate outcome keeps it and warns with its path, so a later prune cannot remove code under a job that may exist.
+- **The snapshot is read-only, so the job cannot write into its default cwd.** srunx warns (does not reject) when `--chdir` is missing or relative and `--output` is missing or relative, or `--error` is relative. Pass an absolute `--output` / `--error` (or `--log-dir`) or an absolute `-D`. Relative paths in `-D/-o/-e` resolve inside the snapshot.
+- Locking: one `mkdir`-based lock per repo, held for seconds inside a single remote script and released by a shell `trap`. Waiters retry for about 120 s and the lock is **never broken automatically**. After a timeout the error prints the lock path and owner; once you have confirmed the owner is dead (e.g. a killed client or crashed node), remove it manually with `rm -rf <snapshot_root>/<repo_id>/.lock`.
+- Reuse trusts a tree that is a real directory at the same HEAD with a regular marker file; it does not re-hash contents. srunx requires every directory from `/` down to the snapshot root, repo dir, `trees/` and `leases/` to be owned by you (ancestors: you or root) and not replaceable by other users (not group/other-writable, except sticky dirs like `/tmp`). A directory you own with no group/other execute bit and no ACL (for example `$HOME` at 0700) shields everything below it, so a group-writable `~/.local` under it is fine; otherwise it exits 1 with code 32 naming the directory. Fix it with `chmod go-w <dir>` or choose a `snapshot_root` under a private directory.
+- `chmod -R a-w` only prevents accidental writes; it is not tamper protection. To delete a snapshot by hand run `chmod -R u+w` on it first. `snapshot list` / `prune` are not implemented yet.
 
 ##### Account secrets (`ssh secret`)
 Secrets (API keys etc.) are stored in a single **remote** `0600` file per
@@ -436,12 +458,13 @@ src/srunx/
 │   ├── cli/           # ssh_app: profile CRUD + sync + test
 │   └── helpers/       # proxy_helper
 ├── sync/              # rsync client + per-mount lock + owner_marker + hash_verify
+├── snapshot/          # per-commit read-only git snapshots (local_git, lease, remote scripts, service); integrations layer
 │
 ├── cli/               # Typer CLI surface
 │   ├── main.py        # Thin Typer root (app, flow_app, sub-app registration)
 │   ├── watch.py       # watch app (jobs / resources / cluster)
 │   ├── workflow.py    # flow run executor (_execute_workflow)
-│   ├── commands/      # Per-command-group modules: jobs (sbatch/squeue/scancel/sinfo/gpus/tail), reports (history), config, templates, ui
+│   ├── commands/      # Per-command-group modules: jobs (sbatch/squeue/scancel/sinfo/gpus/tail), reports (history), config, templates, snapshot, ui
 │   └── _helpers/      # debug_callback, sbatch_helpers, notification_setup, transport_options
 │
 ├── mcp/               # MCP server for AI agent integration (FastMCP tool surface)

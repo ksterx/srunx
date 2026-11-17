@@ -86,6 +86,36 @@ class TestSchedulerKeyFilter:
         assert {j["job_name"] for j in only_ssh} == {"dgx_100"}
 
 
+class TestRecordSubmissionMetadata:
+    def test_metadata_round_trips_through_job_repository(self, _isolated_db):
+        from srunx.observability.storage.connection import initialized_connection
+        from srunx.observability.storage.repositories.jobs import JobRepository
+
+        meta = {"snapshot": {"repo_id": "r-abc", "sha": "a" * 40, "path": "/s"}}
+        record_submission_from_job(
+            _make_job("snap", 77),
+            transport_type="ssh",
+            profile_name="dgx",
+            scheduler_key="ssh:dgx",
+            metadata=meta,
+        )
+
+        with initialized_connection() as conn:
+            row = JobRepository(conn).get(77, scheduler_key="ssh:dgx")
+        assert row is not None
+        assert row.metadata == meta
+
+    def test_metadata_defaults_to_none(self, _isolated_db):
+        from srunx.observability.storage.connection import initialized_connection
+        from srunx.observability.storage.repositories.jobs import JobRepository
+
+        record_submission_from_job(_make_job("plain", 78))
+        with initialized_connection() as conn:
+            row = JobRepository(conn).get(78, scheduler_key="local")
+        assert row is not None
+        assert row.metadata is None
+
+
 @pytest.fixture
 def _isolated_db(tmp_path, monkeypatch):
     """Redirect the state DB to a per-test tmp dir."""

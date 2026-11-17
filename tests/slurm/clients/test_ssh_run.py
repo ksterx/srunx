@@ -248,7 +248,9 @@ class TestSSHAdapterRun:
 
         recorded: dict[str, object] = {}
 
-        def fake_record(job, *, workflow_name=None, workflow_run_id=None):
+        def fake_record(
+            job, *, workflow_name=None, workflow_run_id=None, metadata=None
+        ):
             recorded["name"] = job.name
             recorded["workflow_name"] = workflow_name
             recorded["workflow_run_id"] = workflow_run_id

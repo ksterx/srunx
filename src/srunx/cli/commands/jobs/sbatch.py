@@ -24,6 +24,12 @@ from srunx.cli._helpers.sbatch_passthrough import (
     own_option_specs,
     validate_passthrough_args,
 )
+from srunx.cli._helpers.snapshot_submit import (
+    build_snapshot_plan,
+    print_snapshot_dry_run,
+    require_ssh_transport,
+    validate_snapshot_options,
+)
 from srunx.cli._helpers.transport import resolve_transport
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.common.config import get_config
@@ -211,6 +217,26 @@ def sbatch(
             ),
         ),
     ] = False,
+    snapshot: Annotated[
+        bool,
+        typer.Option(
+            "--snapshot",
+            help=(
+                "Submit from a read-only per-commit snapshot of the current git "
+                "repo on the cluster (SSH profiles only; HEAD unless "
+                "--snapshot-rev). The job's default cwd is the snapshot; "
+                "SRUNX_CODE_DIR / SRUNX_SNAPSHOT_SHA are set. No auto-sync."
+            ),
+        ),
+    ] = False,
+    snapshot_rev: Annotated[
+        str | None,
+        typer.Option(
+            "--snapshot-rev",
+            metavar="REV",
+            help="Snapshot this git revision instead of HEAD (implies --snapshot).",
+        ),
+    ] = None,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Show verbose output")
     ] = False,
@@ -251,6 +277,27 @@ def sbatch(
         raise typer.BadParameter(
             "Missing job source. Provide a script path or use --wrap <command>.",
             param_hint="<script> / --wrap",
+        )
+
+    # --snapshot / --snapshot-rev: reject conflicting options (exit 2), then
+    # validate the local repo before any remote call.
+    snapshot_mode = validate_snapshot_options(
+        snapshot=snapshot,
+        snapshot_rev=snapshot_rev,
+        script=script,
+        wrap=wrap,
+        template=template,
+        local=local,
+        sync=sync,
+        force_sync=force_sync,
+        profile=profile,
+    )
+    snapshot_plan = None
+    snapshot_profile_name: str | None = None
+    if snapshot_mode:
+        snapshot_profile_name = require_ssh_transport(profile=profile, local=local)
+        snapshot_plan = build_snapshot_plan(
+            script=script, rev=snapshot_rev, cwd=Path.cwd()
         )
 
     # Validate the final --sbatch-arg list (format R2.6 + reject list
@@ -364,7 +411,10 @@ def sbatch(
         # display / history match the scheduler without a post-submit
         # query; ``inject_job_name`` rides along from the same resolution.
         effective_name, inject_job_name = _resolve_job_name(
-            script, name, cli_name_explicit=name_explicit
+            script,
+            name,
+            cli_name_explicit=name_explicit,
+            script_text=(snapshot_plan.script_text if snapshot_plan else None),
         )
         shell_data: dict[str, Any] = {
             "name": effective_name,
@@ -420,36 +470,6 @@ def sbatch(
         callbacks = [SlackCallback(webhook_url=webhook_url)]
     else:
         callbacks = []
-
-    if dry_run:
-        console = Console()
-        console.print("🔍 Dry run mode - would submit job:")
-        console.print(f"  Name: {job.name}")
-        if isinstance(job, Job):
-            command_str = (
-                job.command
-                if isinstance(job.command, str)
-                else " ".join(job.command or [])
-            )
-            console.print(f"  Command: {command_str}")
-            console.print(f"  Nodes: {job.resources.nodes}")
-            console.print(f"  GPUs: {job.resources.gpus_per_node}")
-        elif isinstance(job, ShellJob):
-            console.print(f"  Script: {job.script_path}")
-        # #137 part 2: when the dry run targets an SSH in-place
-        # candidate (positional script under a profile mount), also
-        # show rsync's preview of what *would* transfer. Lets the user
-        # spot a stray ``build/`` or ``.cache/`` they forgot to
-        # gitignore before they trigger an actual sync.
-        _print_in_place_sync_preview(
-            console=console,
-            script=script,
-            profile_name=profile,
-            local=local,
-            sync_flag=sync,
-            config=config,
-        )
-        return
 
     # Submit job through the resolved transport.
     #
@@ -513,6 +533,44 @@ def sbatch(
     else:
         extra_sbatch_args = list(passthrough)
 
+    if dry_run:
+        console = Console()
+        console.print("🔍 Dry run mode - would submit job:")
+        console.print(f"  Name: {job.name}")
+        if isinstance(job, Job):
+            command_str = (
+                job.command
+                if isinstance(job.command, str)
+                else " ".join(job.command or [])
+            )
+            console.print(f"  Command: {command_str}")
+            console.print(f"  Nodes: {job.resources.nodes}")
+            console.print(f"  GPUs: {job.resources.gpus_per_node}")
+        elif isinstance(job, ShellJob):
+            console.print(f"  Script: {job.script_path}")
+        # #137 part 2: when the dry run targets an SSH in-place
+        # candidate (positional script under a profile mount), also
+        # show rsync's preview of what *would* transfer. Lets the user
+        # spot a stray ``build/`` or ``.cache/`` they forgot to
+        # gitignore before they trigger an actual sync.
+        if snapshot_plan is not None:
+            print_snapshot_dry_run(
+                console,
+                snapshot_plan,
+                profile_name=snapshot_profile_name,
+                extra_sbatch_args=extra_sbatch_args,
+            )
+        else:
+            _print_in_place_sync_preview(
+                console=console,
+                script=script,
+                profile_name=profile,
+                local=local,
+                sync_flag=sync,
+                config=config,
+            )
+        return
+
     with resolve_transport(
         profile=profile,
         local=local,
@@ -534,6 +592,7 @@ def sbatch(
             extra_sbatch_args=extra_sbatch_args,
             force_sync=force_sync,
             inject_job_name=inject_job_name,
+            snapshot=snapshot_plan,
         )
         client = (
             _slurm_local.Slurm(callbacks=callbacks)

@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srunx.callbacks import Callback
+from srunx.common.exceptions import SbatchIndeterminateError, SbatchRejectedError
 from srunx.common.logging import get_logger
 
 # Imported at runtime (not under TYPE_CHECKING) because the literal types
@@ -453,6 +454,7 @@ class SlurmSSHClient:
         dependency: str | None = None,
         extra_sbatch_args: list[str] | None = None,
         callbacks_job: Any = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Any:
         """Submit a script already present on the remote cluster.
 
@@ -487,8 +489,14 @@ class SlurmSSHClient:
             callbacks_job.environment.env_vars if callbacks_job is not None else None
         )
         with self._io_lock:
-            self._ensure_connected()
-            result = self._client.slurm.submit_remote_sbatch_file(
+            try:
+                self._ensure_connected()
+            except RuntimeError as exc:
+                # Nothing was sent, so no job exists: a confirmed rejection.
+                raise SbatchRejectedError(f"cannot submit: {exc}") from exc
+            # Checked variant: raises SbatchRejectedError / SbatchIndeterminateError
+            # (both RuntimeError) so callers can tell "no job" from "maybe a job".
+            result = self._client.slurm.submit_remote_sbatch_file_checked(
                 remote_path,
                 submit_cwd=submit_cwd,
                 job_name=job_name,
@@ -496,8 +504,10 @@ class SlurmSSHClient:
                 extra_sbatch_args=extra_sbatch_args,
                 job_env_vars=job_env_vars,
             )
-        if result is None or not result.job_id:
-            raise RuntimeError("remote sbatch submission failed")
+        if not result.job_id:
+            raise SbatchIndeterminateError(
+                "remote sbatch submission failed: no job id returned"
+            )
         job_id = int(result.job_id)
 
         # Bind the result to a Job-shaped object so DB recording +
@@ -526,10 +536,14 @@ class SlurmSSHClient:
                 profile_name=self._profile_name,
                 scheduler_key=f"ssh:{self._profile_name}",
                 submission_source=self.submission_source,
+                metadata=metadata,
             )
         else:
             self._record_job_submission(
-                callbacks_job, workflow_name=None, workflow_run_id=None
+                callbacks_job,
+                workflow_name=None,
+                workflow_run_id=None,
+                metadata=metadata,
             )
 
         # Fire on_job_submitted callbacks. Mirrors :meth:`submit` step 4.
@@ -1302,6 +1316,7 @@ class SlurmSSHClient:
         profile_name: str | None = None,
         scheduler_key: str | None = None,
         submission_source: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         # ``transport_type`` / ``submission_source`` are typed plain ``str``
         # here even though the underlying recorder expects ``Literal``s
@@ -1318,6 +1333,7 @@ class SlurmSSHClient:
             profile_name=profile_name,
             scheduler_key=scheduler_key,
             submission_source=submission_source,  # type: ignore[arg-type]
+            metadata=metadata,
         )
 
     def _record_completion_safe(self, job_id: int, status: JobStatus) -> None:

@@ -42,6 +42,7 @@ MODULE_LAYERS: dict[str, str] = {
     # integrations
     "containers": "integrations",
     "ssh": "integrations",
+    "snapshot": "integrations",
     "sync": "integrations",
     # interfaces
     "cli": "interfaces",

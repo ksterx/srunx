@@ -420,6 +420,7 @@ class LocalClient:
         dependency: str | None = None,
         extra_sbatch_args: list[str] | None = None,
         callbacks_job: Any = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Any:
         """Conformance stub for :class:`JobOperations`.
 

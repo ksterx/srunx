@@ -1305,6 +1305,50 @@ class TestRemoteCommandShell:
         assert "\n" not in mock_run.call_args[0][0][-1]
 
 
+class TestPublicSshWrappers:
+    def test_ssh_command_matches_internal_builder(self):
+        client = _make_rsync_client(hostname="h", username="u", port=2222)
+        assert client.ssh_command() == client._build_ssh_cmd()
+        assert client.ssh_command()[:3] == ["ssh", "-p", "2222"]
+
+    def test_remote_spec_with_and_without_username(self):
+        assert (
+            _make_rsync_client(hostname="h", username="u").remote_spec("/a/b")
+            == "u@h:/a/b"
+        )
+        assert _make_rsync_client(hostname="h", username="").remote_spec("/a") == "h:/a"
+
+    def test_run_script_sends_script_on_stdin_to_sh_s(self):
+        client = _make_rsync_client(hostname="h", username="u")
+        script = "set -u\necho hi\n"
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="hi\n", stderr="")
+            result = client.run_script(script)
+
+        assert result.stdout == "hi\n"
+        argv = mock_run.call_args[0][0]
+        assert argv[-1] == "sh -c 'sh -s'"
+        assert "\n" not in argv[-1]
+        assert mock_run.call_args.kwargs["input"] == script
+        assert mock_run.call_args.kwargs["timeout"] is None
+
+    def test_run_script_passes_timeout(self):
+        client = _make_rsync_client(hostname="h", username="u")
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client.run_script("true", timeout=12.5)
+
+        assert mock_run.call_args.kwargs["timeout"] == 12.5
+
+    def test_ssh_run_timeout_default_none(self):
+        client = _make_rsync_client(hostname="h", username="u")
+        with patch("srunx.sync.rsync.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            client._ssh_run("true")
+
+        assert mock_run.call_args.kwargs["timeout"] is None
+
+
 class TestControlFileExcluded:
     def test_owner_marker_is_excluded_by_default(self):
         """Otherwise a mirror deletes it: there is no local counterpart.

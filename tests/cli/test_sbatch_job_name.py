@@ -25,6 +25,9 @@ from typer.testing import CliRunner
 from srunx.cli._helpers.sbatch_helpers import (
     _resolve_job_name,
     _script_job_name,
+    _script_job_name_from_text,
+    last_option_value,
+    script_sbatch_tokens,
 )
 from srunx.cli.main import app
 from srunx.ssh.core.config import MountConfig, ServerProfile
@@ -81,6 +84,42 @@ def test_script_job_name_unreadable_returns_none(tmp_path: Path) -> None:
 
 
 # ── Unit: name resolution + injection decision ────────────────────────
+
+
+def test_script_job_name_from_text_directive() -> None:
+    text = "#!/bin/bash\n#SBATCH -J first\n#SBATCH --job-name=second\necho hi\n"
+    assert _script_job_name_from_text(text) == "second"
+
+
+def test_script_job_name_from_text_stops_at_first_command() -> None:
+    text = "#!/bin/bash\necho hi\n#SBATCH --job-name=late\n"
+    assert _script_job_name_from_text(text) is None
+
+
+def testscript_sbatch_tokens_text_lines() -> None:
+    text = "#!/bin/sh\n\n#SBATCH -D /w -o 'a b'\n# note\n#SBATCH --error=e\nrun\n"
+    assert script_sbatch_tokens(text) == [
+        ["-D", "/w", "-o", "a b"],
+        ["--error=e"],
+    ]
+
+
+def testscript_sbatch_tokens_text_skips_unsplittable_line() -> None:
+    assert script_sbatch_tokens("#SBATCH --x='oops\n#SBATCH -J ok\n") == [["-J", "ok"]]
+
+
+def test_resolve_job_name_script_text_ignores_local_file(tmp_path: Path) -> None:
+    missing = tmp_path / "absent.sbatch"
+    assert _resolve_job_name(
+        missing,
+        "job",
+        cli_name_explicit=False,
+        script_text="#SBATCH --job-name=fromcommit\n",
+    ) == ("fromcommit", False)
+    # no directive in the text: basename fallback, injected
+    assert _resolve_job_name(
+        missing, "job", cli_name_explicit=False, script_text="echo\n"
+    ) == ("absent.sbatch", True)
 
 
 def test_resolve_explicit_wins_and_injects(tmp_path: Path) -> None:
@@ -317,3 +356,10 @@ def test_temp_upload_no_directive_injects_basename(
     job_ops.submit.assert_called_once()
     assert job_ops.submit.call_args.kwargs["inject_job_name"] is True
     assert "Job name: run.sbatch" in result.stdout
+
+
+def test_last_option_value_spellings_and_last_wins() -> None:
+    assert last_option_value(["-D", "/a", "--chdir=/b"], "-D", "--chdir") == "/b"
+    assert last_option_value(["--chdir", "/a", "-D/c"], "-D", "--chdir") == "/c"
+    assert last_option_value(["--chdir"], "-D", "--chdir") is None
+    assert last_option_value(["-N", "2"], "-D", "--chdir") is None

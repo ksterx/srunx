@@ -560,6 +560,7 @@ class RsyncClient:
         remote_cmd: str,
         *,
         stdin: str | None = None,
+        timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run *remote_cmd* on the configured host via ssh, under ``sh``.
 
@@ -606,7 +607,29 @@ class RsyncClient:
             # arbitrary. Manifest JSON itself stays ASCII (``json.dumps``
             # escapes non-ASCII by default), so this round-trips intact.
             errors="surrogateescape",
+            timeout=timeout,
         )
+
+    def ssh_command(self) -> list[str]:
+        """Return the ssh argv (options only, no destination) for ``GIT_SSH_COMMAND``."""
+        return self._build_ssh_cmd()
+
+    def remote_spec(self, path: str) -> str:
+        """Return ``[user@]host:path`` for use as an rsync/git remote."""
+        return self._format_remote(path)
+
+    def run_script(
+        self, script: str, *, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        """Run a multi-line POSIX ``sh`` *script* remotely, sent on stdin to ``sh -s``.
+
+        The ssh argument stays the single line ``sh -s`` (csh-safe); the
+        script body travels on stdin, so newlines are fine here.
+
+        Raises:
+            subprocess.TimeoutExpired: When *timeout* elapses.
+        """
+        return self._ssh_run("sh -s", stdin=script, timeout=timeout)
 
     def read_remote_file(
         self, remote_path: str, *, require_owned: bool = False
