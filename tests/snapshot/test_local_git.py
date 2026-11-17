@@ -281,3 +281,74 @@ def test_symlink_in_repo_relative_accepted(repo: Path) -> None:
     (repo / "alias.sbatch").symlink_to("sub/../job.sbatch")
     commit_all(repo)
     ensure_supported_tree(repo, head_commit(repo))
+
+
+def _commit_links(repo: Path, links: dict[str, str]) -> str:
+    """Commit symlinks (path -> target) by writing blobs directly, no work tree needed."""
+    lines = b""
+    for path, target in links.items():
+        oid = _REAL_RUN(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=repo,
+            input=os.fsencode(target),
+            check=True,
+            capture_output=True,
+        ).stdout.strip()
+        lines += b"120000 " + oid + b"\t" + os.fsencode(path) + b"\n"
+    _REAL_RUN(
+        ["git", "update-index", "--add", "--index-info"],
+        cwd=repo,
+        input=lines,
+        check=True,
+        capture_output=True,
+    )
+    git(repo, "commit", "-q", "-m", "links")
+    return git(repo, "rev-parse", "HEAD")
+
+
+def test_symlink_chain_through_dot_link_rejected(repo: Path) -> None:
+    sha = _commit_links(repo, {"dir": ".", "escape": "dir/../outside"})
+    with pytest.raises(SnapshotValidationError, match="escape -> dir/../outside"):
+        ensure_supported_tree(repo, sha)
+
+
+def test_symlink_chain_through_dir_link_inside_rejected(repo: Path) -> None:
+    sha = _commit_links(repo, {"sub/up": "..", "sub/x": "up/../../outside"})
+    with pytest.raises(SnapshotValidationError, match="sub/x"):
+        ensure_supported_tree(repo, sha)
+
+
+def test_symlink_chain_into_absolute_link_rejected(repo: Path) -> None:
+    sha = _commit_links(repo, {"a": "b", "b": "/etc"})
+    with pytest.raises(SnapshotValidationError, match="symlink"):
+        ensure_supported_tree(repo, sha)
+
+
+@pytest.mark.parametrize("links", [{"a": "b", "b": "a"}, {"self": "self"}])
+def test_symlink_cycle_rejected(repo: Path, links: dict[str, str]) -> None:
+    sha = _commit_links(repo, links)
+    with pytest.raises(SnapshotValidationError, match="loop|symlink"):
+        ensure_supported_tree(repo, sha)
+
+
+def test_symlinks_staying_inside_accepted(repo: Path) -> None:
+    sha = _commit_links(
+        repo,
+        {
+            "x/a": "../sub/run.sh",
+            "alias": "x/a",
+            "sub/dot": ".",
+            "sub/viadot": "dot/run.sh",
+            "deep/er/er": "../../README",
+        },
+    )
+    ensure_supported_tree(repo, sha)
+
+
+def test_non_utf8_symlink_names_do_not_collapse(repo: Path) -> None:
+    # Both names decode to the same string under errors="replace".
+    bad = os.fsdecode(b"l\x80")
+    ok = os.fsdecode(b"l\x81")
+    sha = _commit_links(repo, {bad: "/home/u/live", ok: "README"})
+    with pytest.raises(SnapshotValidationError, match="/home/u/live"):
+        ensure_supported_tree(repo, sha)

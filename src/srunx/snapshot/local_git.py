@@ -131,20 +131,11 @@ def _list_tree(top: Path, sha: str, *, names_only: bool = False) -> list[str]:
     return [e for e in out.split("\0") if e]
 
 
-def _symlink_targets(top: Path, entries: list[str]) -> dict[str, str]:
-    """Map path -> target for every committed symlink (one ``cat-file --batch``)."""
-    links: list[tuple[str, str]] = []
-    for entry in entries:
-        meta, _, name = entry.partition("\t")
-        parts = meta.split(" ")
-        if parts[0] == "120000":
-            links.append((name, parts[2]))
-    if not links:
-        return {}
-    stdin = "".join(f"{oid}\n" for _, oid in links).encode()
+def _git_bytes(args: list[str], *, top: Path, stdin: bytes | None = None) -> bytes:
+    """Run git and return raw stdout; paths and link targets may not be UTF-8."""
     try:
         proc = subprocess.run(  # noqa: S603
-            ["git", "cat-file", "--batch"],  # noqa: S607
+            ["git", *args],  # noqa: S607
             cwd=top,
             input=stdin,
             capture_output=True,
@@ -153,38 +144,86 @@ def _symlink_targets(top: Path, entries: list[str]) -> dict[str, str]:
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise SnapshotValidationError(f"cannot read symlink targets: {exc}") from exc
+        raise SnapshotValidationError(f"cannot run git {args[0]}: {exc}") from exc
     if proc.returncode != 0:
+        detail = proc.stderr.decode(errors="replace").strip() or "no output"
         raise SnapshotValidationError(
-            "cannot read symlink targets: "
-            + (proc.stderr.decode(errors="replace").strip() or "git cat-file failed")
+            f"git {args[0]} failed (exit {proc.returncode}): {detail}"
         )
-    out, pos, result = proc.stdout, 0, {}
+    return proc.stdout
+
+
+def _symlink_map(top: Path, sha: str) -> dict[bytes, bytes]:
+    """Map every committed symlink path to its target, all as raw bytes."""
+    listing = _git_bytes(["ls-tree", "-r", "-z", sha], top=top)
+    links: list[tuple[bytes, bytes]] = []
+    for entry in listing.split(b"\0"):
+        meta, _, name = entry.partition(b"\t")
+        parts = meta.split(b" ")
+        if len(parts) == 3 and parts[0] == b"120000":
+            links.append((name, parts[2]))
+    if not links:
+        return {}
+    out = _git_bytes(
+        ["cat-file", "--batch"],
+        top=top,
+        stdin=b"".join(oid + b"\n" for _, oid in links),
+    )
+    pos, result = 0, {}
     for name, oid in links:
         nl = out.find(b"\n", pos)
-        header = out[pos:nl].decode(errors="replace").split(" ") if nl >= 0 else []
+        header = out[pos:nl].split(b" ") if nl >= 0 else []
         if len(header) != 3 or header[0] != oid or not header[2].isdigit():
-            raise SnapshotValidationError(f"cannot read symlink target of {name!r}")
+            raise SnapshotValidationError(
+                f"cannot read symlink target of {_show(name)}"
+            )
         size = int(header[2])
-        result[name] = out[nl + 1 : nl + 1 + size].decode(errors="replace")
+        result[name] = out[nl + 1 : nl + 1 + size]
         pos = nl + 1 + size + 1
     return result
 
 
-def _symlink_escapes(link: str, target: str) -> bool:
-    if target.startswith("/") or not target:
-        return True
-    depth = len(PurePosixPath(link).parts) - 1
-    for part in target.split("/"):
-        if part in ("", "."):
+def _show(raw: bytes) -> str:
+    return raw.decode("utf-8", "backslashreplace")
+
+
+MAX_SYMLINK_EXPANSIONS = 40
+
+
+def _symlink_problem(link: bytes, links: dict[bytes, bytes]) -> str | None:
+    """Resolve *link* component by component inside the commit's symlink map.
+
+    Returns why it is unsafe (absolute target, leaves the repo root, loop) or
+    None. A component that is itself a committed symlink is expanded in place,
+    so chains such as ``dir -> .`` plus ``x -> dir/../outside`` are followed the
+    way the kernel would follow them.
+    """
+    cur = link.split(b"/")[:-1]
+    pending = links[link].split(b"/")
+    if not links[link] or links[link].startswith(b"/"):
+        return "absolute or empty target"
+    expansions = 0
+    while pending:
+        comp = pending.pop(0)
+        if comp in (b"", b"."):
             continue
-        if part == "..":
-            depth -= 1
-            if depth < 0:
-                return True
-        else:
-            depth += 1
-    return False
+        if comp == b"..":
+            if not cur:
+                return "escapes the repository root"
+            cur.pop()
+            continue
+        cur.append(comp)
+        target = links.get(b"/".join(cur))
+        if target is None:
+            continue
+        expansions += 1
+        if expansions > MAX_SYMLINK_EXPANSIONS:
+            return f"symlink loop (more than {MAX_SYMLINK_EXPANSIONS} expansions)"
+        if not target or target.startswith(b"/"):
+            return f"leads through an absolute link ({_show(b'/'.join(cur))} -> {_show(target)})"
+        cur.pop()
+        pending = target.split(b"/") + pending
+    return None
 
 
 def ensure_supported_tree(top: Path, sha: str) -> None:
@@ -201,11 +240,12 @@ def ensure_supported_tree(top: Path, sha: str) -> None:
             raise SnapshotValidationError(
                 f"submodules are not supported for snapshots (found {name!r})"
             )
-    bad = [
-        f"{name} -> {target}"
-        for name, target in _symlink_targets(top, entries).items()
-        if _symlink_escapes(name, target)
-    ]
+    links = _symlink_map(top, sha)
+    bad = []
+    for link in sorted(links):
+        problem = _symlink_problem(link, links)
+        if problem:
+            bad.append(f"{_show(link)} -> {_show(links[link])} ({problem})")
     if bad:
         shown = "\n".join(f"  {b}" for b in bad[:10])
         more = f"\n  ... and {len(bad) - 10} more" if len(bad) > 10 else ""
