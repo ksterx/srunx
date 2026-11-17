@@ -1,8 +1,9 @@
 """Run the generated snapshot scripts for real, with a local ``sh -s`` as the "remote".
 
 The remote is a temp directory, the bare repo is local, and git is wrapped by a
-logging shim so tests can count ``worktree add`` calls. A missing ``git`` fails
-the fixture with an assertion.
+logging shim so tests can count ``worktree add`` calls. The shim costs a shell
+spawn per git call, so only the tests that need it switch it on (``enable_shim``).
+A missing ``git`` fails the fixture with an assertion.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,6 +44,38 @@ TOKEN = "a1" * 16
 OWNER = LockOwner(client_host="testhost", client_pid=4242, token=TOKEN)
 
 
+@dataclass(frozen=True)
+class PushedTemplate:
+    """A remote root holding the pushed commit, plus the probe that reported it."""
+
+    root: Path
+    probe: remote.ProbeResult
+    committed_root: Path
+    committed: remote.CommitResult
+    committed_old_root: str
+
+    @staticmethod
+    def probe_for_root(
+        probe: remote.ProbeResult, root: Path, git: str
+    ) -> remote.ProbeResult:
+        """``probe`` as a probe of the copy at ``root`` would report it.
+
+        The path layout comes from a real probe (the scripts are exercised by
+        their own tests), so only the root and the git path are swapped.
+        """
+        new = str(root.resolve())
+        return remote.ProbeResult(
+            root=new,
+            repo_dir=new + probe.repo_dir.removeprefix(probe.root),
+            git=git,
+            git_version=probe.git_version,
+            has_commit=True,
+        )
+
+    def probe_for(self, root: Path, git: str) -> remote.ProbeResult:
+        return self.probe_for_root(self.probe, root, git)
+
+
 @dataclass
 class Env:
     tmp: Path
@@ -51,6 +85,13 @@ class Env:
     shim_dir: Path
     shim_log: Path
     root: Path
+    template: PushedTemplate
+    git: str
+
+    def enable_shim(self) -> None:
+        """Put the logging git shim on the remote's PATH (``worktree_adds`` etc.)."""
+        self.shell = LocalShell(f"{self.shim_dir}{os.pathsep}{os.environ['PATH']}")
+        self.git = str(self.shim_dir / "git")
 
     def store(
         self,
@@ -94,11 +135,53 @@ class Env:
     def prepare(
         self, store: RemoteSnapshotStore | None = None
     ) -> tuple[RemoteSnapshotStore, remote.ProbeResult]:
+        # A fresh remote root starts from a copy of a store that already holds
+        # the pushed commit (built once per module), so only the tests that
+        # create the root themselves pay for ``git init`` and ``git push``.
+        if not self.root.exists():
+            return store or self.store(), self.seed()
         store = store or self.store()
         probe = store.probe(repo_id="proj-0123456789ab", sha=self.sha)
         if not probe.has_commit:
             store.push(repo_top=self.repo, probe=probe, sha=self.sha)
         return store, probe
+
+    def seed(self) -> remote.ProbeResult:
+        """Create the remote root as a copy of the pushed template."""
+        shutil.copytree(self.template.root, self.root, symlinks=True)
+        return self.template.probe_for(self.root, self.git)
+
+    def prepare_committed(
+        self,
+    ) -> tuple[RemoteSnapshotStore, remote.ProbeResult, remote.CommitResult]:
+        """``prepare`` plus a first ``commit`` (no lease), from a per-module copy.
+
+        The snapshot was made by a real commit script; the copy only has the
+        absolute paths git recorded for the worktree pointed at its new home.
+        """
+        tpl = self.template
+        shutil.copytree(tpl.committed_root, self.root, symlinks=True)
+        probe = tpl.probe_for(self.root, self.git)
+        old = tpl.committed_old_root
+        tree = Path(probe.repo_dir) / "trees" / self.sha
+        gitfiles = [
+            tree / ".git",
+            *(Path(probe.repo_dir) / "repo.git" / "worktrees").glob("*/gitdir"),
+        ]
+        tree_mode = tree.stat().st_mode
+        tree.chmod(tree_mode | stat.S_IWUSR)
+        for f in gitfiles:
+            mode = f.stat().st_mode
+            f.chmod(mode | stat.S_IWUSR)
+            f.write_text(f.read_text().replace(old, probe.root))
+            f.chmod(mode)
+        tree.chmod(tree_mode)
+        res = remote.CommitResult(
+            path=str(tree),
+            status=tpl.committed.status,
+            lease_path=None,
+        )
+        return self.store(), probe, res
 
     def new_lease(self, probe: remote.ProbeResult) -> Lease:
         return Lease.new_provisional(
@@ -138,7 +221,7 @@ def _make_shim(directory: Path, real_git: str, log: Path) -> None:
         f'echo "$*" >> {log}\n'
         'case " $* " in\n'
         "  *' worktree add '*)\n"
-        f"    if [ -e {directory}/slow ]; then touch {directory}/started; sleep 1; exit 1; fi\n"
+        f"    if [ -e {directory}/slow ]; then touch {directory}/started; n=0; while [ ! -e {directory}/release ] && [ $n -lt 200 ]; do sleep 0.05; n=$((n+1)); done; exit 1; fi\n"
         "    ;;\n"
         "esac\n"
         f'exec {real_git} "$@"\n'
@@ -179,9 +262,43 @@ def source_repo(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str]:
     return repo, run("rev-parse", "HEAD")
 
 
+@pytest.fixture(scope="module")
+def pushed_root(
+    tmp_path_factory: pytest.TempPathFactory, source_repo: tuple[Path, str]
+) -> PushedTemplate:
+    """A remote root whose bare repo already holds the pushed commit.
+
+    Built with the real probe and a real ``git push``; ``prepare`` copies it so
+    each test starts from the state a first submission leaves behind.
+    """
+    repo, sha = source_repo
+    base = tmp_path_factory.mktemp("template")
+    real_git = shutil.which("git")
+    assert real_git, "git must be installed to run the snapshot script tests"
+    shell = LocalShell(os.environ["PATH"])
+    root = base / "remote-root"
+    store = RemoteSnapshotStore(shell, snapshot_root=str(root), mounts=[], lock_wait=10)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(subprocess, "run", _REAL_RUN)
+        probe = store.probe(repo_id="proj-0123456789ab", sha=sha)
+        store.push(repo_top=repo, probe=probe, sha=sha)
+        # A second copy with the snapshot created by the real commit script.
+        committed_root = base / "committed-root"
+        shutil.copytree(root, committed_root, symlinks=True)
+        cstore = RemoteSnapshotStore(
+            shell, snapshot_root=str(committed_root), mounts=[], lock_wait=10
+        )
+        cprobe = PushedTemplate.probe_for_root(probe, committed_root, probe.git)
+        committed = cstore.commit(probe=cprobe, sha=sha, lease=None)
+    return PushedTemplate(root, probe, committed_root, committed, cprobe.root)
+
+
 @pytest.fixture
 def env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source_repo: tuple[Path, str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_repo: tuple[Path, str],
+    pushed_root: PushedTemplate,
 ) -> Iterator[Env]:
     monkeypatch.setattr(subprocess, "run", _REAL_RUN)
     real_git = shutil.which("git")
@@ -191,10 +308,12 @@ def env(
     shim_dir = tmp_path / "shim"
     shim_log = tmp_path / "shim.log"
     _make_shim(shim_dir, real_git, shim_log)
-    shell = LocalShell(f"{shim_dir}{os.pathsep}{os.environ['PATH']}")
+    shell = LocalShell(os.environ["PATH"])
 
     root = tmp_path / "remote-root"
-    yield Env(tmp_path, shell, repo, sha, shim_dir, shim_log, root)
+    yield Env(
+        tmp_path, shell, repo, sha, shim_dir, shim_log, root, pushed_root, real_git
+    )
 
     # Snapshots are read-only; restore write permission so pytest can clean up.
     for dirpath, dirnames, filenames in os.walk(tmp_path):
@@ -213,6 +332,7 @@ def _u_w(path: Path) -> None:
 
 
 def test_create_snapshot_is_readonly_with_marker_and_lease(env: Env) -> None:
+    env.enable_shim()
     store, probe = env.prepare()
     assert probe.git == str(env.shim_dir / "git")
     lease = env.new_lease(probe)
@@ -237,6 +357,7 @@ def test_create_snapshot_is_readonly_with_marker_and_lease(env: Env) -> None:
 
 
 def test_reuse_does_not_add_a_second_worktree(env: Env) -> None:
+    env.enable_shim()
     store = env.store()
     assert not store.probe(repo_id="proj-0123456789ab", sha=env.sha).has_commit
     store, probe = env.prepare(store)
@@ -256,8 +377,7 @@ def test_reuse_does_not_add_a_second_worktree(env: Env) -> None:
 
 
 def test_directory_without_marker_is_recovered(env: Env) -> None:
-    store, probe = env.prepare()
-    res = store.commit(probe=probe, sha=env.sha, lease=None)
+    store, probe, res = env.prepare_committed()
     tree = Path(res.path)
     marker = Path(probe.repo_dir) / "trees" / f"{env.sha}.complete"
     _u_w(tree)
@@ -274,23 +394,23 @@ def test_directory_without_marker_is_recovered(env: Env) -> None:
 
 
 def test_registration_without_directory_is_recovered(env: Env) -> None:
-    store, probe = env.prepare()
-    res = store.commit(probe=probe, sha=env.sha, lease=None)
+    env.enable_shim()
+    store, probe, res = env.prepare_committed()
     tree = Path(res.path)
     _u_w(tree)
     shutil.rmtree(tree)
     (Path(probe.repo_dir) / "trees" / f"{env.sha}.complete").unlink()
     listing = _git(Path(probe.repo_dir) / "repo.git", "worktree", "list", "--porcelain")
     assert str(tree) in listing  # still registered
+    adds_before = env.worktree_adds()
     again = store.commit(probe=probe, sha=env.sha, lease=None)
     assert again.status == "recovered"
     assert (tree / "README").is_file()
-    assert env.worktree_adds() == 2
+    assert env.worktree_adds() - adds_before == 1
 
 
 def test_marker_without_tree_is_recovered(env: Env) -> None:
-    store, probe = env.prepare()
-    res = store.commit(probe=probe, sha=env.sha, lease=None)
+    store, probe, res = env.prepare_committed()
     tree = Path(res.path)
     _u_w(tree)
     shutil.rmtree(tree)
@@ -300,8 +420,7 @@ def test_marker_without_tree_is_recovered(env: Env) -> None:
 
 
 def test_unwritable_tree_without_marker_is_recovered(env: Env) -> None:
-    store, probe = env.prepare()
-    res = store.commit(probe=probe, sha=env.sha, lease=None)
+    store, probe, res = env.prepare_committed()
     (Path(probe.repo_dir) / "trees" / f"{env.sha}.complete").unlink()
     assert not os.access(res.path, os.W_OK)  # read-only, registered, no marker
     again = store.commit(probe=probe, sha=env.sha, lease=None)
@@ -448,6 +567,7 @@ def test_waiter_times_out_and_never_breaks_the_lock(env: Env) -> None:
 
 
 def test_sigterm_to_lock_holder_leaves_no_lock(env: Env) -> None:
+    env.enable_shim()
     store, probe = env.prepare()
     (env.shim_dir / "slow").touch()  # shim makes `worktree add` linger, lock held
     script = _commit_script(env, probe, None)
@@ -470,6 +590,9 @@ def test_sigterm_to_lock_holder_leaves_no_lock(env: Env) -> None:
             time.sleep(0.05)
         assert lock.is_dir()
         os.kill(proc.pid, signal.SIGTERM)
+        # sh runs the TERM trap once its foreground child (the lingering shim)
+        # returns, so let the shim go now that the signal is pending.
+        (env.shim_dir / "release").touch()
         proc.wait(timeout=15)
     finally:
         if proc.poll() is None:
@@ -552,8 +675,16 @@ def test_unresolvable_mount_exits_23(env: Env) -> None:
     afile.write_text("x")
     dangling = env.tmp / "dangling"
     dangling.symlink_to(env.tmp / "nowhere")
-    for bad in (str(afile / "sub"), str(dangling), str(env.tmp / "a" / ".." / "b")):
-        proc = _assert_exit(env, env.probe_script(mounts=[bad]), 23)
+    bads = (str(afile / "sub"), str(dangling), str(env.tmp / "a" / ".." / "b"))
+    # Independent runs against the same (never created) root: run them together.
+    with ThreadPoolExecutor(len(bads)) as pool:
+        procs = list(
+            pool.map(
+                lambda bad: env.shell.run_script(env.probe_script(mounts=[bad])), bads
+            )
+        )
+    for proc in procs:
+        assert proc.returncode == 23, (proc.returncode, proc.stderr)
         assert "cannot be resolved" in proc.stderr
     assert not env.root.exists()
 
@@ -635,7 +766,7 @@ def test_new_store_dirs_are_mode_700(env: Env) -> None:
 
 
 def test_group_writable_repo_dir_rejected_by_locked_scripts(env: Env) -> None:
-    probe = env.store().probe(repo_id="proj-0123456789ab", sha=env.sha)
+    probe = env.seed()
     repo = Path(probe.repo_dir)
     repo.chmod(0o770)
     lease = env.new_lease(probe)
@@ -655,7 +786,7 @@ def test_group_writable_repo_dir_rejected_by_locked_scripts(env: Env) -> None:
 
 
 def test_group_writable_repo_dir_rejected_by_probe(env: Env) -> None:
-    probe = env.store().probe(repo_id="proj-0123456789ab", sha=env.sha)
+    probe = env.seed()
     repo = Path(probe.repo_dir)
     repo.chmod(0o770)
     proc = env.shell.run_script(env.probe_script())
@@ -664,14 +795,14 @@ def test_group_writable_repo_dir_rejected_by_probe(env: Env) -> None:
 
 
 def test_other_writable_root_rejected_by_probe(env: Env) -> None:
-    env.store().probe(repo_id="proj-0123456789ab", sha=env.sha)
+    env.seed()
     env.root.chmod(0o757)
     proc = env.shell.run_script(env.probe_script())
     assert proc.returncode == 32 and str(env.root) in proc.stderr, proc.stderr
 
 
 def test_symlinked_trees_dir_rejected(env: Env) -> None:
-    probe = env.store().probe(repo_id="proj-0123456789ab", sha=env.sha)
+    probe = env.seed()
     trees = Path(probe.repo_dir) / "trees"
     elsewhere = env.tmp / "elsewhere"
     elsewhere.mkdir()
@@ -683,7 +814,7 @@ def test_symlinked_trees_dir_rejected(env: Env) -> None:
 
 
 def test_symlinked_repo_dir_rejected_by_bind_and_delete(env: Env) -> None:
-    probe = env.store().probe(repo_id="proj-0123456789ab", sha=env.sha)
+    probe = env.seed()
     repo = Path(probe.repo_dir)
     moved = env.tmp / "moved"
     repo.rename(moved)
@@ -737,8 +868,7 @@ def test_foreign_owner_is_rejected_by_the_uid_comparison() -> None:
 
 
 def test_symlinked_tree_dir_is_not_reused(env: Env) -> None:
-    store, probe = env.prepare()
-    res = store.commit(probe=probe, sha=env.sha, lease=None)
+    store, probe, res = env.prepare_committed()
     tree = Path(res.path)
     elsewhere = env.tmp / "elsewhere-tree"
     _u_w(tree)  # renaming a directory needs write permission on it
@@ -751,8 +881,7 @@ def test_symlinked_tree_dir_is_not_reused(env: Env) -> None:
 
 
 def test_symlinked_marker_is_not_reused(env: Env) -> None:
-    store, probe = env.prepare()
-    res = store.commit(probe=probe, sha=env.sha, lease=None)
+    store, probe, res = env.prepare_committed()
     marker = Path(probe.repo_dir) / "trees" / f"{env.sha}.complete"
     other = env.tmp / "other-marker"
     other.write_text("")
@@ -765,8 +894,7 @@ def test_symlinked_marker_is_not_reused(env: Env) -> None:
 
 
 def test_tree_at_another_commit_is_not_reused(env: Env) -> None:
-    store, probe = env.prepare()
-    res = store.commit(probe=probe, sha=env.sha, lease=None)
+    store, probe, res = env.prepare_committed()
     tree = Path(res.path)
     _u_w(tree)
     # Move HEAD of the worktree away from the expected sha.
@@ -852,30 +980,43 @@ def test_private_grandparent_shields_a_group_writable_parent(env: Env) -> None:
     assert proc.returncode == 0, proc.stderr
 
 
-@pytest.mark.parametrize(
-    ("mode", "shields"),
-    [
-        ("drwx------", True),
-        ("drwx------.", True),
-        ("drwx------@", True),
-        ("drwx--S---", True),
-        ("drwx-----T", True),
-        ("drwx------+", False),
-        ("drwx--x---", False),
-        ("drwx--s---", False),
-        ("drwx-----x", False),
-        ("drwxr-x---", False),
-    ],
-)
-def test_mode_shields_predicate(mode: str, shields: bool) -> None:
+_SHIELD_CASES = [
+    ("drwx------", True),
+    ("drwx------.", True),
+    ("drwx------@", True),
+    ("drwx--S---", True),
+    ("drwx-----T", True),
+    ("drwx------+", False),
+    ("drwx--x---", False),
+    ("drwx--s---", False),
+    ("drwx-----x", False),
+    ("drwxr-x---", False),
+]
+
+
+@pytest.fixture(scope="module")
+def shield_answers() -> dict[str, str]:
+    """``mode_shields`` answered by one real ``sh -s`` run for every case."""
     preamble = remote._lock_preamble(
         client_host="h", client_pid=1, token=TOKEN, lock_wait=1
     )
+    body = "".join(
+        f"mode_shields '{mode}' && echo yes || echo no\n" for mode, _ in _SHIELD_CASES
+    )
     proc = REAL_RUN(
         ["/bin/sh", "-s"],
-        input=preamble + f"mode_shields '{mode}' && echo yes || echo no\n",
+        input=preamble + body,
         capture_output=True,
         text=True,
         check=False,
     )
-    assert proc.stdout.strip() == ("yes" if shields else "no"), proc.stderr
+    answers = proc.stdout.split()
+    assert len(answers) == len(_SHIELD_CASES), proc.stderr
+    return {mode: ans for (mode, _), ans in zip(_SHIELD_CASES, answers, strict=True)}
+
+
+@pytest.mark.parametrize(("mode", "shields"), _SHIELD_CASES)
+def test_mode_shields_predicate(
+    mode: str, shields: bool, shield_answers: dict[str, str]
+) -> None:
+    assert shield_answers[mode] == ("yes" if shields else "no")
