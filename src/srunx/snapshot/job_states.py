@@ -45,6 +45,7 @@ CLUSTER_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 CLUSTER_LOOKUP_TIMEOUT = 10
 
 _NONCE_RE = re.compile(r"[0-9a-f]{8,64}")
+_SACCT_FIELDS = 5
 _RC_RE = re.compile(r"RC (-?\d+)")
 _MIN_JOB_AGE_RE = re.compile(r"\s*MinJobAge\s*=\s*(\d+)")
 _JOB_STATE_RE = re.compile(r"\bJobState=(\S+)")
@@ -314,6 +315,8 @@ def parse_queue_output(
         first = next((ln.strip() for ln in date_body if ln.strip()), "")
         if _DIGITS_RE.fullmatch(first):
             now = int(first)
+    if now is None:
+        return _failed_report(ids, "the cluster clock could not be read"), []
 
     if "SQUEUE" not in sections:
         return _failed_report(ids, "squeue output section is missing", now=now), []
@@ -349,18 +352,31 @@ def parse_queue_output(
                 "listed by squeue -t all",
             )
 
-    for k, chunk in enumerate(_chunks(ids)):
-        body, rc = sections.get(f"SACCT{k}", ([], None))
+    chunks = _chunks(ids)
+    for k in range(len(chunks)):
+        if f"SACCT{k}" not in sections:
+            return _failed_report(
+                ids, f"sacct output section {k} is missing", now=now
+            ), []
+    for k, chunk in enumerate(chunks):
+        body, rc = sections[f"SACCT{k}"]
         if rc != 0:
-            continue
+            continue  # sacct unavailable: these jobs stay unknown
         by_id: dict[int, list[list[str]]] = {}
+        malformed = False
         for line in body:
-            fields = line.split("|")
-            if len(fields) != 5:
+            if not line.strip():
                 continue
-            base = _base_id(fields[0])
-            if base is not None:
-                by_id.setdefault(base, []).append(fields)
+            fields = line.split("|")
+            base = _base_id(fields[0]) if len(fields) == _SACCT_FIELDS else None
+            if base is None:
+                # A row we cannot read might have been the one that said the
+                # job is still alive: nothing in this section can be trusted.
+                malformed = True
+                break
+            by_id.setdefault(base, []).append(fields)
+        if malformed:
+            continue
         for jid in chunk:
             if jid not in states and jid in by_id:
                 states[jid] = _judge_sacct(jid, by_id[jid])

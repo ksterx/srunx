@@ -140,7 +140,8 @@ def round1(
     squeue_rc: int = 0,
 ) -> str:
     out = section("DATE", date) + section("SQUEUE", squeue, squeue_rc)
-    for k, body in (sacct or {}).items():
+    # By default one (empty) accounting section, as a query with ids has.
+    for k, body in (sacct if sacct is not None else {0: ""}).items():
         out += section(f"SACCT{k}", body, sacct_rc)
     out += section("CONFIG", config or "", config_rc if config is not None else 1)
     return out
@@ -324,11 +325,38 @@ class TestSqueue:
         rep = query_job_states([5], None)
         assert rep.error and rep.states[5].kind == "unknown"
 
-    def test_now_is_parsed_and_missing_gives_none(self) -> None:
+    def test_now_is_parsed(self) -> None:
         rep, _ = parse_queue_output(round1("", date="1800000123"), [], NONCE)
-        assert rep.now == 1800000123
-        rep, _ = parse_queue_output(round1("", date="oops"), [], NONCE)
-        assert rep.now is None and rep.error is None
+        assert rep.now == 1800000123 and rep.error is None
+
+    def test_missing_date_section_is_error_and_every_job_unknown(self) -> None:
+        out = section("SQUEUE", sq(5, 5, "RUNNING")) + section("SACCT0", "")
+        rep, _ = parse_queue_output(out, [5], NONCE)
+        assert rep.error and "clock" in rep.error
+        assert rep.states[5].kind == "unknown"
+
+    @pytest.mark.parametrize("date", ["oops", ""])
+    def test_unusable_clock_is_error(self, date: str) -> None:
+        rep, _ = parse_queue_output(round1("", date=date), [5], NONCE)
+        assert rep.error and rep.states[5].kind == "unknown"
+
+    def test_missing_sacct_section_with_ids_is_error(self) -> None:
+        rep, _ = parse_queue_output(round1("", sacct={}), [5], NONCE)
+        assert rep.error and "sacct" in rep.error
+        assert rep.states[5].kind == "unknown" and rep.queue == ()
+
+    def test_missing_second_sacct_chunk_is_error(self) -> None:
+        ids = list(range(1, SACCT_CHUNK + 2))
+        rep, _ = parse_queue_output(round1("", sacct={0: ""}), ids, NONCE)
+        assert rep.error
+
+    def test_no_sacct_section_needed_without_ids(self) -> None:
+        rep, _ = parse_queue_output(round1("", sacct={}), [], NONCE)
+        assert rep.error is None
+
+    def test_failed_sacct_section_is_still_not_an_error(self) -> None:
+        rep, _ = parse_queue_output(round1("", sacct={0: ""}, sacct_rc=1), [5], NONCE)
+        assert rep.error is None
 
 
 class TestSacct:
@@ -393,6 +421,38 @@ class TestSacct:
         rep, _ = parse_queue_output(out, [40070], NONCE)
         assert rep.states[40070].kind == "active"
         assert rep.states[40070].source == "squeue"
+
+    def test_one_malformed_row_makes_every_job_in_the_section_unknown(self) -> None:
+        rows = SACCT_DONE + "\n" + "41|COMPLETED|garbage-without-enough-fields"
+        rep, unresolved = self._rep(rows, [40070, 41])
+        assert rep.error is None
+        assert rep.states[40070].kind == "unknown"
+        assert rep.states[41].kind == "unknown"
+        assert unresolved == [41, 40070]
+
+    def test_malformed_row_cannot_be_outvoted_by_a_terminal_row_of_the_same_job(
+        self,
+    ) -> None:
+        rows = SACCT_DONE + "\n40070|RUNNING"  # the live row is the broken one
+        rep, _ = self._rep(rows)
+        assert rep.states[40070].kind == "unknown"
+
+    def test_row_without_a_numeric_job_id_is_malformed(self) -> None:
+        rows = SACCT_DONE + "\nx|COMPLETED|1|2|clusterA"
+        rep, _ = self._rep(rows)
+        assert rep.states[40070].kind == "unknown"
+
+    def test_malformed_row_in_one_chunk_leaves_the_other_chunk_alone(self) -> None:
+        ids = list(range(1, SACCT_CHUNK + 2))
+        rows0 = "\n".join(f"{i}|COMPLETED|1|2|c" for i in ids[:SACCT_CHUNK])
+        out = round1("", sacct={0: rows0, 1: "oops"})
+        rep, unresolved = parse_queue_output(out, ids, NONCE)
+        assert rep.states[1].kind == "terminal"
+        assert rep.states[ids[-1]].kind == "unknown" and unresolved == [ids[-1]]
+
+    def test_blank_lines_in_sacct_are_not_malformed(self) -> None:
+        rep, _ = self._rep("\n" + SACCT_DONE + "\n\n")
+        assert rep.states[40070].kind == "terminal"
 
     def test_row_with_wrong_field_count_is_ignored_and_unresolved(self) -> None:
         rep, unresolved = self._rep("40070|COMPLETED|1794904226|clusterA")
