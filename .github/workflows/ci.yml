@@ -58,6 +58,35 @@ jobs:
         token: ${{ secrets.CODECOV_TOKEN }}
         fail_ci_if_error: false
 
+  test-latest-deps:
+    # The ``test`` job installs from uv.lock, but pyproject only sets lower
+    # bounds, so a fresh ``pip install srunx`` resolves newer releases than
+    # CI ever ran. typer 0.26 vendoring its own Click broke ``srunx sbatch``
+    # for exactly those users while CI stayed green. Re-resolve the CLI
+    # framework to its newest release and run the suite against it.
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        version: "latest"
+
+    - name: Set up Python
+      run: uv python install 3.12
+
+    - name: Install dependencies (newest typer / click)
+      run: |
+        uv sync --dev --extra mcp --upgrade-package typer --upgrade-package click
+        uv pip show typer click | grep -E '^(Name|Version):'
+
+    - name: Run mypy
+      run: uv run --no-sync mypy .
+
+    - name: Run tests
+      run: uv run --no-sync pytest tests/ --tb=short
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

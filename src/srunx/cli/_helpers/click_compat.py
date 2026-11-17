@@ -28,20 +28,26 @@ from __future__ import annotations
 from typing import Protocol
 
 import click
-import typer.core
 
-#: ``isinstance`` target matching an option parameter under either layout.
-#: Under typer < 0.26 ``TyperOption`` *is* a ``click.Option``, so naming
-#: both is redundant there and load-bearing from 0.26 on.
-OPTION_CLASSES: tuple[type, ...] = (click.Option, typer.core.TyperOption)
+
+def is_option(param: object) -> bool:
+    """Is ``param`` an option (as opposed to a positional argument)?
+
+    Tests Click's ``param_type_name`` instead of ``isinstance``, because
+    the option class depends on the installed typer: from 0.26 on,
+    :class:`typer.core.TyperOption` derives from the vendored Click's
+    ``Parameter`` and is not a :class:`click.Option`. Every Click
+    parameter, vendored or not, reports ``"option"`` or ``"argument"``
+    here, so this stays correct however typer vendors Click next.
+    """
+    return getattr(param, "param_type_name", None) == "option"
 
 
 class OptionLike(Protocol):
     """The attributes srunx reads off an option parameter.
 
     A structural type, because the nominal one differs per typer version
-    (see :data:`OPTION_CLASSES`): narrowing on that tuple leaves a plain
-    ``object``, so callers ``cast`` to this after the isinstance check.
+    (see :func:`is_option`), so callers ``cast`` to this after that check.
     """
 
     opts: list[str]

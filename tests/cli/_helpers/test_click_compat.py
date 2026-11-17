@@ -11,23 +11,48 @@ from __future__ import annotations
 import enum
 
 import click
-import typer.core
+import typer
 
-from srunx.cli._helpers.click_compat import OPTION_CLASSES, is_commandline
+from srunx.cli._helpers.click_compat import is_commandline, is_option
 
 
-class TestOptionClasses:
+class _VendoredOption:
+    """Stand-in for a vendored-Click option: no shared base with click's."""
+
+    param_type_name = "option"
+
+
+def _typer_params() -> dict[str, object]:
+    """Parameters exactly as the installed typer builds them.
+
+    Built through a real command rather than by calling ``TyperOption``
+    directly: that constructor is internal and its signature changes
+    between typer releases (0.29 added a required ``type_descriptor``).
+    """
+    app = typer.Typer()
+
+    @app.command()
+    def cmd(script: str, x: int = typer.Option(0, "--x")) -> None: ...
+
+    return {str(p.name): p for p in typer.main.get_command(app).params}
+
+
+class TestIsOption:
     def test_click_option_matches(self):
-        assert isinstance(click.Option(["--x"]), OPTION_CLASSES)
+        assert is_option(click.Option(["--x"]))
 
     def test_typer_option_matches(self):
-        assert isinstance(typer.core.TyperOption(param_decls=["--x"]), OPTION_CLASSES)
+        assert is_option(_typer_params()["x"])
+
+    def test_unrelated_class_with_option_type_name_matches(self):
+        # What typer >= 0.26 hands over: an option that is not a
+        # click.Option subclass. An isinstance test would miss it.
+        assert is_option(_VendoredOption())
 
     def test_arguments_do_not_match(self):
-        assert not isinstance(click.Argument(["script"]), OPTION_CLASSES)
-        assert not isinstance(
-            typer.core.TyperArgument(param_decls=["script"]), OPTION_CLASSES
-        )
+        assert not is_option(click.Argument(["script"]))
+        assert not is_option(_typer_params()["script"])
+        assert not is_option(object())
 
 
 class _VendoredParameterSource(enum.Enum):

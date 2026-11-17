@@ -80,7 +80,7 @@ from typing import Any, cast
 
 import typer
 
-from srunx.cli._helpers.click_compat import OPTION_CLASSES, OptionLike
+from srunx.cli._helpers.click_compat import OptionLike, is_option
 
 SBATCH_ARG_OPT = "--sbatch-arg"
 
@@ -259,16 +259,16 @@ def own_option_specs(params: Iterable[Any]) -> tuple[OwnOptionSpec, ...]:
     consume the next token": true unless the option is a flag or a
     counter.
 
-    The isinstance test goes through
-    :data:`~srunx.cli._helpers.click_compat.OPTION_CLASSES` rather than
-    naming ``click.Option`` directly: from typer 0.26 on, typer builds
+    The option test goes through
+    :func:`~srunx.cli._helpers.click_compat.is_option` rather than
+    ``isinstance(param, click.Option)``: from typer 0.26 on, typer builds
     commands from its own vendored Click, and a bare ``click.Option``
     test matches none of them — leaving this function empty and handing
     every srunx-native flag to the sbatch passthrough rewrite.
     """
     specs: list[OwnOptionSpec] = []
     for param in params:
-        if not isinstance(param, OPTION_CLASSES):
+        if not is_option(param):
             continue
         option = cast(OptionLike, param)
         spellings = frozenset((*option.opts, *option.secondary_opts))
