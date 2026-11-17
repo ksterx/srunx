@@ -134,6 +134,11 @@ class SlurmRemoteClient:
         self._initialize_slurm_paths()
         self._verify_slurm_setup()
 
+    @property
+    def slurm_path(self) -> str | None:
+        """Directory holding the SLURM binaries, when discovery found one."""
+        return self._slurm_path
+
     def _initialize_slurm_paths(self) -> None:
         """Initialize SLURM command paths by checking common locations and environment."""
         try:
