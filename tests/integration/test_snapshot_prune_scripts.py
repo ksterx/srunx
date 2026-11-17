@@ -461,6 +461,30 @@ class TestReuseMarker:
         assert rem.marker(sha).stat().st_mtime > 1_000_000 + 10_000
 
 
+# --------------------------------------------------------------------- recovery
+
+
+class TestRecoveryKeepsOutsideInodes:
+    def test_recovering_a_broken_tree_does_not_chmod_hardlinked_files(
+        self, rem: Remote
+    ) -> None:
+        sha = rem.shas[0]
+        shared = rem.root.parent / "shared-inode"
+        shared.write_text("outside")
+        shared.chmod(0o400)
+        tree = rem.tree(sha)
+        tree.chmod(0o700)
+        os.link(shared, tree / "linked")
+        tree.chmod(0o500)
+        rem.marker(sha).unlink()  # not intact: the commit script recovers it
+
+        result = rem.store().commit(probe=rem.probe(), sha=sha, lease=None)
+
+        assert result.status == "recovered"
+        assert stat.S_IMODE(shared.stat().st_mode) == 0o400
+        assert shared.read_text() == "outside"
+
+
 # --------------------------------------------------------------------- prune
 
 
@@ -639,7 +663,15 @@ class TestPruneScript:
         real = trees / f".trash.{sha}.{'1' * 32}"
         (real / "sub").mkdir(parents=True)
         (real / "sub" / "f").write_text("x")
+        # a file hardlinked to something outside the store: the sweep must not
+        # change that inode's mode (it would with a recursive chmod)
+        shared = rem.root.parent / "shared-inode"
+        shared.write_text("outside")
+        shared.chmod(0o400)
+        os.link(shared, real / "sub" / "linked")
         (real / "sub").chmod(0o500)  # read-only inside, as a pruned snapshot is
+        (real / "closed").mkdir()
+        (real / "closed").chmod(0o000)  # not even searchable
         bad_name = trees / ".trash.foo"
         bad_name.mkdir()
         outside = rem.root.parent / "outside-dir"
@@ -664,6 +696,8 @@ class TestPruneScript:
         assert lines[-1] == "END"
         assert res.removed == () and res.trash_left == 0 and not res.sweep_incomplete
         assert not real.exists()
+        assert stat.S_IMODE(shared.stat().st_mode) == 0o400
+        assert shared.read_text() == "outside"
         assert bad_name.is_dir() and link.is_symlink() and regular.is_file()
         assert plain_file.is_file() and (outside / "keep").read_text() == "keep"
         assert set(res.trash_skipped) == {

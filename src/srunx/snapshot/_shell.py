@@ -295,6 +295,17 @@ mtime_of() {
 }
 """
 
+# ``make_dirs_writable <path>`` gives the owner rwx on every directory below
+# (and including) *path* so it can be deleted. Only directories are touched:
+# a recursive ``chmod -R u+w`` would also change regular files, and a file
+# hardlinked to something outside the store would change that inode's mode.
+# ``find`` visits a directory before reading it, so a mode-000 directory is
+# opened up before it is entered; it does not follow symlinks.
+MAKE_DIRS_WRITABLE = r"""make_dirs_writable() {
+  find "$1" -type d ! -perm -u+rwx -exec chmod u+rwx {} \; 2>/dev/null
+}
+"""
+
 # A snapshot is intact only when the marker is a regular file, the tree a real
 # directory (-f / -d follow symlinks) and the tree really is at the commit.
 TREE_INTACT = r"""tree_intact() {

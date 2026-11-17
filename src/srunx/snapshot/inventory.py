@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from srunx.snapshot._shell import (
+    MAKE_DIRS_WRITABLE,
     MTIME_OF,
     REPO_DIR_RE,
     RESOLVE_PATH,
@@ -672,7 +673,7 @@ if [ "$BAD_GIT" = 0 ]; then
   for tr_e in "$REPO"/trees/.trash*; do
     if [ ! -e "$tr_e" ] && [ ! -L "$tr_e" ]; then continue; fi
     if is_owned_trash "$tr_e"; then
-      chmod -R u+w "$tr_e" 2>/dev/null
+      make_dirs_writable "$tr_e"
       rm -rf "$tr_e" 2>/dev/null
       if [ -e "$tr_e" ] || [ -L "$tr_e" ]; then TRASH_LEFT=$((TRASH_LEFT + 1)); fi
     else
@@ -727,6 +728,7 @@ def build_prune_script(
         )
         + repo_vars(repo_dir, git, None)
         + MTIME_OF
+        + MAKE_DIRS_WRITABLE
         + TREE_INTACT
         + _GC_HELPERS
         + fill(_PRUNE_BODY, PRUNE_CALLS=calls, TOKEN=token)

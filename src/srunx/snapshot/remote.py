@@ -32,6 +32,9 @@ from srunx.snapshot._shell import (
     HEX32_RE as _HEX32_RE,
 )
 from srunx.snapshot._shell import (
+    MAKE_DIRS_WRITABLE as _MAKE_DIRS_WRITABLE,
+)
+from srunx.snapshot._shell import (
     MTIME_OF as _MTIME_OF,
 )
 from srunx.snapshot._shell import (
@@ -342,7 +345,7 @@ else
     STATUS=recovered
     # Drop links first so neither chmod nor worktree remove can follow them.
     if [ -L "$TREE" ]; then rm -f "$TREE"; fi
-    if [ -d "$TREE" ]; then chmod -R u+w "$TREE" 2>/dev/null; fi
+    if [ -d "$TREE" ]; then make_dirs_writable "$TREE"; fi
     "$GIT" --git-dir="$GITDIR" worktree remove --force "$TREE" >/dev/null 2>&1 || rm -rf "$TREE"
     rm -rf "$MARK"
     "$GIT" --git-dir="$GITDIR" worktree prune --expire=now >/dev/null 2>&1
@@ -389,6 +392,7 @@ def build_commit_script(
         + _lease_vars(lease_json, lease_id)
         + _fill(_WRITE_LEASE)
         + _MTIME_OF
+        + _MAKE_DIRS_WRITABLE
         + _TREE_INTACT
         + _fill(_COMMIT_BODY, WRITE_LEASE_CALL=call, SKEW=str(MARKER_SKEW_SECONDS))
     )
