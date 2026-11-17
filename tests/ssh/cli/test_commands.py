@@ -535,7 +535,8 @@ class TestUpdateSnapshotRoot:
         cfg = self._seed(tmp_path)
         result = self._update(cfg, value)
         assert result.exit_code == 2
-        assert "--snapshot-root" in result.output
+        # CI forces colour, and rich splits the option name with ANSI codes.
+        assert "--snapshot-root" in re.sub(r"\x1b\[[0-9;]*m", "", result.output)
         profile = ConfigManager(cfg).get_profile("p")
         assert profile is not None
         assert profile.snapshot_root is None

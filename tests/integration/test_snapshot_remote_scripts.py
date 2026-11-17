@@ -109,9 +109,24 @@ class Env:
         )
 
 
+# CI runners have no git identity configured, so commits made by the tests
+# must carry one explicitly.
+_GIT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@example.com",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@example.com",
+}
+
+
 def _git(cwd: Path, *args: str) -> str:
     return _REAL_RUN(
-        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **_GIT_IDENTITY},
     ).stdout.strip()
 
 
