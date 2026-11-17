@@ -23,6 +23,12 @@ from srunx.cli._helpers.sbatch_passthrough import (
     own_option_specs,
     validate_passthrough_args,
 )
+from srunx.cli._helpers.snapshot_submit import (
+    build_snapshot_request,
+    print_snapshot_dry_run,
+    require_ssh_transport,
+    validate_snapshot_options,
+)
 from srunx.cli._helpers.transport import resolve_transport
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
 from srunx.common.config import get_config
@@ -210,6 +216,26 @@ def sbatch(
             ),
         ),
     ] = False,
+    snapshot: Annotated[
+        bool,
+        typer.Option(
+            "--snapshot",
+            help=(
+                "Submit from a read-only per-commit snapshot of the current git "
+                "repo on the cluster (SSH profiles only; HEAD unless "
+                "--snapshot-rev). The job's default cwd is the snapshot; "
+                "SRUNX_CODE_DIR / SRUNX_SNAPSHOT_SHA are set. No auto-sync."
+            ),
+        ),
+    ] = False,
+    snapshot_rev: Annotated[
+        str | None,
+        typer.Option(
+            "--snapshot-rev",
+            metavar="REV",
+            help="Snapshot this git revision instead of HEAD (implies --snapshot).",
+        ),
+    ] = None,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Show verbose output")
     ] = False,
@@ -250,6 +276,27 @@ def sbatch(
         raise typer.BadParameter(
             "Missing job source. Provide a script path or use --wrap <command>.",
             param_hint="<script> / --wrap",
+        )
+
+    # --snapshot / --snapshot-rev: reject conflicting options (exit 2), then
+    # validate the local repo before any remote call.
+    snapshot_mode = validate_snapshot_options(
+        snapshot=snapshot,
+        snapshot_rev=snapshot_rev,
+        script=script,
+        wrap=wrap,
+        template=template,
+        local=local,
+        sync=sync,
+        force_sync=force_sync,
+        profile=profile,
+    )
+    snapshot_request = None
+    snapshot_profile_name: str | None = None
+    if snapshot_mode:
+        snapshot_profile_name = require_ssh_transport(profile=profile, local=local)
+        snapshot_request = build_snapshot_request(
+            script=script, rev=snapshot_rev, cwd=Path.cwd()
         )
 
     # Validate the final --sbatch-arg list (format R2.6 + reject list
@@ -365,7 +412,12 @@ def sbatch(
         # display / history match the scheduler without a post-submit
         # query; ``inject_job_name`` rides along from the same resolution.
         effective_name, inject_job_name = _resolve_job_name(
-            script, name, cli_name_explicit=name_explicit
+            script,
+            name,
+            cli_name_explicit=name_explicit,
+            script_text=(
+                snapshot_request.plan.script_text if snapshot_request else None
+            ),
         )
         shell_data: dict[str, Any] = {
             "name": effective_name,
@@ -442,14 +494,28 @@ def sbatch(
         # show rsync's preview of what *would* transfer. Lets the user
         # spot a stray ``build/`` or ``.cache/`` they forgot to
         # gitignore before they trigger an actual sync.
-        _print_in_place_sync_preview(
-            console=console,
-            script=script,
-            profile_name=profile,
-            local=local,
-            sync_flag=sync,
-            config=config,
-        )
+        if snapshot_request is not None:
+            from srunx.ssh.core.config import ConfigManager
+
+            snap_profile = (
+                ConfigManager().get_profile(snapshot_profile_name)
+                if snapshot_profile_name
+                else None
+            )
+            print_snapshot_dry_run(
+                console,
+                snapshot_request,
+                snapshot_root=snap_profile.snapshot_root if snap_profile else None,
+            )
+        else:
+            _print_in_place_sync_preview(
+                console=console,
+                script=script,
+                profile_name=profile,
+                local=local,
+                sync_flag=sync,
+                config=config,
+            )
         return
 
     # Submit job through the resolved transport.
@@ -540,6 +606,7 @@ def sbatch(
             extra_sbatch_args=extra_sbatch_args,
             force_sync=force_sync,
             inject_job_name=inject_job_name,
+            snapshot=snapshot_request,
         )
         client = (
             _slurm_local.Slurm(callbacks=callbacks)

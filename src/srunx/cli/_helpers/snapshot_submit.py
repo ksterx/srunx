@@ -81,8 +81,8 @@ def validate_snapshot_options(
     return True
 
 
-def require_ssh_transport(*, profile: str | None, local: bool) -> None:
-    """Reject a transport that resolves to local SLURM (exit 2)."""
+def require_ssh_transport(*, profile: str | None, local: bool) -> str:
+    """Return the SSH profile name; reject a transport that resolves to local (exit 2)."""
     from srunx.cli._helpers.transport import peek_scheduler_key
 
     key = peek_scheduler_key(profile=profile, local=local)
@@ -91,6 +91,7 @@ def require_ssh_transport(*, profile: str | None, local: bool) -> None:
             "--snapshot requires an SSH profile (use --profile <name>).",
             param_hint="--snapshot / --profile",
         )
+    return key[len("ssh:") :]
 
 
 def build_snapshot_request(

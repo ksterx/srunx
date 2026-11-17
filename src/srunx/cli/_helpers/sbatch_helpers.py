@@ -34,6 +34,7 @@ def _submit_via_transport(
     extra_sbatch_args: list[str] | None = None,
     force_sync: bool = False,
     inject_job_name: bool = True,
+    snapshot: Any | None = None,
 ) -> Any:
     """Dispatch a submit to the right adapter method + optional mount sync.
 
@@ -66,6 +67,11 @@ def _submit_via_transport(
     SLURM treats them as overrides of the script's ``#SBATCH``
     directives, matching real sbatch's precedence.
 
+    ``snapshot`` (a ``SnapshotRequest``) switches the SSH path to snapshot
+    submission: the job runs from a read-only per-commit snapshot, with no
+    mount sync, no mount lock, and no requirement that the script sit under a
+    mount.
+
     ``inject_job_name`` controls whether ``--job-name`` reaches the
     remote sbatch command line. It is ``False`` when the user did not
     type ``-J`` on a positional script, so the script's own ``#SBATCH
@@ -91,6 +97,18 @@ def _submit_via_transport(
             template_path=template,
             verbose=verbose,
             extra_sbatch_args=extra_sbatch_args or None,
+        )
+
+    if snapshot is not None:
+        from srunx.cli._helpers.snapshot_submit import submit_via_snapshot
+
+        return submit_via_snapshot(
+            rt=rt,
+            job=job,
+            request=snapshot,
+            profile_name=profile_name,
+            extra_sbatch_args=extra_sbatch_args,
+            inject_job_name=inject_job_name,
         )
 
     # --- SSH transport ---

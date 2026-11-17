@@ -379,3 +379,219 @@ def test_help_still_works(runner, tmp_path):
 
     result = runner.invoke(app, ["sbatch", "--sbatch-arg=--help"])
     assert result.exit_code == 2, result.output
+
+
+# -- --snapshot / --snapshot-rev ---------------------------------------------
+
+
+def _snapshot_plan():
+    from pathlib import Path
+
+    from srunx.snapshot import SnapshotPlan
+
+    return SnapshotPlan(
+        repo_top=Path("/repo"),
+        repo_id="repo-123456789abc",
+        sha="b" * 40,
+        script_rel="job.sbatch",
+        script_text="#!/bin/bash\n#SBATCH --job-name=from-commit\necho\n",
+        cwd_rel=None,
+        warnings=(),
+    )
+
+
+@pytest.fixture
+def snapshot_env(monkeypatch, tmp_path):
+    """Fake plan + service + profile so snapshot mode runs without git or SSH."""
+    from contextlib import contextmanager as cm
+
+    from srunx.cli._helpers import snapshot_submit as ss
+    from srunx.snapshot import PreparedSnapshot
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
+    state: dict[str, object] = {"plan_calls": [], "service_calls": 0}
+
+    def fake_plan(*, script, rev, cwd):
+        state["plan_calls"].append({"script": script, "rev": rev})  # type: ignore[attr-defined]
+        from srunx.cli._helpers.snapshot_submit import SnapshotRequest
+
+        return SnapshotRequest(plan=_snapshot_plan())
+
+    monkeypatch.setattr(
+        "srunx.cli.commands.jobs.sbatch.build_snapshot_request", fake_plan
+    )
+
+    class _Handle:
+        def __init__(self, prepared):
+            self.prepared = prepared
+
+        def metadata(self):
+            return {"snapshot": {}}
+
+        def bind(self, job_id):
+            state["bound"] = job_id
+
+    class _Service:
+        def __init__(self, **_kw):
+            state["service_calls"] += 1  # type: ignore[operator]
+
+        @cm
+        def leased_snapshot(self, plan):
+            yield _Handle(
+                PreparedSnapshot(
+                    plan=plan,
+                    root="/r",
+                    repo_dir="/r/x",
+                    path="/r/x/trees/" + plan.sha,
+                    status="created",
+                )
+            )
+
+    monkeypatch.setattr(ss, "SnapshotService", _Service)
+    profile = MagicMock()
+    profile.snapshot_root = "/snaps"
+    cfg = MagicMock()
+    cfg.return_value.get_profile.return_value = profile
+    monkeypatch.setattr("srunx.ssh.core.config.ConfigManager", cfg)
+    return state
+
+
+def _rt_with_ops():
+    rt = MagicMock()
+    rt.transport_type = "ssh"
+    rt.profile_name = "test-profile"
+    rt.scheduler_key = "ssh:test-profile"
+
+    def _remote(path, *, callbacks_job, **_kw):
+        callbacks_job.job_id = 31
+        return callbacks_job
+
+    rt.job_ops.submit_remote_sbatch.side_effect = _remote
+    return rt
+
+
+@pytest.mark.parametrize(
+    ("extra", "flag"),
+    [
+        (["--template", "t"], "--template"),
+        (["--sync"], "--sync"),
+        (["--force-sync"], "--force-sync"),
+        (["--local"], "--local"),
+    ],
+)
+def test_snapshot_rejects_conflicting_option(
+    runner, snapshot_env, tmp_path, extra, flag
+):
+    script = tmp_path / "job.sbatch"
+    script.write_text("echo\n")
+    args = ["sbatch", "--snapshot", str(script), *extra]
+    if flag != "--local":
+        args += ["--profile", "test-profile"]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 2, result.output
+    assert snapshot_env["plan_calls"] == []
+
+
+def test_snapshot_rejects_wrap(runner, snapshot_env):
+    result = runner.invoke(
+        app, ["sbatch", "--snapshot", "--wrap", "x", "--profile", "test-profile"]
+    )
+    assert result.exit_code == 2
+
+
+def test_snapshot_requires_script(runner, snapshot_env):
+    result = runner.invoke(app, ["sbatch", "--snapshot", "--profile", "test-profile"])
+    assert result.exit_code == 2
+
+
+def test_snapshot_rejects_transport_resolving_to_local(runner, snapshot_env, tmp_path):
+    script = tmp_path / "job.sbatch"
+    script.write_text("echo\n")
+    result = runner.invoke(app, ["sbatch", "--snapshot", str(script)])
+    assert result.exit_code == 2
+    assert snapshot_env["plan_calls"] == []
+
+
+def test_snapshot_rev_implies_snapshot_and_keeps_script_positional(
+    runner, snapshot_env, tmp_path
+):
+    script = tmp_path / "job.sbatch"
+    script.write_text("echo\n")
+    rt = _rt_with_ops()
+
+    @contextmanager
+    def fake_rt(*a, **k):
+        yield rt
+
+    with patch("srunx.cli.commands.jobs.sbatch.resolve_transport", fake_rt):
+        result = runner.invoke(
+            app,
+            [
+                "sbatch",
+                "--snapshot-rev",
+                "v1",
+                str(script),
+                "--profile",
+                "test-profile",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    call = snapshot_env["plan_calls"][0]  # type: ignore[index]
+    assert call["rev"] == "v1"
+    assert str(call["script"]) == str(script)
+
+
+def test_snapshot_submit_never_syncs_or_uses_tmp_upload_and_names_from_commit(
+    runner, snapshot_env, tmp_path
+):
+    # The local file has a different directive: the commit's content must win.
+    script = tmp_path / "job.sbatch"
+    script.write_text("#SBATCH --job-name=local-name\necho\n")
+    rt = _rt_with_ops()
+
+    @contextmanager
+    def fake_rt(*a, **k):
+        yield rt
+
+    with (
+        patch("srunx.cli.commands.jobs.sbatch.resolve_transport", fake_rt),
+        patch("srunx.sync.mount_helpers.sync_mount_by_name") as sync_mock,
+        patch("srunx.sync.service.mount_sync_session") as session_mock,
+    ):
+        result = runner.invoke(
+            app, ["sbatch", "--snapshot", str(script), "--profile", "test-profile"]
+        )
+    assert result.exit_code == 0, result.output
+    sync_mock.assert_not_called()
+    session_mock.assert_not_called()
+    rt.job_ops.submit.assert_not_called()
+    kwargs = rt.job_ops.submit_remote_sbatch.call_args.kwargs
+    assert kwargs["callbacks_job"].name == "from-commit"
+    # the commit's script declares its own name, so it is not injected
+    assert kwargs["job_name"] is None
+    assert snapshot_env["bound"] == 31
+    assert "from-commit" in result.output
+
+
+def test_snapshot_dry_run_makes_no_remote_call(runner, snapshot_env, tmp_path):
+    script = tmp_path / "job.sbatch"
+    script.write_text("echo\n")
+
+    with patch("srunx.cli.commands.jobs.sbatch.resolve_transport") as rt_mock:
+        result = runner.invoke(
+            app,
+            [
+                "sbatch",
+                "--snapshot",
+                "--dry-run",
+                str(script),
+                "--profile",
+                "test-profile",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    rt_mock.assert_not_called()
+    assert snapshot_env["service_calls"] == 0
+    assert "b" * 40 in result.output
+    assert "/snaps" in result.output
