@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from srunx.snapshot import remote
+from srunx.snapshot._shell import PLACEHOLDER_RE
 from srunx.snapshot.remote import (
     build_bind_script,
     build_commit_script,
@@ -220,9 +221,11 @@ from srunx.snapshot.errors import (  # noqa: E402
 from srunx.snapshot.lease import Lease  # noqa: E402
 from srunx.snapshot.remote import (  # noqa: E402
     COMMIT_TIMEOUT,
+    INVENTORY_TIMEOUT,
     LEASE_TIMEOUT,
     LOCK_WAIT_SECONDS,
     PROBE_TIMEOUT,
+    PRUNE_TIMEOUT,
     PUSH_TIMEOUT,
     ProbeResult,
     RemoteSnapshotStore,
@@ -319,6 +322,57 @@ class TestStoreTimeouts:
     def test_bad_root_is_validation_error(self) -> None:
         with pytest.raises(SnapshotValidationError):
             RemoteSnapshotStore(FakeShell(), snapshot_root="/a b", mounts=[])
+
+
+class TestRunRaw:
+    def test_run_raw_returns_stdout_untouched(self) -> None:
+        shell = FakeShell(done("A=1\nnoise\nEND\n"))
+        out = make_store(shell).run("true", timeout=7, what="x")
+        assert out == "A=1\nnoise\nEND\n"
+        assert shell.calls == [("true", 7)]
+
+    def test_run_raw_maps_exit_codes_like_run(self) -> None:
+        with pytest.raises(SnapshotRemoteError, match="invalid or unusable"):
+            make_store(FakeShell(done(rc=22))).run("x", timeout=1, what="inv")
+        stderr = "LOCK=/r/.lock\nhost=h\n"
+        with pytest.raises(SnapshotLockTimeoutError):
+            make_store(FakeShell(done(rc=30, stderr=stderr))).run(
+                "x", timeout=1, what="prune"
+            )
+
+    def test_run_raw_timeout_becomes_remote_error(self) -> None:
+        shell = FakeShell(subprocess.TimeoutExpired("ssh", 1))
+        with pytest.raises(SnapshotRemoteError, match="timed out"):
+            make_store(shell).run("x", timeout=1, what="inv")
+
+    def test_public_accessors(self) -> None:
+        store = make_store(FakeShell(), lock_wait=7)
+        assert store.root_expr == "/r/snap"
+        assert store.lock_wait == 7
+        owner = store.owner()
+        assert set(owner) == {"client_host", "client_pid", "token"}
+        assert len(owner["token"]) == 32
+
+
+class TestTimeoutConstants:
+    def test_prune_timeout_exceeds_lock_wait(self) -> None:
+        assert PRUNE_TIMEOUT > LOCK_WAIT_SECONDS
+        assert INVENTORY_TIMEOUT > 0
+
+
+class TestMarkerTouch:
+    def test_marker_touch_exit_33_message(self) -> None:
+        shell = FakeShell(done(rc=33, stderr="cannot refresh"))
+        with pytest.raises(SnapshotRemoteError, match="last-requested time") as ei:
+            make_store(shell).commit(probe=probe_result(), sha=SHA, lease=None)
+        assert "exit 33" in str(ei.value)
+
+    def test_marker_touch_in_reuse_branch_only(self) -> None:
+        script = commit_script()
+        assert 'touch "$MARK"' in script
+        assert "exit 33" in script
+        assert f"{remote.MARKER_SKEW_SECONDS}" in script
+        assert script.index("mtime_of()") < script.index('touch "$MARK"')
 
 
 class TestStoreResults:
@@ -491,4 +545,4 @@ def test_generated_scripts_have_no_placeholders_left() -> None:
             token=TOKEN,
         ),
     ):
-        assert not remote._PLACEHOLDER_RE.search(script)
+        assert not PLACEHOLDER_RE.search(script)

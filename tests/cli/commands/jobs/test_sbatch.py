@@ -618,3 +618,67 @@ def test_snapshot_dry_run_no_output_warning_with_absolute_output(
         )
     assert result.exit_code == 0, result.output
     assert "read-only" not in result.output
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["-M", "other"],
+        ["--clusters", "other"],
+        ["--clusters=other"],
+        ["-Mother"],
+        ["--sbatch-arg=--clusters=other"],
+    ],
+)
+def test_snapshot_rejects_clusters_passthrough(runner, snapshot_env, tmp_path, extra):
+    script = tmp_path / "job.sbatch"
+    script.write_text("echo\n")
+    result = runner.invoke(
+        app, ["sbatch", "--snapshot", str(script), "--profile", "test-profile", *extra]
+    )
+    assert result.exit_code == 2, result.output
+    assert "clusters" in result.output.lower()
+    assert snapshot_env["plan_calls"] == [] and snapshot_env["service_calls"] == 0
+
+
+def test_snapshot_rejects_clusters_directive_in_the_committed_script(
+    runner, snapshot_env, monkeypatch, tmp_path
+):
+    from dataclasses import replace
+
+    plan = replace(
+        _snapshot_plan(),
+        script_text="#!/bin/bash\n#SBATCH --clusters=other\necho\n",
+    )
+    monkeypatch.setattr(
+        "srunx.cli.commands.jobs.sbatch.build_snapshot_plan",
+        lambda *, script, rev, cwd: plan,
+    )
+    script = tmp_path / "job.sbatch"
+    script.write_text("echo\n")
+    result = runner.invoke(
+        app, ["sbatch", "--snapshot", str(script), "--profile", "test-profile"]
+    )
+    assert result.exit_code == 2, result.output
+    assert "clusters" in result.output.lower()
+    assert snapshot_env["service_calls"] == 0
+
+
+def test_clusters_passthrough_is_still_accepted_without_snapshot(runner, tmp_path):
+    from srunx.cli._helpers.snapshot_submit import validate_snapshot_options
+
+    assert (
+        validate_snapshot_options(
+            snapshot=False,
+            snapshot_rev=None,
+            script=None,
+            wrap=None,
+            template=None,
+            local=False,
+            sync=None,
+            force_sync=False,
+            profile=None,
+            sbatch_args=["--clusters=other"],
+        )
+        is False
+    )

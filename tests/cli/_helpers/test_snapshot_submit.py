@@ -56,8 +56,11 @@ class FakeHandle:
 class FakeService:
     last: FakeService | None = None
 
-    def __init__(self, *, profile_name: str, profile: Any) -> None:
+    def __init__(
+        self, *, profile_name: str, profile: Any, slurm_execute: Any = None
+    ) -> None:
         self.profile_name = profile_name
+        self.slurm_execute = slurm_execute
         self.handle: FakeHandle | None = None
         self.raise_on_enter: Exception | None = None
         FakeService.last = self
@@ -240,6 +243,28 @@ def test_submit_uses_snapshot_script_cwd_env_metadata_and_binds(
     assert fake_service.last is not None and fake_service.last.handle is not None
     assert fake_service.last.handle.bound == [77]
     assert result is job
+
+
+def test_submit_passes_cluster_runner_to_the_service(
+    fake_service: type[FakeService],
+) -> None:
+    rt = _rt()
+    _submit(rt, _plan())
+    assert fake_service.last is not None
+    assert fake_service.last.slurm_execute is rt.job_ops.run_slurm_command
+
+
+def test_submit_cluster_runner_is_none_when_client_has_none(
+    fake_service: type[FakeService],
+) -> None:
+    rt = _rt()
+    rt.job_ops = MagicMock(spec=["submit_remote_sbatch"])
+    rt.job_ops.submit_remote_sbatch.side_effect = (
+        _rt().job_ops.submit_remote_sbatch.side_effect
+    )
+    _submit(rt, _plan())
+    assert fake_service.last is not None
+    assert fake_service.last.slurm_execute is None
 
 
 def test_submit_cwd_is_snapshot_top_without_cwd_rel(

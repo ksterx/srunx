@@ -27,6 +27,7 @@ from srunx.cli._helpers.sbatch_passthrough import (
 from srunx.cli._helpers.snapshot_submit import (
     build_snapshot_plan,
     print_snapshot_dry_run,
+    reject_clusters_in_script,
     require_ssh_transport,
     validate_snapshot_options,
 )
@@ -291,6 +292,7 @@ def sbatch(
         sync=sync,
         force_sync=force_sync,
         profile=profile,
+        sbatch_args=sbatch_arg or [],
     )
     snapshot_plan = None
     snapshot_profile_name: str | None = None
@@ -299,6 +301,7 @@ def sbatch(
         snapshot_plan = build_snapshot_plan(
             script=script, rev=snapshot_rev, cwd=Path.cwd()
         )
+        reject_clusters_in_script(snapshot_plan.script_text)
 
     # Validate the final --sbatch-arg list (format R2.6 + reject list
     # R2.5) once, here, before any I/O. Tokens may have arrived either
