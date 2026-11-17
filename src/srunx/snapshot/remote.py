@@ -61,6 +61,7 @@ from srunx.snapshot._shell import (
 from srunx.snapshot.errors import (
     SnapshotLockTimeoutError,
     SnapshotRemoteError,
+    SnapshotRemoteTimeoutError,
     SnapshotValidationError,
 )
 from srunx.snapshot.lease import Lease
@@ -565,8 +566,11 @@ class RemoteSnapshotStore:
         try:
             proc = self._shell.run_script(script, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            raise SnapshotRemoteError(
-                f"remote {what} timed out after {timeout:g}s"
+            partial = exc.stdout or ""
+            if isinstance(partial, bytes):
+                partial = partial.decode(errors="replace")
+            raise SnapshotRemoteTimeoutError(
+                f"remote {what} timed out after {timeout:g}s", partial
             ) from exc
         except OSError as exc:
             raise SnapshotRemoteError(f"remote {what} could not run: {exc}") from exc

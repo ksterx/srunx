@@ -15,3 +15,11 @@ class SnapshotRemoteError(SnapshotError):
 
 class SnapshotLockTimeoutError(SnapshotRemoteError):
     """The per-repo remote lock could not be acquired within the wait window."""
+
+
+class SnapshotRemoteTimeoutError(SnapshotRemoteError):
+    """A remote script did not finish in time; ``partial_output`` is what it printed."""
+
+    def __init__(self, message: str, partial_output: str = "") -> None:
+        super().__init__(message)
+        self.partial_output = partial_output

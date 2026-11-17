@@ -28,7 +28,7 @@ from srunx.snapshot._shell import (
     lock_preamble,
     repo_vars,
 )
-from srunx.snapshot.errors import SnapshotRemoteError
+from srunx.snapshot.errors import SnapshotRemoteError, SnapshotRemoteTimeoutError
 from srunx.snapshot.lease import Lease
 from srunx.snapshot.local_git import REPO_ID_RE, SHA_RE
 from srunx.snapshot.remote import (
@@ -107,6 +107,9 @@ class PruneRepoResult:
     failed: tuple[tuple[str, str], ...]  # (sha, reason)
     trash_left: int  # valid trash entries that could not be deleted
     trash_skipped: tuple[str, ...]  # .trash* entries left alone
+    # The trash sweep did not finish (output cut after the results were
+    # printed, e.g. a timeout); the removals above are complete.
+    sweep_incomplete: bool = False
 
 
 def _int_or_none(text: str) -> int | None:
@@ -300,7 +303,8 @@ def parse_inventory(stdout: str) -> Inventory:
 def parse_prune_output(stdout: str, targets: Sequence[PruneTarget]) -> PruneRepoResult:
     """Parse the prune script output; a target without a result line failed."""
     lines = stdout.splitlines()
-    if "END" not in lines:
+    has_end = "END" in lines
+    if not has_end and "RESULTS_DONE" not in lines:
         raise SnapshotRemoteError(
             "remote prune output is truncated (no END line); the outcome is unknown"
         )
@@ -311,7 +315,7 @@ def parse_prune_output(stdout: str, targets: Sequence[PruneTarget]) -> PruneRepo
     skipped: list[str] = []
     trash_left = 0
     seen: set[str] = set()
-    for line in lines[: lines.index("END")]:
+    for line in lines[: lines.index("END")] if has_end else lines:
         kind, _, rest = line.partition(" ")
         if kind in ("REMOVED", "CHANGED", "FAILED"):
             sha, _, reason = rest.partition(" ")
@@ -337,6 +341,7 @@ def parse_prune_output(stdout: str, targets: Sequence[PruneTarget]) -> PruneRepo
         failed=tuple(failed.items()),
         trash_left=trash_left,
         trash_skipped=tuple(skipped),
+        sweep_incomplete=not has_end,
     )
 
 
@@ -357,6 +362,16 @@ _GC_HELPERS = r"""is_plain() {
 is_sha_name() {
   [ "${#1}" = 40 ] || return 1
   case $1 in
+    *[!0-9a-f]*) return 1 ;;
+  esac
+  return 0
+}
+is_lease_name() {
+  case $1 in
+    ????????????????????????????????.json) ;;
+    *) return 1 ;;
+  esac
+  case ${1%.json} in
     *[!0-9a-f]*) return 1 ;;
   esac
   return 0
@@ -382,7 +397,7 @@ snap_fp() {
   if [ -d "$TREE" ] && [ ! -L "$TREE" ]; then mtime_set "$TREE"; sf_t=$MTIME_RESULT; fi
   if tree_intact; then sf_i=1; fi
   set --
-  for sf_f in "$REPO"/leases/*.json; do
+  for sf_f in "$REPO"/leases/* "$REPO"/leases/.[!.]* "$REPO"/leases/..?*; do
     if [ -f "$sf_f" ] && [ ! -L "$sf_f" ]; then set -- "$@" "$sf_f"; fi
   done
   sf_list=
@@ -396,11 +411,8 @@ snap_fp() {
       while IFS= read -r sf_h; do
         [ -n "$sf_h" ] || continue
         sf_b=${sf_h##*/}
+        if ! is_lease_name "$sf_b"; then sf_list='!'; break; fi
         sf_id=${sf_b%.json}
-        if [ "${#sf_id}" != 32 ] || [ "$sf_id.json" != "$sf_b" ]; then sf_list='!'; break; fi
-        case $sf_id in
-          *[!0-9a-f]*) sf_list='!'; break ;;
-        esac
         mtime_set "$sf_h"
         sf_acc="$sf_acc$sf_id:$MTIME_RESULT
 "
@@ -463,6 +475,10 @@ inventory_repo() {
     printf 'SKIP %s %s\n' "$ir_n" "${ir_msg:-directory is not private}"
     return 0
   fi
+  if [ -L "$REPO/repo.git" ] || [ ! -d "$REPO/repo.git" ] || [ ! -O "$REPO/repo.git" ]; then
+    printf 'SKIP %s %s\n' "$ir_n" 'repo.git is not a real directory owned by you (symlink or foreign owner)'
+    return 0
+  fi
   printf 'REPO %s\n' "$ir_n"
   if [ -e "$REPO/.lock" ] || [ -L "$REPO/.lock" ]; then
     printf 'LOCK %s %s\n' "$ir_n" "$(mtime_of "$REPO/.lock")"
@@ -476,7 +492,7 @@ inventory_repo() {
       fi
     done
     set --
-    for ir_l in "$REPO"/leases/*.json; do
+    for ir_l in "$REPO"/leases/* "$REPO"/leases/.[!.]* "$REPO"/leases/..?*; do
       if [ -f "$ir_l" ] && [ ! -L "$ir_l" ]; then set -- "$@" "$ir_l"; fi
     done
     if [ $# -gt 0 ]; then
@@ -500,12 +516,16 @@ inventory_repo() {
     fi
     printf 'SNAP %s %s %s %s %s%s\n' "$ir_n" "$ir_sha" "$ir_fp" "$ir_size" "$ir_tf" "$ir_mf"
   done
-  for ir_l in "$REPO"/leases/*.json; do
+  for ir_l in "$REPO"/leases/* "$REPO"/leases/.[!.]* "$REPO"/leases/..?*; do
     if [ ! -e "$ir_l" ] && [ ! -L "$ir_l" ]; then continue; fi
     ir_b=${ir_l##*/}
     ir_lm=$(mtime_of "$ir_l")
     if ! is_plain "$ir_b"; then
       printf 'LEASEBAD %s %s %s %s\n' "$ir_n" '?' "$ir_lm" 'unusual file name'
+      continue
+    fi
+    if ! is_lease_name "$ir_b"; then
+      printf 'LEASEBAD %s %s %s %s\n' "$ir_n" "$ir_b" "$ir_lm" 'unexpected file name'
       continue
     fi
     if [ -L "$ir_l" ] || [ ! -f "$ir_l" ]; then
@@ -580,10 +600,19 @@ def build_inventory_script(*, root_expr: str, with_size: bool = False) -> str:
 
 
 _PRUNE_BODY = r"""RESULTS=
+BAD_GIT=0
+fail_sha() {
+  RESULTS="${RESULTS}FAILED $1 $2
+"
+}
 prune_one() {
   po_sha=$1
   po_fp=$2
   po_ids=$3
+  if [ "$BAD_GIT" = 1 ]; then
+    fail_sha "$po_sha" repo-git
+    return 0
+  fi
   SHA=$po_sha
   TREE=$REPO/trees/$SHA
   MARK=$TREE.complete
@@ -594,45 +623,63 @@ prune_one() {
     return 0
   fi
   if [ ! -L "$TREE" ] && [ -e "$TREE" ] && [ ! -O "$TREE" ]; then
-    RESULTS="${RESULTS}FAILED $po_sha not-owned
-"
+    fail_sha "$po_sha" not-owned
     return 0
   fi
-  rm -rf "$MARK"
+  # The tree goes first: if it cannot be moved away nothing else is touched
+  # (marker and modes stay). A marker without a tree is a state Phase 1
+  # recovers from and a later prune removes.
   if [ -L "$TREE" ]; then
     rm -f "$TREE"
+    if [ -L "$TREE" ]; then fail_sha "$po_sha" rename; return 0; fi
   elif [ -d "$TREE" ]; then
-    chmod u+w "$TREE" 2>/dev/null
     if ! mv "$TREE" "$REPO/trees/.trash.$po_sha.@TOKEN@" 2>/dev/null; then
-      RESULTS="${RESULTS}FAILED $po_sha rename
-"
+      fail_sha "$po_sha" rename
       return 0
     fi
   elif [ -e "$TREE" ]; then
     rm -f "$TREE"
+    if [ -e "$TREE" ]; then fail_sha "$po_sha" rename; return 0; fi
   fi
-  "$GIT" --git-dir="$GITDIR" update-ref -d "refs/srunx/snapshots/$po_sha" >/dev/null 2>&1 </dev/null
+  rm -rf "$MARK"
+  if [ -e "$MARK" ] || [ -L "$MARK" ]; then fail_sha "$po_sha" marker; return 0; fi
+  if ! "$GIT" --git-dir="$GITDIR" update-ref -d "refs/srunx/snapshots/$po_sha" >/dev/null 2>&1 </dev/null; then
+    fail_sha "$po_sha" update-ref
+    return 0
+  fi
   for po_id in $(printf '%s' "$po_ids" | tr ',' ' '); do
     rm -f "$REPO/leases/$po_id.json"
+    if [ -e "$REPO/leases/$po_id.json" ] || [ -L "$REPO/leases/$po_id.json" ]; then
+      fail_sha "$po_sha" lease
+      return 0
+    fi
   done
   RESULTS="${RESULTS}REMOVED $po_sha
 "
 }
 acquire
-@PRUNE_CALLS@"$GIT" --git-dir="$GITDIR" worktree prune --expire=now >/dev/null 2>&1 </dev/null
+# repo.git must be a real directory of ours: a symlink would send update-ref
+# and worktree prune into some other repository.
+if [ -L "$GITDIR" ] || [ ! -d "$GITDIR" ] || [ ! -O "$GITDIR" ]; then BAD_GIT=1; fi
+@PRUNE_CALLS@if [ "$BAD_GIT" = 0 ]; then
+  "$GIT" --git-dir="$GITDIR" worktree prune --expire=now >/dev/null 2>&1 </dev/null
+fi
 release
 printf '%s' "$RESULTS"
+echo RESULTS_DONE
 TRASH_LEFT=0
-for tr_e in "$REPO"/trees/.trash*; do
-  if [ ! -e "$tr_e" ] && [ ! -L "$tr_e" ]; then continue; fi
-  if is_owned_trash "$tr_e"; then
-    chmod -R u+w "$tr_e" 2>/dev/null
-    rm -rf "$tr_e" 2>/dev/null
-    if [ -e "$tr_e" ] || [ -L "$tr_e" ]; then TRASH_LEFT=$((TRASH_LEFT + 1)); fi
-  else
-    printf 'TRASHSKIP %s\n' "$(shown_name "${tr_e##*/}")"
-  fi
-done
+if [ "$BAD_GIT" = 0 ]; then
+  for tr_e in "$REPO"/trees/.trash*; do
+    if [ ! -e "$tr_e" ] && [ ! -L "$tr_e" ]; then continue; fi
+    if is_owned_trash "$tr_e"; then
+      chmod -R u+w "$tr_e" 2>/dev/null
+      rm -rf "$tr_e" 2>/dev/null
+      if [ -e "$tr_e" ] || [ -L "$tr_e" ]; then TRASH_LEFT=$((TRASH_LEFT + 1)); fi
+    else
+      printf 'TRASHSKIP %s\n' "$(shown_name "${tr_e##*/}")"
+    fi
+  done
+fi
 printf 'TRASHLEFT %s\n' "$TRASH_LEFT"
 echo END
 """
@@ -711,5 +758,12 @@ class InventoryStore:
             lock_wait=self._store.lock_wait,
             **self._store.owner(),
         )
-        out = self._store.run(script, timeout=PRUNE_TIMEOUT, what="snapshot prune")
+        try:
+            out = self._store.run(script, timeout=PRUNE_TIMEOUT, what="snapshot prune")
+        except SnapshotRemoteTimeoutError as exc:
+            # The removals are done once RESULTS_DONE was printed; only the
+            # trash sweep after it was cut short.
+            if "RESULTS_DONE" not in exc.partial_output.splitlines():
+                raise
+            return parse_prune_output(exc.partial_output, targets)
         return parse_prune_output(out, targets)

@@ -256,3 +256,20 @@ def test_execute_plan_trash_only_repo_is_run_with_no_targets() -> None:
     out, _ = console()
     assert execute_plan(store, inventory, plan, err, out) == 0
     assert store.calls == [(REPO_DIR, "/usr/bin/git", [])]
+
+
+def test_execute_plan_unfinished_trash_sweep_warns_and_returns_1_but_lists_removals() -> (
+    None
+):
+    inventory, plan, other_dir = two_repo_plan()
+    store = FakeStore(
+        {
+            REPO_DIR: result(removed=(SHA,), sweep_incomplete=True),
+            other_dir: result(removed=(SHA,)),
+        }
+    )
+    err, err_buf = console()
+    out, out_buf = console()
+    assert execute_plan(store, inventory, plan, err, out) == 1
+    assert out_buf.getvalue().count("removed ") == 2
+    assert "trash cleanup did not finish" in err_buf.getvalue()

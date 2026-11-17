@@ -260,6 +260,29 @@ class TestParsePruneOutput:
         with pytest.raises(SnapshotRemoteError, match="END"):
             parse_prune_output(f"REMOVED {SHA}\n", self.TARGETS)
 
+    def test_complete_run_has_no_sweep_warning(self) -> None:
+        out = f"REMOVED {SHA}\nRESULTS_DONE\nTRASHLEFT 0\nEND\n"
+        assert parse_prune_output(out, self.TARGETS[:1]).sweep_incomplete is False
+
+    def test_results_marker_without_end_is_accepted_as_an_unfinished_sweep(
+        self,
+    ) -> None:
+        out = f"REMOVED {SHA}\nCHANGED {SHA2}\nRESULTS_DONE\nTRASHSKIP .trash.foo\n"
+        res = parse_prune_output(out, self.TARGETS)
+        assert res.removed == (SHA,) and res.changed == (SHA2,) and res.failed == ()
+        assert res.sweep_incomplete is True
+        assert res.trash_skipped == (".trash.foo",)
+
+    def test_truncation_before_the_results_marker_is_still_an_error(self) -> None:
+        with pytest.raises(SnapshotRemoteError, match="END"):
+            parse_prune_output(f"REMOVED {SHA}\n", self.TARGETS)
+
+    def test_targets_without_result_are_failed_even_when_the_sweep_was_cut(
+        self,
+    ) -> None:
+        res = parse_prune_output(f"REMOVED {SHA}\nRESULTS_DONE\n", self.TARGETS)
+        assert res.failed == ((SHA2, "no result"),) and res.sweep_incomplete
+
     def test_unknown_sha_is_ignored_and_empty_targets_work(self) -> None:
         res = parse_prune_output(f"REMOVED {SHA}\nTRASHLEFT 0\nEND\n", [])
         assert res.removed == () and res.failed == ()
@@ -361,12 +384,15 @@ class TestBuilders:
 class StubShell:
     def __init__(self, result: subprocess.CompletedProcess[str]) -> None:
         self.result = result
+        self.error: Exception | None = None
         self.calls: list[tuple[str, float | None]] = []
 
     def run_script(
         self, script: str, *, timeout: float | None = None
     ) -> subprocess.CompletedProcess[str]:
         self.calls.append((script, timeout))
+        if self.error is not None:
+            raise self.error
         return self.result
 
     def ssh_command(self) -> list[str]:
@@ -421,6 +447,29 @@ class TestInventoryStore:
         store, _ = store_for(done(rc=30, stderr=f"LOCK={REPO_DIR}/.lock\nhost=h\n"))
         with pytest.raises(SnapshotLockTimeoutError):
             store.prune_repo(repo_dir=REPO_DIR, git="/usr/bin/git", targets=[])
+
+    def test_prune_timeout_after_the_results_marker_reports_the_removals(self) -> None:
+        exc = subprocess.TimeoutExpired(
+            "ssh", 5, output=f"REMOVED {SHA}\nRESULTS_DONE\n".encode()
+        )
+        shell = StubShell(done())
+        shell.error = exc
+        raw = RemoteSnapshotStore(shell, snapshot_root=ROOT, mounts=[])
+        res = InventoryStore(raw).prune_repo(
+            repo_dir=REPO_DIR, git="/usr/bin/git", targets=[PruneTarget(SHA, fp(), ())]
+        )
+        assert res.removed == (SHA,) and res.sweep_incomplete is True
+
+    def test_prune_timeout_before_the_results_marker_is_an_error(self) -> None:
+        shell = StubShell(done())
+        shell.error = subprocess.TimeoutExpired("ssh", 5, output=b"partial")
+        raw = RemoteSnapshotStore(shell, snapshot_root=ROOT, mounts=[])
+        with pytest.raises(SnapshotRemoteError, match="timed out"):
+            InventoryStore(raw).prune_repo(
+                repo_dir=REPO_DIR,
+                git="/usr/bin/git",
+                targets=[PruneTarget(SHA, fp(), ())],
+            )
 
     def test_prune_repo_without_end_is_an_error(self) -> None:
         store, _ = store_for(done(f"REMOVED {SHA}\n"))

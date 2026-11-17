@@ -34,7 +34,7 @@ from srunx.snapshot.job_states import (
 )
 from srunx.snapshot.lease import Lease
 from srunx.snapshot.prune import referencing_jobs
-from srunx.snapshot.remote import ProbeResult, RemoteSnapshotStore
+from srunx.snapshot.remote import ProbeResult, RemoteShell, RemoteSnapshotStore
 from tests.integration._local_shell import REAL_RUN, LocalShell
 
 REPO_ID = "proj-0123456789ab"
@@ -144,7 +144,7 @@ class Remote:
 
     # -- stores
     def store(
-        self, *, lock_wait: int = 10, shell: LocalShell | None = None
+        self, *, lock_wait: int = 10, shell: RemoteShell | None = None
     ) -> RemoteSnapshotStore:
         return RemoteSnapshotStore(
             shell or self.shell,
@@ -154,7 +154,7 @@ class Remote:
         )
 
     def inv_store(
-        self, *, lock_wait: int = 10, shell: LocalShell | None = None
+        self, *, lock_wait: int = 10, shell: RemoteShell | None = None
     ) -> InventoryStore:
         return InventoryStore(self.store(lock_wait=lock_wait, shell=shell))
 
@@ -189,10 +189,14 @@ class Remote:
         return self.targets_of(self.repo_inv(), *shas)
 
     def prune(
-        self, targets: list[PruneTarget], *, store: InventoryStore | None = None
+        self,
+        targets: list[PruneTarget],
+        *,
+        store: InventoryStore | None = None,
+        git: str | None = None,
     ) -> PruneRepoResult:
         return (store or self.inv_store()).prune_repo(
-            repo_dir=str(self.repo), git=self.git, targets=targets
+            repo_dir=str(self.repo), git=git or self.git, targets=targets
         )
 
     # -- poking
@@ -262,6 +266,27 @@ def _shim(directory: Path, name: str, body: str) -> None:
     path.chmod(0o755)
 
 
+class _Recorder:
+    """Wraps a shell and keeps the stdout of the last script."""
+
+    def __init__(self, inner: LocalShell) -> None:
+        self.inner = inner
+        self.stdout = ""
+
+    def run_script(
+        self, script: str, *, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        proc = self.inner.run_script(script, timeout=timeout)
+        self.stdout = proc.stdout
+        return proc
+
+    def ssh_command(self) -> list[str]:
+        return self.inner.ssh_command()
+
+    def remote_spec(self, path: str) -> str:
+        return self.inner.remote_spec(path)
+
+
 def _shim_shell(directory: Path) -> LocalShell:
     return LocalShell(f"{directory}{os.pathsep}{os.environ['PATH']}")
 
@@ -314,6 +339,12 @@ class TestInventoryScript:
         (leases / f"{'3' * 32}.json").write_text("")
         (leases / f"{'4' * 32}.json").write_text("x" * 5000 + "\n")
         (leases / f"{'5' * 32}.json").mkdir()
+        # hidden and oddly named entries are leases too (unreadable ones)
+        (leases / ".hidden").write_text("garbage\n")
+        (leases / "notes.txt").write_text("x\n")
+        (leases / f".{'6' * 32}.json").write_text(
+            rem.add_lease(sha1).to_json() + "\n"
+        )  # a hidden file that names sha1
         (rem.repo / ".lock").mkdir()
         trash = rem.repo / "trees" / f".trash.{sha1}.{TRASH_TOKEN}"
         trash.mkdir()
@@ -339,7 +370,9 @@ class TestInventoryScript:
         g = by[ghost]
         assert (g.has_tree, g.has_marker, g.intact) == (False, False, False)
         assert g.fp_lease_ids == frozenset({ghost_lease.lease_id})
-        assert by[sha1].fp_lease_ids == frozenset()
+        assert (
+            by[sha1].fp_lease_ids is None
+        )  # the hidden file naming it cannot be attributed
         inc = by[odd["incomplete"]]
         assert (inc.has_tree, inc.has_marker, inc.intact) == (True, False, False)
         mo = by[odd["marker_only"]]
@@ -354,6 +387,8 @@ class TestInventoryScript:
         for ident in "12345":
             bad = records[f"{ident * 32}.json"]
             assert bad.lease is None and bad.error, ident
+        for name in (".hidden", "notes.txt", f".{'6' * 32}.json"):
+            assert records[name].lease is None and records[name].error, name
 
     def test_skipped_repos_other_repos_and_no_side_effects(self, rem: Remote) -> None:
         (rem.repo / "leases").chmod(0o770)  # writable by group: skipped
@@ -363,6 +398,12 @@ class TestInventoryScript:
         moved = rem.root.parent / "moved-trees"
         moved.mkdir()
         (symlinked / "trees").symlink_to(moved)
+        gitlink = rem.root / "gitlink-0123456789ab"  # repo.git points elsewhere
+        (gitlink / "trees").mkdir(parents=True, mode=0o700)
+        (gitlink / "leases").mkdir(mode=0o700)
+        foreign = rem.root.parent / "foreign.git"
+        foreign.mkdir()
+        (gitlink / "repo.git").symlink_to(foreign)
         fine = rem.root / "other-0123456789ab"
         for sub in ("repo.git", "trees", "leases"):
             (fine / sub).mkdir(parents=True, mode=0o700)
@@ -375,6 +416,8 @@ class TestInventoryScript:
         assert "writable" in (by[REPO_ID].skipped or "")
         assert by[REPO_ID].snapshots == () and by[REPO_ID].leases == ()
         assert "symlink" in (by["linked-0123456789ab"].skipped or "")
+        assert "repo.git" in (by["gitlink-0123456789ab"].skipped or "")
+        assert by["gitlink-0123456789ab"].snapshots == ()
         assert by["other-0123456789ab"].skipped is None
 
     def test_group_writable_root_fails_the_inventory(self, rem: Remote) -> None:
@@ -445,6 +488,9 @@ class TestPruneScript:
         res = rem.prune(targets[1:], store=rem.inv_store(shell=_shim_shell(shim)))
         assert res.failed == ((sha2, "rename"),) and res.removed == ()
         assert rem.tree(sha2).is_dir() and not (rem.repo / ".lock").exists()
+        # nothing was touched: marker kept, tree still read-only, ref kept
+        assert rem.marker(sha2).exists() and rem.has_ref(sha2)
+        assert rem.tree(sha2).stat().st_mode & 0o222 == 0
 
         res = rem.prune(targets[:1])
 
@@ -506,6 +552,74 @@ class TestPruneScript:
         assert not (rem.repo / "trees" / odd["linked"]).is_symlink()
         assert (outside / "keep").read_text() == "keep"  # the link was not followed
 
+    def test_symlinked_repo_git_under_the_lock_fails_every_target(
+        self, rem: Remote
+    ) -> None:
+        sha0, sha1, _ = rem.shas
+        targets = rem.targets(sha0, sha1)
+        other = rem.root.parent / "other.git"
+        shutil.copytree(rem.repo / "repo.git", other, symlinks=True)
+        shutil.rmtree(rem.repo / "repo.git")
+        (rem.repo / "repo.git").symlink_to(other)  # now outside the store
+
+        res = rem.prune(targets)
+
+        assert res.removed == () and res.changed == ()
+        assert sorted(res.failed) == sorted([(sha0, "repo-git"), (sha1, "repo-git")])
+        for sha in (sha0, sha1):
+            assert rem.tree(sha).is_dir() and rem.marker(sha).exists()
+        refs = REAL_RUN(
+            ["git", "--git-dir", str(other), "for-each-ref", "refs/srunx/snapshots"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert sha0 in refs and sha1 in refs  # the foreign repository is untouched
+        assert not (rem.repo / ".lock").exists()
+
+    def test_each_failing_removal_step_is_reported_and_stops_that_sha(
+        self, rem: Remote, tmp_path: Path
+    ) -> None:
+        sha0, sha1, sha2 = rem.shas
+        l0 = rem.add_lease(sha0, bound=True)
+        l1 = rem.add_lease(sha1, bound=True, job_id=6)
+        l2 = rem.add_lease(sha2, bound=True, job_id=7)
+        targets = rem.targets(sha0, sha1, sha2)
+        shim = tmp_path / "shim"
+        real_rm = shutil.which("rm")
+        real_git = shutil.which("git")
+        _shim(
+            shim,
+            "rm",
+            f'case "$*" in *{sha0}.complete*|*{l2.lease_id}.json*) exit 1 ;; esac\n'
+            f'exec {real_rm} "$@"\n',
+        )
+        _shim(
+            shim,
+            "git",
+            f'case "$*" in *update-ref*{sha1}*) exit 1 ;; esac\nexec {real_git} "$@"\n',
+        )
+
+        res = rem.prune(
+            targets,
+            store=rem.inv_store(shell=_shim_shell(shim)),
+            git=str(shim / "git"),
+        )
+
+        assert sorted(res.failed) == sorted(
+            [(sha0, "marker"), (sha1, "update-ref"), (sha2, "lease")]
+        )
+        assert res.removed == ()
+        # sha0: stopped at the marker, so its ref and lease are still there
+        assert rem.marker(sha0).exists() and rem.has_ref(sha0)
+        assert rem.lease_file(l0).exists()
+        # sha1: stopped at update-ref, so its lease is still there
+        assert rem.has_ref(sha1) and rem.lease_file(l1).exists()
+        assert not rem.marker(sha1).exists()
+        # sha2: everything but the lease file went
+        assert not rem.has_ref(sha2) and rem.lease_file(l2).exists()
+        assert not (rem.repo / ".lock").exists()
+
     def test_held_lock_times_out_and_the_lock_survives(self, rem: Remote) -> None:
         sha = rem.shas[0]
         lock = rem.repo / ".lock"
@@ -538,9 +652,17 @@ class TestPruneScript:
         plain_file = trees / ".trash"
         plain_file.write_text("x")
 
-        res = rem.prune([])
+        recorder = _Recorder(rem.shell)
+        res = rem.prune([], store=InventoryStore(rem.store(shell=recorder)))
 
-        assert res.removed == () and res.trash_left == 0
+        # results are complete (and printed) before the slow sweep starts
+        lines = recorder.stdout.splitlines()
+        assert lines.index("RESULTS_DONE") < lines.index("TRASHLEFT 0")
+        assert lines.index("RESULTS_DONE") < next(
+            i for i, ln in enumerate(lines) if ln.startswith("TRASHSKIP")
+        )
+        assert lines[-1] == "END"
+        assert res.removed == () and res.trash_left == 0 and not res.sweep_incomplete
         assert not real.exists()
         assert bad_name.is_dir() and link.is_symlink() and regular.is_file()
         assert plain_file.is_file() and (outside / "keep").read_text() == "keep"

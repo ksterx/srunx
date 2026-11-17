@@ -300,6 +300,15 @@ def execute_plan(
                 markup=False,
                 highlight=False,
             )
+        if result.sweep_incomplete:
+            err.print(
+                f"warning: {name}: the removals above are complete but the trash "
+                "cleanup did not finish; the next prune finishes it",
+                style="yellow",
+                markup=False,
+                highlight=False,
+            )
+            rc = 1
         if result.trash_left:
             err.print(
                 f"warning: {name}: {result.trash_left} trash director(y/ies) could "
