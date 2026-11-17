@@ -153,7 +153,6 @@ def _job_json(job: JobState | None) -> dict[str, Any] | None:
         "kind": job.kind,
         "state": job.state,
         "ended_at": job.ended_at,
-        "submitted_at": job.submitted_at,
         "cluster": job.cluster,
         "source": job.source,
     }

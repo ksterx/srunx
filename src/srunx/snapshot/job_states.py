@@ -45,7 +45,7 @@ CLUSTER_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 CLUSTER_LOOKUP_TIMEOUT = 10
 
 _NONCE_RE = re.compile(r"[0-9a-f]{8,64}")
-_SACCT_FIELDS = 5
+_SACCT_FIELDS = 4
 _RC_RE = re.compile(r"RC (-?\d+)")
 _MIN_JOB_AGE_RE = re.compile(r"\s*MinJobAge\s*=\s*(\d+)")
 _JOB_STATE_RE = re.compile(r"\bJobState=(\S+)")
@@ -100,23 +100,51 @@ def _split_sections(stdout: str, nonce: str) -> dict[str, tuple[list[str], int |
     return result
 
 
+def _bounded(command: str) -> str:
+    """Run *command* under ``timeout`` when the remote has it (one attempt)."""
+    return (
+        "if command -v timeout >/dev/null 2>&1; "
+        f"then timeout {CLUSTER_LOOKUP_TIMEOUT} {command}; else {command}; fi"
+    )
+
+
 def build_cluster_command(job_id: int, nonce: str) -> str:
-    """The single bind-time ``sacct`` lookup, bounded by ``timeout`` when available."""
+    """Bind-time lookup of a job's cluster: slurmctld first, then accounting.
+
+    ``squeue`` answers from the controller with no accounting lag; ``sacct``
+    is the fallback for a job the controller no longer lists. One attempt for
+    each, no retry, no sleep, each bounded by ``timeout`` when available.
+    """
     if not _NONCE_RE.fullmatch(nonce):
         raise ValueError(f"invalid nonce: {nonce!r}")
     jid = int(job_id)
-    sacct = f"sacct -n -P -X -j {jid} -o Cluster"
-    command = (
-        "if command -v timeout >/dev/null 2>&1; "
-        f"then timeout {CLUSTER_LOOKUP_TIMEOUT} {sacct}; else {sacct}; fi"
+    return "; ".join(
+        (
+            _section(nonce, "CLUSTERQ", _bounded(f"squeue -h -j {jid} -O Cluster")),
+            _section(
+                nonce, "CLUSTERA", _bounded(f"sacct -n -P -X -j {jid} -o Cluster")
+            ),
+        )
     )
-    return _section(nonce, "CLUSTER", command)
+
+
+def _single_cluster_name(
+    sections: dict[str, tuple[list[str], int | None]], name: str
+) -> str | None:
+    body, rc = sections.get(name, ([], None))
+    if rc != 0:
+        return None
+    names = {ln.strip() for ln in body if ln.strip()}
+    if len(names) != 1:
+        return None
+    (only,) = names
+    return only if CLUSTER_NAME_RE.fullmatch(only) else None
 
 
 def query_job_cluster(job_id: int, execute: SlurmExecute | None) -> str | None:
     """Return the cluster name of *job_id*, or None when it cannot be learned.
 
-    One attempt, no retry. Never raises.
+    Asks slurmctld, then accounting; a single attempt each. Never raises.
     """
     if execute is None:
         return None
@@ -128,14 +156,10 @@ def query_job_cluster(job_id: int, execute: SlurmExecute | None) -> str | None:
         return None
     if code != 0:
         return None
-    body, rc = _split_sections(stdout, nonce).get("CLUSTER", ([], None))
-    if rc != 0:
-        return None
-    names = {ln.strip() for ln in body if ln.strip()}
-    if len(names) != 1:
-        return None
-    name = names.pop()
-    return name if CLUSTER_NAME_RE.fullmatch(name) else None
+    sections = _split_sections(stdout, nonce)
+    return _single_cluster_name(sections, "CLUSTERQ") or _single_cluster_name(
+        sections, "CLUSTERA"
+    )
 
 
 @dataclass(frozen=True)
@@ -153,7 +177,6 @@ class JobState:
     kind: Literal["active", "terminal", "unknown"]
     state: str | None  # raw SLURM state when known
     ended_at: int | None  # epoch; terminal only
-    submitted_at: int | None  # earliest sacct Submit when every row's is an epoch
     cluster: str | None  # Cluster of its sacct rows; None when they disagree
     source: Literal["squeue", "sacct", "scontrol"] | None
     detail: str
@@ -169,7 +192,7 @@ class JobStateReport:
 
 
 def _unknown(job_id: int, detail: str) -> JobState:
-    return JobState(job_id, "unknown", None, None, None, None, None, detail)
+    return JobState(job_id, "unknown", None, None, None, None, detail)
 
 
 def _failed_report(
@@ -211,7 +234,7 @@ def build_queue_command(job_ids: Sequence[int], nonce: str) -> str:
                 f"SACCT{k}",
                 "SLURM_TIME_FORMAT=%s sacct -n -P -X "
                 f"-j {','.join(str(i) for i in chunk)} "
-                "--format=JobID,State,Submit,End,Cluster",
+                "--format=JobID,State,End,Cluster",
             )
         )
     parts.append(_section(nonce, "CONFIG", "scontrol show config"))
@@ -255,16 +278,10 @@ def _sacct_state(raw: str) -> str:
 
 
 def _judge_sacct(job_id: int, rows: Sequence[Sequence[str]]) -> JobState:
-    """*rows* are ``[JobID, State, Submit, End, Cluster]`` for one job id."""
+    """*rows* are ``[JobID, State, End, Cluster]`` for one job id."""
     states = [_sacct_state(r[1]) for r in rows]
-    submits = [r[2] for r in rows]
-    ends = [r[3] for r in rows]
-    clusters = {r[4] for r in rows}
-    submitted_at = (
-        min(int(x) for x in submits)
-        if all(_DIGITS_RE.fullmatch(x) for x in submits)
-        else None
-    )
+    ends = [r[2] for r in rows]
+    clusters = {r[3] for r in rows}
     cluster = None
     if len(clusters) == 1:
         (only,) = clusters
@@ -279,7 +296,6 @@ def _judge_sacct(job_id: int, rows: Sequence[Sequence[str]]) -> JobState:
             "active",
             live[0],
             None,
-            submitted_at,
             cluster,
             "sacct",
             "non-terminal state in accounting",
@@ -295,7 +311,6 @@ def _judge_sacct(job_id: int, rows: Sequence[Sequence[str]]) -> JobState:
         "terminal",
         state,
         ended_at,
-        submitted_at,
         cluster,
         "sacct",
         "terminal in accounting and absent from the queue",
@@ -345,7 +360,6 @@ def parse_queue_output(
                 jid,
                 "active",
                 live[0] if live else matching[0].state,
-                None,
                 None,
                 None,
                 "squeue",
@@ -412,7 +426,6 @@ def parse_scontrol_output(
                 jid,
                 "active",
                 state,
-                None,
                 None,
                 None,
                 "scontrol",

@@ -15,7 +15,6 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Literal
 
 from srunx.snapshot.errors import SnapshotValidationError
@@ -31,7 +30,6 @@ from srunx.snapshot.job_states import JobState, JobStateReport, QueueRow
 MIN_OLDER_THAN = 3600
 MIN_JOB_AGE_MARGIN = 600
 UNLEASED_MIN_AGE = 7 * 86400
-CORRELATION_WINDOW = 600  # seconds, inclusive, either side
 DEFAULT_OLDER_THAN = "7d"
 
 _DURATION_RE = re.compile(r"([1-9][0-9]*)([dhm])")
@@ -93,6 +91,7 @@ LeaseReason = Literal[
     "provisional",
     "other-cluster",
     "unverifiable",
+    "cluster-unknown",
     "mtime-unknown",
     "clock-unknown",
     "invalid",
@@ -173,32 +172,6 @@ def referencing_jobs(
     )
 
 
-def _parse_utc(text: str | None) -> int | None:
-    if not text:
-        return None
-    try:
-        return int(
-            datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
-            .replace(tzinfo=UTC)
-            .timestamp()
-        )
-    except ValueError:
-        return None
-
-
-def lease_reference_time(record: LeaseRecord) -> int | None:
-    """Lease file mtime (the cluster's clock), else ``bound_at``, else ``created_at``."""
-    if record.mtime is not None:
-        return record.mtime
-    if record.lease is None:
-        return None
-    for text in (record.lease.bound_at, record.lease.created_at):
-        parsed = _parse_utc(text)
-        if parsed is not None:
-            return parsed
-    return None
-
-
 def lease_verifiable(
     record: LeaseRecord, job: JobState
 ) -> tuple[bool, LeaseReason | None, str]:
@@ -220,14 +193,9 @@ def lease_verifiable(
             "unverifiable",
             "lease cannot be verified against this cluster",
         )
-    reference = lease_reference_time(record)
-    if (
-        job.submitted_at is not None
-        and reference is not None
-        and abs(job.submitted_at - reference) <= CORRELATION_WINDOW
-    ):
-        return True, None, ""
-    return False, "unverifiable", "lease cannot be verified against this cluster"
+    # No recorded cluster: nothing ties the job id to this lease, and a job id
+    # alone is not an identity. No time- or profile-based guess is made.
+    return False, "cluster-unknown", "lease cluster unknown"
 
 
 def _lease_verdict(

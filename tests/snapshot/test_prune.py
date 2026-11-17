@@ -21,7 +21,6 @@ from srunx.snapshot.prune import (
     check_min_job_age,
     decide,
     job_ids_to_query,
-    lease_reference_time,
     lease_verifiable,
     needs_scheduler,
     parse_duration,
@@ -133,14 +132,12 @@ def terminal(
     *,
     ended_ago: int | None = 5 * DAY,
     cluster: str | None = "clusterA",
-    submitted_at: int | None = None,
 ) -> JobState:
     return JobState(
         job_id,
         "terminal",
         "COMPLETED",
         None if ended_ago is None else NOW - ended_ago,
-        submitted_at,
         cluster,
         "sacct",
         "",
@@ -148,11 +145,11 @@ def terminal(
 
 
 def active(job_id: int = 100, state: str = "RUNNING") -> JobState:
-    return JobState(job_id, "active", state, None, None, None, "squeue", "")
+    return JobState(job_id, "active", state, None, None, "squeue", "")
 
 
 def unknown(job_id: int = 100) -> JobState:
-    return JobState(job_id, "unknown", None, None, None, None, None, "")
+    return JobState(job_id, "unknown", None, None, None, None, "")
 
 
 def report(
@@ -398,81 +395,64 @@ class TestClusterAttribution:
 
     def test_cluster_ignores_submit_time_when_set(self) -> None:
         rec = lrec(make_lease(cluster="clusterA"))
-        job = terminal(cluster="clusterB", submitted_at=NOW - 5 * DAY)
+        job = terminal(cluster="clusterB")
         assert lease_verifiable(rec, job)[0] is False
 
 
-# -------------------------------------------------------------- correlation
+# ------------------------------------------------------------ null cluster
 
 
-class TestCorrelation:
-    def _verify(
-        self,
-        submitted_at: int | None,
-        *,
-        mtime: int | None = NOW - 5 * DAY,
-        lease: Lease | None = None,
-    ):
-        lease = lease or make_lease(cluster=None)
-        return lease_verifiable(
-            lrec(lease, mtime=mtime),
-            terminal(cluster="clusterA", submitted_at=submitted_at),
-        )
+class TestNullCluster:
+    """A lease with no recorded cluster is never verifiable (no time or profile guess)."""
 
-    def test_correlation_inside_window_is_verifiable(self) -> None:
-        assert self._verify(NOW - 5 * DAY + 30)[0] is True
+    def test_null_cluster_lease_is_kept_whatever_the_job_says(self) -> None:
+        lease = make_lease(cluster=None)
+        for cluster in ("clusterA", "clusterB", None):
+            v = bound_case(
+                lease=lease, job=terminal(ended_ago=30 * DAY, cluster=cluster)
+            )
+            assert not v.remove
+            assert v.leases[0].reason == "cluster-unknown"
+            assert v.leases[0].message == "lease cluster unknown"
+            assert v.message == "lease cluster unknown"
 
-    def test_correlation_exactly_600_seconds_is_inside_either_side(self) -> None:
-        ref = NOW - 5 * DAY
-        assert self._verify(ref + 600)[0] is True
-        assert self._verify(ref - 600)[0] is True
-
-    def test_correlation_outside_window_keeps(self) -> None:
-        ref = NOW - 5 * DAY
-        for s in (ref + 601, ref - 601):
-            ok, reason, _ = self._verify(s)
-            assert (ok, reason) == (False, "unverifiable")
-
-    def test_correlation_missing_submit_keeps(self) -> None:
-        assert self._verify(None)[0] is False
-
-    def test_correlation_never_falls_back_to_the_profile(self) -> None:
+    def test_null_cluster_never_falls_back_to_the_profile(self) -> None:
         lease = make_lease(cluster=None, profile="current")
         assert lease.scheduler_key == "ssh:current"
-        v = bound_case(
-            lease=lease, job=terminal(cluster="clusterA", submitted_at=NOW - 20 * DAY)
+        v = bound_case(lease=lease, job=terminal(cluster="clusterA"))
+        assert not v.remove and v.leases[0].reason == "cluster-unknown"
+
+    def test_null_cluster_verifiable_helper_says_no(self) -> None:
+        rec = lrec(make_lease(cluster=None))
+        ok, reason, message = lease_verifiable(rec, terminal(cluster="clusterA"))
+        assert (ok, reason, message) == (
+            False,
+            "cluster-unknown",
+            "lease cluster unknown",
         )
-        assert not v.remove and v.leases[0].reason == "unverifiable"
 
-    def test_correlation_removes_when_inside_window_through_decide(self) -> None:
-        lease = make_lease(cluster=None)
-        v = bound_case(
-            lease=lease, job=terminal(cluster=None, submitted_at=NOW - 5 * DAY - 10)
-        )
-        assert v.remove
-
-    def test_correlation_reference_time_prefers_mtime(self) -> None:
-        rec = lrec(make_lease(), mtime=1234)
-        assert lease_reference_time(rec) == 1234
-
-    def test_correlation_reference_time_falls_back_to_bound_at_then_created_at(
+    def test_null_cluster_active_job_still_reports_the_job_not_the_cluster(
         self,
     ) -> None:
-        lease = make_lease(bound_at="2026-01-01T00:00:10Z")
-        assert lease_reference_time(lrec(lease, mtime=None)) == 1767225610
-        lease = make_lease(bound_at=None, created_at="2026-01-01T00:00:00Z")
-        assert lease_reference_time(lrec(lease, mtime=None)) == 1767225600
-        lease = make_lease(bound_at="garbage", created_at="2026-01-01T00:00:00Z")
-        assert lease_reference_time(lrec(lease, mtime=None)) == 1767225600
+        v = bound_case(lease=make_lease(cluster=None), job=active())
+        assert v.leases[0].reason == "job-active"
 
-    def test_correlation_reference_time_none_when_unusable(self) -> None:
-        lease = make_lease(bound_at=None, created_at="garbage")
-        assert lease_reference_time(lrec(lease, mtime=None)) is None
-        assert lease_reference_time(lrec(None, mtime=None)) is None
-        ok, reason, _ = lease_verifiable(
-            lrec(lease, mtime=None), terminal(cluster=None, submitted_at=5)
+    def test_null_cluster_does_not_block_other_leases_from_being_judged(self) -> None:
+        a = make_lease(1, job_id=100, cluster="clusterA")
+        b = make_lease(2, job_id=101, cluster=None)
+        plan = decide(
+            inv(
+                repo(
+                    [snap(lease_ids=(a.lease_id, b.lease_id))],
+                    [lrec(a, n=1), lrec(b, n=2)],
+                )
+            ),
+            report(terminal(100), terminal(101)),
+            POLICY,
         )
-        assert (ok, reason) == (False, "unverifiable")
+        (v,) = plan.verdicts
+        assert not v.remove and v.reason == "live-lease"
+        assert [lv.reason for lv in v.leases] == ["job-finished", "cluster-unknown"]
 
 
 # --------------------------------------------------------------- referenced

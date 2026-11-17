@@ -579,8 +579,8 @@ case " $* " in
   *" -j "*) ;;
   *) echo "unexpected args: $*" >&2; exit 6 ;;
 esac
-echo "10|COMPLETED|1000|1500|clusterA"
-echo "11|FAILED|1000|1600|clusterA"
+echo "10|COMPLETED|1500|clusterA"
+echo "11|FAILED|1600|clusterA"
 """
 
 _SCONTROL_SHIM = r"""case "$*" in
@@ -730,7 +730,32 @@ class TestSchedulerCommands:
         _shim(bin_, "timeout", f'echo "$*" >> {log}\nshift\nexec "$@"\n')
         _shim(bin_, "sacct", 'echo "clusterA"\n')
         assert query_job_cluster(5, _executor(bin_, tools)) == "clusterA"
-        assert log.read_text().startswith("10 sacct ")
+        lines = log.read_text().splitlines()
+        # slurmctld first (not installed here), then accounting; both bounded
+        assert [ln.split()[:2] for ln in lines] == [["10", "squeue"], ["10", "sacct"]]
+
+    def test_cluster_lookup_prefers_slurmctld_over_accounting(
+        self, tmp_path: Path, tools: Path
+    ) -> None:
+        bin_ = tmp_path / "bin"
+        _shim(
+            bin_,
+            "squeue",
+            'case "$*" in *"-O Cluster"*) printf "clusterA            \\n" ;; *) exit 9 ;; esac\n',
+        )
+        _shim(bin_, "sacct", 'echo "fromaccounting"\n')
+        assert query_job_cluster(5, _executor(bin_, tools)) == "clusterA"
+
+    def test_cluster_lookup_falls_back_to_accounting_when_squeue_is_absent_or_empty(
+        self, tmp_path: Path, tools: Path
+    ) -> None:
+        only_sacct = tmp_path / "bin1"
+        _shim(only_sacct, "sacct", 'echo "clusterB"\n')
+        assert query_job_cluster(5, _executor(only_sacct, tools)) == "clusterB"
+        empty_squeue = tmp_path / "bin2"
+        _shim(empty_squeue, "squeue", "exit 0\n")
+        _shim(empty_squeue, "sacct", 'echo "clusterB"\n')
+        assert query_job_cluster(5, _executor(empty_squeue, tools)) == "clusterB"
 
     def test_cluster_lookup_with_timeout_absent(
         self, tmp_path: Path, tools: Path

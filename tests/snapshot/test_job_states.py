@@ -21,59 +21,90 @@ from srunx.snapshot.job_states import (
 
 
 def _nonce(cmd: str) -> str:
-    m = re.search(r"__SRUNX_([0-9a-f]+)_CLUSTER__", cmd)
+    m = re.search(r"__SRUNX_([0-9a-f]+)_CLUSTERQ__", cmd)
     assert m
     return m.group(1)
 
 
 class FakeExecute:
-    """Answers the cluster command with *rows* and exit code *rc*."""
+    """Answers the two cluster lookups: slurmctld (squeue) and accounting (sacct)."""
 
     def __init__(
-        self, rows: str = "", rc: int = 0, *, code: int = 0, noise: str = ""
+        self,
+        squeue: str = "",
+        sacct: str = "",
+        *,
+        squeue_rc: int = 0,
+        sacct_rc: int = 0,
+        code: int = 0,
+        noise: str = "",
     ) -> None:
-        self.rows, self.rc, self.code, self.noise = rows, rc, code, noise
+        self.squeue, self.sacct = squeue, sacct
+        self.squeue_rc, self.sacct_rc = squeue_rc, sacct_rc
+        self.code, self.noise = code, noise
         self.commands: list[str] = []
 
     def __call__(self, cmd: str) -> tuple[str, str, int]:
         self.commands.append(cmd)
         n = _nonce(cmd)
-        out = f"{self.noise}__SRUNX_{n}_CLUSTER__\n{self.rows}\nRC {self.rc}\n"
+        out = (
+            f"{self.noise}__SRUNX_{n}_CLUSTERQ__\n{self.squeue}\nRC {self.squeue_rc}\n"
+            f"__SRUNX_{n}_CLUSTERA__\n{self.sacct}\nRC {self.sacct_rc}\n"
+        )
         return out, "", self.code
 
 
-def test_cluster_name_is_returned() -> None:
-    ex = FakeExecute("clusterA\n")
+def test_cluster_name_from_slurmctld_is_returned_and_padding_is_stripped() -> None:
+    ex = FakeExecute("clusterA                \n")
     assert query_job_cluster(5, ex) == "clusterA"
-    assert len(ex.commands) == 1
+    assert len(ex.commands) == 1  # one round trip
+
+
+def test_cluster_slurmctld_answer_wins_over_accounting() -> None:
+    assert query_job_cluster(5, FakeExecute("fromctld\n", "fromacct\n")) == "fromctld"
+
+
+def test_cluster_falls_back_to_accounting_when_slurmctld_has_nothing() -> None:
+    assert query_job_cluster(5, FakeExecute("", "clusterB\n")) == "clusterB"
+
+
+def test_cluster_falls_back_to_accounting_when_squeue_fails() -> None:
+    ex = FakeExecute("clusterA\n", "clusterB\n", squeue_rc=1)
+    assert query_job_cluster(5, ex) == "clusterB"
+
+
+def test_cluster_falls_back_when_slurmctld_names_are_mixed_or_invalid() -> None:
+    assert query_job_cluster(5, FakeExecute("a\nb\n", "c\n")) == "c"
+    assert query_job_cluster(5, FakeExecute("bad name;x\n", "c\n")) == "c"
 
 
 def test_cluster_login_noise_is_ignored() -> None:
     assert query_job_cluster(5, FakeExecute("c1\n", noise="Welcome!\n")) == "c1"
 
 
-def test_cluster_empty_output_is_none() -> None:
-    assert query_job_cluster(5, FakeExecute("")) is None
+def test_cluster_both_empty_is_none() -> None:
+    assert query_job_cluster(5, FakeExecute("", "")) is None
 
 
-def test_cluster_mixed_names_is_none() -> None:
-    assert query_job_cluster(5, FakeExecute("a\nb\n")) is None
+def test_cluster_mixed_names_everywhere_is_none() -> None:
+    assert query_job_cluster(5, FakeExecute("a\nb\n", "c\nd\n")) is None
 
 
 def test_cluster_repeated_same_name_is_accepted() -> None:
     assert query_job_cluster(5, FakeExecute("a\na\n")) == "a"
 
 
-def test_cluster_invalid_name_is_none() -> None:
-    assert query_job_cluster(5, FakeExecute("bad name;rm\n")) is None
+def test_cluster_invalid_names_everywhere_is_none() -> None:
+    assert query_job_cluster(5, FakeExecute("bad name;rm\n", "also bad!\n")) is None
 
 
 def test_cluster_timeout_rc_124_is_none() -> None:
-    assert query_job_cluster(5, FakeExecute("clusterA\n", rc=124)) is None
+    ex = FakeExecute("a\n", "b\n", squeue_rc=124, sacct_rc=124)
+    assert query_job_cluster(5, ex) is None
 
 
-def test_cluster_nonzero_exit_is_none() -> None:
-    assert query_job_cluster(5, FakeExecute("clusterA\n", code=1)) is None
+def test_cluster_nonzero_overall_exit_is_none() -> None:
+    assert query_job_cluster(5, FakeExecute("a\n", "b\n", code=1)) is None
 
 
 def test_cluster_missing_marker_is_none() -> None:
@@ -82,7 +113,7 @@ def test_cluster_missing_marker_is_none() -> None:
 
 def test_cluster_missing_rc_line_is_none() -> None:
     def ex(cmd: str) -> tuple[str, str, int]:
-        return f"__SRUNX_{_nonce(cmd)}_CLUSTER__\nclusterA\n", "", 0
+        return f"__SRUNX_{_nonce(cmd)}_CLUSTERQ__\nclusterA\n", "", 0
 
     assert query_job_cluster(5, ex) is None
 
@@ -98,19 +129,21 @@ def test_cluster_without_runner_is_none() -> None:
     assert query_job_cluster(5, None) is None
 
 
-def test_cluster_command_is_one_bounded_attempt() -> None:
+def test_cluster_command_asks_slurmctld_then_accounting_once_each_bounded() -> None:
     cmd = build_cluster_command(42, "ab" * 8)
+    assert cmd.index("squeue") < cmd.index("sacct")
+    assert "squeue -h -j 42 -O Cluster" in cmd
+    assert "sacct -n -P -X -j 42 -o Cluster" in cmd
     assert "command -v timeout" in cmd
-    assert "timeout 10 sacct" in cmd
-    assert cmd.count("sacct") == 2  # one per branch of the if
-    assert "-j 42" in cmd and "-o Cluster" in cmd
+    assert "timeout 10 squeue" in cmd and "timeout 10 sacct" in cmd
+    assert cmd.count("squeue") == 2 and cmd.count("sacct") == 2  # one per branch
     assert "sleep" not in cmd
     assert "while" not in cmd and "until" not in cmd
 
 
 def test_cluster_command_rejects_bad_nonce() -> None:
     with pytest.raises(ValueError):
-        build_cluster_command(1, "x; rm -rf /")
+        build_cluster_command(1, "x; true")
 
 
 # ----------------------------------------------------------- job state queries
@@ -147,7 +180,7 @@ def round1(
     return out
 
 
-SACCT_DONE = "40070|COMPLETED|1794900000|1794904226|clusterA"
+SACCT_DONE = "40070|COMPLETED|1794904226|clusterA"
 
 
 class FakeCluster:
@@ -208,7 +241,7 @@ class TestCommands:
         for field in ("%F", "%A", "%T", "%Z", "%o"):
             assert field in cmd
         assert "SLURM_TIME_FORMAT=%s sacct" in cmd
-        assert "-j 7" in cmd and "JobID,State,Submit,End,Cluster" in cmd
+        assert "-j 7" in cmd and "JobID,State,End,Cluster" in cmd
         assert "sinfo" not in cmd
         # The separator is produced by the remote shell; no literal \x1f text.
         assert "\\x1f" not in cmd
@@ -368,52 +401,44 @@ class TestSacct:
         rep, unresolved = self._rep(SACCT_DONE)
         st = rep.states[40070]
         assert st.kind == "terminal" and st.state == "COMPLETED"
-        assert st.submitted_at == 1794900000
         assert st.ended_at == 1794904226
         assert st.cluster == "clusterA"
         assert st.source == "sacct"
         assert unresolved == []
 
     def test_non_integer_end_gives_none(self) -> None:
-        rep, _ = self._rep("40070|COMPLETED|1794900000|Unknown|clusterA")
+        rep, _ = self._rep("40070|COMPLETED|Unknown|clusterA")
         assert rep.states[40070].kind == "terminal"
         assert rep.states[40070].ended_at is None
 
-    @pytest.mark.parametrize("submit", ["", "Unknown", "2026-01-01T00:00:00"])
-    def test_missing_or_non_integer_submit_gives_none(self, submit: str) -> None:
-        rep, _ = self._rep(f"40070|COMPLETED|{submit}|1794904226|clusterA")
-        assert rep.states[40070].submitted_at is None
-
     def test_cancelled_by_and_plus_suffix(self) -> None:
-        rows = "1|CANCELLED by 1000|1|2|c\n2|COMPLETED+|1|2|c"
+        rows = "1|CANCELLED by 1000|2|c\n2|COMPLETED+|2|c"
         rep, _ = self._rep(rows, [1, 2])
         assert rep.states[1].kind == "terminal" and rep.states[1].state == "CANCELLED"
         assert rep.states[2].kind == "terminal"
 
     def test_non_terminal_state_is_active(self) -> None:
-        rep, _ = self._rep("40070|REQUEUED|1|Unknown|c")
+        rep, _ = self._rep("40070|REQUEUED|Unknown|c")
         assert rep.states[40070].kind == "active"
         assert rep.states[40070].state == "REQUEUED"
 
     def test_array_with_one_nonterminal_element_is_active(self) -> None:
-        rows = "9_1|COMPLETED|1|2|c\n9_2|RUNNING|1|Unknown|c"
+        rows = "9_1|COMPLETED|2|c\n9_2|RUNNING|Unknown|c"
         rep, _ = self._rep(rows, [9])
         assert rep.states[9].kind == "active"
 
-    def test_array_rows_use_latest_end_and_earliest_submit(self) -> None:
-        rows = "9_1|COMPLETED|10|20|c\n9_2|FAILED|5|30|c"
+    def test_array_rows_use_the_latest_end(self) -> None:
+        rows = "9_1|COMPLETED|20|c\n9_2|FAILED|30|c"
         rep, _ = self._rep(rows, [9])
         st = rep.states[9]
-        assert (st.kind, st.state, st.ended_at, st.submitted_at) == (
-            "terminal", "FAILED", 30, 5,
-        )  # fmt: skip
+        assert (st.kind, st.state, st.ended_at) == ("terminal", "FAILED", 30)
 
     def test_two_cluster_names_give_none(self) -> None:
-        rep, _ = self._rep("9_1|COMPLETED|1|2|a\n9_2|COMPLETED|1|2|b", [9])
+        rep, _ = self._rep("9_1|COMPLETED|2|a\n9_2|COMPLETED|2|b", [9])
         assert rep.states[9].kind == "terminal" and rep.states[9].cluster is None
 
     def test_empty_cluster_gives_none(self) -> None:
-        rep, _ = self._rep("9|COMPLETED|1|2|", [9])
+        rep, _ = self._rep("9|COMPLETED|2|", [9])
         assert rep.states[9].cluster is None
 
     def test_squeue_row_wins_over_sacct(self) -> None:
@@ -438,13 +463,13 @@ class TestSacct:
         assert rep.states[40070].kind == "unknown"
 
     def test_row_without_a_numeric_job_id_is_malformed(self) -> None:
-        rows = SACCT_DONE + "\nx|COMPLETED|1|2|clusterA"
+        rows = SACCT_DONE + "\nx|COMPLETED|2|clusterA"
         rep, _ = self._rep(rows)
         assert rep.states[40070].kind == "unknown"
 
     def test_malformed_row_in_one_chunk_leaves_the_other_chunk_alone(self) -> None:
         ids = list(range(1, SACCT_CHUNK + 2))
-        rows0 = "\n".join(f"{i}|COMPLETED|1|2|c" for i in ids[:SACCT_CHUNK])
+        rows0 = "\n".join(f"{i}|COMPLETED|2|c" for i in ids[:SACCT_CHUNK])
         out = round1("", sacct={0: rows0, 1: "oops"})
         rep, unresolved = parse_queue_output(out, ids, NONCE)
         assert rep.states[1].kind == "terminal"
@@ -455,7 +480,7 @@ class TestSacct:
         assert rep.states[40070].kind == "terminal"
 
     def test_row_with_wrong_field_count_is_ignored_and_unresolved(self) -> None:
-        rep, unresolved = self._rep("40070|COMPLETED|1794904226|clusterA")
+        rep, unresolved = self._rep("40070|COMPLETED|1794904226")
         assert rep.states[40070].kind == "unknown"
         assert unresolved == [40070]
 
@@ -472,8 +497,8 @@ class TestSacct:
 
     def test_chunked_sacct_sections_are_all_read(self) -> None:
         ids = list(range(1, SACCT_CHUNK + 2))
-        rows0 = "\n".join(f"{i}|COMPLETED|1|2|c" for i in ids[:SACCT_CHUNK])
-        rows1 = f"{ids[-1]}|FAILED|1|2|c"
+        rows0 = "\n".join(f"{i}|COMPLETED|2|c" for i in ids[:SACCT_CHUNK])
+        rows1 = f"{ids[-1]}|FAILED|2|c"
         out = round1("", sacct={0: rows0, 1: rows1})
         rep, unresolved = parse_queue_output(out, ids, NONCE)
         assert unresolved == []

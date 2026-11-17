@@ -316,9 +316,16 @@ def _sacct_runner(
     def run(cmd: str) -> tuple[str, str, int]:
         if calls is not None:
             calls.append(cmd)
-        marker = re.search(r"(__SRUNX_[0-9a-f]+_CLUSTER__)", cmd)
+        marker = re.search(r"__SRUNX_([0-9a-f]+)_CLUSTERQ__", cmd)
         assert marker
-        return f"{marker.group(1)}\n{rows}\nRC {rc}\n", "", 0
+        n = marker.group(1)
+        # the controller (squeue) answers; accounting would answer the same
+        return (
+            f"__SRUNX_{n}_CLUSTERQ__\n{rows}\nRC {rc}\n"
+            f"__SRUNX_{n}_CLUSTERA__\n{rows}\nRC {rc}\n",
+            "",
+            0,
+        )
 
     return run
 
