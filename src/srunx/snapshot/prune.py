@@ -30,6 +30,8 @@ from srunx.snapshot.job_states import JobState, JobStateReport, QueueRow
 MIN_OLDER_THAN = 3600
 MIN_JOB_AGE_MARGIN = 600
 UNLEASED_MIN_AGE = 7 * 86400
+# A stalled submission cannot plausibly outlive this, whatever --older-than says.
+UNBOUND_MIN_AGE = 86400
 DEFAULT_OLDER_THAN = "7d"
 
 _DURATION_RE = re.compile(r"([1-9][0-9]*)([dhm])")
@@ -224,7 +226,7 @@ def _lease_verdict(
         if inventory_now is None:
             return LeaseVerdict(record, False, "clock-unknown", "clock unknown", None)
         age = inventory_now - record.mtime
-        if age > policy.older_than:
+        if age > max(policy.older_than, UNBOUND_MIN_AGE):
             return LeaseVerdict(
                 record,
                 True,

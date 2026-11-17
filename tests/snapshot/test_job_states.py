@@ -60,6 +60,12 @@ def test_cluster_name_from_slurmctld_is_returned_and_padding_is_stripped() -> No
     assert len(ex.commands) == 1  # one round trip
 
 
+def test_cluster_long_name_is_returned_whole_and_padding_stripped() -> None:
+    name = "cluster-" + "x" * 32
+    assert len(name) == 40
+    assert query_job_cluster(5, FakeExecute(f"{name}{' ' * 200}\n")) == name
+
+
 def test_cluster_slurmctld_answer_wins_over_accounting() -> None:
     assert query_job_cluster(5, FakeExecute("fromctld\n", "fromacct\n")) == "fromctld"
 
@@ -132,7 +138,7 @@ def test_cluster_without_runner_is_none() -> None:
 def test_cluster_command_asks_slurmctld_then_accounting_once_each_bounded() -> None:
     cmd = build_cluster_command(42, "ab" * 8)
     assert cmd.index("squeue") < cmd.index("sacct")
-    assert "squeue -h -j 42 -O Cluster" in cmd
+    assert "squeue -h -j 42 -O Cluster:256" in cmd
     assert "sacct -n -P -X -j 42 -o Cluster" in cmd
     assert "command -v timeout" in cmd
     assert "timeout 10 squeue" in cmd and "timeout 10 sacct" in cmd

@@ -43,6 +43,8 @@ SACCT_CHUNK = 500
 SQUEUE_SEP = "\x1f"
 CLUSTER_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 CLUSTER_LOOKUP_TIMEOUT = 10
+# squeue -O pads / truncates each field to a width; ask for a generous one.
+CLUSTER_FIELD_WIDTH = 256
 
 _NONCE_RE = re.compile(r"[0-9a-f]{8,64}")
 _SACCT_FIELDS = 4
@@ -120,7 +122,11 @@ def build_cluster_command(job_id: int, nonce: str) -> str:
     jid = int(job_id)
     return "; ".join(
         (
-            _section(nonce, "CLUSTERQ", _bounded(f"squeue -h -j {jid} -O Cluster")),
+            _section(
+                nonce,
+                "CLUSTERQ",
+                _bounded(f"squeue -h -j {jid} -O Cluster:{CLUSTER_FIELD_WIDTH}"),
+            ),
             _section(
                 nonce, "CLUSTERA", _bounded(f"sacct -n -P -X -j {jid} -o Cluster")
             ),

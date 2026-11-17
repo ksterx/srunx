@@ -293,6 +293,24 @@ class TestLeaseReasons:
             )
             assert v.remove and v.leases[0].reason == "unbound-expired"
 
+    def test_unbound_needs_at_least_24h_whatever_older_than_says(self) -> None:
+        policy = PrunePolicy(HOUR, include_unbound=True)
+        young = bound_case(
+            lease=make_lease(state="provisional"), mtime=NOW - 23 * HOUR, policy=policy
+        )
+        assert not young.remove and young.leases[0].reason == "provisional"
+        old = bound_case(
+            lease=make_lease(state="provisional"), mtime=NOW - 25 * HOUR, policy=policy
+        )
+        assert old.remove and old.leases[0].reason == "unbound-expired"
+
+    def test_unbound_longer_older_than_still_wins_over_the_24h_floor(self) -> None:
+        policy = PrunePolicy(3 * DAY, include_unbound=True)
+        v = bound_case(
+            lease=make_lease(state="provisional"), mtime=NOW - 2 * DAY, policy=policy
+        )
+        assert not v.remove
+
     def test_unbound_inside_window_keeps_even_with_flag(self) -> None:
         policy = PrunePolicy(2 * HOUR, include_unbound=True)
         v = bound_case(
