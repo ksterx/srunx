@@ -23,8 +23,9 @@ import socket
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import IntEnum
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypedDict
 
 from loguru import logger
 
@@ -49,6 +50,25 @@ _HEX32_RE = re.compile(r"[0-9a-f]{32}")
 _REPO_DIR_RE = re.compile(r"/[A-Za-z0-9._/+-]+")
 
 
+class RemoteExit(IntEnum):
+    """Exit codes of the generated remote scripts (substituted into the templates)."""
+
+    GIT_MISSING = 20
+    GIT_TOO_OLD = 21
+    ROOT_INVALID = 22
+    ROOT_OVERLAP = 23
+    REPO_INIT = 24
+    COMMIT_MISSING = 26
+    WORKTREE_ADD = 27
+    CHMOD = 28
+    MARKER = 29
+    LOCK_TIMEOUT = 30
+    LEASE_WRITE = 31
+
+
+_PLACEHOLDER_RE = re.compile(r"@[A-Z][A-Z_]*@")
+
+
 def _check(pattern: str | re.Pattern[str], value: str, what: str) -> str:
     if not re.fullmatch(pattern, value):
         raise ValueError(f"invalid {what}: {value!r}")
@@ -62,7 +82,18 @@ def _check_snapshot_root(value: str) -> str:
 
 
 def _fill(template: str, **values: str) -> str:
-    for key, val in values.items():
+    """Substitute ``@KEY@`` placeholders; ``@EXIT_*@`` come from :class:`RemoteExit`.
+
+    Raises ``ValueError`` when the template has a placeholder nobody supplied,
+    so a typo can never reach a remote shell as a literal ``@NAME@``.
+    """
+    all_values = {f"EXIT_{e.name}": str(int(e)) for e in RemoteExit} | values
+    unknown = sorted(
+        set(_PLACEHOLDER_RE.findall(template)) - {f"@{k}@" for k in all_values}
+    )
+    if unknown:
+        raise ValueError(f"unfilled template placeholders: {', '.join(unknown)}")
+    for key, val in all_values.items():
         template = template.replace(f"@{key}@", val)
     return template
 
@@ -121,6 +152,12 @@ def _mount_expr(mount: str) -> str:
     return shlex.quote(mount)
 
 
+class LockOwner(TypedDict):
+    client_host: str
+    client_pid: int
+    token: str
+
+
 def _owner_args(client_host: str, client_pid: int, token: str) -> tuple[str, str, str]:
     _check(_HEX32_RE, token, "lock token")
     host = "".join(c for c in client_host if c.isprintable()) or "unknown"
@@ -147,14 +184,14 @@ trap 'exit 143' TERM
 acquire() {
   if [ ! -d "${LOCKDIR%/*}" ]; then
     echo "directory for lock does not exist: ${LOCKDIR%/*}" >&2
-    exit 22
+    exit @EXIT_ROOT_INVALID@
   fi
   waited=0
   until mkdir "$LOCKDIR" 2>/dev/null; do
     if [ "$waited" -ge @WAIT@ ]; then
       echo "LOCK=$LOCKDIR" >&2
       if [ -f "$LOCKDIR/owner" ]; then cat "$LOCKDIR/owner" >&2; else echo "owner file missing" >&2; fi
-      exit 30
+      exit @EXIT_LOCK_TIMEOUT@
     fi
     sleep 1
     waited=$((waited + 1))
@@ -186,27 +223,27 @@ _WRITE_LEASE = r"""write_lease() {
   TARGET=$LEASES/$LEASE_ID.json
   if [ -L "$LEASES" ] || [ ! -d "$LEASES" ] || [ ! -O "$LEASES" ]; then
     echo "leases directory is missing, a symlink, or not owned by us: $LEASES" >&2
-    exit 31
+    exit @EXIT_LEASE_WRITE@
   fi
   if [ -L "$TARGET" ] || [ -d "$TARGET" ]; then
     echo "refusing to overwrite lease target: $TARGET" >&2
-    exit 31
+    exit @EXIT_LEASE_WRITE@
   fi
   umask 077
   TMP=$LEASES/.tmp.$LEASE_ID.$$
   if ! printf '%s\n' "$LEASE_JSON" > "$TMP"; then
     rm -f "$TMP"
     echo "cannot write lease" >&2
-    exit 31
+    exit @EXIT_LEASE_WRITE@
   fi
   if ! mv -f "$TMP" "$TARGET"; then
     rm -f "$TMP"
     echo "cannot move lease into place" >&2
-    exit 31
+    exit @EXIT_LEASE_WRITE@
   fi
   if [ ! -f "$TARGET" ] || [ -L "$TARGET" ]; then
     echo "lease is not a regular file after write: $TARGET" >&2
-    exit 31
+    exit @EXIT_LEASE_WRITE@
   fi
 }
 """
@@ -253,7 +290,7 @@ check_mounts() {
 GIT=$(command -v git 2>/dev/null || true)
 case $GIT in
   /*) ;;
-  *) echo "git was not found on the remote PATH" >&2; exit 20 ;;
+  *) echo "git was not found on the remote PATH" >&2; exit @EXIT_GIT_MISSING@ ;;
 esac
 gv_line=$("$GIT" --version 2>/dev/null || true)
 GITVER=${gv_line#git version }
@@ -262,26 +299,26 @@ gv_major=${GITVER%%.*}
 gv_rest=${GITVER#*.}
 gv_minor=${gv_rest%%.*}
 case "$gv_major$gv_minor" in
-  ''|*[!0-9]*) echo "cannot parse remote git version: $gv_line" >&2; exit 21 ;;
+  ''|*[!0-9]*) echo "cannot parse remote git version: $gv_line" >&2; exit @EXIT_GIT_TOO_OLD@ ;;
 esac
 if [ "$gv_major" -lt @MIN_MAJOR@ ] || { [ "$gv_major" -eq @MIN_MAJOR@ ] && [ "$gv_minor" -lt @MIN_MINOR@ ]; }; then
   echo "remote git $GITVER is older than @MIN_MAJOR@.@MIN_MINOR@" >&2
-  exit 21
+  exit @EXIT_GIT_TOO_OLD@
 fi
 ROOT_IN=@ROOT_EXPR@
-resolve_path "$ROOT_IN" || { echo "snapshot root cannot be resolved: $ROOT_IN" >&2; exit 22; }
+resolve_path "$ROOT_IN" || { echo "snapshot root cannot be resolved: $ROOT_IN" >&2; exit @EXIT_ROOT_INVALID@; }
 ROOT=$RESOLVED
-check_mounts || exit 23
-mkdir -p "$ROOT" || { echo "cannot create snapshot root: $ROOT" >&2; exit 22; }
-resolve_path "$ROOT" || { echo "snapshot root cannot be resolved: $ROOT" >&2; exit 22; }
+check_mounts || exit @EXIT_ROOT_OVERLAP@
+mkdir -p "$ROOT" || { echo "cannot create snapshot root: $ROOT" >&2; exit @EXIT_ROOT_INVALID@; }
+resolve_path "$ROOT" || { echo "snapshot root cannot be resolved: $ROOT" >&2; exit @EXIT_ROOT_INVALID@; }
 ROOT=$RESOLVED
 case $ROOT in
-  *[!A-Za-z0-9._/+-]*) echo "snapshot root has characters outside [A-Za-z0-9._/+-]: $ROOT" >&2; exit 22 ;;
+  *[!A-Za-z0-9._/+-]*) echo "snapshot root has characters outside [A-Za-z0-9._/+-]: $ROOT" >&2; exit @EXIT_ROOT_INVALID@ ;;
 esac
-check_mounts || exit 23
+check_mounts || exit @EXIT_ROOT_OVERLAP@
 REPO=$ROOT/@REPO_ID@
-mkdir -p "$REPO/trees" || { echo "cannot create $REPO/trees" >&2; exit 22; }
-mkdir -p -m 700 "$REPO/leases" || { echo "cannot create $REPO/leases" >&2; exit 22; }
+mkdir -p "$REPO/trees" || { echo "cannot create $REPO/trees" >&2; exit @EXIT_ROOT_INVALID@; }
+mkdir -p -m 700 "$REPO/leases" || { echo "cannot create $REPO/leases" >&2; exit @EXIT_ROOT_INVALID@; }
 LOCKDIR=$REPO/.lock
 if [ ! -d "$REPO/repo.git" ]; then
   acquire
@@ -291,12 +328,12 @@ if [ ! -d "$REPO/repo.git" ]; then
     if ! "$GIT" init --bare -q "$INITTMP" || ! mv "$INITTMP" "$REPO/repo.git"; then
       rm -rf "$INITTMP"
       echo "git init failed in $REPO" >&2
-      exit 24
+      exit @EXIT_REPO_INIT@
     fi
   fi
   release
 fi
-"$GIT" --git-dir="$REPO/repo.git" rev-parse --git-dir >/dev/null 2>&1 || { echo "$REPO/repo.git is not a valid git repository" >&2; exit 24; }
+"$GIT" --git-dir="$REPO/repo.git" rev-parse --git-dir >/dev/null 2>&1 || { echo "$REPO/repo.git is not a valid git repository" >&2; exit @EXIT_REPO_INIT@; }
 HAVE=0
 if "$GIT" --git-dir="$REPO/repo.git" cat-file -e '@SHA@^{commit}' 2>/dev/null; then HAVE=1; fi
 release
@@ -373,7 +410,7 @@ def _lease_vars(lease_json: str | None, lease_id: str | None) -> str:
 _COMMIT_BODY = r"""acquire
 if ! "$GIT" --git-dir="$GITDIR" cat-file -e "$SHA^{commit}" 2>/dev/null; then
   echo "commit $SHA is not in $GITDIR" >&2
-  exit 26
+  exit @EXIT_COMMIT_MISSING@
 fi
 if [ -f "$MARK" ] && [ -d "$TREE" ]; then
   STATUS=reused
@@ -388,10 +425,10 @@ else
   fi
   if ! "$GIT" --git-dir="$GITDIR" worktree add --detach -q "$TREE" "$SHA" >&2; then
     echo "git worktree add failed for $TREE" >&2
-    exit 27
+    exit @EXIT_WORKTREE_ADD@
   fi
-  chmod -R a-w "$TREE" || { echo "chmod -R a-w failed for $TREE" >&2; exit 28; }
-  : > "$MARK" || { echo "cannot create marker $MARK" >&2; exit 29; }
+  chmod -R a-w "$TREE" || { echo "chmod -R a-w failed for $TREE" >&2; exit @EXIT_CHMOD@; }
+  : > "$MARK" || { echo "cannot create marker $MARK" >&2; exit @EXIT_MARKER@; }
 fi
 LEASE=
 @WRITE_LEASE_CALL@release
@@ -426,7 +463,7 @@ def build_commit_script(
         )
         + _repo_vars(repo_dir, git, sha)
         + _lease_vars(lease_json, lease_id)
-        + _WRITE_LEASE
+        + _fill(_WRITE_LEASE)
         + _fill(_COMMIT_BODY, WRITE_LEASE_CALL=call)
     )
 
@@ -460,8 +497,8 @@ def build_bind_script(
         )
         + _repo_vars(repo_dir, None, sha)
         + _lease_vars(lease_json, lease_id)
-        + _WRITE_LEASE
-        + _BIND_BODY
+        + _fill(_WRITE_LEASE)
+        + _fill(_BIND_BODY)
     )
 
 
@@ -490,7 +527,7 @@ def build_delete_lease_script(
         )
         + _repo_vars(repo_dir, None, None)
         + _lease_vars(None, lease_id)
-        + _DELETE_BODY
+        + _fill(_DELETE_BODY)
     )
 
 
@@ -522,17 +559,18 @@ class CommitResult:
     lease_path: str | None
 
 
-_EXIT_MESSAGES = {
-    20: "git was not found on the remote PATH (git >= {min} is required)",
-    21: "remote git is too old (git >= {min} is required)",
-    22: "the snapshot root is invalid or unusable",
-    23: "the snapshot root overlaps a mount, or their relation could not be determined",
-    24: "could not initialise the bare repository on the remote",
-    26: "the commit is missing from the remote repository",
-    27: "git worktree add failed on the remote",
-    28: "chmod -R a-w failed on the remote snapshot",
-    29: "could not create the snapshot completion marker",
-    31: "could not write the lease (refused or failed)",
+_KNOWN_EXITS = frozenset(int(e) for e in RemoteExit)
+_EXIT_MESSAGES: dict[RemoteExit, str] = {
+    RemoteExit.GIT_MISSING: "git was not found on the remote PATH (git >= {min} is required)",
+    RemoteExit.GIT_TOO_OLD: "remote git is too old (git >= {min} is required)",
+    RemoteExit.ROOT_INVALID: "the snapshot root is invalid or unusable",
+    RemoteExit.ROOT_OVERLAP: "the snapshot root overlaps a mount, or their relation could not be determined",
+    RemoteExit.REPO_INIT: "could not initialise the bare repository on the remote",
+    RemoteExit.COMMIT_MISSING: "the commit is missing from the remote repository",
+    RemoteExit.WORKTREE_ADD: "git worktree add failed on the remote",
+    RemoteExit.CHMOD: "chmod -R a-w failed on the remote snapshot",
+    RemoteExit.MARKER: "could not create the snapshot completion marker",
+    RemoteExit.LEASE_WRITE: "could not write the lease (refused or failed)",
 }
 
 
@@ -568,7 +606,7 @@ class RemoteSnapshotStore:
     def lease_path(repo_dir: str, lease_id: str) -> str:
         return f"{repo_dir}/leases/{lease_id}.json"
 
-    def _owner(self) -> dict[str, object]:
+    def _owner(self) -> LockOwner:
         return {
             "client_host": socket.gethostname(),
             "client_pid": os.getpid(),
@@ -590,7 +628,7 @@ class RemoteSnapshotStore:
 
     def _raise_for(self, code: int, stderr: str, what: str) -> None:
         stderr = stderr.strip()
-        if code == 30:
+        if code == RemoteExit.LOCK_TIMEOUT:
             lines = stderr.splitlines()
             lock = next(
                 (ln[len("LOCK=") :] for ln in lines if ln.startswith("LOCK=")),
@@ -604,7 +642,9 @@ class RemoteSnapshotStore:
                 "If that owner is no longer running, remove the lock by hand "
                 f"(only after confirming): rm -rf {shlex.quote(lock)}"
             )
-        template = _EXIT_MESSAGES.get(code)
+        template = (
+            _EXIT_MESSAGES.get(RemoteExit(code)) if code in _KNOWN_EXITS else None
+        )
         if template is not None:
             minimum = ".".join(str(n) for n in MIN_REMOTE_GIT)
             msg = f"{template.format(min=minimum)} ({what}, exit {code})"
@@ -629,7 +669,7 @@ class RemoteSnapshotStore:
             sha=sha,
             mounts=self._mounts,
             lock_wait=self._lock_wait,
-            **self._owner(),  # type: ignore[arg-type]
+            **self._owner(),
         )
         out = self._run(script, timeout=PROBE_TIMEOUT, what="probe")
         self._need(out, "ROOT", "REPO", "GIT", "GITVER", "HAVE", what="probe")
@@ -705,7 +745,7 @@ class RemoteSnapshotStore:
             lease_json=lease.to_json() if lease else None,
             lease_id=lease.lease_id if lease else None,
             lock_wait=self._lock_wait,
-            **self._owner(),  # type: ignore[arg-type]
+            **self._owner(),
         )
         out = self._run(script, timeout=COMMIT_TIMEOUT, what="snapshot commit")
         self._need(out, "STATUS", "PATH", what="snapshot commit")
@@ -726,7 +766,7 @@ class RemoteSnapshotStore:
             lease_json=lease.to_json(),
             lease_id=lease.lease_id,
             lock_wait=self._lock_wait,
-            **self._owner(),  # type: ignore[arg-type]
+            **self._owner(),
         )
         out = self._run(script, timeout=LEASE_TIMEOUT, what="lease bind")
         self._need(out, "SNAPSHOT", what="lease bind")
@@ -737,6 +777,6 @@ class RemoteSnapshotStore:
             repo_dir=repo_dir,
             lease_id=lease_id,
             lock_wait=self._lock_wait,
-            **self._owner(),  # type: ignore[arg-type]
+            **self._owner(),
         )
         self._run(script, timeout=LEASE_TIMEOUT, what="lease delete")

@@ -139,8 +139,8 @@ class SnapshotService:
         self._store = store
 
     def _prepare(
-        self, plan: SnapshotPlan, lease: Lease | None
-    ) -> tuple[PreparedSnapshot, CommitResult]:
+        self, plan: SnapshotPlan, *, leased: bool
+    ) -> tuple[PreparedSnapshot, CommitResult, Lease | None]:
         probe = self._store.probe(repo_id=plan.repo_id, sha=plan.sha)
         push_error: SnapshotRemoteError | None = None
         if not probe.has_commit:
@@ -154,9 +154,13 @@ class SnapshotService:
                 logger.debug(
                     "push failed, checking whether the commit arrived: {}", exc
                 )
-        if lease is not None:
-            lease = lease.model_copy(
-                update={"snapshot_path": f"{probe.repo_dir}/trees/{plan.sha}"}
+        lease: Lease | None = None
+        if leased:
+            lease = Lease.new_provisional(
+                repo_id=plan.repo_id,
+                sha=plan.sha,
+                snapshot_path=f"{probe.repo_dir}/trees/{plan.sha}",
+                profile=self._profile_name,
             )
         try:
             result = self._store.commit(probe=probe, sha=plan.sha, lease=lease)
@@ -172,7 +176,7 @@ class SnapshotService:
             status=result.status,
         )
         logger.info("Snapshot {} {} at {}", plan.sha[:12], result.status, result.path)
-        return prepared, result
+        return prepared, result, lease
 
     def _check_root(self) -> None:
         conflict = literal_root_conflict(self._profile.snapshot_root, self._mounts)
@@ -182,7 +186,7 @@ class SnapshotService:
     def create(self, plan: SnapshotPlan) -> PreparedSnapshot:
         """Ensure the snapshot exists on the cluster; writes no lease."""
         self._check_root()
-        prepared, _ = self._prepare(plan, None)
+        prepared, _, _ = self._prepare(plan, leased=False)
         return prepared
 
     @contextmanager
@@ -194,14 +198,8 @@ class SnapshotService:
         not bound it is kept and its path is logged, because a job may exist.
         """
         self._check_root()
-        lease = Lease.new_provisional(
-            repo_id=plan.repo_id,
-            sha=plan.sha,
-            snapshot_path="",  # filled in once the probe reports the path
-            profile=self._profile_name,
-        )
-        prepared, result = self._prepare(plan, lease)
-        lease = lease.model_copy(update={"snapshot_path": prepared.path})
+        prepared, result, lease = self._prepare(plan, leased=True)
+        assert lease is not None
         lease_path = result.lease_path or RemoteSnapshotStore.lease_path(
             prepared.repo_dir, lease.lease_id
         )

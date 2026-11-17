@@ -166,19 +166,6 @@ def test_submit_remote_sbatch_no_profile_falls_back_to_default_record(
     assert "scheduler_key" not in record_calls[0]
 
 
-def test_submit_remote_sbatch_raises_when_inner_returns_none(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A falsy inner result surfaces as RuntimeError so the CLI catches it cleanly."""
-    adapter = _bare_adapter()
-    fail_method = MagicMock(return_value=None)
-    adapter._client.slurm.submit_remote_sbatch_file_checked = fail_method  # type: ignore[method-assign]
-    monkeypatch.setattr(adapter, "_record_job_submission", lambda *a, **kw: None)
-
-    with pytest.raises(RuntimeError, match="remote sbatch submission failed"):
-        adapter.submit_remote_sbatch("/r/x.sh")
-
-
 def test_submit_remote_sbatch_propagates_rejected_error() -> None:
     """The typed rejection reaches the caller unchanged (still a RuntimeError)."""
     adapter = _bare_adapter()

@@ -18,7 +18,6 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
 
 import pytest
 
@@ -26,6 +25,7 @@ from srunx.snapshot import remote
 from srunx.snapshot.errors import SnapshotLockTimeoutError, SnapshotRemoteError
 from srunx.snapshot.lease import Lease
 from srunx.snapshot.remote import (
+    LockOwner,
     RemoteSnapshotStore,
     build_commit_script,
     build_probe_script,
@@ -39,13 +39,7 @@ _REAL_POPEN = subprocess.Popen
 TOKEN = "a1" * 16
 
 
-class _Owner(TypedDict):
-    client_host: str
-    client_pid: int
-    token: str
-
-
-OWNER = _Owner(client_host="testhost", client_pid=4242, token=TOKEN)
+OWNER = LockOwner(client_host="testhost", client_pid=4242, token=TOKEN)
 
 
 class LocalShell:

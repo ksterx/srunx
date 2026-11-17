@@ -465,3 +465,30 @@ class TestPush:
             make_store(FakeShell()).push(
                 repo_top=Path("/t"), probe=probe_result("git"), sha=SHA
             )
+
+
+def test_fill_rejects_unfilled_placeholder() -> None:
+    with pytest.raises(ValueError, match="@MISSING@"):
+        remote._fill("echo @GIVEN@ @MISSING@", GIVEN="x")
+
+
+def test_fill_substitutes_exit_codes_from_the_enum() -> None:
+    out = remote._fill("exit @EXIT_LOCK_TIMEOUT@")
+    assert out == f"exit {int(remote.RemoteExit.LOCK_TIMEOUT)}"
+
+
+def test_generated_scripts_have_no_placeholders_left() -> None:
+    for script in (
+        probe_script(),
+        build_commit_script(
+            repo_dir="/r/x",
+            git="/usr/bin/git",
+            sha=SHA,
+            lease_json=None,
+            lease_id=None,
+            client_host=HOST,
+            client_pid=PID,
+            token=TOKEN,
+        ),
+    ):
+        assert not remote._PLACEHOLDER_RE.search(script)

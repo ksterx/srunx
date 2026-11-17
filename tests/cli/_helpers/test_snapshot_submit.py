@@ -103,7 +103,7 @@ def _submit(rt: MagicMock, plan: SnapshotPlan, job: ShellJob | None = None, **kw
     return ss.submit_via_snapshot(
         rt=rt,
         job=job or _job(),
-        request=ss.SnapshotRequest(plan=plan),
+        plan=plan,
         profile_name="p",
         extra_sbatch_args=kw.pop("extra_sbatch_args", ["--output=/abs/%j.log"]),
         inject_job_name=kw.pop("inject_job_name", True),
@@ -179,10 +179,10 @@ def test_validate_empty_rev_rejected() -> None:
         ss.validate_snapshot_options(**{**_OK, "snapshot_rev": " "})
 
 
-# -- build_snapshot_request -------------------------------------------------
+# -- build_snapshot_plan -------------------------------------------------
 
 
-def test_build_snapshot_request_validation_error_is_bad_parameter(
+def test_build_snapshot_plan_validation_error_is_bad_parameter(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     def boom(**_kw: Any) -> None:
@@ -190,10 +190,10 @@ def test_build_snapshot_request_validation_error_is_bad_parameter(
 
     monkeypatch.setattr(ss, "plan_snapshot", boom)
     with pytest.raises(typer.BadParameter, match="not a git repository"):
-        ss.build_snapshot_request(script=Path("j"), rev=None, cwd=tmp_path)
+        ss.build_snapshot_plan(script=Path("j"), rev=None, cwd=tmp_path)
 
 
-def test_build_snapshot_request_passes_arguments(
+def test_build_snapshot_plan_passes_arguments(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     seen: dict[str, Any] = {}
@@ -203,8 +203,8 @@ def test_build_snapshot_request_passes_arguments(
         return _plan()
 
     monkeypatch.setattr(ss, "plan_snapshot", fake)
-    req = ss.build_snapshot_request(script=Path("j"), rev="v1", cwd=tmp_path)
-    assert req.plan.sha == SHA
+    got = ss.build_snapshot_plan(script=Path("j"), rev="v1", cwd=tmp_path)
+    assert got.sha == SHA
     assert seen == {
         "start": tmp_path,
         "rev": "v1",

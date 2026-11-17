@@ -414,13 +414,9 @@ def snapshot_env(monkeypatch, tmp_path):
 
     def fake_plan(*, script, rev, cwd):
         state["plan_calls"].append({"script": script, "rev": rev})  # type: ignore[attr-defined]
-        from srunx.cli._helpers.snapshot_submit import SnapshotRequest
+        return _snapshot_plan()
 
-        return SnapshotRequest(plan=_snapshot_plan())
-
-    monkeypatch.setattr(
-        "srunx.cli.commands.jobs.sbatch.build_snapshot_request", fake_plan
-    )
+    monkeypatch.setattr("srunx.cli.commands.jobs.sbatch.build_snapshot_plan", fake_plan)
 
     class _Handle:
         def __init__(self, prepared):

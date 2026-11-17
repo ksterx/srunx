@@ -5,10 +5,12 @@ These were siblings of ``sbatch`` in the old monolithic ``main.py``; they live
 here so ``commands/jobs.py`` only holds Typer command functions.
 """
 
+from __future__ import annotations
+
 import shlex
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.console import Console
@@ -17,6 +19,9 @@ import srunx.slurm.local as _slurm_local  # module-level so ``patch("srunx.slurm
 from srunx.callbacks import Callback
 from srunx.common.logging import get_logger
 from srunx.domain import ContainerResource
+
+if TYPE_CHECKING:
+    from srunx.snapshot import SnapshotPlan
 
 logger = get_logger(__name__)
 
@@ -35,7 +40,7 @@ def _submit_via_transport(
     extra_sbatch_args: list[str] | None = None,
     force_sync: bool = False,
     inject_job_name: bool = True,
-    snapshot: Any | None = None,
+    snapshot: SnapshotPlan | None = None,
 ) -> Any:
     """Dispatch a submit to the right adapter method + optional mount sync.
 
@@ -68,7 +73,7 @@ def _submit_via_transport(
     SLURM treats them as overrides of the script's ``#SBATCH``
     directives, matching real sbatch's precedence.
 
-    ``snapshot`` (a ``SnapshotRequest``) switches the SSH path to snapshot
+    ``snapshot`` (a ``SnapshotPlan``) switches the SSH path to snapshot
     submission: the job runs from a read-only per-commit snapshot, with no
     mount sync, no mount lock, and no requirement that the script sit under a
     mount.
@@ -103,10 +108,11 @@ def _submit_via_transport(
     if snapshot is not None:
         from srunx.cli._helpers.snapshot_submit import submit_via_snapshot
 
+        assert profile_name is not None  # snapshot mode is SSH-only (checked upstream)
         return submit_via_snapshot(
             rt=rt,
             job=job,
-            request=snapshot,
+            plan=snapshot,
             profile_name=profile_name,
             extra_sbatch_args=extra_sbatch_args,
             inject_job_name=inject_job_name,

@@ -504,7 +504,7 @@ class SlurmSSHClient:
                 extra_sbatch_args=extra_sbatch_args,
                 job_env_vars=job_env_vars,
             )
-        if result is None or not result.job_id:
+        if not result.job_id:
             raise SbatchIndeterminateError(
                 "remote sbatch submission failed: no job id returned"
             )

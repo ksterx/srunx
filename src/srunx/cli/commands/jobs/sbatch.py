@@ -24,7 +24,7 @@ from srunx.cli._helpers.sbatch_passthrough import (
     validate_passthrough_args,
 )
 from srunx.cli._helpers.snapshot_submit import (
-    build_snapshot_request,
+    build_snapshot_plan,
     print_snapshot_dry_run,
     require_ssh_transport,
     validate_snapshot_options,
@@ -291,11 +291,11 @@ def sbatch(
         force_sync=force_sync,
         profile=profile,
     )
-    snapshot_request = None
+    snapshot_plan = None
     snapshot_profile_name: str | None = None
     if snapshot_mode:
         snapshot_profile_name = require_ssh_transport(profile=profile, local=local)
-        snapshot_request = build_snapshot_request(
+        snapshot_plan = build_snapshot_plan(
             script=script, rev=snapshot_rev, cwd=Path.cwd()
         )
 
@@ -415,9 +415,7 @@ def sbatch(
             script,
             name,
             cli_name_explicit=name_explicit,
-            script_text=(
-                snapshot_request.plan.script_text if snapshot_request else None
-            ),
+            script_text=(snapshot_plan.script_text if snapshot_plan else None),
         )
         shell_data: dict[str, Any] = {
             "name": effective_name,
@@ -494,18 +492,9 @@ def sbatch(
         # show rsync's preview of what *would* transfer. Lets the user
         # spot a stray ``build/`` or ``.cache/`` they forgot to
         # gitignore before they trigger an actual sync.
-        if snapshot_request is not None:
-            from srunx.ssh.core.config import ConfigManager
-
-            snap_profile = (
-                ConfigManager().get_profile(snapshot_profile_name)
-                if snapshot_profile_name
-                else None
-            )
+        if snapshot_plan is not None:
             print_snapshot_dry_run(
-                console,
-                snapshot_request,
-                snapshot_root=snap_profile.snapshot_root if snap_profile else None,
+                console, snapshot_plan, profile_name=snapshot_profile_name
             )
         else:
             _print_in_place_sync_preview(
@@ -606,7 +595,7 @@ def sbatch(
             extra_sbatch_args=extra_sbatch_args,
             force_sync=force_sync,
             inject_job_name=inject_job_name,
-            snapshot=snapshot_request,
+            snapshot=snapshot_plan,
         )
         client = (
             _slurm_local.Slurm(callbacks=callbacks)

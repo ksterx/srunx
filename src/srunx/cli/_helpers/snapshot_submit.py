@@ -8,7 +8,6 @@ mount sync or the per-mount lock.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -31,11 +30,6 @@ from srunx.snapshot import (
 from srunx.snapshot.remote import DEFAULT_SNAPSHOT_ROOT
 
 logger = get_logger(__name__)
-
-
-@dataclass(frozen=True)
-class SnapshotRequest:
-    plan: SnapshotPlan
 
 
 def validate_snapshot_options(
@@ -97,21 +91,23 @@ def require_ssh_transport(*, profile: str | None, local: bool) -> str:
     return key[len("ssh:") :]
 
 
-def build_snapshot_request(
+def build_snapshot_plan(
     *, script: Path | None, rev: str | None, cwd: Path
-) -> SnapshotRequest:
+) -> SnapshotPlan:
     """Run local validation; ``SnapshotValidationError`` becomes ``BadParameter``."""
     try:
-        plan = plan_snapshot(start=cwd, rev=rev, script=script, cwd=cwd)
+        return plan_snapshot(start=cwd, rev=rev, script=script, cwd=cwd)
     except SnapshotValidationError as exc:
         raise typer.BadParameter(str(exc)) from exc
-    return SnapshotRequest(plan=plan)
 
 
 def print_snapshot_dry_run(
-    console: Console, request: SnapshotRequest, *, snapshot_root: str | None
+    console: Console, plan: SnapshotPlan, *, profile_name: str | None
 ) -> None:
-    plan = request.plan
+    from srunx.ssh.core.config import ConfigManager
+
+    profile = ConfigManager().get_profile(profile_name) if profile_name else None
+    snapshot_root = profile.snapshot_root if profile else None
     root = snapshot_root or f"{DEFAULT_SNAPSHOT_ROOT} (default)"
     console.print("  Snapshot mode (no remote call in dry run):")
     console.print(f"    Commit: {plan.sha}")
@@ -166,25 +162,20 @@ def submit_via_snapshot(
     *,
     rt: Any,
     job: Any,
-    request: SnapshotRequest,
-    profile_name: str | None,
+    plan: SnapshotPlan,
+    profile_name: str,
     extra_sbatch_args: list[str] | None,
     inject_job_name: bool,
 ) -> Any:
     """Prepare the snapshot, submit from it under a lease, and bind the lease."""
     from srunx.ssh.core.config import ConfigManager
 
-    if profile_name is None:
-        raise typer.BadParameter(
-            "--snapshot requires an SSH profile.", param_hint="--snapshot / --profile"
-        )
     profile = ConfigManager().get_profile(profile_name)
     if profile is None:
         raise typer.BadParameter(
             f"SSH profile {profile_name!r} not found.", param_hint="--profile"
         )
 
-    plan = request.plan
     for w in plan.warnings:
         logger.warning("{}", w)
     if plan.script_text is not None:
@@ -209,8 +200,9 @@ def submit_via_snapshot(
                 callbacks_job=job,
                 metadata=handle.metadata(),
             )
-            if getattr(submitted, "job_id", None) is not None:
-                handle.bind(int(submitted.job_id))
+            # submit_remote_sbatch always returns the job with its id set.
+            assert submitted.job_id is not None
+            handle.bind(int(submitted.job_id))
     except SnapshotValidationError as exc:
         raise typer.BadParameter(str(exc)) from exc
     except (SnapshotError, SbatchSubmitError, TransportError) as exc:
