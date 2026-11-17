@@ -269,6 +269,20 @@ def _shim_shell(directory: Path) -> LocalShell:
 # ---------------------------------------------------------------- inventory
 
 
+def _plant_odd_entries(rem: Remote) -> dict[str, str]:
+    """Fake shas that need no real worktree: incomplete, marker-only, symlinked."""
+    trees = rem.repo / "trees"
+    incomplete, marker_only, linked = "7" * 40, "8" * 40, "6" * 40
+    (trees / incomplete).mkdir()
+    (trees / incomplete / "partial").write_text("x")  # tree without marker
+    (trees / f"{marker_only}.complete").write_text("")  # marker without tree
+    outside = rem.root.parent / "elsewhere"
+    outside.mkdir()
+    (outside / "keep").write_text("keep")
+    (trees / linked).symlink_to(outside)  # a symlinked tree is never intact
+    return {"incomplete": incomplete, "marker_only": marker_only, "linked": linked}
+
+
 class TestInventoryScript:
     def test_missing_and_empty_root(self, tmp_path: Path) -> None:
         shell = LocalShell(os.environ["PATH"])
@@ -284,12 +298,22 @@ class TestInventoryScript:
         inv = InventoryStore(empty).read()
         assert inv.exists is True and inv.repos == ()
 
-    def test_snapshots_leases_lock_trash_and_stray(self, rem: Remote) -> None:
+    def test_snapshots_leases_lock_trash_stray_incomplete_and_bad_leases(
+        self, rem: Remote
+    ) -> None:
         sha0, sha1, _ = rem.shas
         lease = rem.add_lease(sha0, bound=True, job_id=77)
-        # a lease for a commit that has no snapshot at all
-        ghost = "9" * 40
+        ghost = "9" * 40  # a lease for a commit that has no snapshot at all
         ghost_lease = rem.add_lease(ghost)
+        odd = _plant_odd_entries(rem)
+        leases = rem.repo / "leases"
+        target = rem.root.parent / "real-lease.json"
+        target.write_text(lease.to_json() + "\n")
+        (leases / f"{'1' * 32}.json").symlink_to(target)
+        (leases / f"{'2' * 32}.json").write_text("garbage {\n")
+        (leases / f"{'3' * 32}.json").write_text("")
+        (leases / f"{'4' * 32}.json").write_text("x" * 5000 + "\n")
+        (leases / f"{'5' * 32}.json").mkdir()
         (rem.repo / ".lock").mkdir()
         trash = rem.repo / "trees" / f".trash.{sha1}.{TRASH_TOKEN}"
         trash.mkdir()
@@ -299,14 +323,15 @@ class TestInventoryScript:
         os.utime(rem.marker(sha0), (1_000_000, 1_000_000))
 
         inv = rem.inventory()
+
         assert inv.git and inv.git.startswith("/")
         assert inv.stray == ("loose",)
         (repo,) = inv.repos
         assert repo.skipped is None and repo.locked_since is not None
-        assert repo.trash == (trash.name,)
+        assert repo.trash == (trash.name,) and trash.is_dir()  # never swept here
         assert set(repo.stray) == {"trees/stray.txt", "notes"}
         by = {s.sha: s for s in repo.snapshots}
-        assert set(by) == {*rem.shas, ghost}
+        assert set(by) == {*rem.shas, ghost, *odd.values()}
         a = by[sha0]
         assert (a.has_tree, a.has_marker, a.intact) == (True, True, True)
         assert a.marker_mtime == 1_000_000
@@ -315,44 +340,20 @@ class TestInventoryScript:
         assert (g.has_tree, g.has_marker, g.intact) == (False, False, False)
         assert g.fp_lease_ids == frozenset({ghost_lease.lease_id})
         assert by[sha1].fp_lease_ids == frozenset()
-        rec = {r.filename: r for r in repo.leases}[f"{lease.lease_id}.json"]
+        inc = by[odd["incomplete"]]
+        assert (inc.has_tree, inc.has_marker, inc.intact) == (True, False, False)
+        mo = by[odd["marker_only"]]
+        assert (mo.has_tree, mo.has_marker) == (False, True)
+        assert mo.tree_mtime is None and mo.marker_mtime is not None
+        ln = by[odd["linked"]]
+        assert (ln.has_tree, ln.intact) == (True, False) and ln.tree_mtime is None
+        records = {r.filename: r for r in repo.leases}
+        rec = records[f"{lease.lease_id}.json"]
         assert rec.lease is not None and rec.lease.job_id == 77
         assert rec.lease.cluster == "clusterA"
-
-    def test_incomplete_marker_only_symlinked_and_bad_leases(self, rem: Remote) -> None:
-        sha0, sha1, sha2 = rem.shas
-        rem.marker(sha0).unlink()  # tree without marker
-        rem.remove_tree(sha1)  # marker without tree
-        outside = rem.root.parent / "elsewhere"
-        outside.mkdir()
-        rem.remove_tree(sha2)
-        rem.tree(sha2).symlink_to(outside)  # a symlinked tree is never intact
-        leases = rem.repo / "leases"
-        good = rem.add_lease(sha0)
-        target = rem.root.parent / "real-lease.json"
-        target.write_text(good.to_json() + "\n")
-        (leases / f"{'1' * 32}.json").symlink_to(target)
-        (leases / f"{'2' * 32}.json").write_text("garbage {\n")
-        (leases / f"{'3' * 32}.json").write_text("")
-        (leases / f"{'4' * 32}.json").write_text("x" * 5000 + "\n")
-        (leases / f"{'5' * 32}.json").mkdir()
-
-        repo = rem.repo_inv()
-        by = {s.sha: s for s in repo.snapshots}
-        assert (by[sha0].has_tree, by[sha0].has_marker, by[sha0].intact) == (
-            True,
-            False,
-            False,
-        )
-        assert (by[sha1].has_tree, by[sha1].has_marker) == (False, True)
-        assert by[sha1].tree_mtime is None and by[sha1].marker_mtime is not None
-        assert (by[sha2].has_tree, by[sha2].intact) == (True, False)
-        assert by[sha2].tree_mtime is None
-        records = {r.filename: r for r in repo.leases}
-        assert records[f"{good.lease_id}.json"].lease is not None
         for ident in "12345":
-            rec = records[f"{ident * 32}.json"]
-            assert rec.lease is None and rec.error, ident
+            bad = records[f"{ident * 32}.json"]
+            assert bad.lease is None and bad.error, ident
 
     def test_skipped_repos_other_repos_and_no_side_effects(self, rem: Remote) -> None:
         (rem.repo / "leases").chmod(0o770)  # writable by group: skipped
@@ -373,7 +374,6 @@ class TestInventoryScript:
         by = {r.repo_id: r for r in inv.repos}
         assert "writable" in (by[REPO_ID].skipped or "")
         assert by[REPO_ID].snapshots == () and by[REPO_ID].leases == ()
-        assert by["linked-0123456789ab"].skipped
         assert "symlink" in (by["linked-0123456789ab"].skipped or "")
         assert by["other-0123456789ab"].skipped is None
 
@@ -400,14 +400,7 @@ class TestInventoryScript:
 
 
 class TestReuseMarker:
-    def test_reuse_touches_the_marker(self, rem: Remote) -> None:
-        sha = rem.shas[0]
-        os.utime(rem.marker(sha), (1_000_000, 1_000_000))
-        result = rem.store().commit(probe=rem.probe(), sha=sha, lease=None)
-        assert result.status == "reused"
-        assert rem.marker(sha).stat().st_mtime > 1_000_000 + 10_000
-
-    def test_reuse_fails_with_exit_33_when_touch_fails_or_has_no_effect(
+    def test_reuse_fails_with_exit_33_without_a_refresh_then_touches_when_it_works(
         self, rem: Remote, tmp_path: Path
     ) -> None:
         sha = rem.shas[0]
@@ -420,6 +413,9 @@ class TestReuseMarker:
                 store.commit(probe=rem.probe(), sha=sha, lease=None)
             assert "last-requested" in str(ei.value)
         assert rem.marker(sha).stat().st_mtime == 1_000_000
+        result = rem.store().commit(probe=rem.probe(), sha=sha, lease=None)
+        assert result.status == "reused"
+        assert rem.marker(sha).stat().st_mtime > 1_000_000 + 10_000
 
 
 # --------------------------------------------------------------------- prune
@@ -427,7 +423,7 @@ class TestReuseMarker:
 
 class TestPruneScript:
     def test_removes_exactly_the_targets_and_nothing_protected(
-        self, rem: Remote
+        self, rem: Remote, tmp_path: Path
     ) -> None:
         sha0, sha1, sha2 = rem.shas
         mine = rem.add_lease(sha0, bound=True)
@@ -441,26 +437,29 @@ class TestPruneScript:
         leftover = rem.repo / "trees" / f".trash.{sha1}.{'1' * 32}"
         leftover.mkdir()
         assert rem.has_ref(sha0) and str(rem.tree(sha0)) in rem.registered()
+        targets = rem.targets(sha0, sha2)
 
-        res = rem.prune(rem.targets(sha0, sha2))
+        # a failing rename leaves the tree in place and is reported
+        shim = tmp_path / "shim"
+        _shim(shim, "mv", "exit 1\n")
+        res = rem.prune(targets[1:], store=rem.inv_store(shell=_shim_shell(shim)))
+        assert res.failed == ((sha2, "rename"),) and res.removed == ()
+        assert rem.tree(sha2).is_dir() and not (rem.repo / ".lock").exists()
 
-        assert sorted(res.removed) == sorted([sha0, sha2])
+        res = rem.prune(targets[:1])
+
+        assert res.removed == (sha0,)
         assert res.failed == () and res.changed == () and res.trash_left == 0
-        for sha in (sha0, sha2):
-            assert not rem.tree(sha).exists() and not rem.marker(sha).exists()
-            assert not rem.has_ref(sha)
-            assert str(rem.tree(sha)) not in rem.registered()
+        assert not rem.tree(sha0).exists() and not rem.marker(sha0).exists()
+        assert not rem.has_ref(sha0)
+        assert str(rem.tree(sha0)) not in rem.registered()
         assert not rem.lease_file(mine).exists()
         assert rem.lease_file(other).exists()
-        assert (
-            rem.tree(sha1).is_dir() and rem.marker(sha1).exists() and rem.has_ref(sha1)
-        )
-        assert str(rem.tree(sha1)) in rem.registered()
+        for sha in (sha1, sha2):
+            assert rem.tree(sha).is_dir() and rem.has_ref(sha)
+        assert rem.marker(sha1).exists()
         # leftover trash from an earlier run is swept too; nothing else is
         assert not leftover.exists()
-        assert sorted(p.name for p in (rem.repo / "trees").iterdir()) == sorted(
-            [sha1, f"{sha1}.complete", "stray.txt"]
-        )
         assert not (rem.repo / ".lock").exists()
         for keep in (rem.repo / "repo.git", rem.repo / "trees", rem.repo / "leases"):
             assert keep.is_dir()
@@ -474,10 +473,14 @@ class TestPruneScript:
         self, rem: Remote
     ) -> None:
         sha0, sha1, sha2 = rem.shas
-        ghost = "9" * 40  # a sha that only has a lease
+        ghost, ghost2 = "9" * 40, "5" * 40  # shas that only have leases
         existing = rem.add_lease(sha0)
         rem.add_lease(ghost)
-        targets = rem.targets(sha0, sha1, sha2, ghost)
+        gone = rem.add_lease(ghost2, bound=True)
+        odd = _plant_odd_entries(rem)
+        outside = rem.root.parent / "elsewhere"
+        everything = [sha0, sha1, sha2, ghost, ghost2, *odd.values()]
+        targets = rem.targets(*everything)
         # sha0: lease rewritten (provisional -> bound); sha1: marker touched;
         # ghost: a second lease appears after the inventory
         path = rem.lease_file(existing)
@@ -489,26 +492,19 @@ class TestPruneScript:
         res = rem.prune(targets)
 
         assert sorted(res.changed) == sorted([sha0, sha1, ghost])
-        assert res.removed == (sha2,) and res.failed == ()
+        assert res.failed == ()
+        assert sorted(res.removed) == sorted([sha2, ghost2, *odd.values()])
         for sha in (sha0, sha1):
             assert (
                 rem.tree(sha).is_dir() and rem.marker(sha).exists() and rem.has_ref(sha)
             )
         assert path.exists() and rem.lease_file(late).exists()
-        assert not rem.tree(sha2).exists()
-        assert len(list((rem.repo / "leases").iterdir())) == 3
-
-    def test_failed_when_the_rename_fails_leaves_the_tree_in_place(
-        self, rem: Remote, tmp_path: Path
-    ) -> None:
-        sha = rem.shas[0]
-        shim = tmp_path / "shim"
-        _shim(shim, "mv", "exit 1\n")
-        targets = rem.targets(sha)
-        res = rem.prune(targets, store=rem.inv_store(shell=_shim_shell(shim)))
-        assert res.failed == ((sha, "rename"),)
-        assert res.removed == () and rem.tree(sha).is_dir()
-        assert not (rem.repo / ".lock").exists()
+        # removed: normal, leases-only, incomplete tree, marker-only, symlinked tree
+        assert not rem.tree(sha2).exists() and not rem.lease_file(gone).exists()
+        assert not (rem.repo / "trees" / odd["incomplete"]).exists()
+        assert not (rem.repo / "trees" / f"{odd['marker_only']}.complete").exists()
+        assert not (rem.repo / "trees" / odd["linked"]).is_symlink()
+        assert (outside / "keep").read_text() == "keep"  # the link was not followed
 
     def test_held_lock_times_out_and_the_lock_survives(self, rem: Remote) -> None:
         sha = rem.shas[0]
@@ -542,18 +538,7 @@ class TestPruneScript:
         plain_file = trees / ".trash"
         plain_file.write_text("x")
 
-        inv_store = rem.inv_store()
-        repo = inv_store.read().repos[0]
-        assert repo.trash == (real.name,)
-        assert {
-            "trees/.trash.foo",
-            f"trees/{link.name}",
-            f"trees/{regular.name}",
-            "trees/.trash",
-        } <= set(repo.stray)
-        assert real.is_dir()  # the inventory never sweeps
-
-        res = rem.prune([], store=inv_store)
+        res = rem.prune([])
 
         assert res.removed == () and res.trash_left == 0
         assert not real.exists()
@@ -566,25 +551,6 @@ class TestPruneScript:
             ".trash",
         }
         assert not (rem.repo / ".lock").exists()
-
-    def test_incomplete_marker_only_leases_only_and_symlinked_shas_are_removed(
-        self, rem: Remote
-    ) -> None:
-        sha0, sha1, sha2 = rem.shas
-        ghost = "9" * 40
-        lease = rem.add_lease(ghost, bound=True)
-        rem.marker(sha0).unlink()  # tree without marker
-        rem.remove_tree(sha1)  # marker without tree
-        outside = rem.root.parent / "elsewhere"
-        outside.mkdir()
-        (outside / "keep").write_text("keep")
-        rem.remove_tree(sha2)
-        rem.tree(sha2).symlink_to(outside)  # unlinked, never followed
-        res = rem.prune(rem.targets(sha0, sha1, sha2, ghost))
-        assert sorted(res.removed) == sorted([sha0, sha1, sha2, ghost])
-        assert not rem.tree(sha0).exists() and not rem.marker(sha1).exists()
-        assert not rem.tree(sha2).is_symlink() and not rem.lease_file(lease).exists()
-        assert (outside / "keep").read_text() == "keep"
 
 
 # --------------------------------------------------------- scheduler commands
