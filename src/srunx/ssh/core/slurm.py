@@ -625,6 +625,13 @@ class SlurmRemoteClient:
             cmd = " ".join(cmd_parts)
             if submit_cwd:
                 cmd = f"cd {shlex.quote(submit_cwd)} && {cmd}"
+            # Bracket sbatch with per-call markers so only its own output and
+            # exit code are judged: login-shell / env-setup noise before it can
+            # contain "sbatch: error:" and must not look like a rejection.
+            nonce = uuid.uuid4().hex
+            begin = f"__SRUNX_SBATCH_BEGIN_{nonce}__"
+            end = f"__SRUNX_SBATCH_END_{nonce}__"
+            cmd = f"echo {begin}; {{ {cmd}; }} 2>&1; printf '\\n%s %s\\n' {end} \"$?\""
         except SbatchSubmitError:
             raise
         except Exception as e:
@@ -642,7 +649,6 @@ class SlurmRemoteClient:
                 f"Remote sbatch outcome unknown (connection or execution error): {e}"
             ) from e
 
-        match = re.search(r"Submitted batch job (\d+)", stdout or "")
         detail = f"stdout: {stdout}, stderr: {stderr}, exit_code: {exit_code}"
         # paramiko's recv_exit_status() returns -1 when the channel closed
         # without an exit status; treat that (and None) as "no status".
@@ -650,6 +656,18 @@ class SlurmRemoteClient:
             raise SbatchIndeterminateError(
                 f"Remote sbatch returned no exit status; a job may exist. {detail}"
             )
+        # Judge only what sits between our markers, with the exit code the END
+        # marker carries (the outer shell's own status is the printf's).
+        begin_at = (stdout or "").find(f"{begin}\n")
+        end_match = re.search(rf"^{re.escape(end)} (-?\d+)$", stdout or "", re.M)
+        if begin_at < 0 or end_match is None or end_match.start() < begin_at:
+            raise SbatchIndeterminateError(
+                "Remote sbatch output is missing its begin/end marker; "
+                f"a job may exist. {detail}"
+            )
+        inner = (stdout or "")[begin_at + len(begin) + 1 : end_match.start()]
+        exit_code = int(end_match.group(1))
+        match = re.search(r"Submitted batch job (\d+)", inner)
         if exit_code == 0:
             if not match:
                 raise SbatchIndeterminateError(
@@ -671,10 +689,10 @@ class SlurmRemoteClient:
                 f"{detail}"
             )
         # A rejection needs positive evidence that sbatch itself refused the
-        # job: its own ``sbatch: error:`` line. A bare non-zero exit (wrapper
-        # failure, dropped session, signal) could follow a submission that
-        # already reached slurmctld, so it keeps the lease.
-        if "sbatch: error:" in f"{stderr or ''}\n{stdout or ''}":
+        # job: its own ``sbatch: error:`` line between the markers. A bare
+        # non-zero exit (wrapper failure, dropped session, signal) could follow
+        # a submission that already reached slurmctld, so it keeps the lease.
+        if "sbatch: error:" in inner:
             raise SbatchRejectedError(f"Failed to submit remote sbatch. {detail}")
         raise SbatchIndeterminateError(
             "Remote sbatch exited non-zero without an 'sbatch: error:' message; "
