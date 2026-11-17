@@ -769,31 +769,98 @@ def test_tree_at_another_commit_is_not_reused(env: Env) -> None:
 # ------------------------------------------- ancestors of the root (StrictModes)
 
 
-def test_root_under_group_writable_parent_rejected(env: Env) -> None:
+def _check_dirs(kind: str, *paths: Path) -> subprocess.CompletedProcess[str]:
+    """Run the preamble's ``check_dirs`` on an explicit list.
+
+    pytest's own tmp chain is 0700 and user-owned, so it shields everything
+    below it; going through ``check_dirs`` keeps those real ancestors out of
+    the picture so the ancestor rules can be seen to reject.
+    """
+    preamble = remote._lock_preamble(
+        client_host="h", client_pid=1, token=TOKEN, lock_wait=1
+    )
+    return REAL_RUN(
+        ["/bin/sh", "-s"],
+        input=preamble + f"check_dirs {kind} {' '.join(map(str, paths))}\necho ok\n",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_group_writable_ancestor_rejected_and_sticky_accepted(env: Env) -> None:
     parent = env.tmp / "shared"
     parent.mkdir()
     parent.chmod(0o775)
-    root = parent / "snaps"
-    proc = env.shell.run_script(env.probe_script(root=root))
+    proc = _check_dirs("anc", parent)
     assert proc.returncode == 32, proc.stderr
-    assert f"{parent} " in proc.stderr and "private directory" in proc.stderr
-    assert not root.exists()
+    assert f"ancestor {parent} " in proc.stderr and "private directory" in proc.stderr
+    sticky = env.tmp / "tmpish"
+    sticky.mkdir()
+    sticky.chmod(0o1777)
+    assert _check_dirs("anc", sticky).returncode == 0
+    # and the real probe accepts a root below the sticky dir
+    proc = env.shell.run_script(env.probe_script(root=sticky / "snaps"))
+    assert proc.returncode == 0, proc.stderr
 
 
-def test_root_under_sticky_world_writable_parent_accepted(env: Env) -> None:
-    parent = env.tmp / "tmpish"
-    parent.mkdir()
-    parent.chmod(0o1777)
+def test_locked_scripts_recheck_the_ancestors() -> None:
+    preamble = remote._lock_preamble(
+        client_host="h", client_pid=1, token=TOKEN, lock_wait=1
+    )
+    body = preamble.split("check_store_dirs() {", 1)[1].split("\n}\n", 1)[0]
+    assert 'check_ancestors "${REPO%/*}"' in body
+    # acquire() runs it both before and after taking the lock
+    acquire = preamble.split("acquire() {", 1)[1].split("\n}\n", 1)[0]
+    assert acquire.count("check_store_dirs") == 2
+
+
+def test_private_grandparent_shields_a_group_writable_parent(env: Env) -> None:
+    """$HOME 0700 above ~/.local 0770: nobody else can traverse, so it is safe."""
+    grand = env.tmp / "home"
+    parent = grand / "local"
+    parent.mkdir(parents=True)
+    parent.chmod(0o770)
+    grand.chmod(0o700)
+    assert _check_dirs("anc", grand, parent).returncode == 0
+    # whatever order ls prints them in, and also when only the parent is listed
+    # the shield is what makes the difference
+    assert _check_dirs("anc", parent).returncode == 32
+    # A grandparent the group can traverse shields nothing.
+    grand.chmod(0o750)
+    proc = _check_dirs("anc", grand, parent)
+    assert proc.returncode == 32, proc.stderr
+    assert f"ancestor {parent} " in proc.stderr
+    # End to end through the probe: the 0700 grandparent case is accepted.
+    grand.chmod(0o700)
     proc = env.shell.run_script(env.probe_script(root=parent / "snaps"))
     assert proc.returncode == 0, proc.stderr
 
 
-def test_ancestor_made_writable_after_probe_is_caught_under_the_lock(env: Env) -> None:
-    parent = env.tmp / "late"
-    parent.mkdir()
-    root = parent / "snaps"
-    store = env.store(root=root)
-    probe = store.probe(repo_id="proj-0123456789ab", sha=env.sha)
-    parent.chmod(0o775)
-    proc = env.shell.run_script(_commit_script(env, probe, None))
-    assert proc.returncode == 32 and f"{parent} " in proc.stderr, proc.stderr
+@pytest.mark.parametrize(
+    ("mode", "shields"),
+    [
+        ("drwx------", True),
+        ("drwx------.", True),
+        ("drwx------@", True),
+        ("drwx--S---", True),
+        ("drwx-----T", True),
+        ("drwx------+", False),
+        ("drwx--x---", False),
+        ("drwx--s---", False),
+        ("drwx-----x", False),
+        ("drwxr-x---", False),
+    ],
+)
+def test_mode_shields_predicate(mode: str, shields: bool) -> None:
+    preamble = remote._lock_preamble(
+        client_host="h", client_pid=1, token=TOKEN, lock_wait=1
+    )
+    proc = REAL_RUN(
+        ["/bin/sh", "-s"],
+        input=preamble + f"mode_shields '{mode}' && echo yes || echo no\n",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.stdout.strip() == ("yes" if shields else "no"), proc.stderr

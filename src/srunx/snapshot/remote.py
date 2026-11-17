@@ -182,6 +182,24 @@ trap 'exit 129' HUP
 trap 'exit 141' PIPE
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# A directory shields everything below it when other users cannot traverse it:
+# no group/other execute (chars 7 and 10 are - or S/T) and no ACL ('+'; a
+# trailing '.' SELinux or '@' xattr marker is fine). Owner is checked apart.
+mode_shields() {
+  case $1 in
+    *+*) return 1 ;;
+    ??????[-S]??[-T]*) return 0 ;;
+  esac
+  return 1
+}
+below_shield() {
+  for bs_s in $cd_shields; do
+    case "$1/" in
+      "$bs_s"/?*) return 0 ;;
+    esac
+  done
+  return 1
+}
 check_dirs() {
   cd_kind=$1
   shift
@@ -197,8 +215,23 @@ check_dirs() {
   # instead of being matched to an argument by position.
   cd_all=$(ls -ldn "$@" 2>/dev/null | awk '{print $NF, $1, $3}') || cd_all=
   cd_n=0
+  cd_shields=
+  if [ "$cd_kind" = anc ]; then
+    # ls order is not trusted, so find the shielding directories first and then
+    # judge every ancestor strictly below one as covered.
+    while read -r cd_p cd_mode cd_owner; do
+      if [ "$cd_owner" = "$SNAP_UID" ] && mode_shields "$cd_mode"; then
+        cd_shields="$cd_shields $cd_p"
+      fi
+    done <<CDEOF
+$cd_all
+CDEOF
+  fi
   while read -r cd_p cd_mode cd_owner; do
     cd_n=$((cd_n + 1))
+    if [ -n "$cd_shields" ] && below_shield "$cd_p"; then
+      continue
+    fi
     case $cd_kind in
       own)
         if [ "$cd_owner" != "$SNAP_UID" ]; then
