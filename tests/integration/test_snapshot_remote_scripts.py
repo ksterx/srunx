@@ -334,7 +334,6 @@ def _u_w(path: Path) -> None:
 def test_create_snapshot_is_readonly_with_marker_and_lease(env: Env) -> None:
     env.enable_shim()
     store, probe = env.prepare()
-    assert probe.git == str(env.shim_dir / "git")
     lease = env.new_lease(probe)
     res = store.commit(probe=probe, sha=env.sha, lease=lease)
 
@@ -359,7 +358,11 @@ def test_create_snapshot_is_readonly_with_marker_and_lease(env: Env) -> None:
 def test_reuse_does_not_add_a_second_worktree(env: Env) -> None:
     env.enable_shim()
     store = env.store()
-    assert not store.probe(repo_id="proj-0123456789ab", sha=env.sha).has_commit
+    first_probe = store.probe(repo_id="proj-0123456789ab", sha=env.sha)
+    assert not first_probe.has_commit
+    # A real probe resolves the git found on the remote PATH (the shim here),
+    # which later scripts and --receive-pack must use.
+    assert first_probe.git == str(env.shim_dir / "git")
     store, probe = env.prepare(store)
     ref = _git(
         Path(probe.repo_dir) / "repo.git",
