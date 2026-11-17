@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from srunx.snapshot import remote
+from srunx.snapshot._shell import PLACEHOLDER_RE
 from srunx.snapshot.remote import (
     build_bind_script,
     build_commit_script,
@@ -544,4 +545,4 @@ def test_generated_scripts_have_no_placeholders_left() -> None:
             token=TOKEN,
         ),
     ):
-        assert not remote._PLACEHOLDER_RE.search(script)
+        assert not PLACEHOLDER_RE.search(script)

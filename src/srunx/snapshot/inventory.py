@@ -18,22 +18,24 @@ import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from srunx.snapshot._shell import (
+    MTIME_OF,
+    REPO_DIR_RE,
+    RESOLVE_PATH,
+    TREE_INTACT,
+    check,
+    fill,
+    lock_preamble,
+    repo_vars,
+)
 from srunx.snapshot.errors import SnapshotRemoteError
 from srunx.snapshot.lease import Lease
 from srunx.snapshot.local_git import REPO_ID_RE, SHA_RE
 from srunx.snapshot.remote import (
-    _MTIME_OF,
-    _REPO_DIR_RE,
-    _RESOLVE_PATH,
-    _TREE_INTACT,
     INVENTORY_TIMEOUT,
     LOCK_WAIT_SECONDS,
     PRUNE_TIMEOUT,
     RemoteSnapshotStore,
-    _check,
-    _fill,
-    _lock_preamble,
-    _repo_vars,
 )
 
 _LEASE_ID = r"[0-9a-f]{32}"
@@ -213,7 +215,7 @@ def parse_inventory(stdout: str) -> Inventory:
             if rest != "-" and now is None:
                 raise _bad(line, "bad clock")
         elif kind == "ROOT":
-            if not _REPO_DIR_RE.fullmatch(rest):
+            if not REPO_DIR_RE.fullmatch(rest):
                 raise _bad(line, "unsafe root path")
             root = rest
         elif kind == "EXISTS":
@@ -562,15 +564,15 @@ echo END
 def build_inventory_script(*, root_expr: str, with_size: bool = False) -> str:
     """Read-only inventory of the whole root; takes no lock."""
     # The preamble's ``acquire`` is never called; the owner is a placeholder.
-    preamble = _lock_preamble(
+    preamble = lock_preamble(
         client_host="inventory", client_pid=0, token="0" * 32, lock_wait=0
     )
-    body = _fill(_INVENTORY_BODY, ROOT_EXPR=root_expr)
+    body = fill(_INVENTORY_BODY, ROOT_EXPR=root_expr)
     return (
         preamble
-        + _RESOLVE_PATH
-        + _MTIME_OF
-        + _TREE_INTACT
+        + RESOLVE_PATH
+        + MTIME_OF
+        + TREE_INTACT
         + _GC_HELPERS
         + f"WITH_SIZE={1 if with_size else 0}\n"
         + body
@@ -653,15 +655,15 @@ def build_prune_script(
     """
     calls = ""
     for t in targets:
-        _check(SHA_RE, t.sha, "sha")
-        _check(FINGERPRINT_RE, t.fingerprint, "fingerprint")
+        check(SHA_RE, t.sha, "sha")
+        check(FINGERPRINT_RE, t.fingerprint, "fingerprint")
         listed = FINGERPRINT_RE.fullmatch(t.fingerprint)
         assert listed is not None
         if listed.group(4) == "!":
             raise ValueError(
                 f"fingerprint cannot be attributed to leases: {t.fingerprint!r}"
             )
-        ids = [_check(_LEASE_ID, i, "lease id") for i in t.lease_ids]
+        ids = [check(_LEASE_ID, i, "lease id") for i in t.lease_ids]
         fp_ids = {item.split(":", 1)[0] for item in listed.group(4).split(",") if item}
         if set(ids) != fp_ids:
             raise ValueError("lease ids differ from the ones in the fingerprint")
@@ -670,17 +672,17 @@ def build_prune_script(
             f"{shlex.quote(','.join(ids))}\n"
         )
     return (
-        _lock_preamble(
+        lock_preamble(
             client_host=client_host,
             client_pid=client_pid,
             token=token,
             lock_wait=lock_wait,
         )
-        + _repo_vars(repo_dir, git, None)
-        + _MTIME_OF
-        + _TREE_INTACT
+        + repo_vars(repo_dir, git, None)
+        + MTIME_OF
+        + TREE_INTACT
         + _GC_HELPERS
-        + _fill(_PRUNE_BODY, PRUNE_CALLS=calls, TOKEN=token)
+        + fill(_PRUNE_BODY, PRUNE_CALLS=calls, TOKEN=token)
     )
 
 
