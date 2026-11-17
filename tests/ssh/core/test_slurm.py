@@ -541,6 +541,29 @@ class TestRemoteSbatchOutcomeClassification:
         with pytest.raises(SbatchRejectedError, match="invalid partition"):
             client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
 
+    @pytest.mark.parametrize(
+        "result",
+        [
+            ("", "", 1),  # wrapper / transport failure: no evidence sbatch ran
+            ("", "bash: sbatch: command not found", 127),
+            ("", "Connection reset by peer", 255),
+            ("some stdout", "ssh: warning", 1),
+        ],
+    )
+    def test_indeterminate_on_nonzero_exit_without_sbatch_error_text(
+        self, client, result
+    ):
+        self._prep(client, result)
+
+        with pytest.raises(SbatchIndeterminateError):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+
+    def test_rejected_when_sbatch_error_text_is_in_stdout_stream(self, client):
+        self._prep(client, ("sbatch: error: Batch job submission failed", "", 1))
+
+        with pytest.raises(SbatchRejectedError, match="submission failed"):
+            client.slurm.submit_remote_sbatch_file_checked("/r/x.sh")
+
     def test_indeterminate_on_exit_zero_without_job_id(self, client):
         self._prep(client, ("weird output", "", 0))
 

@@ -670,7 +670,16 @@ class SlurmRemoteClient:
                 f"Remote sbatch exited non-zero but reported job {match.group(1)}. "
                 f"{detail}"
             )
-        raise SbatchRejectedError(f"Failed to submit remote sbatch. {detail}")
+        # A rejection needs positive evidence that sbatch itself refused the
+        # job: its own ``sbatch: error:`` line. A bare non-zero exit (wrapper
+        # failure, dropped session, signal) could follow a submission that
+        # already reached slurmctld, so it keeps the lease.
+        if "sbatch: error:" in f"{stderr or ''}\n{stdout or ''}":
+            raise SbatchRejectedError(f"Failed to submit remote sbatch. {detail}")
+        raise SbatchIndeterminateError(
+            "Remote sbatch exited non-zero without an 'sbatch: error:' message; "
+            f"a job may exist. {detail}"
+        )
 
     # ------------------------------------------------------------------
     # Job status / monitoring
