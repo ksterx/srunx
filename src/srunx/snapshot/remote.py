@@ -453,15 +453,20 @@ if ! "$GIT" --git-dir="$GITDIR" cat-file -e "$SHA^{commit}" 2>/dev/null; then
   echo "commit $SHA is not in $GITDIR" >&2
   exit @EXIT_COMMIT_MISSING@
 fi
-if [ -f "$MARK" ] && [ -d "$TREE" ]; then
+# -f / -d follow symlinks: a link planted at the marker or tree path must not
+# pass for a complete snapshot, and the tree must really be at the commit.
+if [ -f "$MARK" ] && [ ! -L "$MARK" ] && [ -d "$TREE" ] && [ ! -L "$TREE" ] \
+  && [ "$("$GIT" -C "$TREE" rev-parse HEAD 2>/dev/null)" = "$SHA" ]; then
   STATUS=reused
 else
   STATUS=created
   if [ -e "$TREE" ] || [ -L "$TREE" ] || [ -e "$MARK" ] || "$GIT" --git-dir="$GITDIR" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $TREE"; then
     STATUS=recovered
-    if [ -d "$TREE" ] && [ ! -L "$TREE" ]; then chmod -R u+w "$TREE" 2>/dev/null; fi
+    # Drop links first so neither chmod nor worktree remove can follow them.
+    if [ -L "$TREE" ]; then rm -f "$TREE"; fi
+    if [ -d "$TREE" ]; then chmod -R u+w "$TREE" 2>/dev/null; fi
     "$GIT" --git-dir="$GITDIR" worktree remove --force "$TREE" >/dev/null 2>&1 || rm -rf "$TREE"
-    rm -f "$MARK"
+    rm -rf "$MARK"
     "$GIT" --git-dir="$GITDIR" worktree prune --expire=now >/dev/null 2>&1
   fi
   if ! "$GIT" --git-dir="$GITDIR" worktree add --detach -q "$TREE" "$SHA" >&2; then
@@ -510,7 +515,7 @@ def build_commit_script(
 
 
 _BIND_BODY = r"""acquire
-if [ -f "$MARK" ]; then SNAPSHOT=present; else SNAPSHOT=missing; fi
+if [ -f "$MARK" ] && [ ! -L "$MARK" ]; then SNAPSHOT=present; else SNAPSHOT=missing; fi
 write_lease
 release
 printf 'SNAPSHOT=%s\n' "$SNAPSHOT"

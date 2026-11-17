@@ -692,3 +692,51 @@ def test_foreign_owner_is_rejected_by_the_uid_comparison() -> None:
     else:
         assert proc.returncode == 32, (proc.returncode, proc.stderr)
         assert "owned by uid 0" in proc.stderr and "/usr" in proc.stderr
+
+
+# ------------------------------------------- tree / marker must not be links
+
+
+def test_symlinked_tree_dir_is_not_reused(env: Env) -> None:
+    store, probe = env.prepare()
+    res = store.commit(probe=probe, sha=env.sha, lease=None)
+    tree = Path(res.path)
+    elsewhere = env.tmp / "elsewhere-tree"
+    _u_w(tree)  # renaming a directory needs write permission on it
+    tree.rename(elsewhere)
+    tree.symlink_to(elsewhere, target_is_directory=True)
+    again = store.commit(probe=probe, sha=env.sha, lease=None)
+    assert again.status == "recovered"
+    assert not tree.is_symlink() and tree.is_dir()
+    assert (elsewhere / "README").is_file()  # the link target was left alone
+
+
+def test_symlinked_marker_is_not_reused(env: Env) -> None:
+    store, probe = env.prepare()
+    res = store.commit(probe=probe, sha=env.sha, lease=None)
+    marker = Path(probe.repo_dir) / "trees" / f"{env.sha}.complete"
+    other = env.tmp / "other-marker"
+    other.write_text("")
+    marker.unlink()
+    marker.symlink_to(other)
+    again = store.commit(probe=probe, sha=env.sha, lease=None)
+    assert again.status == "recovered"
+    assert marker.is_file() and not marker.is_symlink()
+    assert not os.access(res.path, os.W_OK)
+
+
+def test_tree_at_another_commit_is_not_reused(env: Env) -> None:
+    store, probe = env.prepare()
+    res = store.commit(probe=probe, sha=env.sha, lease=None)
+    tree = Path(res.path)
+    _u_w(tree)
+    # Move HEAD of the worktree away from the expected sha.
+    (env.repo / "extra").write_text("x")
+    _git(env.repo, "add", "-A")
+    _git(env.repo, "commit", "-q", "-m", "second")
+    new_sha = _git(env.repo, "rev-parse", "HEAD")
+    gitdir = _git(tree, "rev-parse", "--git-dir")
+    (Path(gitdir) / "HEAD").write_text(new_sha + "\n")
+    again = store.commit(probe=probe, sha=env.sha, lease=None)
+    assert again.status == "recovered"
+    assert _git(tree, "rev-parse", "HEAD") == env.sha
