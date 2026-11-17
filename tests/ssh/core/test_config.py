@@ -450,3 +450,45 @@ class TestWebConfigSshKeyExpansion:
         monkeypatch.setenv("SRUNX_SSH_KEY", "~/.ssh/env_key")
         cfg = WebConfig()
         assert cfg.ssh_key_filename == str(Path("~/.ssh/env_key").expanduser())
+
+
+class TestServerProfileSnapshotRoot:
+    def _profile(self, **kw) -> ServerProfile:
+        return ServerProfile(hostname="h", username="u", key_filename="/k", **kw)
+
+    def test_snapshot_root_defaults_to_none(self):
+        assert self._profile().snapshot_root is None
+
+    @pytest.mark.parametrize(
+        "value", ["/data/snap", "~", "~/.srunx/snapshots", "/a/b.c_d+e-f"]
+    )
+    def test_snapshot_root_accepts_valid(self, value):
+        assert self._profile(snapshot_root=value).snapshot_root == value
+
+    def test_snapshot_root_empty_string_becomes_none(self):
+        assert self._profile(snapshot_root="").snapshot_root is None
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "/data/my snap",
+            "/data/it's",
+            '/data/"q"',
+            "/data/$HOME",
+            "/data;rm",
+            "/data/../etc",
+            "~/../x",
+            "relative/path",
+            "/a/~b",
+            "~user/x",
+        ],
+    )
+    def test_snapshot_root_rejects_invalid(self, value):
+        with pytest.raises(ValidationError):
+            self._profile(snapshot_root=value)
+
+    def test_snapshot_root_old_config_loads_unchanged(self):
+        profile = ServerProfile.model_validate(
+            {"hostname": "h", "username": "u", "key_filename": "/k"}
+        )
+        assert profile.snapshot_root is None

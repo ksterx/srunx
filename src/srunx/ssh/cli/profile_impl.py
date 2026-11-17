@@ -313,6 +313,7 @@ def update_profile_impl(
     proxy_jump: str | None = None,
     description: str | None = None,
     config: str | None = None,
+    snapshot_root: str | None = None,
 ):
     """Implementation for updating an existing profile."""
     try:
@@ -342,6 +343,11 @@ def update_profile_impl(
             update_params["proxy_jump"] = proxy_jump
         if description is not None:
             update_params["description"] = description
+        if snapshot_root is not None:
+            from srunx.ssh.core.config import validate_snapshot_root
+
+            # Empty string clears the field (stored as None).
+            update_params["snapshot_root"] = validate_snapshot_root(snapshot_root)
 
         if not update_params:
             console.print("[yellow]No updates provided[/yellow]")

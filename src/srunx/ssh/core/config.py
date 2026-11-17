@@ -31,6 +31,33 @@ def validate_profile_name(name: str) -> None:
         )
 
 
+# Charset shared with ``srunx.snapshot.remote.SNAPSHOT_ROOT_RE``: the root ends
+# up unquoted-safe in remote scripts and push destinations, so anything outside
+# it (spaces, quotes, ``$``, ``;``) is rejected up front. ``~`` only leads.
+SNAPSHOT_ROOT_RE = re.compile(r"(~|~/[A-Za-z0-9._/+-]*|/[A-Za-z0-9._/+-]*)")
+
+
+def validate_snapshot_root(value: str | None) -> str | None:
+    """Validate a snapshot root; ``None`` / empty string means "unset".
+
+    Raises:
+        ValueError: When the path is relative, uses characters outside
+            ``[A-Za-z0-9._/~+-]``, puts ``~`` anywhere but first, or has a
+            ``..`` segment.
+    """
+    if value is None or value == "":
+        return None
+    if not SNAPSHOT_ROOT_RE.fullmatch(value):
+        raise ValueError(
+            f"Invalid snapshot_root {value!r}: must be absolute or start with "
+            "'~', and contain only [A-Za-z0-9._/~+-] ('~' only as the first "
+            "character)"
+        )
+    if ".." in value.split("/"):
+        raise ValueError(f"Invalid snapshot_root {value!r}: '..' is not allowed")
+    return value
+
+
 class MountConfig(BaseModel):
     """Local-to-remote path mapping for a project directory.
 
@@ -95,6 +122,17 @@ class ServerProfile(BaseModel):
     mounts: list[MountConfig] = Field(
         default=[], description="Local-to-remote path mappings for project directories"
     )
+
+    snapshot_root: str | None = Field(
+        None,
+        description="Remote directory holding read-only per-commit snapshots "
+        "(default ~/.srunx/snapshots)",
+    )
+
+    @field_validator("snapshot_root")
+    @classmethod
+    def _validate_snapshot_root(cls, v: str | None) -> str | None:
+        return validate_snapshot_root(v)
 
     @model_validator(mode="after")
     def expand_key_filename(self) -> "ServerProfile":
@@ -244,7 +282,9 @@ class ConfigManager:
             profile_data = self.config_data["profiles"][name]
 
             for key, value in kwargs.items():
-                if value is not None:  # Only update non-None values
+                # Only update non-None values; ``snapshot_root`` may be
+                # cleared back to None (unset).
+                if value is not None or key == "snapshot_root":
                     profile_data[key] = value
 
             self.save_config()

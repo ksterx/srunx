@@ -547,6 +547,14 @@ def update_profile(
     description: Annotated[
         str | None, typer.Option("--description", help="Profile description")
     ] = None,
+    snapshot_root: Annotated[
+        str | None,
+        typer.Option(
+            "--snapshot-root",
+            help="Remote directory for per-commit snapshots "
+            "(absolute or ~-relative; empty string clears)",
+        ),
+    ] = None,
     config: _ConfigOpt = None,
 ):
     """Update an existing profile."""
@@ -562,6 +570,7 @@ def update_profile(
         proxy_jump,
         description,
         config,
+        snapshot_root,
     )
 
 
