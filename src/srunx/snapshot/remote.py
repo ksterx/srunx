@@ -211,7 +211,8 @@ _WRITE_LEASE = r"""write_lease() {
 """
 
 _PROBE_BODY = r"""resolve_path() {
-  rp_in=$(printf '%s' "$1" | sed 's:/*$::')
+  rp_in=$1
+  while [ "${rp_in%/}" != "$rp_in" ]; do rp_in=${rp_in%/}; done
   [ -n "$rp_in" ] || rp_in=/
   RESOLVED=
   case $rp_in in /*) ;; *) return 1 ;; esac
@@ -253,12 +254,14 @@ case $GIT in
   /*) ;;
   *) echo "git was not found on the remote PATH" >&2; exit 20 ;;
 esac
-GITVER=$("$GIT" --version 2>/dev/null | sed -n 's/^git version \([0-9][0-9.]*\).*/\1/p')
+gv_line=$("$GIT" --version 2>/dev/null || true)
+GITVER=${gv_line#git version }
+GITVER=${GITVER%%[!0-9.]*}
 gv_major=${GITVER%%.*}
 gv_rest=${GITVER#*.}
 gv_minor=${gv_rest%%.*}
 case "$gv_major$gv_minor" in
-  ''|*[!0-9]*) echo "cannot parse remote git version: $GITVER" >&2; exit 21 ;;
+  ''|*[!0-9]*) echo "cannot parse remote git version: $gv_line" >&2; exit 21 ;;
 esac
 if [ "$gv_major" -lt @MIN_MAJOR@ ] || { [ "$gv_major" -eq @MIN_MAJOR@ ] && [ "$gv_minor" -lt @MIN_MINOR@ ]; }; then
   echo "remote git $GITVER is older than @MIN_MAJOR@.@MIN_MINOR@" >&2
