@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from loguru import logger
 
 from srunx.common.exceptions import SbatchIndeterminateError, SbatchRejectedError
 from srunx.snapshot.errors import SnapshotRemoteError, SnapshotValidationError
+from srunx.snapshot.job_states import SlurmExecute
 from srunx.snapshot.lease import Lease
 from srunx.snapshot.local_git import SnapshotPlan
 from srunx.snapshot.remote import CommitResult, ProbeResult
@@ -87,6 +89,7 @@ def make_plan(
 def make_service(
     store: FakeStore,
     *,
+    slurm_execute: SlurmExecute | None = None,
     snapshot_root: str | None = None,
     mounts: list[MountConfig] | None = None,
 ) -> SnapshotService:
@@ -97,7 +100,12 @@ def make_service(
         snapshot_root=snapshot_root,
         mounts=mounts or [],
     )
-    return SnapshotService(profile_name="prof", profile=profile, store=store)
+    return SnapshotService(
+        profile_name="prof",
+        profile=profile,
+        store=store,
+        slurm_execute=slurm_execute,
+    )
 
 
 @pytest.fixture
@@ -300,6 +308,77 @@ class TestLeasedSnapshot:
             with make_service(store).leased_snapshot(make_plan()):
                 pass  # pragma: no cover
         assert "delete_lease" not in store.calls and "bind" not in store.calls
+
+
+def _sacct_runner(
+    rows: str, rc: int = 0, calls: list[str] | None = None
+) -> SlurmExecute:
+    def run(cmd: str) -> tuple[str, str, int]:
+        if calls is not None:
+            calls.append(cmd)
+        marker = re.search(r"(__SRUNX_[0-9a-f]+_CLUSTER__)", cmd)
+        assert marker
+        return f"{marker.group(1)}\n{rows}\nRC {rc}\n", "", 0
+
+    return run
+
+
+class TestBindCluster:
+    def _bind(self, store: FakeStore, execute: SlurmExecute | None) -> None:
+        with make_service(store, slurm_execute=execute).leased_snapshot(
+            make_plan()
+        ) as handle:
+            handle.bind(9)
+
+    def test_cluster_is_stored_when_found(self) -> None:
+        store = FakeStore()
+        calls: list[str] = []
+        self._bind(store, _sacct_runner("gpucloud2\n", calls=calls))
+        assert store.bound_lease is not None
+        assert store.bound_lease.cluster == "gpucloud2"
+        assert len(calls) == 1
+
+    def test_cluster_none_when_lookup_returns_nothing(self) -> None:
+        store = FakeStore()
+        self._bind(store, _sacct_runner(""))
+        assert store.bound_lease is not None
+        assert store.bound_lease.state == "bound"
+        assert store.bound_lease.cluster is None
+
+    def test_cluster_none_when_lookup_raises_and_bind_still_happens(self) -> None:
+        def boom(cmd: str) -> tuple[str, str, int]:
+            raise RuntimeError("ssh down")
+
+        store = FakeStore()
+        self._bind(store, boom)
+        assert store.bound_lease is not None
+        assert store.bound_lease.job_id == 9 and store.bound_lease.cluster is None
+
+    def test_cluster_none_without_a_runner(self) -> None:
+        store = FakeStore()
+        self._bind(store, None)
+        assert store.bound_lease is not None
+        assert store.bound_lease.cluster is None
+
+    def test_cluster_none_on_timeout_exit(self) -> None:
+        store = FakeStore()
+        self._bind(store, _sacct_runner("gpucloud2\n", rc=124))
+        assert store.bound_lease is not None
+        assert store.bound_lease.cluster is None
+
+    def test_cluster_lookup_exception_inside_helper_is_contained(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import srunx.snapshot.service as svc
+
+        def explode(job_id: int, execute: object) -> str:
+            raise ValueError("unexpected")
+
+        monkeypatch.setattr(svc, "query_job_cluster", explode)
+        store = FakeStore()
+        self._bind(store, _sacct_runner("x\n"))
+        assert store.bound_lease is not None
+        assert store.bound_lease.cluster is None
 
 
 def test_push_failure_is_tolerated_when_commit_step_finds_the_commit() -> None:

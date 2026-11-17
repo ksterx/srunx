@@ -196,7 +196,11 @@ def submit_via_snapshot(
         if warning:
             logger.warning("{}", warning)
 
-    service = SnapshotService(profile_name=profile_name, profile=profile)
+    service = SnapshotService(
+        profile_name=profile_name,
+        profile=profile,
+        slurm_execute=getattr(rt.job_ops, "run_slurm_command", None),
+    )
     try:
         with service.leased_snapshot(plan) as handle:
             prepared = handle.prepared

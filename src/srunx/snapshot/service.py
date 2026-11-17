@@ -12,6 +12,7 @@ from loguru import logger
 
 from srunx.common.exceptions import SbatchRejectedError
 from srunx.snapshot.errors import SnapshotRemoteError, SnapshotValidationError
+from srunx.snapshot.job_states import SlurmExecute, query_job_cluster
 from srunx.snapshot.lease import Lease
 from srunx.snapshot.local_git import SnapshotPlan
 from srunx.snapshot.remote import (
@@ -74,8 +75,10 @@ class LeaseHandle:
         prepared: PreparedSnapshot,
         lease: Lease,
         lease_path: str,
+        slurm_execute: SlurmExecute | None = None,
     ) -> None:
         self._store = store
+        self._slurm_execute = slurm_execute
         self.prepared = prepared
         self.lease = lease
         self.lease_path = lease_path
@@ -93,7 +96,14 @@ class LeaseHandle:
 
     def bind(self, job_id: int) -> None:
         """Record the job id in the lease. Never raises: the job already exists."""
-        bound = self.lease.bound(job_id)
+        cluster: str | None = None
+        try:
+            # One bounded attempt; a missing cluster only weakens prune's
+            # attribution of this lease, it must never fail the bind.
+            cluster = query_job_cluster(job_id, self._slurm_execute)
+        except Exception as exc:
+            logger.debug("cluster lookup for job {} failed: {}", job_id, exc)
+        bound = self.lease.bound(job_id, cluster=cluster)
         try:
             present = self._store.bind(repo_dir=self.prepared.repo_dir, lease=bound)
         except Exception as exc:
@@ -124,7 +134,9 @@ class SnapshotService:
         profile: ServerProfile,
         shell: RemoteShell | None = None,
         store: SnapshotStore | None = None,
+        slurm_execute: SlurmExecute | None = None,
     ) -> None:
+        self._slurm_execute = slurm_execute
         self._profile_name = profile_name
         self._profile = profile
         self._mounts: Sequence[str] = [m.remote for m in profile.mounts]
@@ -205,7 +217,11 @@ class SnapshotService:
             prepared.repo_dir, lease.lease_id
         )
         handle = LeaseHandle(
-            store=self._store, prepared=prepared, lease=lease, lease_path=lease_path
+            store=self._store,
+            prepared=prepared,
+            lease=lease,
+            lease_path=lease_path,
+            slurm_execute=self._slurm_execute,
         )
         try:
             yield handle
