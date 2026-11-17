@@ -18,6 +18,7 @@ from srunx.cli._helpers.sbatch_helpers import (
     last_option_value,
     script_sbatch_tokens,
 )
+from srunx.cli._helpers.snapshot_gc import slurm_runner
 from srunx.common.exceptions import SbatchSubmitError, TransportError
 from srunx.common.logging import get_logger
 from srunx.snapshot import (
@@ -32,6 +33,31 @@ from srunx.snapshot.remote import DEFAULT_SNAPSHOT_ROOT
 logger = get_logger(__name__)
 
 
+def has_clusters_option(tokens: Sequence[str]) -> bool:
+    """True when *tokens* carry sbatch ``-M`` / ``--clusters`` in any spelling."""
+    for tok in tokens:
+        if tok.startswith("-M") and not tok.startswith("--"):
+            return True
+        name = tok.split("=", 1)[0]
+        if name.startswith("--clu") and "--clusters".startswith(name):
+            return True
+    return False
+
+
+def reject_clusters_in_script(script_text: str | None) -> None:
+    """Exit 2 when the committed script's ``#SBATCH`` lines select another cluster."""
+    if script_text is None:
+        return
+    tokens = [t for line in script_sbatch_tokens(script_text) for t in line]
+    if has_clusters_option(tokens):
+        raise typer.BadParameter(
+            "--snapshot cannot be combined with a #SBATCH --clusters/-M directive "
+            "in the script: the snapshot lease is attributed to the cluster of "
+            "the submission host.",
+            param_hint="--snapshot",
+        )
+
+
 def validate_snapshot_options(
     *,
     snapshot: bool,
@@ -43,6 +69,7 @@ def validate_snapshot_options(
     sync: bool | None,
     force_sync: bool,
     profile: str | None,
+    sbatch_args: Sequence[str] = (),
 ) -> bool:
     """Return True when snapshot mode is requested; reject conflicting options.
 
@@ -59,11 +86,17 @@ def validate_snapshot_options(
         (local, "--local"),
         (sync is True, "--sync"),
         (force_sync, "--force-sync"),
+        (has_clusters_option(sbatch_args), "--clusters/-M"),
     )
     for present, flag in conflicts:
         if present:
             raise typer.BadParameter(
-                f"--snapshot cannot be combined with {flag}.",
+                f"--snapshot cannot be combined with {flag}"
+                + (
+                    " (the lease would be attributed to the wrong cluster)."
+                    if flag == "--clusters/-M"
+                    else "."
+                ),
                 param_hint="--snapshot",
             )
     if script is None:
@@ -199,7 +232,7 @@ def submit_via_snapshot(
     service = SnapshotService(
         profile_name=profile_name,
         profile=profile,
-        slurm_execute=getattr(rt.job_ops, "run_slurm_command", None),
+        slurm_execute=slurm_runner(rt),
     )
     try:
         with service.leased_snapshot(plan) as handle:

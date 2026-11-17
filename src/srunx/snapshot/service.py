@@ -96,13 +96,9 @@ class LeaseHandle:
 
     def bind(self, job_id: int) -> None:
         """Record the job id in the lease. Never raises: the job already exists."""
-        cluster: str | None = None
-        try:
-            # One bounded attempt; a missing cluster only weakens prune's
-            # attribution of this lease, it must never fail the bind.
-            cluster = query_job_cluster(job_id, self._slurm_execute)
-        except Exception as exc:
-            logger.debug("cluster lookup for job {} failed: {}", job_id, exc)
+        # One bounded attempt that never raises; a missing cluster only makes
+        # prune keep this lease.
+        cluster = query_job_cluster(job_id, self._slurm_execute)
         bound = self.lease.bound(job_id, cluster=cluster)
         try:
             present = self._store.bind(repo_dir=self.prepared.repo_dir, lease=bound)

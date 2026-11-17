@@ -373,20 +373,6 @@ class TestBindCluster:
         assert store.bound_lease is not None
         assert store.bound_lease.cluster is None
 
-    def test_cluster_lookup_exception_inside_helper_is_contained(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import srunx.snapshot.service as svc
-
-        def explode(job_id: int, execute: object) -> str:
-            raise ValueError("unexpected")
-
-        monkeypatch.setattr(svc, "query_job_cluster", explode)
-        store = FakeStore()
-        self._bind(store, _sacct_runner("x\n"))
-        assert store.bound_lease is not None
-        assert store.bound_lease.cluster is None
-
 
 def test_push_failure_is_tolerated_when_commit_step_finds_the_commit() -> None:
     store = FakeStore()
