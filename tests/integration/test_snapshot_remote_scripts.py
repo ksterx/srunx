@@ -613,6 +613,14 @@ def test_group_writable_repo_dir_rejected_by_locked_scripts(env: Env) -> None:
     assert "chmod go-w" in proc.stderr
     assert not (repo / ".lock").exists()
     assert not (repo / "trees" / env.sha).exists()
+    # ``ls`` sorts by name, so the message must still name the directory that
+    # is actually bad: only trees/ writable -> trees/, not leases/.
+    repo.chmod(0o700)
+    (repo / "trees").chmod(0o770)
+    proc = env.shell.run_script(_commit_script(env, probe, lease))
+    assert proc.returncode == 32, proc.stderr
+    assert f"{repo}/trees is group" in proc.stderr, proc.stderr
+    assert "leases" not in proc.stderr
 
 
 def test_group_writable_repo_dir_rejected_by_probe(env: Env) -> None:
@@ -740,3 +748,36 @@ def test_tree_at_another_commit_is_not_reused(env: Env) -> None:
     again = store.commit(probe=probe, sha=env.sha, lease=None)
     assert again.status == "recovered"
     assert _git(tree, "rev-parse", "HEAD") == env.sha
+
+
+# ------------------------------------------- ancestors of the root (StrictModes)
+
+
+def test_root_under_group_writable_parent_rejected(env: Env) -> None:
+    parent = env.tmp / "shared"
+    parent.mkdir()
+    parent.chmod(0o775)
+    root = parent / "snaps"
+    proc = env.shell.run_script(env.probe_script(root=root))
+    assert proc.returncode == 32, proc.stderr
+    assert f"{parent} " in proc.stderr and "private directory" in proc.stderr
+    assert not root.exists()
+
+
+def test_root_under_sticky_world_writable_parent_accepted(env: Env) -> None:
+    parent = env.tmp / "tmpish"
+    parent.mkdir()
+    parent.chmod(0o1777)
+    proc = env.shell.run_script(env.probe_script(root=parent / "snaps"))
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_ancestor_made_writable_after_probe_is_caught_under_the_lock(env: Env) -> None:
+    parent = env.tmp / "late"
+    parent.mkdir()
+    root = parent / "snaps"
+    store = env.store(root=root)
+    probe = store.probe(repo_id="proj-0123456789ab", sha=env.sha)
+    parent.chmod(0o775)
+    proc = env.shell.run_script(_commit_script(env, probe, None))
+    assert proc.returncode == 32 and f"{parent} " in proc.stderr, proc.stderr

@@ -182,38 +182,77 @@ trap 'exit 129' HUP
 trap 'exit 141' PIPE
 trap 'exit 130' INT
 trap 'exit 143' TERM
-check_private_dir() {
-  for cpd_p in "$@"; do
-    if [ -L "$cpd_p" ] || [ ! -d "$cpd_p" ]; then
-      echo "snapshot directory is missing or a symlink: $cpd_p (it must be a real directory; remove the symlink or choose a private snapshot_root)" >&2
+check_dirs() {
+  cd_kind=$1
+  shift
+  for cd_p in "$@"; do
+    if [ -L "$cd_p" ] || [ ! -d "$cd_p" ]; then
+      echo "snapshot directory is missing or a symlink: $cd_p (it must be a real directory; remove the symlink or choose a private snapshot_root)" >&2
       exit @EXIT_DIR_UNSAFE@
     fi
   done
   [ -n "${SNAP_UID:-}" ] || SNAP_UID=$(id -u)
-  # One ls + awk for all paths (ls -ldn keeps the order of its arguments).
-  cpd_all=$(ls -ldn "$@" 2>/dev/null | awk '{print $1, $3}') || cpd_all=
-  for cpd_p in "$@"; do
-    cpd_l=${cpd_all%%
-*}
-    case $cpd_all in *'
-'*) cpd_all=${cpd_all#*
-} ;; *) cpd_all= ;; esac
-    cpd_mode=${cpd_l% *}
-    cpd_owner=${cpd_l#* }
-    if [ -z "$cpd_l" ] || [ "$cpd_owner" != "$SNAP_UID" ]; then
-      echo "snapshot directory $cpd_p is owned by uid ${cpd_owner:-unknown} (mode ${cpd_mode:-unknown}), not by you (uid $SNAP_UID); choose a private snapshot_root or have the owner hand it over" >&2
-      exit @EXIT_DIR_UNSAFE@
-    fi
-    case $cpd_mode in
-      ?????w*|????????w*)
-        echo "snapshot directory $cpd_p is group- or other-writable (mode $cpd_mode); another user could swap its contents. Fix: chmod go-w $cpd_p, or choose a private snapshot_root" >&2
-        exit @EXIT_DIR_UNSAFE@
+  # One ls + awk for all paths. ls sorts its operands by name, so every output
+  # line carries its own path (last field; the allowed charset has no spaces)
+  # instead of being matched to an argument by position.
+  cd_all=$(ls -ldn "$@" 2>/dev/null | awk '{print $NF, $1, $3}') || cd_all=
+  cd_n=0
+  while read -r cd_p cd_mode cd_owner; do
+    cd_n=$((cd_n + 1))
+    case $cd_kind in
+      own)
+        if [ "$cd_owner" != "$SNAP_UID" ]; then
+          echo "snapshot directory $cd_p is owned by uid $cd_owner (mode $cd_mode), not by you (uid $SNAP_UID); choose a private snapshot_root or have the owner hand it over" >&2
+          exit @EXIT_DIR_UNSAFE@
+        fi
+        case $cd_mode in
+          ?????w*|????????w*)
+            echo "snapshot directory $cd_p is group- or other-writable (mode $cd_mode); another user could swap its contents. Fix: chmod go-w $cd_p, or choose a private snapshot_root" >&2
+            exit @EXIT_DIR_UNSAFE@
+            ;;
+        esac
+        ;;
+      *)
+        if [ "$cd_owner" != "$SNAP_UID" ] && [ "$cd_owner" != 0 ]; then
+          echo "snapshot root ancestor $cd_p is owned by uid $cd_owner (mode $cd_mode), neither you (uid $SNAP_UID) nor root; another user could replace the snapshot root. Fix: choose a snapshot_root under a private directory" >&2
+          exit @EXIT_DIR_UNSAFE@
+        fi
+        case $cd_mode in
+          ?????????[tT]*) ;;
+          ?????w*|????????w*)
+            echo "snapshot root ancestor $cd_p is group- or other-writable without the sticky bit (owner uid $cd_owner, mode $cd_mode); another user could replace the snapshot root. Fix: choose a snapshot_root under a private directory, or chmod go-w $cd_p" >&2
+            exit @EXIT_DIR_UNSAFE@
+            ;;
+        esac
         ;;
     esac
+  done <<CDEOF
+$cd_all
+CDEOF
+  if [ "$cd_n" != "$#" ]; then
+    echo "cannot inspect snapshot directories: $*" >&2
+    exit @EXIT_DIR_UNSAFE@
+  fi
+}
+check_private_dir() {
+  check_dirs own "$@"
+}
+check_ancestors() {
+  # Every existing ancestor up to /, StrictModes style. Missing ones are created
+  # by us under umask 077, so only the nearest existing one matters.
+  ca_list=
+  ca_p=${1%/*}
+  while [ -n "$ca_p" ]; do
+    if [ -d "$ca_p" ]; then ca_list="$ca_list $ca_p"; fi
+    ca_p=${ca_p%/*}
   done
+  ca_list="$ca_list /"
+  # shellcheck disable=SC2086
+  check_dirs anc $ca_list
 }
 check_store_dirs() {
   [ -n "${REPO:-}" ] || return 0
+  check_ancestors "${REPO%/*}"
   check_private_dir "${REPO%/*}" "$REPO" "$REPO/trees" "$REPO/leases"
 }
 acquire() {
@@ -350,6 +389,10 @@ fi
 resolve_path "$ROOT_IN" || { echo "snapshot root cannot be resolved: $ROOT_IN" >&2; exit @EXIT_ROOT_INVALID@; }
 ROOT=$RESOLVED
 check_mounts || exit @EXIT_ROOT_OVERLAP@
+case $ROOT in
+  *[!A-Za-z0-9._/+-]*) echo "snapshot root has characters outside [A-Za-z0-9._/+-]: $ROOT" >&2; exit @EXIT_ROOT_INVALID@ ;;
+esac
+check_ancestors "$ROOT"
 (umask 077; mkdir -p "$ROOT") || { echo "cannot create snapshot root: $ROOT" >&2; exit @EXIT_ROOT_INVALID@; }
 resolve_path "$ROOT" || { echo "snapshot root cannot be resolved: $ROOT" >&2; exit @EXIT_ROOT_INVALID@; }
 ROOT=$RESOLVED
