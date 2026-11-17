@@ -11,10 +11,26 @@ message names the path and the owner).
 
 from __future__ import annotations
 
+import os
 import posixpath
 import re
+import secrets
 import shlex
+import socket
+import subprocess
 from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal, Protocol
+
+from loguru import logger
+
+from srunx.snapshot.errors import (
+    SnapshotLockTimeoutError,
+    SnapshotRemoteError,
+    SnapshotValidationError,
+)
+from srunx.snapshot.lease import Lease
 
 DEFAULT_SNAPSHOT_ROOT = "~/.srunx/snapshots"
 # Shared charset with ``srunx.ssh.core.config.validate_snapshot_root``.
@@ -468,3 +484,251 @@ def build_delete_lease_script(
         + _lease_vars(None, lease_id)
         + _DELETE_BODY
     )
+
+
+class RemoteShell(Protocol):
+    """What the store needs from the transport (``RsyncClient`` in production)."""
+
+    def run_script(
+        self, script: str, *, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]: ...
+
+    def ssh_command(self) -> list[str]: ...
+
+    def remote_spec(self, path: str) -> str: ...
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    root: str
+    repo_dir: str
+    git: str
+    git_version: str
+    has_commit: bool
+
+
+@dataclass(frozen=True)
+class CommitResult:
+    path: str
+    status: Literal["reused", "created", "recovered"]
+    lease_path: str | None
+
+
+_EXIT_MESSAGES = {
+    20: "git was not found on the remote PATH (git >= {min} is required)",
+    21: "remote git is too old (git >= {min} is required)",
+    22: "the snapshot root is invalid or unusable",
+    23: "the snapshot root overlaps a mount, or their relation could not be determined",
+    24: "could not initialise the bare repository on the remote",
+    26: "the commit is missing from the remote repository",
+    27: "git worktree add failed on the remote",
+    28: "chmod -R a-w failed on the remote snapshot",
+    29: "could not create the snapshot completion marker",
+    31: "could not write the lease (refused or failed)",
+}
+
+
+def _parse_kv(stdout: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and re.fullmatch(r"[A-Z]+", key):
+            out[key] = value
+    return out
+
+
+class RemoteSnapshotStore:
+    """Runs the remote scripts and the push; maps every failure to a precise error."""
+
+    def __init__(
+        self,
+        shell: RemoteShell,
+        *,
+        snapshot_root: str | None,
+        mounts: Sequence[str],
+        lock_wait: int = LOCK_WAIT_SECONDS,
+    ) -> None:
+        self._shell = shell
+        self._mounts = list(mounts)
+        self._lock_wait = lock_wait
+        try:
+            self._root_expr = root_expr(snapshot_root)
+        except ValueError as exc:
+            raise SnapshotValidationError(str(exc)) from exc
+
+    @staticmethod
+    def lease_path(repo_dir: str, lease_id: str) -> str:
+        return f"{repo_dir}/leases/{lease_id}.json"
+
+    def _owner(self) -> dict[str, object]:
+        return {
+            "client_host": socket.gethostname(),
+            "client_pid": os.getpid(),
+            "token": secrets.token_hex(16),
+        }
+
+    def _run(self, script: str, *, timeout: float, what: str) -> dict[str, str]:
+        try:
+            proc = self._shell.run_script(script, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise SnapshotRemoteError(
+                f"remote {what} timed out after {timeout:g}s"
+            ) from exc
+        except OSError as exc:
+            raise SnapshotRemoteError(f"remote {what} could not run: {exc}") from exc
+        if proc.returncode != 0:
+            self._raise_for(proc.returncode, proc.stderr or "", what)
+        return _parse_kv(proc.stdout or "")
+
+    def _raise_for(self, code: int, stderr: str, what: str) -> None:
+        stderr = stderr.strip()
+        if code == 30:
+            lines = stderr.splitlines()
+            lock = next(
+                (ln[len("LOCK=") :] for ln in lines if ln.startswith("LOCK=")),
+                "<unknown>",
+            )
+            owner = "\n".join(ln for ln in lines if not ln.startswith("LOCK="))
+            raise SnapshotLockTimeoutError(
+                f"could not acquire the snapshot lock {lock} within "
+                f"{self._lock_wait}s during {what}.\n"
+                f"Lock owner:\n{owner or 'unknown'}\n"
+                "If that owner is no longer running, remove the lock by hand "
+                f"(only after confirming): rm -rf {shlex.quote(lock)}"
+            )
+        template = _EXIT_MESSAGES.get(code)
+        if template is not None:
+            minimum = ".".join(str(n) for n in MIN_REMOTE_GIT)
+            msg = f"{template.format(min=minimum)} ({what}, exit {code})"
+        else:
+            msg = f"remote {what} failed (exit {code})"
+        if stderr:
+            msg += f": {stderr}"
+        raise SnapshotRemoteError(msg)
+
+    @staticmethod
+    def _need(values: dict[str, str], *keys: str, what: str) -> None:
+        missing = [k for k in keys if k not in values]
+        if missing:
+            raise SnapshotRemoteError(
+                f"remote {what} returned no {', '.join(missing)} (unexpected output)"
+            )
+
+    def probe(self, *, repo_id: str, sha: str) -> ProbeResult:
+        script = build_probe_script(
+            root_expr=self._root_expr,
+            repo_id=repo_id,
+            sha=sha,
+            mounts=self._mounts,
+            lock_wait=self._lock_wait,
+            **self._owner(),  # type: ignore[arg-type]
+        )
+        out = self._run(script, timeout=PROBE_TIMEOUT, what="probe")
+        self._need(out, "ROOT", "REPO", "GIT", "GITVER", "HAVE", what="probe")
+        for key in ("ROOT", "REPO"):
+            if not _REPO_DIR_RE.fullmatch(out[key]):
+                raise SnapshotRemoteError(
+                    f"remote probe reported an unsafe {key} path: {out[key]!r}"
+                )
+        if not out["GIT"].startswith("/"):
+            raise SnapshotRemoteError(
+                f"remote git path is not absolute: {out['GIT']!r}"
+            )
+        if out["HAVE"] not in ("0", "1"):
+            raise SnapshotRemoteError(f"remote probe returned HAVE={out['HAVE']!r}")
+        return ProbeResult(
+            root=out["ROOT"],
+            repo_dir=out["REPO"],
+            git=out["GIT"],
+            git_version=out["GITVER"],
+            has_commit=out["HAVE"] == "1",
+        )
+
+    def push(self, *, repo_top: Path, probe: ProbeResult, sha: str) -> None:
+        _check(_SHA_RE, sha, "sha")
+        if not probe.git.startswith("/"):
+            raise SnapshotRemoteError(f"remote git path is not absolute: {probe.git!r}")
+        env = {
+            **os.environ,
+            "GIT_SSH_COMMAND": shlex.join(self._shell.ssh_command()),
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+        cmd = [
+            "git",
+            "-C",
+            str(repo_top),
+            "push",
+            "--no-verify",
+            "--quiet",
+            f"--receive-pack={shlex.quote(probe.git)} receive-pack",
+            self._shell.remote_spec(f"{probe.repo_dir}/repo.git"),
+            f"{sha}:refs/srunx/snapshots/{sha}",
+        ]
+        try:
+            proc = subprocess.run(  # noqa: S603
+                cmd,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=PUSH_TIMEOUT,
+                env=env,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise SnapshotRemoteError(
+                f"git push timed out after {PUSH_TIMEOUT}s"
+            ) from exc
+        except OSError as exc:
+            raise SnapshotRemoteError(f"git push could not run: {exc}") from exc
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise SnapshotRemoteError(
+                f"git push failed (exit {proc.returncode}): {detail}"
+            )
+        logger.debug("pushed {} to {}", sha, probe.repo_dir)
+
+    def commit(
+        self, *, probe: ProbeResult, sha: str, lease: Lease | None
+    ) -> CommitResult:
+        script = build_commit_script(
+            repo_dir=probe.repo_dir,
+            git=probe.git,
+            sha=sha,
+            lease_json=lease.to_json() if lease else None,
+            lease_id=lease.lease_id if lease else None,
+            lock_wait=self._lock_wait,
+            **self._owner(),  # type: ignore[arg-type]
+        )
+        out = self._run(script, timeout=COMMIT_TIMEOUT, what="snapshot commit")
+        self._need(out, "STATUS", "PATH", what="snapshot commit")
+        status = out["STATUS"]
+        if status not in ("reused", "created", "recovered"):
+            raise SnapshotRemoteError(f"remote commit returned STATUS={status!r}")
+        return CommitResult(
+            path=out["PATH"],
+            status=status,  # type: ignore[arg-type]
+            lease_path=out.get("LEASE") or None,
+        )
+
+    def bind(self, *, repo_dir: str, lease: Lease) -> bool:
+        """Rewrite the lease; False when the snapshot's marker is gone."""
+        script = build_bind_script(
+            repo_dir=repo_dir,
+            sha=lease.sha,
+            lease_json=lease.to_json(),
+            lease_id=lease.lease_id,
+            lock_wait=self._lock_wait,
+            **self._owner(),  # type: ignore[arg-type]
+        )
+        out = self._run(script, timeout=LEASE_TIMEOUT, what="lease bind")
+        self._need(out, "SNAPSHOT", what="lease bind")
+        return out["SNAPSHOT"] == "present"
+
+    def delete_lease(self, *, repo_dir: str, lease_id: str) -> None:
+        script = build_delete_lease_script(
+            repo_dir=repo_dir,
+            lease_id=lease_id,
+            lock_wait=self._lock_wait,
+            **self._owner(),  # type: ignore[arg-type]
+        )
+        self._run(script, timeout=LEASE_TIMEOUT, what="lease delete")
