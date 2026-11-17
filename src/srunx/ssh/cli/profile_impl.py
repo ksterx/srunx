@@ -281,6 +281,9 @@ def show_profile_impl(name: str | None = None, config: str | None = None):
             details.append(f"  Key File: {profile.key_filename}")
             details.append(f"  Port: {profile.port}")
 
+        if profile.snapshot_root:
+            details.append(f"  Snapshot Root: {profile.snapshot_root}")
+
         if profile.description:
             details.append("\n[bold green]Description:[/bold green]")
             details.append(f"  {profile.description}")

@@ -513,6 +513,13 @@ class TestUpdateSnapshotRoot:
         assert profile is not None
         assert profile.snapshot_root == "~/snaps"
 
+    def test_show_displays_snapshot_root(self, tmp_path: Path):
+        cfg = self._seed(tmp_path)
+        assert self._update(cfg, "/data/s").exit_code == 0
+        shown = runner.invoke(ssh_app, ["show", "--profile", "p", "--config", cfg])
+        assert shown.exit_code == 0, shown.output
+        assert "Snapshot Root: /data/s" in shown.output
+
     def test_update_snapshot_root_empty_clears(self, tmp_path: Path):
         cfg = self._seed(tmp_path)
         assert self._update(cfg, "/data/s").exit_code == 0
