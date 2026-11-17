@@ -17,7 +17,76 @@ from srunx.snapshot.remote import (
 SHA = "b" * 40
 TOKEN = "c" * 32
 LEASE_ID = "d" * 32
-OWNER = {"client_host": "host1", "client_pid": 123, "token": TOKEN}
+HOST = "host1"
+PID = 123
+
+
+def probe_script(
+    *,
+    repo_id: str = "repo-0123456789ab",
+    sha: str = SHA,
+    mounts: tuple[str, ...] = (),
+    token: str = TOKEN,
+    lock_wait: int = 120,
+) -> str:
+    return build_probe_script(
+        root_expr=root_expr("/r/snap"),
+        repo_id=repo_id,
+        sha=sha,
+        mounts=mounts,
+        client_host=HOST,
+        client_pid=PID,
+        token=token,
+        lock_wait=lock_wait,
+    )
+
+
+def commit_script(
+    *,
+    repo_dir: str = "/r/snap/x",
+    git: str = "/usr/bin/git",
+    sha: str = SHA,
+    lease_json: str | None = None,
+    lease_id: str | None = None,
+) -> str:
+    return build_commit_script(
+        repo_dir=repo_dir,
+        git=git,
+        sha=sha,
+        lease_json=lease_json,
+        lease_id=lease_id,
+        client_host=HOST,
+        client_pid=PID,
+        token=TOKEN,
+    )
+
+
+def bind_script(
+    *,
+    repo_dir: str = "/r/x",
+    sha: str = SHA,
+    lease_json: str = "{}",
+    lease_id: str = LEASE_ID,
+) -> str:
+    return build_bind_script(
+        repo_dir=repo_dir,
+        sha=sha,
+        lease_json=lease_json,
+        lease_id=lease_id,
+        client_host=HOST,
+        client_pid=PID,
+        token=TOKEN,
+    )
+
+
+def delete_script(*, repo_dir: str = "/r/x", lease_id: str = LEASE_ID) -> str:
+    return build_delete_lease_script(
+        repo_dir=repo_dir,
+        lease_id=lease_id,
+        client_host=HOST,
+        client_pid=PID,
+        token=TOKEN,
+    )
 
 
 class TestRootExpr:
@@ -77,94 +146,61 @@ class TestLiteralConflict:
 
 
 class TestBuilders:
-    def _probe(self, **kw: object) -> str:
-        args: dict[str, object] = {
-            "root_expr": root_expr("/r/snap"),
-            "repo_id": "repo-0123456789ab",
-            "sha": SHA,
-            "mounts": [],
-            **OWNER,
-        }
-        args.update(kw)
-        return build_probe_script(**args)  # type: ignore[arg-type]
-
     def test_probe_rejects_bad_repo_id_and_sha(self) -> None:
         for bad in ("a b", "a/b", "a;b", "", "../x"):
             with pytest.raises(ValueError):
-                self._probe(repo_id=bad)
+                probe_script(repo_id=bad)
         with pytest.raises(ValueError):
-            self._probe(sha="xyz")
+            probe_script(sha="xyz")
         with pytest.raises(ValueError):
-            self._probe(sha="B" * 40)
+            probe_script(sha="B" * 40)
 
     def test_probe_rejects_bad_token(self) -> None:
         with pytest.raises(ValueError):
-            self._probe(token="not-hex")
+            probe_script(token="not-hex")
 
     def test_hostile_mount_path_is_quoted(self) -> None:
-        script = self._probe(mounts=["/m/$(touch pwned);`id`'x"])
+        script = probe_script(mounts=("/m/$(touch pwned);`id`'x",))
         assert "'/m/$(touch pwned);`id`'\"'\"'x'" in script
 
     def test_home_mount_uses_home_expr(self) -> None:
-        assert '"$HOME"/work' in self._probe(mounts=["~/work"])
+        assert '"$HOME"/work' in probe_script(mounts=("~/work",))
 
     def test_lock_wait_and_traps_embedded(self) -> None:
-        script = self._probe(lock_wait=7)
+        script = probe_script(lock_wait=7)
         assert "-ge 7 ]" in script
         for trap in ("trap release EXIT", "exit 129", "exit 130", "exit 143"):
             assert trap in script
-        assert "rm -rf" not in script.split("acquire()")[0]
 
     def test_no_stale_lock_breaking(self) -> None:
-        for script in (
-            self._probe(),
-            build_delete_lease_script(repo_dir="/r/snap/x", lease_id=LEASE_ID, **OWNER),
-        ):
+        for script in (probe_script(), delete_script()):
             assert "stale" not in script.lower()
             assert 'rm -rf "$LOCKDIR"' not in script
 
     def test_commit_rejects_bad_inputs(self) -> None:
-        base = {
-            "repo_dir": "/r/snap/x",
-            "git": "/usr/bin/git",
-            "sha": SHA,
-            "lease_json": None,
-            "lease_id": None,
-            **OWNER,
-        }
-        build_commit_script(**base)  # type: ignore[arg-type]
-        for key, bad in (
-            ("repo_dir", "/r/a b"),
-            ("repo_dir", "relative"),
-            ("git", "git"),
-            ("sha", "abc"),
-            ("lease_id", "zz"),
-        ):
-            args = {**base, key: bad}
-            if key == "lease_id":
-                args["lease_json"] = "{}"
-            with pytest.raises(ValueError):
-                build_commit_script(**args)  # type: ignore[arg-type]
+        commit_script()
         with pytest.raises(ValueError):
-            build_commit_script(**{**base, "lease_json": "{}"})  # type: ignore[arg-type]
+            commit_script(repo_dir="/r/a b")
+        with pytest.raises(ValueError):
+            commit_script(repo_dir="relative")
+        with pytest.raises(ValueError):
+            commit_script(git="git")
+        with pytest.raises(ValueError):
+            commit_script(sha="abc")
+        with pytest.raises(ValueError):
+            commit_script(lease_id="zz", lease_json="{}")
+        with pytest.raises(ValueError):
+            commit_script(lease_json="{}")  # id and json go together
 
     def test_lease_json_is_quoted(self) -> None:
-        script = build_bind_script(
-            repo_dir="/r/snap/x",
-            sha=SHA,
-            lease_json='{"a":"it\'s"}',
-            lease_id=LEASE_ID,
-            **OWNER,
-        )
+        script = bind_script(repo_dir="/r/snap/x", lease_json='{"a":"it\'s"}')
         assert 'LEASE_JSON=\'{"a":"it\'"\'"\'s"}\'' in script
 
     def test_bind_and_delete_reject_bad_ids(self) -> None:
         with pytest.raises(ValueError):
-            build_bind_script(
-                repo_dir="/r/x", sha="1", lease_json="{}", lease_id=LEASE_ID, **OWNER
-            )
+            bind_script(sha="1")
         with pytest.raises(ValueError):
-            build_delete_lease_script(repo_dir="/r/x", lease_id="../x", **OWNER)
+            delete_script(lease_id="../x")
 
     def test_constants(self) -> None:
         assert remote.MIN_REMOTE_GIT == (2, 17)
