@@ -45,6 +45,11 @@ PROBE_TIMEOUT = LOCK_WAIT_SECONDS + 60
 COMMIT_TIMEOUT = LOCK_WAIT_SECONDS + 600
 LEASE_TIMEOUT = LOCK_WAIT_SECONDS + 60
 PUSH_TIMEOUT = 900
+INVENTORY_TIMEOUT = 300  # no lock; one git rev-parse per tree
+PRUNE_TIMEOUT = LOCK_WAIT_SECONDS + 900  # lock wait + trash removal after release
+# How far behind the login node's clock a refreshed marker may be before the
+# touch is judged not to have happened (file servers can lag a little).
+MARKER_SKEW_SECONDS = 300
 
 _HEX32_RE = re.compile(r"[0-9a-f]{32}")
 _REPO_DIR_RE = re.compile(r"/[A-Za-z0-9._/+-]+")
@@ -65,6 +70,7 @@ class RemoteExit(IntEnum):
     LOCK_TIMEOUT = 30
     LEASE_WRITE = 31
     DIR_UNSAFE = 32
+    MARKER_TOUCH = 33
 
 
 _PLACEHOLDER_RE = re.compile(r"@[A-Z][A-Z_]*@")
@@ -357,7 +363,7 @@ _WRITE_LEASE = r"""write_lease() {
 }
 """
 
-_PROBE_BODY = r"""resolve_path() {
+_RESOLVE_PATH = r"""resolve_path() {
   rp_in=$1
   while [ "${rp_in%/}" != "$rp_in" ]; do rp_in=${rp_in%/}; done
   [ -n "$rp_in" ] || rp_in=/
@@ -382,7 +388,9 @@ _PROBE_BODY = r"""resolve_path() {
     RESOLVED=$rp_phys$rp_rest
   fi
 }
-check_overlap() {
+"""
+
+_PROBE_BODY = r"""check_overlap() {
   co_root=${1%/}
   co_mount=${2%/}
   case "$co_root/" in
@@ -502,6 +510,7 @@ def build_probe_script(
             token=token,
             lock_wait=lock_wait,
         )
+        + _RESOLVE_PATH
         + body
     )
 
@@ -529,6 +538,28 @@ def _lease_vars(lease_json: str | None, lease_id: str | None) -> str:
     return out
 
 
+# ``mtime_of <path>`` prints the mtime as epoch seconds, or ``-`` when it cannot
+# be read. GNU and BSD ``stat`` differ, so the flavour is probed once on ``/``.
+_MTIME_OF = r"""if stat -c %Y / >/dev/null 2>&1; then
+  MTIME_FLAVOUR=gnu
+elif stat -f %m / >/dev/null 2>&1; then
+  MTIME_FLAVOUR=bsd
+else
+  MTIME_FLAVOUR=
+fi
+mtime_of() {
+  mo_v=
+  case $MTIME_FLAVOUR in
+    gnu) mo_v=$(stat -c %Y "$1" 2>/dev/null) ;;
+    bsd) mo_v=$(stat -f %m "$1" 2>/dev/null) ;;
+  esac
+  case $mo_v in
+    ''|*[!0-9]*) echo - ;;
+    *) echo "$mo_v" ;;
+  esac
+}
+"""
+
 # A snapshot is intact only when the marker is a regular file, the tree a real
 # directory (-f / -d follow symlinks) and the tree really is at the commit.
 _TREE_INTACT = r"""tree_intact() {
@@ -544,6 +575,21 @@ if ! "$GIT" --git-dir="$GITDIR" cat-file -e "$SHA^{commit}" 2>/dev/null; then
 fi
 if tree_intact; then
   STATUS=reused
+  # The marker mtime means "last requested": refresh it so prune sees the reuse,
+  # and refuse to hand out a snapshot whose refresh did not take.
+  if ! touch "$MARK" 2>/dev/null; then
+    echo "cannot refresh the snapshot marker $MARK" >&2
+    exit @EXIT_MARKER_TOUCH@
+  fi
+  mk_new=$(mtime_of "$MARK")
+  mk_now=$(date +%s)
+  case $mk_new in
+    ''|*[!0-9]*) echo "cannot read the marker mtime after touch: $MARK" >&2; exit @EXIT_MARKER_TOUCH@ ;;
+  esac
+  if [ "$mk_new" -lt $((mk_now - @SKEW@)) ]; then
+    echo "marker mtime did not advance after touch: $MARK" >&2
+    exit @EXIT_MARKER_TOUCH@
+  fi
 else
   STATUS=created
   if [ -e "$TREE" ] || [ -L "$TREE" ] || [ -e "$MARK" ] || "$GIT" --git-dir="$GITDIR" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $TREE"; then
@@ -596,8 +642,9 @@ def build_commit_script(
         + _repo_vars(repo_dir, git, sha)
         + _lease_vars(lease_json, lease_id)
         + _fill(_WRITE_LEASE)
+        + _MTIME_OF
         + _TREE_INTACT
-        + _fill(_COMMIT_BODY, WRITE_LEASE_CALL=call)
+        + _fill(_COMMIT_BODY, WRITE_LEASE_CALL=call, SKEW=str(MARKER_SKEW_SECONDS))
     )
 
 
@@ -713,6 +760,7 @@ _EXIT_MESSAGES: dict[RemoteExit, str] = {
     RemoteExit.MARKER: "could not create the snapshot completion marker",
     RemoteExit.DIR_UNSAFE: "a snapshot directory is not private (must be a real directory owned by you and not group/other-writable)",
     RemoteExit.LEASE_WRITE: "could not write the lease (refused or failed)",
+    RemoteExit.MARKER_TOUCH: "could not refresh the snapshot's last-requested time; the snapshot was not reused",
 }
 
 
@@ -749,7 +797,15 @@ class RemoteSnapshotStore:
     def lease_path(repo_dir: str, lease_id: str) -> str:
         return f"{repo_dir}/leases/{lease_id}.json"
 
-    def _owner(self) -> LockOwner:
+    @property
+    def root_expr(self) -> str:
+        return self._root_expr
+
+    @property
+    def lock_wait(self) -> int:
+        return self._lock_wait
+
+    def owner(self) -> LockOwner:
         return {
             "client_host": socket.gethostname(),
             "client_pid": os.getpid(),
@@ -757,6 +813,10 @@ class RemoteSnapshotStore:
         }
 
     def _run(self, script: str, *, timeout: float, what: str) -> dict[str, str]:
+        return _parse_kv(self.run(script, timeout=timeout, what=what))
+
+    def run(self, script: str, *, timeout: float, what: str) -> str:
+        """Run *script* remotely and return its raw stdout; failures map to errors."""
         try:
             proc = self._shell.run_script(script, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
@@ -767,7 +827,7 @@ class RemoteSnapshotStore:
             raise SnapshotRemoteError(f"remote {what} could not run: {exc}") from exc
         if proc.returncode != 0:
             self._raise_for(proc.returncode, proc.stderr or "", what)
-        return _parse_kv(proc.stdout or "")
+        return proc.stdout or ""
 
     def _raise_for(self, code: int, stderr: str, what: str) -> None:
         stderr = stderr.strip()
@@ -812,7 +872,7 @@ class RemoteSnapshotStore:
             sha=sha,
             mounts=self._mounts,
             lock_wait=self._lock_wait,
-            **self._owner(),
+            **self.owner(),
         )
         out = self._run(script, timeout=PROBE_TIMEOUT, what="probe")
         self._need(out, "ROOT", "REPO", "GIT", "GITVER", "HAVE", what="probe")
@@ -888,7 +948,7 @@ class RemoteSnapshotStore:
             lease_json=lease.to_json() if lease else None,
             lease_id=lease.lease_id if lease else None,
             lock_wait=self._lock_wait,
-            **self._owner(),
+            **self.owner(),
         )
         self._git = probe.git
         out = self._run(script, timeout=COMMIT_TIMEOUT, what="snapshot commit")
@@ -911,7 +971,7 @@ class RemoteSnapshotStore:
             lease_json=lease.to_json(),
             lease_id=lease.lease_id,
             lock_wait=self._lock_wait,
-            **self._owner(),
+            **self.owner(),
         )
         out = self._run(script, timeout=LEASE_TIMEOUT, what="lease bind")
         self._need(out, "SNAPSHOT", what="lease bind")
@@ -922,6 +982,6 @@ class RemoteSnapshotStore:
             repo_dir=repo_dir,
             lease_id=lease_id,
             lock_wait=self._lock_wait,
-            **self._owner(),
+            **self.owner(),
         )
         self._run(script, timeout=LEASE_TIMEOUT, what="lease delete")
