@@ -14,6 +14,7 @@ from rich.console import Console
 
 import srunx.slurm.local as _slurm_local  # module-level so ``patch("srunx.slurm.local.Slurm")`` intercepts
 from srunx.callbacks import Callback
+from srunx.cli._helpers.click_compat import is_commandline
 from srunx.common.logging import get_logger
 from srunx.domain import ContainerResource
 
@@ -228,8 +229,6 @@ def _build_extra_sbatch_args(
     typed value, and the conversion lives at the call site (caller
     knows the configured default to suppress).
     """
-    from click.core import ParameterSource
-
     args: list[str] = []
     for param_name, sbatch_flag in _SBATCH_FLAG_BY_PARAM.items():
         try:
@@ -237,7 +236,7 @@ def _build_extra_sbatch_args(
         except (LookupError, AttributeError):
             # No such parameter; defensive against signature drift.
             source = None
-        if source != ParameterSource.COMMANDLINE:
+        if not is_commandline(source):
             continue
         value = values.get(param_name)
         if value is None or value == "":
