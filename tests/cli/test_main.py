@@ -453,6 +453,61 @@ class TestTyperCLI:
         assert "resources" in data
         assert "log_dir" in data
 
+    @patch("srunx.cli.commands.config.get_config_paths")
+    def test_config_init_force_preserves_ssh_profiles(
+        self, mock_get_config_paths, tmp_path
+    ):
+        """``--force`` resets srunx defaults but keeps SSH profiles.
+
+        The user config file is shared with ``ConfigManager``, so a blind
+        overwrite would delete every registered SSH profile.
+        """
+        import json
+
+        user_path = tmp_path / "xdg" / "srunx" / "config.json"
+        user_path.parent.mkdir(parents=True)
+        profiles = {"dgx": {"hostname": "dgx.example.com", "username": "me"}}
+        user_path.write_text(
+            json.dumps(
+                {
+                    "current_profile": "dgx",
+                    "profiles": profiles,
+                    "resources": {"nodes": 8},
+                }
+            ),
+            encoding="utf-8",
+        )
+        mock_get_config_paths.return_value = [
+            tmp_path / "etc" / "srunx" / "config.json",
+            user_path,
+            tmp_path / "project" / "srunx.json",
+        ]
+
+        result = self.runner.invoke(app, ["config", "init", "--force"])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(user_path.read_text(encoding="utf-8"))
+        assert data["current_profile"] == "dgx"
+        assert data["profiles"] == profiles
+        assert data["resources"]["nodes"] == 1  # reset to the example value
+
+    @patch("srunx.cli.commands.config.get_config_paths")
+    def test_config_init_makes_config_dir_private(
+        self, mock_get_config_paths, tmp_path
+    ):
+        """The config dir may hold SSH profile details, so it must be 0700."""
+        user_path = tmp_path / "xdg" / "srunx" / "config.json"
+        mock_get_config_paths.return_value = [
+            tmp_path / "etc" / "srunx" / "config.json",
+            user_path,
+            tmp_path / "project" / "srunx.json",
+        ]
+
+        result = self.runner.invoke(app, ["config", "init"])
+
+        assert result.exit_code == 0, result.output
+        assert user_path.parent.stat().st_mode & 0o777 == 0o700
+
     def test_sbatch_missing_job_source(self):
         """sbatch requires either a positional script or --wrap."""
         result = self.runner.invoke(app, ["sbatch"])

@@ -1,7 +1,8 @@
 """``srunx config`` sub-application: show, paths, init."""
 
+import json
 import sys
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -67,14 +68,9 @@ def config_init(
 ) -> None:
     """Initialize configuration file."""
     paths = get_config_paths()
-    # ``get_config_paths()`` returns the locations in *lowest -> highest*
-    # precedence order (system ``/etc/srunx/config.json``, user
-    # ``$XDG_CONFIG_HOME/srunx/config.json``, project ``./srunx.json``).
-    # The user-wide file is the one a regular account can write and the
-    # one ``save_user_config()`` / the Settings UI already use, so it is
-    # the right target here -- index 0 is the system-wide file, which
-    # needs root and is shadowed by the user- and project-level ones.
-    config_path = paths[1]  # The user-wide config path (second in the list)
+    # Lowest -> highest precedence: system, user, project. Only the user
+    # file is writable without root and not shadowed by the system one.
+    config_path = paths[1]
 
     if config_path.exists() and not force:
         console = Console()
@@ -83,13 +79,28 @@ def config_init(
         return
 
     try:
-        # Create parent directories if they don't exist
         config_path.parent.mkdir(parents=True, exist_ok=True)
+        # The same file holds SSH profiles; keep the dir private.
+        try:
+            config_path.parent.chmod(0o700)
+        except OSError:
+            pass
 
-        # Write example config
-        example_config = create_example_config()
+        # ``--force`` resets the srunx defaults but must keep keys the
+        # example does not define, notably SSH profiles managed by
+        # ``ConfigManager`` in this same file.
+        data: dict[str, Any] = {}
+        if config_path.exists():
+            try:
+                existing = json.loads(config_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                existing = None
+            if isinstance(existing, dict):
+                data = existing
+        data.update(json.loads(create_example_config()))
+
         with open(config_path, "w", encoding="utf-8") as f:
-            f.write(example_config)
+            json.dump(data, f, indent=2)
 
         console = Console()
         console.print(f"✅ Configuration file created: {config_path}")
