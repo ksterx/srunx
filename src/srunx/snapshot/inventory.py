@@ -376,8 +376,8 @@ snap_fp() {
   sf_m=-
   sf_t=-
   sf_i=0
-  if [ -f "$MARK" ] && [ ! -L "$MARK" ]; then sf_m=$(mtime_of "$MARK"); fi
-  if [ -d "$TREE" ] && [ ! -L "$TREE" ]; then sf_t=$(mtime_of "$TREE"); fi
+  if [ -f "$MARK" ] && [ ! -L "$MARK" ]; then mtime_set "$MARK"; sf_m=$MTIME_RESULT; fi
+  if [ -d "$TREE" ] && [ ! -L "$TREE" ]; then mtime_set "$TREE"; sf_t=$MTIME_RESULT; fi
   if tree_intact; then sf_i=1; fi
   set --
   for sf_f in "$REPO"/leases/*.json; do
@@ -399,7 +399,8 @@ snap_fp() {
         case $sf_id in
           *[!0-9a-f]*) sf_list='!'; break ;;
         esac
-        sf_acc="$sf_acc$sf_id:$(mtime_of "$sf_h")
+        mtime_set "$sf_h"
+        sf_acc="$sf_acc$sf_id:$MTIME_RESULT
 "
       done <<SFEOF
 $sf_hits

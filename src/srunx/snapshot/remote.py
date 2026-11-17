@@ -539,7 +539,8 @@ def _lease_vars(lease_json: str | None, lease_id: str | None) -> str:
 
 
 # ``mtime_of <path>`` prints the mtime as epoch seconds, or ``-`` when it cannot
-# be read. GNU and BSD ``stat`` differ, so the flavour is probed once on ``/``.
+# be read; ``mtime_set`` stores it in ``$MTIME_RESULT`` without a subshell.
+# GNU and BSD ``stat`` differ, so the flavour is probed once on ``/``.
 _MTIME_OF = r"""if stat -c %Y / >/dev/null 2>&1; then
   MTIME_FLAVOUR=gnu
 elif stat -f %m / >/dev/null 2>&1; then
@@ -547,16 +548,20 @@ elif stat -f %m / >/dev/null 2>&1; then
 else
   MTIME_FLAVOUR=
 fi
-mtime_of() {
+mtime_set() {
   mo_v=
   case $MTIME_FLAVOUR in
     gnu) mo_v=$(stat -c %Y "$1" 2>/dev/null) ;;
     bsd) mo_v=$(stat -f %m "$1" 2>/dev/null) ;;
   esac
   case $mo_v in
-    ''|*[!0-9]*) echo - ;;
-    *) echo "$mo_v" ;;
+    ''|*[!0-9]*) MTIME_RESULT=- ;;
+    *) MTIME_RESULT=$mo_v ;;
   esac
+}
+mtime_of() {
+  mtime_set "$1"
+  echo "$MTIME_RESULT"
 }
 """
 
