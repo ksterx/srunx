@@ -6,6 +6,7 @@ here so ``commands/jobs.py`` only holds Typer command functions.
 """
 
 import shlex
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -271,30 +272,36 @@ def _build_extra_sbatch_args(
     return args
 
 
-def _job_name_from_tokens(tokens: list[str]) -> str | None:
-    """Extract ``--job-name`` / ``-J`` from one ``#SBATCH`` line's tokens.
+def last_option_value(tokens: Sequence[str], short: str, long: str) -> str | None:
+    """Value of the LAST ``-s V`` / ``-sV`` / ``--long V`` / ``--long=V`` in *tokens*.
 
-    Handles the four sbatch spellings — ``--job-name=X`` / ``--job-name X``
-    / ``-J X`` / ``-JX`` — and returns the LAST one on the line (matching
-    SLURM's last-wins semantics within a directive line). ``None`` when the
-    line carries no job-name option.
+    Last-wins matches SLURM's semantics within a directive line. A trailing
+    option with no value is ignored. ``None`` when the option is absent.
     """
     result: str | None = None
     i = 0
     while i < len(tokens):
         tok = tokens[i]
-        if tok.startswith("--job-name="):
+        if tok.startswith(f"{long}="):
             result = tok.split("=", 1)[1]
-        elif tok in ("--job-name", "-J") and i + 1 < len(tokens):
+        elif tok in (long, short) and i + 1 < len(tokens):
             result = tokens[i + 1]
             i += 1
-        elif tok.startswith("-J") and len(tok) > 2:
+        elif tok.startswith(short) and not tok.startswith("--") and len(tok) > 2:
             result = tok[2:]
         i += 1
-    return result or None
+    return result
 
 
-def _script_sbatch_tokens(text: str) -> list[list[str]]:
+def _job_name_from_tokens(tokens: list[str]) -> str | None:
+    """Extract ``--job-name`` / ``-J`` from one ``#SBATCH`` line's tokens.
+
+    ``None`` when the line carries no (or an empty) job-name option.
+    """
+    return last_option_value(tokens, "-J", "--job-name") or None
+
+
+def script_sbatch_tokens(text: str) -> list[list[str]]:
     """Tokenise each ``#SBATCH`` directive line at the top of a script's text.
 
     Mirrors ``sbatch``'s own directive scan: read ``#SBATCH`` lines from the
@@ -329,7 +336,7 @@ def _script_job_name_from_text(text: str) -> str | None:
     — the value is used only for srunx's own display, never re-injected).
     """
     found: str | None = None
-    for tokens in _script_sbatch_tokens(text):
+    for tokens in script_sbatch_tokens(text):
         name = _job_name_from_tokens(tokens)
         if name is not None:
             found = name  # last directive wins, matching SLURM

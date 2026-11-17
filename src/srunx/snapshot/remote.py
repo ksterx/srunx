@@ -34,11 +34,10 @@ from srunx.snapshot.errors import (
     SnapshotValidationError,
 )
 from srunx.snapshot.lease import Lease
+from srunx.snapshot.local_git import REPO_ID_RE, SHA_RE
+from srunx.ssh.core.config import validate_snapshot_root
 
 DEFAULT_SNAPSHOT_ROOT = "~/.srunx/snapshots"
-# Shared charset with ``srunx.ssh.core.config.validate_snapshot_root``.
-SNAPSHOT_ROOT_RE = r"(~|~/[A-Za-z0-9._/+-]*|/[A-Za-z0-9._/+-]*)"
-REPO_ID_RE = r"[A-Za-z0-9._-]+"
 MIN_REMOTE_GIT = (2, 17)
 LOCK_WAIT_SECONDS = 120
 PROBE_TIMEOUT = LOCK_WAIT_SECONDS + 60
@@ -46,7 +45,6 @@ COMMIT_TIMEOUT = LOCK_WAIT_SECONDS + 600
 LEASE_TIMEOUT = LOCK_WAIT_SECONDS + 60
 PUSH_TIMEOUT = 900
 
-_SHA_RE = re.compile(r"[0-9a-f]{40}")
 _HEX32_RE = re.compile(r"[0-9a-f]{32}")
 _REPO_DIR_RE = re.compile(r"/[A-Za-z0-9._/+-]+")
 
@@ -58,9 +56,8 @@ def _check(pattern: str | re.Pattern[str], value: str, what: str) -> str:
 
 
 def _check_snapshot_root(value: str) -> str:
-    _check(SNAPSHOT_ROOT_RE, value, "snapshot_root")
-    if ".." in value.split("/"):
-        raise ValueError(f"invalid snapshot_root (contains '..'): {value!r}")
+    # Charset and ``..`` rules are shared with ServerProfile validation.
+    validate_snapshot_root(value)
     return value
 
 
@@ -324,7 +321,7 @@ def build_probe_script(
 ) -> str:
     """Probe git, validate the root against the mounts, init the bare repo, test for the sha."""
     _check(REPO_ID_RE, repo_id, "repo_id")
-    _check(_SHA_RE, sha, "sha")
+    _check(SHA_RE, sha, "sha")
     checks = "".join(
         f"  resolve_path {_mount_expr(m)} || {{ echo 'mount path cannot be resolved: '{shlex.quote(m)} >&2; return 1; }}\n"
         '  check_overlap "$ROOT" "$RESOLVED" || return 1\n'
@@ -358,7 +355,7 @@ def _repo_vars(repo_dir: str, git: str | None, sha: str | None) -> str:
             raise ValueError(f"git must be an absolute path: {git!r}")
         out += f"GIT={shlex.quote(git)}\n"
     if sha is not None:
-        _check(_SHA_RE, sha, "sha")
+        _check(SHA_RE, sha, "sha")
         out += f"SHA={sha}\nTREE=$REPO/trees/$SHA\nMARK=$REPO/trees/$SHA.complete\n"
     return out
 
@@ -656,7 +653,7 @@ class RemoteSnapshotStore:
         )
 
     def push(self, *, repo_top: Path, probe: ProbeResult, sha: str) -> None:
-        _check(_SHA_RE, sha, "sha")
+        _check(SHA_RE, sha, "sha")
         if not probe.git.startswith("/"):
             raise SnapshotRemoteError(f"remote git path is not absolute: {probe.git!r}")
         env = {

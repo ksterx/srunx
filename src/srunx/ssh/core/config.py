@@ -31,7 +31,7 @@ def validate_profile_name(name: str) -> None:
         )
 
 
-# Charset shared with ``srunx.snapshot.remote.SNAPSHOT_ROOT_RE``: the root ends
+# Charset also enforced by ``srunx.snapshot.remote`` (it calls this validator): the root ends
 # up unquoted-safe in remote scripts and push destinations, so anything outside
 # it (spaces, quotes, ``$``, ``;``) is rejected up front. ``~`` only leads.
 SNAPSHOT_ROOT_RE = re.compile(r"(~|~/[A-Za-z0-9._/+-]*|/[A-Za-z0-9._/+-]*)")

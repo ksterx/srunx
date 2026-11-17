@@ -45,20 +45,14 @@ def record_job_submission(
             record_submission_from_job,
         )
 
-        # Forwarded only when set so mocks with the older signature keep working.
-        extra: dict[str, Any] = {"metadata": metadata} if metadata is not None else {}
-
         if profile_name is None:
-            # Legacy callsite (pre-V5 style) — pass only the two
-            # original kwargs so tests that mock
-            # ``record_submission_from_job`` with the original
-            # signature (``(job, *, workflow_name, workflow_run_id)``)
-            # keep working. The DB default is local anyway.
+            # Legacy callsite (pre-V5 style): no SSH triple; the DB default
+            # is local.
             record_submission_from_job(
                 job,
                 workflow_name=workflow_name,
                 workflow_run_id=workflow_run_id,
-                **extra,
+                metadata=metadata,
             )
         else:
             resolved_scheduler_key = (
@@ -72,7 +66,7 @@ def record_job_submission(
                 profile_name=profile_name,
                 scheduler_key=resolved_scheduler_key,
                 submission_source=submission_source,
-                **extra,
+                metadata=metadata,
             )
     except Exception as exc:  # noqa: BLE001
         # Best-effort by design: DB unavailability must never block

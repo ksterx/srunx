@@ -8,6 +8,7 @@ from rich.console import Console
 
 from srunx.cli._helpers.transport import resolve_transport
 from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
+from srunx.common.exceptions import TransportError
 from srunx.common.logging import get_logger
 from srunx.snapshot import (
     SnapshotError,
@@ -64,7 +65,7 @@ def snapshot_create(
             prepared = service.create(plan)
         except SnapshotValidationError as exc:
             raise typer.BadParameter(str(exc)) from exc
-        except (SnapshotError, RuntimeError) as exc:
+        except (SnapshotError, TransportError) as exc:
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(code=1) from exc
 

@@ -17,8 +17,8 @@ from srunx.snapshot.errors import SnapshotValidationError
 
 GIT_TIMEOUT = 30.0
 
-_REPO_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
-_SHA_RE = re.compile(r"[0-9a-f]{40}")
+REPO_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
+SHA_RE = re.compile(r"[0-9a-f]{40}")
 _REGULAR_MODES = frozenset({"100644", "100755"})
 
 
@@ -99,7 +99,7 @@ def resolve_commit(top: Path, rev: str) -> str:
             f"revision {rev!r} does not resolve to a commit: {exc}"
         ) from exc
     sha = out.strip()
-    if not _SHA_RE.fullmatch(sha):
+    if not SHA_RE.fullmatch(sha):
         raise SnapshotValidationError(f"revision {rev!r} resolved to {sha!r}")
     return sha
 
@@ -165,10 +165,10 @@ def compute_repo_id(top: Path, sha: str) -> str:
     roots = sorted(
         r for r in run_git(["rev-list", "--max-parents=0", sha], cwd=top).split() if r
     )
-    if not roots or not _SHA_RE.fullmatch(roots[0]):
+    if not roots or not SHA_RE.fullmatch(roots[0]):
         raise SnapshotValidationError(f"cannot determine the root commit of {sha}")
     repo_id = f"{safe}-{roots[0][:12]}"
-    if not _REPO_ID_RE.fullmatch(repo_id):
+    if not REPO_ID_RE.fullmatch(repo_id):
         raise SnapshotValidationError(f"computed repo id {repo_id!r} is invalid")
     return repo_id
 

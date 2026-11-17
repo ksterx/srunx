@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srunx.callbacks import Callback
-from srunx.common.exceptions import SbatchIndeterminateError
+from srunx.common.exceptions import SbatchIndeterminateError, SbatchRejectedError
 from srunx.common.logging import get_logger
 
 # Imported at runtime (not under TYPE_CHECKING) because the literal types
@@ -489,7 +489,11 @@ class SlurmSSHClient:
             callbacks_job.environment.env_vars if callbacks_job is not None else None
         )
         with self._io_lock:
-            self._ensure_connected()
+            try:
+                self._ensure_connected()
+            except RuntimeError as exc:
+                # Nothing was sent, so no job exists: a confirmed rejection.
+                raise SbatchRejectedError(f"cannot submit: {exc}") from exc
             # Checked variant: raises SbatchRejectedError / SbatchIndeterminateError
             # (both RuntimeError) so callers can tell "no job" from "maybe a job".
             result = self._client.slurm.submit_remote_sbatch_file_checked(
@@ -523,11 +527,6 @@ class SlurmSSHClient:
 
         # Record to DB so `srunx history` / poller pick it up. Mirrors
         # :meth:`submit` step 3.
-        # ``metadata`` is forwarded only when set so recorders / mocks with the
-        # pre-metadata signature keep working.
-        metadata_kwargs: dict[str, Any] = (
-            {"metadata": metadata} if metadata is not None else {}
-        )
         if self._profile_name is not None:
             self._record_job_submission(
                 callbacks_job,
@@ -537,14 +536,14 @@ class SlurmSSHClient:
                 profile_name=self._profile_name,
                 scheduler_key=f"ssh:{self._profile_name}",
                 submission_source=self.submission_source,
-                **metadata_kwargs,
+                metadata=metadata,
             )
         else:
             self._record_job_submission(
                 callbacks_job,
                 workflow_name=None,
                 workflow_run_id=None,
-                **metadata_kwargs,
+                metadata=metadata,
             )
 
         # Fire on_job_submitted callbacks. Mirrors :meth:`submit` step 4.
@@ -1326,7 +1325,6 @@ class SlurmSSHClient:
         # Literal (notably ``"mcp"`` from the MCP transport registry).
         # Casting at this single boundary keeps the static type clean
         # without lying to the recorder.
-        extra: dict[str, Any] = {"metadata": metadata} if metadata is not None else {}
         _record_job_submission_impl(
             job,
             workflow_name=workflow_name,
@@ -1335,7 +1333,7 @@ class SlurmSSHClient:
             profile_name=profile_name,
             scheduler_key=scheduler_key,
             submission_source=submission_source,  # type: ignore[arg-type]
-            **extra,
+            metadata=metadata,
         )
 
     def _record_completion_safe(self, job_id: int, status: JobStatus) -> None:

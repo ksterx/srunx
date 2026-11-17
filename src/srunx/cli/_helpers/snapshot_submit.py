@@ -15,8 +15,11 @@ from typing import Any
 import typer
 from rich.console import Console
 
-from srunx.cli._helpers.sbatch_helpers import _script_sbatch_tokens
-from srunx.common.exceptions import SbatchSubmitError
+from srunx.cli._helpers.sbatch_helpers import (
+    last_option_value,
+    script_sbatch_tokens,
+)
+from srunx.common.exceptions import SbatchSubmitError, TransportError
 from srunx.common.logging import get_logger
 from srunx.snapshot import (
     SnapshotError,
@@ -120,29 +123,12 @@ def print_snapshot_dry_run(
         console.print(f"    [yellow]warning: {w}[/yellow]")
 
 
-def _last_option(tokens: Sequence[str], short: str, long: str) -> str | None:
-    """Value of the last ``-s V`` / ``-sV`` / ``--long V`` / ``--long=V`` in tokens."""
-    result: str | None = None
-    i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        if tok.startswith(f"{long}="):
-            result = tok.split("=", 1)[1]
-        elif tok in (long, short) and i + 1 < len(tokens):
-            result = tokens[i + 1]
-            i += 1
-        elif tok.startswith(short) and not tok.startswith("--") and len(tok) > 2:
-            result = tok[2:]
-        i += 1
-    return result
-
-
 def _effective(
     extra: Sequence[str], directive_tokens: Sequence[str], short: str, long: str
 ) -> str | None:
-    value = _last_option(extra, short, long)
+    value = last_option_value(extra, short, long)
     if value is None:
-        value = _last_option(directive_tokens, short, long)
+        value = last_option_value(directive_tokens, short, long)
     return value
 
 
@@ -157,7 +143,7 @@ def output_warning(script_text: str, extra_sbatch_args: Sequence[str]) -> str | 
     ``#SBATCH`` directive. Warns when ``--chdir`` is missing or relative and
     either ``--output`` is missing or relative, or ``--error`` is relative.
     """
-    directive_tokens = [t for line in _script_sbatch_tokens(script_text) for t in line]
+    directive_tokens = [t for line in script_sbatch_tokens(script_text) for t in line]
     chdir = _effective(extra_sbatch_args, directive_tokens, "-D", "--chdir")
     output = _effective(extra_sbatch_args, directive_tokens, "-o", "--output")
     error = _effective(extra_sbatch_args, directive_tokens, "-e", "--error")
@@ -227,7 +213,7 @@ def submit_via_snapshot(
                 handle.bind(int(submitted.job_id))
     except SnapshotValidationError as exc:
         raise typer.BadParameter(str(exc)) from exc
-    except (SnapshotError, SbatchSubmitError, RuntimeError) as exc:
+    except (SnapshotError, SbatchSubmitError, TransportError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 

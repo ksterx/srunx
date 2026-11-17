@@ -302,10 +302,10 @@ def test_submit_remote_sbatch_forwards_metadata_to_recorder(
     assert record_calls[0]["metadata"] == meta
 
 
-def test_submit_remote_sbatch_omits_metadata_kwarg_when_none(
+def test_submit_remote_sbatch_passes_metadata_none_when_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Recorders with the pre-metadata signature must keep working."""
+    """``metadata`` is always forwarded, as None when the caller gave none."""
     for profile in ("ml-cluster", None):
         adapter = _bare_adapter(profile_name=profile)
         _stub_inner_submit(adapter, job_id="12", name="train")
@@ -321,4 +321,13 @@ def test_submit_remote_sbatch_omits_metadata_kwarg_when_none(
             callbacks_job=ShellJob(name="train", script_path="/x/train.sh"),
         )
 
-        assert "metadata" not in record_calls[0]
+        assert record_calls[0]["metadata"] is None
+
+
+def test_submit_remote_sbatch_connect_failure_is_a_confirmed_rejection() -> None:
+    """No connection means nothing was sent, so no job exists."""
+    adapter = _bare_adapter()
+    adapter._client.connection.ssh_client = None
+    adapter._client.connect = MagicMock(return_value=False)  # type: ignore[method-assign]
+    with pytest.raises(SbatchRejectedError, match="SSH connection failed"):
+        adapter.submit_remote_sbatch("/x/train.sh")
