@@ -11,7 +11,7 @@ from typing import Any, Literal, Protocol
 from loguru import logger
 
 from srunx.common.exceptions import SbatchRejectedError
-from srunx.snapshot.errors import SnapshotValidationError
+from srunx.snapshot.errors import SnapshotRemoteError, SnapshotValidationError
 from srunx.snapshot.lease import Lease
 from srunx.snapshot.local_git import SnapshotPlan
 from srunx.snapshot.remote import (
@@ -142,13 +142,28 @@ class SnapshotService:
         self, plan: SnapshotPlan, lease: Lease | None
     ) -> tuple[PreparedSnapshot, CommitResult]:
         probe = self._store.probe(repo_id=plan.repo_id, sha=plan.sha)
+        push_error: SnapshotRemoteError | None = None
         if not probe.has_commit:
-            self._store.push(repo_top=plan.repo_top, probe=probe, sha=plan.sha)
+            try:
+                self._store.push(repo_top=plan.repo_top, probe=probe, sha=plan.sha)
+            except SnapshotRemoteError as exc:
+                # A concurrent push of the same commit makes ours fail with
+                # "reference already exists". The locked commit step checks
+                # for the commit itself and is authoritative.
+                push_error = exc
+                logger.debug(
+                    "push failed, checking whether the commit arrived: {}", exc
+                )
         if lease is not None:
             lease = lease.model_copy(
                 update={"snapshot_path": f"{probe.repo_dir}/trees/{plan.sha}"}
             )
-        result = self._store.commit(probe=probe, sha=plan.sha, lease=lease)
+        try:
+            result = self._store.commit(probe=probe, sha=plan.sha, lease=lease)
+        except SnapshotRemoteError as exc:
+            if push_error is not None:
+                raise push_error from exc
+            raise
         prepared = PreparedSnapshot(
             plan=plan,
             root=probe.root,

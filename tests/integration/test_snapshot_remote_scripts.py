@@ -417,7 +417,7 @@ def test_waiter_blocks_until_holder_releases_then_proceeds(env: Env) -> None:
     lock = _foreign_lock(probe)
 
     def release() -> None:
-        time.sleep(0.8)
+        time.sleep(0.3)
         (lock / "owner").unlink()
         lock.rmdir()
 
@@ -428,7 +428,7 @@ def test_waiter_blocks_until_holder_releases_then_proceeds(env: Env) -> None:
     elapsed = time.monotonic() - started
     t.join()
     assert res.status == "created"
-    assert elapsed >= 0.6
+    assert elapsed >= 0.2
     assert not lock.exists()
 
 
@@ -477,6 +477,31 @@ def test_sigterm_to_lock_holder_leaves_no_lock(env: Env) -> None:
             proc.kill()
             proc.wait()
     assert proc.returncode == 143
+    assert not lock.exists()
+
+
+def test_closed_stdout_pipe_leaves_no_lock(env: Env) -> None:
+    """sshd without a pty sends no SIGHUP; the script dies of SIGPIPE on its write."""
+    store, probe = env.prepare()
+    script = _commit_script(env, probe, None)
+    lock = Path(probe.repo_dir) / ".lock"
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)  # the reader is already gone when the script writes
+    # dash (the usual remote /bin/sh) skips the EXIT trap on SIGPIPE; bash does not.
+    sh = shutil.which("dash") or "/bin/sh"
+    try:
+        proc = _REAL_POPEN(
+            [sh, "-s"],
+            stdin=subprocess.PIPE,
+            stdout=write_fd,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=env.shell.env,
+        )
+    finally:
+        os.close(write_fd)
+    proc.communicate(script, timeout=30)
+    assert proc.returncode != 0
     assert not lock.exists()
 
 

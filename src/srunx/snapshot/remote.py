@@ -2,10 +2,13 @@
 
 Every step that needs the per-repo lock is one script that acquires the lock,
 does its work and releases it through a ``trap``. The client never holds the
-lock across round trips, so nothing ever has to break a stale lock: a client
-that dies takes its ssh session (and so the script's shell) with it, and the
-shell's HUP trap releases the lock. A script killed with SIGKILL, or a node
-crash, leaves ``.lock`` behind; that is cleared by hand (the lock-timeout
+lock across round trips, so nothing ever has to break a stale lock. Without a
+pty, sshd does not send SIGHUP when the client disconnects; the script instead
+dies of SIGPIPE on its next write to stdout. The EXIT trap releases the lock
+for HUP / INT / TERM / PIPE (each trap converts the signal to an ``exit``), and
+each script also calls ``release`` before it writes its result lines so the
+lock never depends on a write succeeding. A script killed with SIGKILL, or a
+node crash, leaves ``.lock`` behind; that is cleared by hand (the lock-timeout
 message names the path and the owner).
 """
 
@@ -141,6 +144,7 @@ release() {
 }
 trap release EXIT
 trap 'exit 129' HUP
+trap 'exit 141' PIPE
 trap 'exit 130' INT
 trap 'exit 143' TERM
 acquire() {
@@ -298,6 +302,7 @@ fi
 "$GIT" --git-dir="$REPO/repo.git" rev-parse --git-dir >/dev/null 2>&1 || { echo "$REPO/repo.git is not a valid git repository" >&2; exit 24; }
 HAVE=0
 if "$GIT" --git-dir="$REPO/repo.git" cat-file -e '@SHA@^{commit}' 2>/dev/null; then HAVE=1; fi
+release
 printf 'ROOT=%s\n' "$ROOT"
 printf 'REPO=%s\n' "$REPO"
 printf 'GIT=%s\n' "$GIT"
@@ -392,7 +397,8 @@ else
   : > "$MARK" || { echo "cannot create marker $MARK" >&2; exit 29; }
 fi
 LEASE=
-@WRITE_LEASE_CALL@printf 'STATUS=%s\n' "$STATUS"
+@WRITE_LEASE_CALL@release
+printf 'STATUS=%s\n' "$STATUS"
 printf 'PATH=%s\n' "$TREE"
 printf 'LEASE=%s\n' "$LEASE"
 """
@@ -431,6 +437,7 @@ def build_commit_script(
 _BIND_BODY = r"""acquire
 if [ -f "$MARK" ]; then SNAPSHOT=present; else SNAPSHOT=missing; fi
 write_lease
+release
 printf 'SNAPSHOT=%s\n' "$SNAPSHOT"
 """
 
@@ -463,6 +470,7 @@ def build_bind_script(
 
 _DELETE_BODY = r"""acquire
 rm -f "$REPO/leases/$LEASE_ID.json"
+release
 """
 
 

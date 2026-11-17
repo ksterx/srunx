@@ -534,7 +534,8 @@ class TestUpdateSnapshotRoot:
     def test_update_snapshot_root_rejects_invalid(self, tmp_path: Path, value: str):
         cfg = self._seed(tmp_path)
         result = self._update(cfg, value)
-        assert result.exit_code == 1
+        assert result.exit_code == 2
+        assert "--snapshot-root" in result.output
         profile = ConfigManager(cfg).get_profile("p")
         assert profile is not None
         assert profile.snapshot_root is None

@@ -29,6 +29,8 @@ class FakeStore:
         self.bind_result: bool | Exception = True
         self.delete_error: Exception | None = None
         self.bound_lease: Lease | None = None
+        self.push_error: Exception | None = None
+        self.commit_error: Exception | None = None
 
     def probe(self, *, repo_id: str, sha: str) -> ProbeResult:
         self.calls.append("probe")
@@ -42,11 +44,15 @@ class FakeStore:
 
     def push(self, *, repo_top: Path, probe: ProbeResult, sha: str) -> None:
         self.calls.append("push")
+        if self.push_error:
+            raise self.push_error
 
     def commit(
         self, *, probe: ProbeResult, sha: str, lease: Lease | None
     ) -> CommitResult:
         self.calls.append("commit")
+        if self.commit_error:
+            raise self.commit_error
         self.commit_lease = lease
         lease_path = f"{REPO_DIR}/leases/{lease.lease_id}.json" if lease else None
         return CommitResult(path=TREE, status="created", lease_path=lease_path)
@@ -294,3 +300,27 @@ class TestLeasedSnapshot:
             with make_service(store).leased_snapshot(make_plan()):
                 pass  # pragma: no cover
         assert "delete_lease" not in store.calls and "bind" not in store.calls
+
+
+def test_push_failure_is_tolerated_when_commit_step_finds_the_commit() -> None:
+    store = FakeStore()
+    store.push_error = SnapshotRemoteError("git push failed: reference already exists")
+    prepared = make_service(store).create(make_plan())
+    assert store.calls == ["probe", "push", "commit"]
+    assert prepared.path == TREE
+
+
+def test_push_failure_is_raised_when_the_commit_is_still_missing() -> None:
+    store = FakeStore()
+    store.push_error = SnapshotRemoteError("git push failed (exit 1): no route")
+    store.commit_error = SnapshotRemoteError("the commit is missing (exit 26)")
+    with pytest.raises(SnapshotRemoteError, match="git push failed .*no route"):
+        make_service(store).create(make_plan())
+    assert store.calls == ["probe", "push", "commit"]
+
+
+def test_commit_failure_without_push_failure_is_unchanged() -> None:
+    store = FakeStore(has_commit=True)
+    store.commit_error = SnapshotRemoteError("lock timeout")
+    with pytest.raises(SnapshotRemoteError, match="lock timeout"):
+        make_service(store).create(make_plan())

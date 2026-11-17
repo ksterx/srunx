@@ -11,7 +11,12 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from ..core.config import ConfigManager, ServerProfile, validate_profile_name
+from ..core.config import (
+    ConfigManager,
+    ServerProfile,
+    validate_profile_name,
+    validate_snapshot_root,
+)
 
 console = Console()
 
@@ -319,6 +324,15 @@ def update_profile_impl(
     snapshot_root: str | None = None,
 ):
     """Implementation for updating an existing profile."""
+    # Validated outside the broad ``try`` below so a bad value is a usage error
+    # (exit 2) rather than a generic failure (exit 1). Empty string clears.
+    validated_snapshot_root: str | None = None
+    if snapshot_root is not None:
+        try:
+            validated_snapshot_root = validate_snapshot_root(snapshot_root)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--snapshot-root") from exc
+
     try:
         config_manager = ConfigManager(config)
 
@@ -347,10 +361,7 @@ def update_profile_impl(
         if description is not None:
             update_params["description"] = description
         if snapshot_root is not None:
-            from srunx.ssh.core.config import validate_snapshot_root
-
-            # Empty string clears the field (stored as None).
-            update_params["snapshot_root"] = validate_snapshot_root(snapshot_root)
+            update_params["snapshot_root"] = validated_snapshot_root
 
         if not update_params:
             console.print("[yellow]No updates provided[/yellow]")
