@@ -31,41 +31,15 @@ from srunx.snapshot.remote import (
     build_probe_script,
     root_expr,
 )
+from tests.integration._local_shell import REAL_RUN, LocalShell
 
-# tests/conftest.py replaces ``subprocess.run`` for every test; keep the real one.
-_REAL_RUN = subprocess.run
+_REAL_RUN = REAL_RUN
 _REAL_POPEN = subprocess.Popen
 
 TOKEN = "a1" * 16
 
 
 OWNER = LockOwner(client_host="testhost", client_pid=4242, token=TOKEN)
-
-
-class LocalShell:
-    """A RemoteShell whose "remote" is ``sh -s`` on this machine."""
-
-    def __init__(self, path_env: str) -> None:
-        self.env = {**os.environ, "PATH": path_env}
-
-    def run_script(
-        self, script: str, *, timeout: float | None = None
-    ) -> subprocess.CompletedProcess[str]:
-        return _REAL_RUN(
-            ["/bin/sh", "-s"],
-            input=script,
-            capture_output=True,
-            text=True,
-            timeout=timeout or 60,
-            env=self.env,
-            check=False,
-        )
-
-    def ssh_command(self) -> list[str]:
-        return ["ssh"]
-
-    def remote_spec(self, path: str) -> str:
-        return path
 
 
 @dataclass
