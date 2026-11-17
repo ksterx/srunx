@@ -609,6 +609,17 @@ class SlurmSSHClient:
             self._ensure_connected()
             return self._client.slurm.get_job_status(str(job_id))
 
+    def run_slurm_command(self, cmd: str) -> tuple[str, str, int]:
+        """Run *cmd* in the remote SLURM environment; returns (stdout, stderr, exit code).
+
+        Unlike the query helpers this never raises on a non-zero exit, so a
+        caller that must tell "the command failed" from "no rows" (snapshot
+        prune) can judge the exit code itself.
+        """
+        with self._io_lock:
+            self._ensure_connected()
+            return self._client.slurm.execute_slurm_command(cmd)
+
     def get_job_output_detailed(
         self,
         job_id: int | str,
