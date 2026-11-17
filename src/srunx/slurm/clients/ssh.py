@@ -453,6 +453,7 @@ class SlurmSSHClient:
         dependency: str | None = None,
         extra_sbatch_args: list[str] | None = None,
         callbacks_job: Any = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Any:
         """Submit a script already present on the remote cluster.
 
@@ -517,6 +518,11 @@ class SlurmSSHClient:
 
         # Record to DB so `srunx history` / poller pick it up. Mirrors
         # :meth:`submit` step 3.
+        # ``metadata`` is forwarded only when set so recorders / mocks with the
+        # pre-metadata signature keep working.
+        metadata_kwargs: dict[str, Any] = (
+            {"metadata": metadata} if metadata is not None else {}
+        )
         if self._profile_name is not None:
             self._record_job_submission(
                 callbacks_job,
@@ -526,10 +532,14 @@ class SlurmSSHClient:
                 profile_name=self._profile_name,
                 scheduler_key=f"ssh:{self._profile_name}",
                 submission_source=self.submission_source,
+                **metadata_kwargs,
             )
         else:
             self._record_job_submission(
-                callbacks_job, workflow_name=None, workflow_run_id=None
+                callbacks_job,
+                workflow_name=None,
+                workflow_run_id=None,
+                **metadata_kwargs,
             )
 
         # Fire on_job_submitted callbacks. Mirrors :meth:`submit` step 4.
@@ -1302,6 +1312,7 @@ class SlurmSSHClient:
         profile_name: str | None = None,
         scheduler_key: str | None = None,
         submission_source: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         # ``transport_type`` / ``submission_source`` are typed plain ``str``
         # here even though the underlying recorder expects ``Literal``s
@@ -1310,6 +1321,7 @@ class SlurmSSHClient:
         # Literal (notably ``"mcp"`` from the MCP transport registry).
         # Casting at this single boundary keeps the static type clean
         # without lying to the recorder.
+        extra: dict[str, Any] = {"metadata": metadata} if metadata is not None else {}
         _record_job_submission_impl(
             job,
             workflow_name=workflow_name,
@@ -1318,6 +1330,7 @@ class SlurmSSHClient:
             profile_name=profile_name,
             scheduler_key=scheduler_key,
             submission_source=submission_source,  # type: ignore[arg-type]
+            **extra,
         )
 
     def _record_completion_safe(self, job_id: int, status: JobStatus) -> None:

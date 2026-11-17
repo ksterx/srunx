@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import datetime
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
@@ -107,6 +107,7 @@ class JobOperations(Protocol):
         dependency: str | None = None,
         extra_sbatch_args: list[str] | None = None,
         callbacks_job: RunnableJobType | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> RunnableJobType:
         """Submit a script that already exists on the remote cluster.
 

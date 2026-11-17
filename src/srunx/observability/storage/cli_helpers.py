@@ -31,6 +31,7 @@ def record_submission_from_job(
     profile_name: str | None = None,
     scheduler_key: str = "local",
     submission_source: SubmissionSource | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     """Insert a ``jobs`` row + seed a ``PENDING`` transition for ``job``.
 
@@ -110,6 +111,7 @@ def record_submission_from_job(
                     getattr(environment, "env_vars", None) if environment else None
                 ),
                 workflow_run_id=workflow_run_id,
+                metadata=metadata,
             )
             # Seed a baseline transition only when we actually inserted
             # the row. INSERT OR IGNORE returns 0 when the row already

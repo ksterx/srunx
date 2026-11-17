@@ -255,3 +255,47 @@ def test_submit_remote_sbatch_no_job_forwards_none_env(
     adapter.submit_remote_sbatch("/r/x.sh")
 
     assert inner.call_args.kwargs["job_env_vars"] is None
+
+
+def test_submit_remote_sbatch_forwards_metadata_to_recorder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _bare_adapter(profile_name="ml-cluster")
+    _stub_inner_submit(adapter, job_id="11", name="train")
+    record_calls: list[dict] = []
+    monkeypatch.setattr(
+        adapter,
+        "_record_job_submission",
+        lambda job, **kw: record_calls.append(kw),
+    )
+
+    meta = {"snapshot": {"repo_id": "r-1", "sha": "a" * 40}}
+    adapter.submit_remote_sbatch(
+        "/x/train.sh",
+        callbacks_job=ShellJob(name="train", script_path="/x/train.sh"),
+        metadata=meta,
+    )
+
+    assert record_calls[0]["metadata"] == meta
+
+
+def test_submit_remote_sbatch_omits_metadata_kwarg_when_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recorders with the pre-metadata signature must keep working."""
+    for profile in ("ml-cluster", None):
+        adapter = _bare_adapter(profile_name=profile)
+        _stub_inner_submit(adapter, job_id="12", name="train")
+        record_calls: list[dict] = []
+        monkeypatch.setattr(
+            adapter,
+            "_record_job_submission",
+            lambda job, _c=record_calls, **kw: _c.append(kw),
+        )
+
+        adapter.submit_remote_sbatch(
+            "/x/train.sh",
+            callbacks_job=ShellJob(name="train", script_path="/x/train.sh"),
+        )
+
+        assert "metadata" not in record_calls[0]
