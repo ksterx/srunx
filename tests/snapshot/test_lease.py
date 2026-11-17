@@ -60,3 +60,28 @@ def test_bound_sets_job_id_and_time() -> None:
     assert bound.bound_at is not None
     assert bound.lease_id == first.lease_id
     assert first.state == "provisional"
+
+
+def test_cluster_defaults_to_none_and_is_always_emitted() -> None:
+    lease = _lease()
+    assert lease.cluster is None
+    assert json.loads(lease.to_json())["cluster"] is None
+
+
+def test_bound_stores_cluster_and_roundtrips() -> None:
+    bound = _lease().bound(7, cluster="gpucloud2")
+    assert bound.cluster == "gpucloud2"
+    again = Lease.from_json(bound.to_json())
+    assert again.cluster == "gpucloud2" and again.job_id == 7
+
+
+def test_bound_without_cluster_is_none() -> None:
+    assert _lease().bound(7).cluster is None
+
+
+def test_cluster_missing_key_loads_as_none_with_schema_one() -> None:
+    data = json.loads(_lease().bound(7).to_json())
+    del data["cluster"]
+    lease = Lease.from_json(json.dumps(data))
+    assert lease.cluster is None
+    assert lease.schema_version == 1

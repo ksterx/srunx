@@ -30,6 +30,9 @@ class Lease(BaseModel):
     client_host: str
     created_at: str
     bound_at: str | None = None
+    # Cluster name from sacct at bind time; None when it could not be learned.
+    # A lease written before this field existed loads as None (schema stays 1).
+    cluster: str | None = None
 
     @classmethod
     def new_provisional(
@@ -49,9 +52,14 @@ class Lease(BaseModel):
             bound_at=None,
         )
 
-    def bound(self, job_id: int) -> Lease:
+    def bound(self, job_id: int, *, cluster: str | None = None) -> Lease:
         return self.model_copy(
-            update={"state": "bound", "job_id": job_id, "bound_at": _now()}
+            update={
+                "state": "bound",
+                "job_id": job_id,
+                "bound_at": _now(),
+                "cluster": cluster,
+            }
         )
 
     def to_json(self) -> str:
