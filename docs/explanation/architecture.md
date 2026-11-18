@@ -12,35 +12,32 @@ srunx is organized as a modular Python library with clear separation of concerns
 
 ``` text
 src/srunx/
-├── models.py          # Data models and validation (Pydantic)
-├── client.py          # Local SLURM client (subprocess-based)
-├── client_protocol.py # Client + JobSnapshot (shared interface)
-├── runner.py          # Workflow execution engine
-├── callbacks.py       # Notification system (Slack, etc.)
-├── config.py          # Configuration management
-├── exceptions.py      # Custom exceptions
-├── formatters.py      # Output formatting utilities
-├── logging.py         # Centralized logging (Loguru)
-├── template.py        # SLURM script template rendering
-├── utils.py           # Utility functions
-├── cli/               # Command-line interface (Typer)
+├── callbacks.py       # Callback base class (job state notifications)
+├── utils.py           # Job status helpers
+├── common/            # Config, exceptions, logging
+├── domain/            # Pydantic models: Job / ShellJob / Workflow / JobStatus
+├── runtime/           # Script rendering, submission planning, workflow runner, sweeps
+├── slurm/             # SLURM wrappers: local client, SSH client, protocols, state parsing
+├── transport/         # Resolves local vs ssh:<profile>
+├── observability/     # Monitoring, notifications, SQLite state, background pollers
 ├── containers/        # Container runtime adapters (Pyxis, Apptainer)
-├── db/                # SQLite-backed state persistence + repositories
+├── ssh/               # SSH profiles, SSH SLURM client, ProxyJump
+├── sync/              # rsync client, per-mount lock, owner marker, manifest
+├── snapshot/          # Per-commit read-only code snapshots on a cluster
+├── cli/               # Command-line interface (Typer)
 ├── mcp/               # MCP server for AI agent integration
-├── monitor/           # Job and resource monitoring
-├── notifications/     # Notification domain (events → deliveries fan-out)
-├── pollers/           # Background lifespan tasks (watch / delivery / snapshots)
-├── ssh/               # SSH integration for remote SLURM
-├── sync/              # rsync-based file synchronization
-├── templates/         # SLURM script templates (Jinja2)
 └── web/               # Web UI (FastAPI + React)
 ```
+
+Imports flow one way: `interfaces (cli, mcp, web) → runtime / slurm /
+observability / integrations (ssh, sync, snapshot, containers) → domain →
+common`. A test in `tests/architecture/` enforces this layering.
 
 ## Two Execution Paths
 
 srunx has two independent paths for interacting with SLURM:
 
-**Local execution** (`srunx.slurm.local.Slurm`)  
+**Local execution** (`srunx.slurm.local.LocalClient`)  
 Calls `sbatch` directly via `subprocess`. Used when the CLI runs on the
 same machine (or a login node) where SLURM is available.
 
@@ -50,19 +47,25 @@ remotely. Supports ProxyJump for multi-hop connections.
 
 ## File Transfer Strategy
 
-The SSH path uses two complementary file transfer mechanisms:
+The SSH path moves code and scripts three ways:
 
-**SFTP (Paramiko)** — for ephemeral single-file staging  
-`upload_file()` transfers a single script to `/tmp/srunx/` on the
-remote server. `_write_remote_file()` writes in-memory script content.
-Both use Paramiko's SFTP subsystem.
+**SFTP (Paramiko)** — for generated scripts  
+Scripts that have no file in a mount (`--wrap`, `--template`, Jinja-rendered
+ShellJobs) are uploaded to `$SRUNX_TEMP_DIR` and submitted from there.
 
-**rsync (subprocess)** — for project directory synchronization  
-`sync_project()` uses the `RsyncClient` to sync an entire project
-directory to `~/.config/srunx/workspace/{repo_name}/` on the remote
-server. This enables scripts that import local modules to work correctly
-on the remote side. rsync provides delta transfers, exclude patterns, and
-works through ProxyJump via the `-e` flag.
+**rsync (subprocess)** — for mounted project directories  
+A profile's mounts map local directories to remote ones. `sbatch` and
+`flow run` rsync the touched mount (additive by default; `--delete` mirrors)
+under a per-mount lock, then run the script in place at its remote path. rsync
+provides delta transfers and exclude patterns, and works through ProxyJump via
+the `-e` flag. `SSHSlurmClient.sync_project()` is the Python entry point for a
+single directory.
+
+**Git snapshots** — for reproducible jobs  
+`sbatch --snapshot` pushes a commit to a bare repo on the cluster and checks it
+out as a read-only tree, so later syncs cannot change the code under pending or
+requeued jobs. Each submission writes a lease file; `snapshot prune` deletes
+only trees that no job can still use. The logic lives in `srunx.snapshot`.
 
 ## Web UI Architecture
 

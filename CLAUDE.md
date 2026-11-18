@@ -462,7 +462,7 @@ src/srunx/
 │   │   └── pollers/   # supervisor, active_watch_poller, delivery_poller, resource_snapshotter, reload_guard
 │   ├── notifications/ # Notification domain (Slack + future channels)
 │   │   ├── sanitize.py, presets.py, service.py, legacy_slack.py, formatting.py
-│   │   └── adapters/  # DeliveryAdapter + SlackWebhookDeliveryAdapter + registry
+│   │   └── adapters/  # DeliveryAdapter + SlackWebhookAdapter + registry
 │   └── storage/       # SQLite persistence at $XDG_CONFIG_HOME/srunx/srunx.observability.storage
 │       ├── connection.py, migrations.py, models.py, cli_helpers.py
 │       └── repositories/  # JobRepository, DeliveryRepository, EndpointRepository, ...
@@ -491,118 +491,6 @@ src/srunx/
     ├── services/      # Business logic extracted from routers (workflow_{storage,validation,run_query,run_cancellation,submission}, sweep_submission, _submission_common)
     └── frontend/      # React SPA (components, hooks, pages, lib)
 ```
-
-### Core Components
-
-#### Models (`models.py`)
-- **BaseJob**: Base class for all job types with common fields (name, job_id, depends_on, exports, status)
-- **Job**: Complete SLURM job configuration with command, resources, and environment
-- **ShellJob**: Job that executes a shell script with variables (script_path, script_vars)
-- **JobResource**: Resource allocation (nodes, GPUs, memory, time, partition, nodelist)
-- **JobEnvironment**: Environment setup (conda, venv, container, env_vars)
-- **ContainerResource**: Container configuration (image, mounts, workdir)
-- **JobStatus**: Job status enumeration (PENDING, RUNNING, COMPLETED, FAILED, etc.)
-- **Workflow**: Workflow definitions with job dependencies and validation
-- **render_job_script()**: Template rendering function for Job instances
-- **render_shell_job_script()**: Template rendering function for ShellJob instances
-
-#### Client (`client.py`)
-- **Slurm**: Main interface for SLURM operations
-  - `submit()`: Submit jobs with full configuration
-  - `retrieve()`: Query job status
-  - `cancel()`: Cancel running jobs
-  - `queue()`: List user jobs
-  - `monitor()`: Wait for job completion
-  - `run()`: Submit and monitor job
-
-#### SSH Integration (`ssh/`)
-- **SSHSlurmClient**: Main SSH client for remote SLURM operations
-  - `connect()`: Establish SSH connection
-  - `submit_sbatch_job()`: Submit script content to remote SLURM
-  - `submit_sbatch_file()`: Submit script file to remote SLURM
-  - `monitor_job()`: Monitor remote job until completion
-  - `get_job_status()`: Query remote job status
-  - `upload_file()`: Upload local files to remote server
-  - Context manager support for automatic connection handling
-- **ConfigManager**: SSH profile management
-  - `add_profile()`: Add new SSH connection profile
-  - `get_profile()`: Retrieve profile by name
-  - `list_profiles()`: List all profiles
-  - `set_current_profile()`: Set default profile
-- **SSHConfigParser**: SSH config file parsing
-  - `get_host()`: Get SSH host configuration
-  - `list_hosts()`: List available hosts
-- **ProxySSHClient**: SSH ProxyJump connection handling
-
-#### Monitoring System (`monitor/`)
-- **BaseMonitor**: Abstract base class for monitoring operations
-  - `watch_until()`: Monitor until condition met (blocking)
-  - `watch_continuous()`: Monitor continuously with state change notifications
-  - `check_condition()`: Abstract method for condition checking
-  - `get_current_state()`: Abstract method for state retrieval
-  - Signal handling (SIGTERM, SIGINT) for graceful shutdown
-  - Configurable polling intervals with aggressive polling warnings
-- **JobMonitor**: SLURM job monitoring until terminal states
-  - Monitor single or multiple jobs simultaneously
-  - Track state transitions (PENDING → RUNNING → COMPLETED/FAILED)
-  - Configurable target statuses (default: COMPLETED, FAILED, CANCELLED, TIMEOUT)
-  - Duplicate notification prevention
-  - Integration with Slurm client for job status queries
-- **ResourceMonitor**: GPU resource availability monitoring
-  - Query partition resources using `sinfo` and `squeue`
-  - Track available/in-use/total GPUs
-  - Threshold-based availability detection
-  - Node statistics (total, idle, down nodes)
-  - DOWN/DRAIN node filtering for accurate availability
-  - Partition-specific or cluster-wide monitoring
-- **MonitorConfig**: Configuration dataclass
-  - `poll_interval`: Polling frequency in seconds (default: 60)
-  - `timeout`: Maximum monitoring duration (None = no timeout)
-  - `mode`: WatchMode.UNTIL_CONDITION or WatchMode.CONTINUOUS
-  - `notify_on_change`: Enable state change notifications
-- **ResourceSnapshot**: Immutable resource state snapshot
-  - Timestamp, partition, GPU metrics, node statistics
-  - Computed fields: `gpu_utilization`, `has_available_gpus`
-  - `meets_threshold()`: Check minimum GPU availability
-
-#### Workflow Runner (`runner.py`)
-- **WorkflowRunner**: YAML workflow execution engine
-  - `from_yaml()`: Load workflow from YAML file
-  - `run()`: Execute workflow with dynamic job scheduling
-  - `get_independent_jobs()`: Find jobs without dependencies
-  - `parse_job()`: Parse job configuration from YAML
-
-#### Callbacks (`callbacks.py`)
-- **Callback**: Base class for job state notifications
-- **SlackCallback**: Send notifications to Slack via webhook
-
-#### Configuration (`config.py`)
-- **SrunxConfig**: Main configuration class with resource and environment defaults
-- **ResourceDefaults**: Default resource allocation settings
-- **EnvironmentDefaults**: Default environment setup
-- **get_config()**: Get global configuration instance
-- **load_config()**: Load configuration from files and environment variables
-- **save_user_config()**: Save configuration to user config file
-
-#### Logging (`logging.py`)
-- **configure_logging()**: General logging configuration
-- **configure_cli_logging()**: CLI-specific logging
-- **configure_workflow_logging()**: Workflow-specific logging
-- **get_logger()**: Get logger instance for module
-
-#### Utilities (`utils.py`)
-- **get_job_status()**: Query job status from SLURM
-- **job_status_msg()**: Format status messages with icons
-
-#### Exceptions (`exceptions.py`)
-- **WorkflowError**: Base workflow exception
-- **WorkflowValidationError**: Workflow validation errors
-- **WorkflowExecutionError**: Workflow execution errors
-
-#### CLI (`cli/`)
-- **Main CLI**: Job management commands (submit, status, list, cancel, resources)
-- **Monitor CLI**: Monitor subcommands (jobs, resources, cluster)
-- **Workflow CLI**: YAML workflow execution with validation
 
 ### Template System
 - Enhanced Jinja2 templates with conditional resource allocation
@@ -734,15 +622,6 @@ watch+subscription (if `--endpoint` is provided); cells do not produce
 individual Slack messages — a single `sweep_run.status_changed` event fires
 at first-cell-start and at final terminal.
 
-### Key Improvements
-- **Unified Job Model**: Single `Job` class with comprehensive configuration
-- **Modular Architecture**: Clear separation of concerns
-- **Enhanced CLI**: Subcommands with rich options
-- **Better Error Handling**: Comprehensive validation and error messages
-- **Resource Management**: Full SLURM resource specification
-- **Workflow Validation**: Dependency checking and cycle detection
-- **Load-Time Value Propagation**: Parent-job `exports` are substituted into child jobs via `{{ deps.<parent>.<key> }}` at workflow load time, with StrictUndefined validation
-
 ### Notification + State Persistence (new in 2026-Q2)
 
 srunx stores durable state in a SQLite DB at
@@ -763,7 +642,7 @@ Tables (abbreviated):
 
 Background pollers (lifespan tasks managed by `PollerSupervisor`):
 - `ActiveWatchPoller` (producer) — polls SLURM every 15 s, writes `job_state_transitions`, `jobs` status, `events`, and fan-outs into `deliveries`.
-- `DeliveryPoller` (consumer) — claims `pending` deliveries every 10 s, sends via `SlackWebhookDeliveryAdapter` (or future channels), handles retry/abandon with exponential backoff (base 10 s, cap 1 h, max 5 attempts).
+- `DeliveryPoller` (consumer) — claims `pending` deliveries every 10 s, sends via `SlackWebhookAdapter` (or future channels), handles retry/abandon with exponential backoff (base 10 s, cap 1 h, max 5 attempts).
 - `ResourceSnapshotter` — every 5 min, writes one `resource_snapshots` row.
 
 All pollers are crash-resilient via a lease mechanism (`leased_until`, `worker_id`) and a `reclaim_expired_leases()` sweep at the start of every `DeliveryPoller` cycle.
@@ -776,8 +655,6 @@ All pollers are crash-resilient via a lease mechanism (`leased_until`, `worker_i
 - `UVICORN_RELOAD` — anything truthy enables dev-mode reload detection in `pollers.reload_guard`.
 
 Notification settings UI lives in `Settings → Notifications`; Phase 1 supports endpoint CRUD for `slack_webhook` only. Webhook URL validation (both UI and backend): `^https://hooks\.slack\.com/services/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$`.
-
-See `.claude/specs/notification-and-state-persistence/` for full requirements, design, and task list.
 
 ## Dependencies
 - **Jinja2**: Template rendering
@@ -805,10 +682,3 @@ Do what has been asked; nothing more, nothing less.
 NEVER create files unless they're absolutely necessary for achieving your goal.
 ALWAYS prefer editing an existing file to creating a new one.
 NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
-
-## Active Technologies
-- Python 3.11+ (project already uses Python 3.12) (001-slurm-job-resource-monitor)
-- N/A (stateless monitoring, no persistence in v1) (001-slurm-job-resource-monitor)
-
-## Recent Changes
-- 001-slurm-job-resource-monitor: Added Python 3.11+ (project already uses Python 3.12)

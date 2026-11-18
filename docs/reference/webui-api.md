@@ -1,5 +1,5 @@
 ---
-description: REST API reference for the srunx Web UI server — endpoints for jobs, workflows, runs, resources, endpoints, deliveries, and templates.
+description: REST API reference for the srunx Web UI server — jobs, resources, workflows and runs, sweep runs, files and mounts, config and SSH profiles, history, notification endpoints, subscriptions, watches, deliveries, and templates.
 ---
 
 # Web UI REST API Reference
@@ -13,6 +13,7 @@ The srunx Web UI exposes a REST API at `http://127.0.0.1:8000/api/`. All respons
 | GET    | `/api/jobs`               | List all SLURM jobs in the queue       |
 | GET    | `/api/jobs/{job_id}`      | Get detailed status for a specific job |
 | POST   | `/api/jobs`               | Submit a new job                       |
+| POST   | `/api/jobs/preview`       | Render a SLURM script without submitting |
 | DELETE | `/api/jobs/{job_id}`      | Cancel a running or pending job        |
 | GET    | `/api/jobs/{job_id}/logs` | Get stdout/stderr log contents         |
 
@@ -71,6 +72,50 @@ Submit a new job with a SLURM script.
 }
 ```
 
+### GET /api/jobs/{job_id}
+
+Returns one job (looked up with `sacct`, so finished jobs are included). Same shape as a `GET /api/jobs` item.
+
+**Error responses:**
+
+- `400` — `job_id` is not positive
+- `404` — Job not found
+- `502` — SLURM command failed
+
+### POST /api/jobs/preview
+
+Render the SLURM script for a job configuration without submitting it.
+
+**Request body:**
+
+``` json
+{
+  "name": "preview",
+  "command": ["python", "train.py"],
+  "resources": {"gpus_per_node": 1, "partition": "gpu"},
+  "environment": {"conda": "ml_env"},
+  "work_dir": "/home/user/proj",
+  "log_dir": "/home/user/logs",
+  "template_name": "base"
+}
+```
+
+Only `command` is required. `name` defaults to `preview`, `template_name` to `base`, and `work_dir` / `log_dir` to `.`.
+
+**Response:**
+
+``` json
+{
+  "script": "#!/bin/bash\n#SBATCH --job-name=preview\n...",
+  "template_used": "base"
+}
+```
+
+**Error responses:**
+
+- `404` — Template not found
+- `422` — Invalid `resources` / `environment` (e.g. bad env-var key)
+
 ### DELETE /api/jobs/{job_id}
 
 Cancel a job. Returns `204 No Content` on success.
@@ -79,10 +124,19 @@ Cancel a job. Returns `204 No Content` on success.
 
 **Response:**
 
+**Query parameters:**
+
+- `stdout_offset` (optional, default `0`) — Byte offset to read stdout from
+- `stderr_offset` (optional, default `0`) — Byte offset to read stderr from
+
+Pass the offsets returned by the previous call to receive only new content.
+
 ``` json
 {
   "stdout": "Epoch 1/10: loss=0.85...",
-  "stderr": "WARNING: GPU memory high"
+  "stderr": "WARNING: GPU memory high",
+  "stdout_offset": 24,
+  "stderr_offset": 24
 }
 ```
 
@@ -135,6 +189,52 @@ Cancel a job. Returns `204 No Content` on success.
 | GET | `/api/workflows/runs` | List workflow run records |
 | GET | `/api/workflows/runs/{run_id}` | Get run status with live job statuses |
 | POST | `/api/workflows/runs/{run_id}/cancel` | Cancel all jobs in a run |
+
+### GET /api/workflows
+
+List the workflow YAML files of a mount. YAML files that fail to load are skipped.
+
+**Query parameters:**
+
+- `mount` (required) — Mount name
+
+**Response:**
+
+``` json
+[
+  {
+    "name": "ml-pipeline",
+    "jobs": [
+      {
+        "name": "train",
+        "job_id": null,
+        "status": "UNKNOWN",
+        "depends_on": ["preprocess"],
+        "exports": {},
+        "command": ["python", "train.py"],
+        "resources": {"nodes": 1, "gpus_per_node": 1, "partition": "gpu", "time_limit": "4:00:00"}
+      }
+    ],
+    "args": {"base_dir": "/data"}
+  }
+]
+```
+
+`args`, `default_project`, and a per-job `template` are present only when the YAML defines them. A `ShellJob` carries `script_path` instead of populated `command` / `resources`.
+
+### GET /api/workflows/{name}
+
+Get one workflow in the shape of a `GET /api/workflows` item.
+
+**Query parameters:**
+
+- `mount` (required) — Mount name
+
+**Error responses:**
+
+- `404` — Workflow not found
+- `422` — Invalid workflow name
+- `502` — Workflow failed to load
 
 ### POST /api/workflows/upload
 
@@ -294,6 +394,16 @@ The `status` field transitions through: `syncing`, `submitting`, `running`, then
 - `422` — Invalid workflow name
 - `500` — Script rendering failed
 - `502` — Mount sync failed or sbatch submission failed
+
+### GET /api/workflows/runs
+
+List workflow runs, newest data from the state database.
+
+**Query parameters:**
+
+- `name` (optional) — Only runs of this workflow
+
+**Response:** an array of run objects, each with the shape shown under `GET /api/workflows/runs/{run_id}`.
 
 ### GET /api/workflows/runs/{run_id}
 
@@ -743,6 +853,9 @@ Sync a mount's local directory to the remote server via rsync.
 | PUT | `/api/config/ssh/profiles/{name}` | Update an existing SSH profile |
 | DELETE | `/api/config/ssh/profiles/{name}` | Delete an SSH profile |
 | POST | `/api/config/ssh/profiles/{name}/activate` | Set profile as current active |
+| POST | `/api/config/ssh/profiles/{name}/connect` | Switch the live SSH connection to a profile |
+| POST | `/api/config/ssh/profiles/{name}/test` | Test SSH and SLURM availability without switching |
+| GET | `/api/config/ssh/status` | Current SSH connection status |
 | POST | `/api/config/ssh/profiles/{name}/mounts` | Add a mount to a profile |
 | DELETE | `/api/config/ssh/profiles/{name}/mounts/{mount_name}` | Remove a mount from a profile |
 | GET | `/api/config/env` | List active [SRUNX]()\* environment variables |
@@ -906,6 +1019,53 @@ Set a profile as the current active profile.
 
 - `404` — Profile not found
 
+### POST /api/config/ssh/profiles/{name}/connect
+
+Open an SSH connection with the profile and make it the server's live connection and current profile. Connection failures are reported in the body with status `200`.
+
+**Response:**
+
+``` json
+{"connected": true, "profile_name": "dgx", "hostname": "dgx.example.com"}
+```
+
+On failure: `{"connected": false, "profile_name": "dgx", "hostname": "dgx.example.com", "error": "SSH connection failed"}`.
+
+**Error responses:**
+
+- `404` — Profile not found
+
+### POST /api/config/ssh/profiles/{name}/test
+
+Connect with a temporary connection, check SLURM, and disconnect. The live connection is not changed.
+
+**Response:**
+
+``` json
+{
+  "ssh_connected": true,
+  "slurm_available": true,
+  "hostname": "dgx.example.com",
+  "user": "researcher",
+  "slurm_version": "slurm 24.05.1",
+  "error": null
+}
+```
+
+**Error responses:**
+
+- `404` — Profile not found
+
+### GET /api/config/ssh/status
+
+**Response:**
+
+``` json
+{"connected": true, "profile_name": "dgx"}
+```
+
+`profile_name` is `null` when no profile is active.
+
 ### POST /api/config/ssh/profiles/{name}/mounts
 
 Add a mount point to a profile.
@@ -1042,6 +1202,33 @@ Initialize `srunx.json` with example values in a mount's local directory.
 | GET    | `/api/history`       | Get recent job execution history |
 | GET    | `/api/history/stats` | Get aggregate job statistics     |
 
+### GET /api/history
+
+Recent job submissions recorded by srunx.
+
+**Query parameters:**
+
+- `limit` (optional, default `50`) — Maximum rows
+
+**Response:**
+
+``` json
+[
+  {
+    "job_id": 18431,
+    "job_name": "train-resnet",
+    "command": "python train.py",
+    "status": "COMPLETED",
+    "submitted_at": "2026-03-30 09:00:00",
+    "completed_at": "2026-03-30 10:30:00",
+    "workflow_name": null,
+    "partition": "gpu",
+    "nodes": 1,
+    "gpus": 8
+  }
+]
+```
+
 ### GET /api/history/stats
 
 **Query parameters:**
@@ -1060,6 +1247,320 @@ Initialize `srunx.json` with example values in a mount's local directory.
   "avg_runtime_seconds": 3600.0
 }
 ```
+
+## Notification Endpoints
+
+Destinations that receive notifications. Phase 1 supports `slack_webhook` only.
+
+| Method | Endpoint | Description |
+|----|----|----|
+| GET | `/api/endpoints` | List endpoints |
+| POST | `/api/endpoints` | Create an endpoint |
+| PATCH | `/api/endpoints/{id}` | Rename or change the config |
+| POST | `/api/endpoints/{id}/disable` | Disable an endpoint |
+| POST | `/api/endpoints/{id}/enable` | Re-enable an endpoint |
+| DELETE | `/api/endpoints/{id}` | Delete an endpoint |
+
+### GET /api/endpoints
+
+**Query parameters:**
+
+- `include_disabled` (optional, default `true`)
+
+**Response:**
+
+``` json
+[
+  {
+    "id": 1,
+    "kind": "slack_webhook",
+    "name": "team-alerts",
+    "config": {"webhook_url": "https://hooks.slack.com/services/T000/B000/XXXX"},
+    "created_at": "2026-03-30T09:00:00Z",
+    "disabled_at": null
+  }
+]
+```
+
+### POST /api/endpoints
+
+**Request body:**
+
+``` json
+{
+  "kind": "slack_webhook",
+  "name": "team-alerts",
+  "config": {"webhook_url": "https://hooks.slack.com/services/T000/B000/XXXX"}
+}
+```
+
+`name` is 1–80 characters. `webhook_url` must match `https://hooks.slack.com/services/<A>/<B>/<C>`.
+
+**Response (201):** the created endpoint.
+
+**Error responses:**
+
+- `409` — An endpoint with the same `kind` and `name` exists
+- `422` — Unsupported `kind` or invalid `webhook_url`
+
+### PATCH /api/endpoints/{id}
+
+Body fields `name` and `config` are both optional; `config` is re-validated for the endpoint's kind. Returns the updated endpoint. `404` if not found, `422` if the config is invalid.
+
+### POST /api/endpoints/{id}/disable
+
+Sets `disabled_at` and returns the endpoint. `404` if not found.
+
+### POST /api/endpoints/{id}/enable
+
+Clears `disabled_at` and returns the endpoint. `404` if not found.
+
+### DELETE /api/endpoints/{id}
+
+Returns `204 No Content`; `404` if not found.
+
+## Subscriptions
+
+A subscription connects a watch to an endpoint with a delivery preset.
+
+| Method | Endpoint | Description |
+|----|----|----|
+| GET | `/api/subscriptions` | List subscriptions |
+| POST | `/api/subscriptions` | Create a subscription |
+| DELETE | `/api/subscriptions/{id}` | Delete a subscription |
+
+### GET /api/subscriptions
+
+**Query parameters:**
+
+- `watch_id` (optional) — Subscriptions of one watch
+- `endpoint_id` (optional) — Subscriptions of one endpoint
+- `limit` (optional, default `200`, max `500`) — Used only when neither filter is given
+
+**Response:**
+
+``` json
+[
+  {"id": 3, "watch_id": 7, "endpoint_id": 1, "preset": "terminal", "created_at": "2026-03-30T09:00:00Z"}
+]
+```
+
+### POST /api/subscriptions
+
+**Request body:**
+
+``` json
+{"watch_id": 7, "endpoint_id": 1, "preset": "terminal"}
+```
+
+`preset` is `terminal` (default), `running_and_terminal`, or `all`. `digest` is not implemented and is rejected.
+
+**Response (201):** the created subscription.
+
+**Error responses:**
+
+- `409` — The (watch, endpoint) pair already has a subscription
+- `422` — Invalid or unimplemented preset
+
+### DELETE /api/subscriptions/{id}
+
+Returns `204 No Content`; `404` if not found.
+
+## Watches
+
+A watch is a monitored target (job, workflow run, sweep run) whose state changes produce events.
+
+| Method | Endpoint | Description |
+|----|----|----|
+| GET | `/api/watches` | List watches |
+| GET | `/api/watches/{id}` | Get one watch |
+| POST | `/api/watches` | Attach a notification to an existing job |
+| POST | `/api/watches/{id}/close` | Close a watch |
+
+### GET /api/watches
+
+**Query parameters:**
+
+- `open` (optional, default `true`) — Only open watches
+- `kind`, `target_ref` (optional) — Filter by target; both must be given together
+
+Unfiltered listing (`open=false` without `kind` and `target_ref`) returns `400`.
+
+**Response:**
+
+``` json
+[
+  {
+    "id": 7,
+    "kind": "job",
+    "target_ref": "job:local:18431",
+    "filter": null,
+    "created_at": "2026-03-30T09:00:00Z",
+    "closed_at": null
+  }
+]
+```
+
+### GET /api/watches/{id}
+
+Returns one watch; `404` if not found.
+
+### POST /api/watches
+
+Create a watch and a subscription for an already-submitted job. Idempotent: repeating the same (job, endpoint, preset) returns the same ids with `created: false`. The scheduler is taken from the active SSH connection.
+
+**Request body:**
+
+``` json
+{"kind": "job", "job_id": 18431, "endpoint_id": 1, "preset": "terminal"}
+```
+
+**Response (201):**
+
+``` json
+{"watch_id": 7, "subscription_id": 3, "created": true}
+```
+
+**Error responses:**
+
+- `404` — Endpoint not found
+- `422` — Endpoint disabled, or invalid or unsupported preset
+
+### POST /api/watches/{id}/close
+
+Closes the watch (sets `closed_at`) and returns it. Closing an already-closed watch succeeds. `404` if the id is unknown.
+
+## Deliveries
+
+Read-only view of the notification outbox. Sending is done by the background delivery poller.
+
+| Method | Endpoint | Description |
+|----|----|----|
+| GET | `/api/deliveries` | List deliveries |
+| GET | `/api/deliveries/stuck` | Count deliveries stuck in `pending` |
+| GET | `/api/deliveries/{id}` | Get one delivery |
+
+### GET /api/deliveries
+
+**Query parameters:**
+
+- `subscription_id` (optional) — Deliveries of one subscription
+- `status` (optional) — Filter by delivery status
+- `limit` (optional, default `100`, max `500`) — Applies when `subscription_id` is omitted
+
+**Response:**
+
+``` json
+[
+  {
+    "id": 12,
+    "event_id": 40,
+    "subscription_id": 3,
+    "endpoint_id": 1,
+    "idempotency_key": "...",
+    "status": "delivered",
+    "attempt_count": 1,
+    "next_attempt_at": "2026-03-30T10:30:00Z",
+    "leased_until": null,
+    "worker_id": null,
+    "last_error": null,
+    "delivered_at": "2026-03-30T10:30:02Z",
+    "created_at": "2026-03-30T10:30:00Z"
+  }
+]
+```
+
+### GET /api/deliveries/stuck
+
+**Query parameters:**
+
+- `older_than_sec` (optional, default `300`)
+
+**Response:**
+
+``` json
+{"count": 0, "older_than_sec": 300}
+```
+
+### GET /api/deliveries/{id}
+
+Returns one delivery; `404` if not found.
+
+## Templates
+
+Job script templates: built-in ones plus user-defined ones.
+
+| Method | Endpoint | Description |
+|----|----|----|
+| GET | `/api/templates` | List templates |
+| GET | `/api/templates/{name}` | Get a template with its Jinja source |
+| POST | `/api/templates` | Create a user-defined template |
+| PUT | `/api/templates/{name}` | Update a user-defined template |
+| DELETE | `/api/templates/{name}` | Delete a user-defined template |
+| POST | `/api/templates/{name}/apply` | Submit a job with a template, or preview it |
+
+### GET /api/templates
+
+**Response:**
+
+``` json
+[
+  {"name": "base", "description": "Full-featured template", "use_case": "General jobs", "user_defined": false}
+]
+```
+
+### GET /api/templates/{name}
+
+**Response:**
+
+``` json
+{"name": "base", "description": "...", "use_case": "...", "content": "#!/bin/bash\n..."}
+```
+
+`404` if the template does not exist.
+
+### POST /api/templates
+
+**Request body:** `{"name": "...", "description": "...", "use_case": "...", "content": "<jinja>"}`
+
+**Response (201):** the template list item. `409` if the name is taken or invalid.
+
+### PUT /api/templates/{name}
+
+Body fields `description`, `use_case`, `content` are optional. Returns the template as in `GET /api/templates/{name}`. `404` if the user-defined template does not exist.
+
+### DELETE /api/templates/{name}
+
+Returns `204 No Content`; `400` if the template is built-in or missing.
+
+### POST /api/templates/{name}/apply
+
+Render the template for a job and submit it, or only return the rendered script.
+
+**Request body:**
+
+``` json
+{
+  "command": ["python", "train.py"],
+  "job_name": "train",
+  "resources": {"gpus_per_node": 1},
+  "environment": {"conda": "ml_env"},
+  "work_dir": "/home/user/proj",
+  "log_dir": "/home/user/logs",
+  "mount_name": "ml-project",
+  "preview_only": false
+}
+```
+
+Only `command` is required; `job_name` defaults to `job`. With `mount_name`, that mount is synced before submission.
+
+**Response:** with `preview_only: true`, `{"script": "...", "template_used": "base"}`; otherwise the submission result (same shape as `POST /api/jobs`).
+
+**Error responses:**
+
+- `404` — Template or mount not found
+- `422` — Invalid `resources` / `environment`
+- `502` — Mount sync or sbatch failed
 
 ## Error Responses
 

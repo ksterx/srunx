@@ -1,7 +1,5 @@
 """SQLite connection management for the srunx state DB.
 
-Design reference: ``.claude/specs/notification-and-state-persistence/design.md``.
-
 Key invariants enforced here:
 
 - DB path resolution honours ``$XDG_CONFIG_HOME`` with a ``~/.config`` fallback.

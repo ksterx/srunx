@@ -5,7 +5,7 @@ description: Manual procedure for verifying the srunx notification pipeline (Act
 # Smoke-testing the notification pipeline against real SLURM
 
 Manual procedure for verifying `ActiveWatchPoller` → `DeliveryPoller` →
-`SlackWebhookDeliveryAdapter` end-to-end on a real SLURM cluster. Run
+`SlackWebhookAdapter` end-to-end on a real SLURM cluster. Run
 this before cutting a release that touches the `srunx.observability.monitoring.pollers` /
 `srunx.observability.notifications` modules.
 
@@ -49,12 +49,11 @@ Estimated wall time: **~15 minutes**.
 
 4. **Submit a quick job via the CLI with an endpoint subscription.**
    Use `--preset all` — the `job.submitted` event is only delivered
-   under `preset='all'` (see `srunx/notifications/presets.py`;
+   under `preset='all'` (see `srunx/observability/notifications/presets.py`;
    `terminal` and `running_and_terminal` will skip the first Slack
    message and only deliver once the job reaches RUNNING / COMPLETED):
    ```bash
-   uv run srunx sbatch --wrap "\"
-     bash -c 'echo hi && sleep 10' \
+   uv run srunx sbatch --wrap "bash -c 'echo hi && sleep 10'" \
      --job-name smoke --endpoint smoke --preset all
    ```
    Verify in the server logs that
@@ -64,8 +63,7 @@ Estimated wall time: **~15 minutes**.
    watch + subscription manually instead of relying on `--endpoint`:
    ```bash
    # 4a. Submit with the legacy --slack flag (uses SLACK_WEBHOOK_URL env)
-   SLACK_WEBHOOK_URL='<YOUR_URL>' uv run srunx sbatch --wrap "\"
-     bash -c 'echo hi && sleep 10' --job-name smoke --slack
+   SLACK_WEBHOOK_URL='<YOUR_URL>' uv run srunx sbatch --wrap "bash -c 'echo hi && sleep 10'" --job-name smoke --slack
    # 4b. Grab the returned SLURM job id and create a watch+sub:
    curl -s http://127.0.0.1:8000/api/watches \
      -H 'content-type: application/json' \

@@ -1,9 +1,9 @@
 """Decide which snapshots are dead. Pure: no I/O and no clock read.
 
 A snapshot is removed only when every fact needed to call it dead was
-positively confirmed; anything that cannot be judged is kept. The rules are in
-``docs/specs/snapshot-prune/spec.md`` (REQ-6b .. REQ-8); ``decide`` applies them
-in order and the first failing rule becomes the reason shown to the user.
+positively confirmed; anything that cannot be judged is kept. ``decide`` applies
+the rules in order and the first failing rule becomes the reason shown to the
+user.
 
 No profile or ``scheduler_key`` is consulted anywhere: a profile is not a
 cluster, so leases are attributed by cluster name or by submit-time

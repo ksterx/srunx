@@ -1,8 +1,5 @@
 """Repository for the ``workflow_run_jobs`` table.
 
-Design reference: ``.claude/specs/notification-and-state-persistence/design.md``
-§ Repositories.
-
 V5 note: the on-disk column is ``jobs_row_id`` (FK to ``jobs.id``). The
 public API still accepts ``job_id`` (SLURM id, ``scheduler_key='local'``
 by default) so pre-V5 callers work unchanged — the repository performs

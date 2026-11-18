@@ -1,6 +1,6 @@
 """Migration V5 tests — schema + data migration for CLI transport unification.
 
-AC references (see ``specs/cli-transport-unification/spec.md``):
+Acceptance criteria:
 - AC-5.1: transport_type / profile_name / scheduler_key present on jobs.
 - AC-5.2: scheduler_key NOT NULL for every row after migration.
 - AC-5.3: legacy 2-segment target_ref forms are backfilled to 3-segment.

@@ -89,7 +89,7 @@ hide:
 === "Container"
 
     ```bash
-    srunx sbatch --wrap "python train.py \"
+    srunx sbatch --wrap "python train.py" \
       --container "runtime=apptainer,image=pytorch.sif,nv=true"
     ```
 

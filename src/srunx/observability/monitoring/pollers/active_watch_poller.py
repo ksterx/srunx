@@ -40,9 +40,6 @@ because there is no per-watch claim / lease yet.
 TODO (Phase 2): add a ``leased_until`` / ``worker_id`` sweep on
 ``watches`` before shipping multi-worker deployments, mirroring the
 pattern already in :class:`~srunx.observability.monitoring.pollers.delivery_poller.DeliveryPoller`.
-
-See ``.claude/specs/notification-and-state-persistence/design.md``
-§ ActiveWatchPoller.
 """
 
 from __future__ import annotations

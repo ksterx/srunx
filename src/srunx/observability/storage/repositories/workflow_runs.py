@@ -1,8 +1,4 @@
-"""Repository for the ``workflow_runs`` table.
-
-Design reference: ``.claude/specs/notification-and-state-persistence/design.md``
-§ Repositories.
-"""
+"""Repository for the ``workflow_runs`` table."""
 
 from __future__ import annotations
 

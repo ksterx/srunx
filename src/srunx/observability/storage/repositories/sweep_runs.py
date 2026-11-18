@@ -1,8 +1,4 @@
-"""Repository for the ``sweep_runs`` table.
-
-Design reference: ``.claude/specs/workflow-parameter-sweep/design.md``
-§ SweepRunRepository.
-"""
+"""Repository for the ``sweep_runs`` table."""
 
 from __future__ import annotations
 

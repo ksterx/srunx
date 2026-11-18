@@ -4,9 +4,6 @@ Scans the DB at Web lifespan startup (before the active-watch poller)
 for sweeps stuck in ``pending`` / ``running`` with pending cells and
 either (1) finalizes sweeps whose cells are all already terminal, or
 (2) re-spawns :class:`SweepOrchestrator` against the pending cells.
-
-See ``.claude/specs/workflow-parameter-sweep/design.md`` § Crash
-Recovery and tasks 21-22.
 """
 
 from __future__ import annotations

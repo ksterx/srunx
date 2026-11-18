@@ -50,21 +50,21 @@ srunx sbatch --wrap "python train.py" --container /path/to/image.sqsh
 **Apptainer** — wraps the command with `apptainer exec`:
 
 ``` bash
-srunx sbatch --wrap "python train.py \"
+srunx sbatch --wrap "python train.py" \
   --container "runtime=apptainer,image=/path/to/image.sif,nv=true"
 ```
 
 **Singularity** — same as Apptainer with `singularity` binary:
 
 ``` bash
-srunx sbatch --wrap "python train.py \"
+srunx sbatch --wrap "python train.py" \
   --container "runtime=singularity,image=/path/to/image.sif,nv=true"
 ```
 
 The runtime can also be specified with a separate flag:
 
 ``` bash
-srunx sbatch --wrap "python train.py \"
+srunx sbatch --wrap "python train.py" \
   --container /path/to/image.sif \
   --container-runtime apptainer
 ```
@@ -99,7 +99,7 @@ srunx sbatch --wrap "python train.py" --container \
 Containers can be combined with conda or venv. The environment activation runs on the host before the containerized command:
 
 ``` bash
-srunx sbatch --wrap "python train.py \"
+srunx sbatch --wrap "python train.py" \
   --container "runtime=apptainer,image=pytorch.sif,nv=true,bind=/opt/conda:/opt/conda" \
   --conda ml_env
 ```
@@ -128,7 +128,7 @@ srunx sbatch --wrap "<command>"
 With resource specification:
 
 ``` bash
-srunx sbatch --wrap "python train.py \"
+srunx sbatch --wrap "python train.py" \
   --job-name "training_job" \
   --nodes 2 \
   --gpus-per-node 2 \
@@ -136,6 +136,42 @@ srunx sbatch --wrap "python train.py \"
   --time "8:00:00" \
   --conda ml_env
 ```
+
+Flags follow real `sbatch` (`-J`, `-N`, `-c`, `-t`, `-p`, `-w`, `-D`,
+`--gres=gpu:N`, `-Q` for `--quiet`, `-q` for `--qos`). Native sbatch options
+that srunx does not model itself pass straight through to `sbatch` in all their
+real spellings:
+
+``` bash
+srunx sbatch --array=1-10 --account=proj --qos=normal train.sh
+srunx sbatch --wrap "python train.py" --dependency=afterok:123
+```
+
+For an option that is not recognized, pass one raw token with `--sbatch-arg`
+(repeatable), for example `--sbatch-arg=--arr=1-10`. Options that would break
+srunx's reading of the submission result (`--parsable`, `--test-only`,
+`--quiet`, `--wrap`, `--help`, `--version`) are rejected with exit 2. Long-option
+abbreviations are not recognized.
+
+Submit over SSH by adding `--profile <name>`; see
+[Project Synchronization](sync.md) for auto-sync and `--snapshot`.
+
+#### Secrets on a remote cluster
+
+API keys can be stored once per remote account instead of being typed into
+scripts. The value is read from a hidden prompt (or `--from-env VAR`) and is
+never placed on a command line:
+
+``` bash
+srunx ssh secret set HF_TOKEN --profile myserver
+srunx ssh secret list --profile myserver        # names only
+srunx ssh secret unset HF_TOKEN --profile myserver
+```
+
+Secrets live in a `0600` file at `~/.config/srunx/secrets.env` on the cluster.
+srunx sources it before each submission, so jobs see the variables; a same-named
+`--env KEY=VALUE` takes precedence. When the file exists, srunx adds
+`--export=ALL` to `sbatch`, which overrides a script's own `#SBATCH --export=NONE`.
 
 ### Job Monitoring
 
@@ -432,8 +468,8 @@ The runtime resolution order (highest priority first):
 Enable debug logging:
 
 ``` bash
-export SRUNX_LOG_LEVEL=DEBUG
-srunx sbatch --wrap "python script.py"
+srunx sbatch -v --wrap "python script.py"
+srunx flow run pipeline.yaml --log-level DEBUG
 ```
 
 Preview job submission (show summary without submitting):
