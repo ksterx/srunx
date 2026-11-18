@@ -4,9 +4,6 @@ These types are produced by the repository layer when reading rows and
 consumed by callers (poller, routers, notification service). They are
 deliberately close to the SQL shape — JSON columns are typed as ``dict``
 and (de)serialized in the repository, timestamps are ``datetime``.
-
-See ``.claude/specs/notification-and-state-persistence/design.md`` for
-the full schema.
 """
 
 from __future__ import annotations

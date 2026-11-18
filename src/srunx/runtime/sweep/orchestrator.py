@@ -1,8 +1,4 @@
-"""SweepOrchestrator: materialize matrix cells and drive them under a semaphore.
-
-See ``.claude/specs/workflow-parameter-sweep/design.md`` § SweepOrchestrator
-and tasks 17-20.
-"""
+"""SweepOrchestrator: materialize matrix cells and drive them under a semaphore."""
 
 from __future__ import annotations
 

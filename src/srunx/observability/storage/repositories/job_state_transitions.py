@@ -1,7 +1,6 @@
 """Repository for the ``job_state_transitions`` table.
 
-Design reference: ``.claude/specs/notification-and-state-persistence/design.md``
-§ Repositories. Records every observed job status change (SSOT for
+Records every observed job status change (SSOT for
 :class:`~srunx.observability.monitoring.pollers.active_watch_poller.ActiveWatchPoller` and CLI
 monitor alike).
 

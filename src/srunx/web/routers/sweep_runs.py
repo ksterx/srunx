@@ -1,6 +1,5 @@
 """Sweep runs read + cancel endpoints: ``/api/sweep_runs/*``.
 
-See ``.claude/specs/workflow-parameter-sweep/design.md`` § Web API.
 Phase G exposes just enough surface for the Web UI Phase I work:
 list, detail, cell list, and cancel.
 """

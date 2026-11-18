@@ -10,7 +10,7 @@ as ``export KEY='<single-quote-escaped>'`` lines (one per key) and delivered by
 sourcing the file in the SSH submission shell (see
 :meth:`SlurmRemoteClient._get_slurm_env_setup`).
 
-Design constraints (see ``.golem/specs/ssh-secret-store/spec.md``):
+Design constraints:
 
 * Secrets never touch local ``config.json``, command-line arguments, or logs —
   only SFTP writes and the submit-shell ``source`` carry the value.

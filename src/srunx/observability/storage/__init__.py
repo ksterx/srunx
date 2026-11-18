@@ -1,8 +1,4 @@
-"""Durable storage layer for srunx (SQLite).
-
-See ``.claude/specs/notification-and-state-persistence/design.md`` for
-the full schema and architecture.
-"""
+"""Durable storage layer for srunx (SQLite)."""
 
 from __future__ import annotations
 

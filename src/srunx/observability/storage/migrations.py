@@ -1,7 +1,5 @@
 """Schema migrations for the srunx state DB.
 
-Design reference: ``.claude/specs/notification-and-state-persistence/design.md``.
-
 Idempotency model: migrations are keyed by ``name`` (not by version
 comparison). The ``schema_version`` table stores one row per applied
 migration; ``apply_migrations`` skips any row that already exists there.

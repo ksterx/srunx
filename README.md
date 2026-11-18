@@ -110,7 +110,7 @@ If you need full-featured scientific workflow tooling, Snakemake / Nextflow are 
 
 | Command | Type | Description |
 |---------|------|-------------|
-| `srunx sbatch <script>` / `srunx sbatch --wrap "<cmd>"` | SLURM | Submit a SLURM job |
+| `srunx sbatch <script>` / `srunx sbatch --wrap "<cmd>"` | SLURM | Submit a SLURM job (native sbatch options such as `--array` / `--qos` pass through) |
 | `srunx scancel <id>` | SLURM | Cancel a job |
 
 ### Status & accounting
@@ -138,6 +138,8 @@ If you need full-featured scientific workflow tooling, Snakemake / Nextflow are 
 | Command | Type | Description |
 |---------|------|-------------|
 | `srunx ssh` | srunx | Manage SSH profiles (add / list / sync / test) — remote execution itself is `--profile` on the commands above |
+| `srunx ssh secret set\|list\|unset` | srunx | Store API keys once per remote account (hidden prompt, `0600` file) |
+| `srunx snapshot create\|list\|prune` | srunx | Per-commit read-only code snapshots on a cluster (`sbatch --snapshot`) |
 | `srunx config` | srunx | Manage configuration |
 | `srunx template` | srunx | Manage job templates |
 | `srunx ui` | srunx | Launch the web dashboard |
@@ -300,8 +302,9 @@ srunx flow run pipeline.yaml --profile dgx            # full DAG: sync once, hol
 - SSH config hosts, saved profiles, and ProxyJump support
 - Environment variable passthrough (`--env KEY=VALUE`)
 - File sync via rsync with per-mount locking — auto-detects profile from current directory
+- `sbatch --snapshot` runs the job from a read-only per-commit copy of your git repo, so later syncs cannot change code under queued jobs
 
-Mount model, sync semantics, and in-place execution rules: [SSH sync how-to](https://ksterx.github.io/srunx/how-to/sync/)
+Mount model, sync semantics, snapshots, and in-place execution rules: [SSH sync how-to](https://ksterx.github.io/srunx/how-to/sync/)
 
 ## Slack Notifications
 

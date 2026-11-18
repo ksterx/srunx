@@ -116,14 +116,14 @@ srunx sbatch --wrap "python script.py" --container /path/to/container.sqsh
 ### Apptainer / Singularity Container
 
 ``` bash
-srunx sbatch --wrap "python script.py \"
+srunx sbatch --wrap "python script.py" \
   --container "runtime=apptainer,image=/path/to/image.sif,nv=true"
 ```
 
 Or specify the runtime separately:
 
 ``` bash
-srunx sbatch --wrap "python script.py \"
+srunx sbatch --wrap "python script.py" \
   --container /path/to/image.sif \
   --container-runtime apptainer
 ```
@@ -133,7 +133,7 @@ srunx sbatch --wrap "python script.py \"
 Containers can be combined with conda or venv:
 
 ``` bash
-srunx sbatch --wrap "python script.py \"
+srunx sbatch --wrap "python script.py" \
   --container "runtime=apptainer,image=pytorch.sif,nv=true,bind=/data:/data" \
   --conda ml_env
 ```

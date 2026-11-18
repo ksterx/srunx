@@ -1,7 +1,4 @@
-"""Sweep domain: matrix expansion, cell spec, orchestrator helpers.
-
-Design reference: ``.claude/specs/workflow-parameter-sweep/design.md``.
-"""
+"""Sweep domain: matrix expansion, cell spec, orchestrator helpers."""
 
 from __future__ import annotations
 
