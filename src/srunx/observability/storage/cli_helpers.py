@@ -231,7 +231,7 @@ def list_recent_jobs(
 
     ``scheduler_key`` (``"local"`` / ``"ssh:<profile>"``) scopes to
     a single transport — passed through to the SQL ``WHERE`` so
-    ``srunx history --profile X`` only sees that cluster's jobs.
+    ``srunx history --cluster X`` only sees that cluster's jobs.
     """
     from srunx.observability.storage.connection import initialized_connection
     from srunx.observability.storage.repositories.jobs import JobRepository

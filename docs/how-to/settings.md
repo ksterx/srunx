@@ -1,135 +1,98 @@
 ---
-description: Configure srunx from the Web UI Settings page — manage SSH profiles, mount points, notification endpoints, and default resources without editing JSON.
+description: Configure srunx from the Web UI Settings page — manage clusters, layered job defaults, project settings, and notification endpoints without editing TOML by hand.
 ---
 
 # Settings
 
-The Settings page lets you manage srunx configuration directly from the Web UI instead of editing config files or running CLI commands.
+The Settings page lets you manage srunx configuration directly from the Web UI instead of editing config files or running CLI commands. Every edit is written to one TOML file — the user config (`$XDG_CONFIG_HOME/srunx/config.toml`) or the selected project's `.srunx/config.toml` — and the effective values are always recomputed from all layers.
 
 ## Open Settings
 
-Click **Settings** (gear icon) in the sidebar. The page has five tabs: General, SSH Profiles, Notifications, Environment, and Project.
+Click **Settings** (gear icon) in the sidebar. The page has five tabs: General, Clusters, Notifications, Environment, and Project.
 
-## Configure SLURM Defaults
+The cluster and project used by the page are the ones selected in the sidebar. They are sent with every API request (`?cluster=` / `?project=`), so two browser tabs on different clusters never affect each other.
 
-The **General** tab controls default resource allocation and environment settings.
+## Configure Job Defaults
 
-1.  Open the **General** tab
-2.  Adjust resource defaults:
-    - **Nodes** — Default number of compute nodes
-    - **GPUs per Node** — Default GPU count per node
-    - **Tasks per Node** — Default number of tasks per node
-    - **CPUs per Task** — Default CPU cores per task
-    - **Memory per Node** — Default memory allocation (e.g. `32GB`)
-    - **Time Limit** — Default wall time (e.g. `4:00:00`)
-    - **Partition** — Default SLURM partition
-    - **Nodelist** — Specific nodes to target (e.g. `node[01-04]`)
-3.  Set environment defaults:
-    - **Conda Environment** — Default conda environment name
-    - **Virtual Environment** — Default virtualenv path
-    - **Environment Variables** — Key-value pairs injected into job scripts (add/remove inline)
-4.  Set general options:
-    - **Log Directory** — Default directory for SLURM log output
-    - **Working Directory** — Default working directory for jobs
-5.  Click **Save** to persist changes to `~/.config/srunx/config.json`
+The **General** tab edits job defaults at one **scope** at a time and shows the effective value of every field together with the file it comes from.
+
+1.  Pick a scope in the scope selector:
+    - **User (all clusters)** — `[defaults]` in the user config
+    - **User · this cluster** — `[clusters.<c>.defaults]` in the user config
+    - **Project** — `[defaults]` in the project config
+    - **Project · this cluster** — `[clusters.<c>.defaults]` in the project config
+
+    The project scopes are only available when a project is selected.
+2.  Adjust resource defaults (Nodes, GPUs per Node, Tasks per Node, CPUs per Task, Memory per Node, Time Limit, Partition, Nodelist), environment defaults (Conda Environment, Virtual Environment), and general options (Log Directory, Working Directory).
+3.  Save. Only the changed keys of that one file are written.
+
+Per field you can also:
+
+- **Inherit** — remove the key from this scope so the value comes from a lower layer again (same as `srunx config delete`)
+- **Explicitly clear** — add the key to the table's `unset = [...]` list so an inherited value is ignored (same as `srunx config unset`)
+
+The **Config File Paths** panel at the bottom lists the files srunx reads, lowest precedence first (system, user, project), plus the state directory.
 
 !!! note
-    Click **Reset** to restore all settings to their defaults. The **Config File Paths** panel at the bottom of the General tab shows which config files are active and their precedence.
+    Edits carry a version token. If the file changed on disk since the page loaded (for example via the CLI), the save is rejected with a conflict and the page reloads the file instead of overwriting it.
 
-## Manage SSH Profiles
+Precedence, lowest to highest: built-in → system `defaults` → user `defaults` → user `clusters.<c>.defaults` → project `defaults` → project `clusters.<c>.defaults` → script `#SBATCH` / workflow job fields → explicit submission values.
 
-The **SSH Profiles** tab provides full CRUD for SSH connection profiles.
+## Manage Clusters
 
-### Add a profile
+The **Clusters** tab manages the clusters (job targets) defined in the user config as `[clusters.<name>]`.
 
-1.  Open the **SSH Profiles** tab
+### Add a cluster
+
+1.  Open the **Clusters** tab and start a new cluster
 2.  Fill in the form:
-    - **Name** — Profile identifier (e.g. `dgx-server`)
-    - **Hostname** — Remote server address
-    - **Username** — SSH login user
-    - **Key File** — Path to SSH private key (e.g. `~/.ssh/id_ed25519`)
-    - **Port** — SSH port (default: 22)
-    - **SSH Host** — Optional `~/.ssh/config` host alias
-    - **Proxy Jump** — Optional jump host for multi-hop connections
-3.  Click **Add Profile**
+    - **Name** — Cluster identifier (e.g. `gpu`)
+    - **Transport** — `local` (submit with the local `sbatch`) or `ssh`
+    - For SSH: **Host alias** (from `~/.ssh/config`) or **Hostname**, plus optional **Username**, **Key file**, **Port**, and **Proxy jump**
+    - **Description** and **Snapshot root** (optional)
+    - **Make default** — also set `default_cluster`
+3.  Save
 
-### Switch the active profile
+### Test, edit, make default, delete
 
-Click **Activate** on any profile card to set it as the current profile. The active profile is indicated with a visual badge.
-
-### Edit a profile
-
-Click the edit button on a profile card, modify fields, and save. Only changed fields are updated.
-
-### Delete a profile
-
-Click the delete button and confirm. The profile and all its mounts are removed.
-
-### Manage per-profile mounts
-
-Each profile can have mount points that map local directories to remote paths.
-
-1.  Expand a profile card to see its mounts section
-2.  To add a mount, fill in **Name**, **Local Path**, and **Remote Path**, then click **Add**
-3.  To remove a mount, click the delete button next to it
+Each cluster row has buttons to **Test connection** (for SSH this also caches the remote `$HOME` / XDG directories), **Make default**, **Edit**, and **Delete**. Deleting a cluster that is the `default_cluster` also clears `default_cluster`.
 
 !!! note
-    Mounts added here are identical to those created via `srunx ssh mount add`. Both modify the same config file.
-
-### Manage per-profile environment variables
-
-Each profile can have environment variables that are passed to jobs run on that server.
-
-1.  Expand a profile card and scroll to the **Environment Variables** section
-2.  Enter a key and value, then click **Add**
-3.  To remove a variable, click the delete button next to it
-
-Environment variables are stored in the profile configuration and sent via the `env_vars` field when updating the profile.
+    Connection settings live only in the user (or system) config. A project config can never define how to connect to a host.
 
 ## Configure Notifications
 
-The **Notifications** tab manages Slack webhook integration.
-
-1.  Open the **Notifications** tab
-2.  Enter your Slack webhook URL (format: `https://hooks.slack.com/services/...`)
-3.  Click **Save**
-
-The webhook is used by the callback system to send job state notifications.
+The **Notifications** tab manages notification endpoints (Slack webhooks) and the notification defaults (default endpoint and preset) stored under `[notifications]` in the user config.
 
 ## View Environment Variables
 
-The **Environment** tab shows all active `SRUNX_*` environment variables and `SLACK_WEBHOOK_URL`.
+The **Environment** tab shows the srunx-related environment variables that are currently set (for example `SRUNX_CLUSTER`, `SRUNX_WEB_PROJECTS`, `SRUNX_WEB_TOKEN` (masked), `SLACK_WEBHOOK_URL`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`).
 
-This is a **read-only** view. Each variable displays its current value and a description. To change environment variables, set them in your shell profile or `.env` file and restart the web server.
+This is a **read-only** view. To change environment variables, set them in your shell and restart the web server.
 
 ## Manage Project Configuration
 
-The **Project** tab lists projects derived from the active SSH profile's mounts. Each mount corresponds to a project.
+The **Project** tab edits the selected project's `.srunx/config.toml`. If no project is selected, start `srunx ui` inside a project (a directory with `.srunx/config.toml`) or pass `--project PATH`.
 
-### Initialize a project
+- **Cluster** — the project's default cluster (`cluster = "..."`); choose "(user default)" to remove it
+- Per cluster: **Remote directory** (`[clusters.<c>] remote_dir`), **Sync** (rsync the project before runs), and **Exclude** patterns
+- **Resolved mounts** — the mounts the project has on each SSH cluster: the project root mapped to `remote_dir` (or, without one, to the remote default workspace `$XDG_DATA_HOME/srunx/workspaces/<name>-<hash>`), plus any `[[clusters.<c>.mounts]]` entries from the file
 
-1.  Open the **Project** tab
-2.  Find a mount that shows "No config"
-3.  Click **Initialize** to create a `srunx.json` with example values in the mount's local directory
-
-### Edit project config
-
-1.  Click **Edit** on a project that has an existing `srunx.json`
-2.  Modify per-project resource defaults, environment settings, or notification overrides
-3.  Click **Save**
-
-Project-level settings in `srunx.json` override the global user config for workflows that execute within that mount's directory.
+To create a project config, run `srunx config init-project` in the project root.
 
 ## Equivalent CLI Commands
 
-Every action in the Settings page has a CLI equivalent:
-
 | Settings Action | CLI Equivalent |
 |----|----|
-| Save general config | `srunx config show` / edit `~/.config/srunx/config.json` |
-| Add SSH profile | `srunx ssh add --profile <name> --hostname ... --username ...` |
-| Activate profile | `srunx ssh use --profile <name>` |
-| Add mount to profile | `srunx ssh mount add --profile <profile> --mount <name> --local ... --remote ...` |
-| List mounts | `srunx ssh mount list --profile <profile>` |
-| Remove mount | `srunx ssh mount remove --profile <profile> --mount <name>` |
+| Show effective config and sources | `srunx config show [--cluster C] [--project PATH]` |
+| Set a default (user scope) | `srunx config set resources.partition gpu` |
+| Set a default (user · this cluster) | `srunx config set resources.partition gpu --cluster C` |
+| Set a default (project scopes) | `srunx config set ... --project [--cluster C]` |
+| Inherit / explicitly clear | `srunx config delete KEY` / `srunx config unset KEY` |
+| Add a cluster | `srunx cluster add <name> --host <alias>` (or `--hostname H`, `--local`) `[--default]` |
+| Edit / remove / test a cluster | `srunx cluster update <name> ...` / `srunx cluster remove <name>` / `srunx cluster test <name>` |
+| Show a cluster and the project's mounts on it | `srunx cluster show <name>` |
+| Set the project's cluster | `srunx config set cluster <name> --project` |
+| Set a project remote directory | `srunx config set remote_dir /abs/path --cluster <name> --project` |
+| Create a project config | `srunx config init-project` |
 | View config paths | `srunx config paths` |

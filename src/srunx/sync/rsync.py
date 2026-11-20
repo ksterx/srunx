@@ -134,7 +134,7 @@ class RsyncClient:
         # only the file at the mount root is srunx's.
         #
         # Known consequence: mirror paths that don't go through
-        # ``mount_sync_session`` (``srunx ssh sync --delete``, the MCP and Web
+        # ``mount_sync_session`` (``srunx cluster sync --delete``, the MCP and Web
         # mirror callers) don't rewrite the marker, so after one workstation
         # mirrors over a mount another one owned, the marker still names the old
         # host and the next ordinary auto-sync is refused. That is the safe
@@ -1244,7 +1244,7 @@ class RsyncClient:
                 from. If None, uses the current working directory.
 
         Returns:
-            A path like ``~/.config/srunx/workspace/<project_name>/``.
+            A path like ``~/.local/share/srunx/workspaces/<project_name>/``.
         """
         cwd = str(Path(local_path)) if local_path else None
         try:
@@ -1262,7 +1262,7 @@ class RsyncClient:
             # git not installed
             basename = Path(cwd).name if cwd else Path.cwd().name
 
-        return f"~/.config/srunx/workspace/{basename}/"
+        return f"~/.local/share/srunx/workspaces/{basename}/"
 
     def _format_remote(self, path: str) -> str:
         """Format a remote path as ``user@host:path`` or ``host:path``.

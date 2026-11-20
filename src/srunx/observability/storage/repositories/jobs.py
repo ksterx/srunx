@@ -436,7 +436,7 @@ class JobRepository(BaseRepository):
         than the page size.
 
         ``scheduler_key`` (e.g. ``"local"`` / ``"ssh:dgx"``) scopes
-        the query to a single transport so ``srunx history --profile X``
+        the query to a single transport so ``srunx history --cluster X``
         only sees jobs that ran against that cluster. ``None`` keeps
         the legacy "all transports" behaviour for the Web UI history.
         """

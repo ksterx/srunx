@@ -1,394 +1,408 @@
-"""Tests for srunx.common.config module."""
+"""Tests for srunx.common.config: TOML layers, clusters, projects, resolution."""
 
-import json
+from __future__ import annotations
+
 import os
-import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
+import pytest
+
+from srunx.common import paths
 from srunx.common.config import (
+    ConfigError,
     EnvironmentDefaults,
     ResourceDefaults,
+    Settings,
     SrunxConfig,
-    create_example_config,
-    get_config_paths,
-    load_config,
-    load_config_from_env,
-    load_config_from_file,
-    merge_config,
-    save_user_config,
+    activate_config,
+    active_config,
+    apply_unset,
+    clear_settings_cache,
+    get_config,
+    load_settings,
+    merge_layer,
+    use_project,
 )
 
 
-class TestResourceDefaults:
-    """Test ResourceDefaults model."""
+def write_user(text: str) -> Path:
+    path = paths.user_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    clear_settings_cache()
+    return path
 
+
+def make_project(root: Path, text: str) -> Path:
+    (root / ".srunx").mkdir(parents=True, exist_ok=True)
+    (root / ".srunx" / "config.toml").write_text(text)
+    (root / ".git").mkdir(exist_ok=True)
+    clear_settings_cache()
+    return root
+
+
+USER = """
+default_cluster = "local"
+
+[defaults.resources]
+time_limit = "01:00:00"
+nodes = 2
+
+[clusters.local]
+transport = "local"
+
+[clusters.gpu]
+transport = "ssh"
+host = "gpu-login"
+
+[clusters.gpu.defaults.resources]
+partition = "gpu"
+gpus_per_node = 8
+
+[clusters.hr]
+transport = "ssh"
+hostname = "hr.example.com"
+username = "me"
+"""
+
+
+class TestModels:
     def test_resource_defaults(self):
-        """Test ResourceDefaults with default values."""
         resource = ResourceDefaults()
         assert resource.nodes == 1
-        assert resource.gpus_per_node == 0
-        assert resource.ntasks_per_node == 1
-        assert resource.cpus_per_task == 1
-        assert resource.memory_per_node is None
-        assert resource.time_limit is None
-        assert resource.nodelist is None
         assert resource.partition is None
 
-    def test_resource_defaults_custom_values(self):
-        """Test ResourceDefaults with custom values."""
-        resource = ResourceDefaults(
-            nodes=2,
-            gpus_per_node=1,
-            memory_per_node="32GB",
-            time_limit="2:00:00",
-            partition="gpu",
-        )
-        assert resource.nodes == 2
-        assert resource.gpus_per_node == 1
-        assert resource.memory_per_node == "32GB"
-        assert resource.time_limit == "2:00:00"
-        assert resource.partition == "gpu"
-
-
-class TestEnvironmentDefaults:
-    """Test EnvironmentDefaults model."""
-
     def test_environment_defaults(self):
-        """Test EnvironmentDefaults with default values."""
         env = EnvironmentDefaults()
         assert env.conda is None
-        assert env.venv is None
-        assert env.container is None
         assert env.env_vars == {}
 
-    def test_environment_defaults_custom_values(self):
-        """Test EnvironmentDefaults with custom values."""
-        env = EnvironmentDefaults(
-            conda="ml_env", env_vars={"CUDA_VISIBLE_DEVICES": "0"}
-        )
-        assert env.conda == "ml_env"
-        assert env.env_vars == {"CUDA_VISIBLE_DEVICES": "0"}
-
-
-class TestSrunxConfig:
-    """Test SrunxConfig model."""
-
     def test_srunx_config_defaults(self):
-        """Test SrunxConfig with default values."""
         config = SrunxConfig()
-        assert config.resources.nodes == 1
-        assert config.environment.conda is None
         assert config.log_dir == "logs"
-        assert config.work_dir is None
+        assert config.sources == {}
 
-    def test_srunx_config_custom_values(self):
-        """Test SrunxConfig with custom values."""
-        config = SrunxConfig(
-            resources=ResourceDefaults(nodes=2, partition="gpu"),
-            environment=EnvironmentDefaults(conda="ml_env"),
-            log_dir="custom_logs",
-            work_dir="/scratch/user",
+
+class TestMergeLayer:
+    def test_records_sources_and_nests(self):
+        sources: dict[str, str] = {}
+        merged = merge_layer({}, {"resources": {"nodes": 2}}, sources, "a")
+        merged = merge_layer(merged, {"resources": {"partition": "gpu"}}, sources, "b")
+        assert merged == {"resources": {"nodes": 2, "partition": "gpu"}}
+        assert sources == {"resources.nodes": "a", "resources.partition": "b"}
+
+    def test_unset_drops_lower_values(self):
+        sources: dict[str, str] = {}
+        merged = merge_layer({}, {"resources": {"partition": "gpu"}}, sources, "a")
+        merged = merge_layer(
+            merged, {"resources": {"unset": ["partition"]}}, sources, "b"
         )
-        assert config.resources.nodes == 2
-        assert config.resources.partition == "gpu"
-        assert config.environment.conda == "ml_env"
-        assert config.log_dir == "custom_logs"
-        assert config.work_dir == "/scratch/user"
+        assert merged == {"resources": {}}
+        assert sources == {}
 
 
-class TestConfigLoading:
-    """Test configuration loading functions."""
+class TestSettings:
+    def test_layer_order(self, tmp_path, monkeypatch):
+        write_user(USER)
+        root = make_project(
+            tmp_path / "proj",
+            """
+name = "proj"
+cluster = "gpu"
 
-    def test_load_config_from_file_nonexistent(self):
-        """Test loading config from nonexistent file."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            config_path = Path(tmp_dir) / "nonexistent.json"
-            result = load_config_from_file(config_path)
-            assert result == {}
+[defaults.resources]
+time_limit = "02:00:00"
 
-    def test_load_config_from_file_valid(self):
-        """Test loading config from valid JSON file."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            config_path = Path(tmp_dir) / "config.json"
-            test_config = {
-                "resources": {"nodes": 2, "partition": "gpu"},
-                "log_dir": "custom_logs",
-            }
-            with open(config_path, "w") as f:
-                json.dump(test_config, f)
+[clusters.gpu.defaults.resources]
+time_limit = "04:00:00"
+""",
+        )
+        settings = Settings(root)
+        cfg = settings.effective("gpu")
+        assert cfg.resources.time_limit == "04:00:00"
+        assert cfg.resources.partition == "gpu"
+        assert cfg.resources.nodes == 2
+        assert cfg.resources.gpus_per_node == 8
+        assert cfg.resources.cpus_per_task == 1  # built-in
+        assert "[clusters.gpu]" in cfg.sources["resources.time_limit"]
+        assert str(root) in cfg.sources["resources.time_limit"]
+        assert cfg.sources["resources.partition"].endswith("config.toml [clusters.gpu]")
+        assert "resources.cpus_per_task" not in cfg.sources
 
-            result = load_config_from_file(config_path)
-            assert result == test_config
+        # Without the cluster, cluster layers do not apply.
+        plain = settings.effective(None)
+        assert plain.resources.time_limit == "02:00:00"
+        assert plain.resources.partition is None
 
-    def test_load_config_from_file_invalid_json(self):
-        """Test loading config from invalid JSON file."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            config_path = Path(tmp_dir) / "invalid.json"
-            with open(config_path, "w") as f:
-                f.write("invalid json content")
+    def test_unset_in_project(self, tmp_path):
+        write_user(USER)
+        root = make_project(
+            tmp_path / "proj",
+            'name = "proj"\n[clusters.gpu.defaults.resources]\nunset = ["partition"]\n',
+        )
+        cfg = Settings(root).effective("gpu")
+        assert cfg.resources.partition is None
+        assert "resources.partition" not in cfg.sources
 
-            result = load_config_from_file(config_path)
-            assert result == {}
+    def test_cluster_selection_order(self, tmp_path, monkeypatch):
+        write_user(USER)
+        root = make_project(tmp_path / "proj", 'name = "proj"\ncluster = "gpu"\n')
+        settings = Settings(root)
+        assert settings.cluster_source("hr") == ("hr", "--cluster")
+        monkeypatch.setenv("SRUNX_CLUSTER", "hr")
+        assert settings.cluster_source() == ("hr", "$SRUNX_CLUSTER")
+        monkeypatch.delenv("SRUNX_CLUSTER")
+        assert settings.cluster_source()[0] == "gpu"
+        assert Settings(None, discover=False).cluster_source()[0] == "local"
 
-    def test_merge_config(self):
-        """Test configuration merging."""
-        base = {"resources": {"nodes": 1, "gpus_per_node": 0}, "log_dir": "logs"}
-        override = {
-            "resources": {"nodes": 2, "partition": "gpu"},
-            "work_dir": "/scratch",
-        }
+    def test_no_cluster_is_an_error(self):
+        write_user('[clusters.local]\ntransport = "local"\n')
+        with pytest.raises(ConfigError, match="No cluster selected"):
+            Settings(None, discover=False).resolve_cluster(None)
 
-        result = merge_config(base, override)
-        expected = {
-            "resources": {"nodes": 2, "gpus_per_node": 0, "partition": "gpu"},
-            "log_dir": "logs",
-            "work_dir": "/scratch",
-        }
-        assert result == expected
+    def test_unknown_cluster_is_an_error(self):
+        write_user(USER)
+        with pytest.raises(ConfigError, match="Unknown cluster 'nope'"):
+            Settings(None, discover=False).resolve_cluster("nope")
 
-    def test_load_config_from_env_empty(self):
-        """Test loading config from environment with no variables set."""
-        with patch.dict(os.environ, {}, clear=True):
-            result = load_config_from_env()
-            assert result == {}
+    def test_project_may_mention_unconfigured_clusters(self, tmp_path):
+        write_user(USER)
+        root = make_project(
+            tmp_path / "proj",
+            'name = "proj"\n[clusters.other.defaults.resources]\npartition = "x"\n',
+        )
+        assert Settings(root).effective("gpu").resources.partition == "gpu"
 
-    def test_load_config_from_env_with_values(self):
-        """Test loading config from environment variables."""
-        env_vars = {
-            "SRUNX_DEFAULT_NODES": "2",
-            "SRUNX_DEFAULT_GPUS_PER_NODE": "1",
-            "SRUNX_DEFAULT_MEMORY_PER_NODE": "32GB",
-            "SRUNX_DEFAULT_PARTITION": "gpu",
-            "SRUNX_DEFAULT_CONDA": "ml_env",
-            "SRUNX_DEFAULT_LOG_DIR": "custom_logs",
-        }
+    def test_project_cannot_define_connections(self, tmp_path):
+        write_user(USER)
+        root = make_project(
+            tmp_path / "proj",
+            'name = "proj"\n[clusters.gpu]\nhost = "evil"\n',
+        )
+        with pytest.raises(ConfigError, match="Extra inputs are not permitted"):
+            Settings(root)
 
-        with patch.dict(os.environ, env_vars):
-            result = load_config_from_env()
+    def test_project_name_required(self, tmp_path):
+        write_user(USER)
+        root = make_project(tmp_path / "proj", 'cluster = "gpu"\n')
+        with pytest.raises(ConfigError):
+            Settings(root)
 
-            expected = {
-                "resources": {
-                    "nodes": 2,
-                    "gpus_per_node": 1,
-                    "memory_per_node": "32GB",
-                    "partition": "gpu",
-                },
-                "environment": {"conda": "ml_env"},
-                "log_dir": "custom_logs",
-            }
-            assert result == expected
+    def test_invalid_toml_is_reported(self):
+        write_user("this is = = not toml")
+        with pytest.raises(ConfigError, match="Invalid TOML"):
+            Settings(None, discover=False)
 
-    def test_load_config_from_env_invalid_values(self):
-        """Test loading config from environment with invalid values."""
-        env_vars = {
-            "SRUNX_DEFAULT_NODES": "invalid",
-            "SRUNX_DEFAULT_GPUS_PER_NODE": "not_a_number",
-        }
+    def test_unknown_default_key_rejected(self):
+        write_user("[defaults.resources]\nbogus = 1\n")
+        with pytest.raises(ConfigError):
+            Settings(None, discover=False)
 
-        with patch.dict(os.environ, env_vars):
-            result = load_config_from_env()
-            assert result == {}
+    def test_only_one_local_cluster(self):
+        write_user(
+            '[clusters.a]\ntransport = "local"\n[clusters.b]\ntransport = "local"\n'
+        )
+        with pytest.raises(ConfigError, match="At most one cluster"):
+            Settings(None, discover=False)
 
+    def test_ssh_cluster_needs_host(self):
+        write_user('[clusters.a]\ntransport = "ssh"\n')
+        with pytest.raises(ConfigError, match="needs 'host'"):
+            Settings(None, discover=False)
 
-class TestConfigPaths:
-    """Test configuration path functions."""
+    def test_mounts(self, tmp_path):
+        write_user(
+            USER + '\n[projects.proj.clusters.hr]\nremote_dir = "/home/me/personal"\n'
+        )
+        root = make_project(
+            tmp_path / "proj",
+            """
+name = "proj"
 
-    def test_get_config_paths(self, monkeypatch):
-        """Test getting configuration paths."""
-        # Drop XDG_CONFIG_HOME so the default POSIX/Windows branch runs
-        # — this test asserts shape, not the XDG override.
-        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-        paths = get_config_paths()
-        assert len(paths) == 3  # system, user, project (srunx.json)
-        assert all(isinstance(path, Path) for path in paths)
+[clusters.gpu]
+remote_dir = "/shared/proj"
+exclude = ["data/"]
 
-    @patch("os.name", "posix")
-    def test_get_config_paths_posix(self, monkeypatch):
-        """Test getting configuration paths on POSIX systems."""
-        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-        paths = get_config_paths()
-        assert str(paths[0]).startswith("/etc/srunx/")
-        assert ".config/srunx/" in str(paths[1])
+[[clusters.gpu.mounts]]
+name = "datasets"
+local = "../datasets"
+remote = "/data/datasets"
+sync = false
 
-    def test_get_config_paths_honours_xdg_config_home(self, tmp_path, monkeypatch):
-        """``$XDG_CONFIG_HOME`` overrides the default user config dir.
+[clusters.hr]
+remote_dir = "/home/x/proj"
+""",
+        )
+        settings = Settings(root)
+        mounts = settings.mounts("gpu")
+        assert [m.name for m in mounts] == ["proj", "datasets"]
+        assert mounts[0].local == str(root.resolve())
+        assert mounts[0].remote == "/shared/proj"
+        assert mounts[0].exclude == ("data/",)
+        assert mounts[1].local == str((tmp_path / "datasets").resolve())
+        assert mounts[1].sync is False
+        # The user's personal override wins over the project file.
+        assert settings.mounts("hr")[0].remote == "/home/me/personal"
+        assert settings.mounts("local") == []
 
-        Matches the XDG base-directory spec and the state DB's resolver
-        in ``srunx.observability.storage.connection.get_config_dir``. Without this, flipping
-        ``XDG_CONFIG_HOME`` for tests/containers/multi-tenant setups would
-        isolate the DB but silently land the JSON config in ``~/.config``.
-        """
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-        paths = get_config_paths()
-        # User config now lives under the override dir.
-        assert paths[1] == tmp_path / "srunx" / "config.json"
+    def test_default_workspace_uses_remote_env(self, tmp_path):
+        from srunx.common.remote_env import RemoteEnv, store_remote_env
 
-    def test_get_config_paths_falls_back_when_xdg_unset(self, monkeypatch):
-        """Empty env var is treated the same as unset (no override)."""
-        monkeypatch.setenv("XDG_CONFIG_HOME", "")
-        paths = get_config_paths()
-        # Empty string is falsy → default path resolution.
-        if Path("/etc").exists():  # POSIX branch; Windows skipped
-            assert ".config/srunx/" in str(paths[1])
-
-    # Skipping Windows test as it's complex to mock across platforms
+        write_user(USER)
+        root = make_project(tmp_path / "proj", 'name = "proj"\n')
+        settings = Settings(root)
+        assert settings.mounts("gpu", fetch_remote=False) == []
+        store_remote_env("gpu", RemoteEnv("/home/u", "/home/u/.local/share", "/c"))
+        (mount,) = settings.mounts("gpu", fetch_remote=False)
+        assert mount.remote.startswith("/home/u/.local/share/srunx/workspaces/proj-")
 
 
-class TestConfigSaving:
-    """Test configuration saving functions."""
+class TestProjectDiscovery:
+    def test_walks_up_to_git_root(self, tmp_path, monkeypatch):
+        root = make_project(tmp_path / "repo", 'name = "repo"\n')
+        sub = root / "a" / "b"
+        sub.mkdir(parents=True)
+        assert paths.find_project_root(sub) == root.resolve()
 
-    def test_save_user_config(self):
-        """Test saving user configuration."""
-        config = SrunxConfig(
-            resources=ResourceDefaults(nodes=2, partition="gpu"), log_dir="custom_logs"
+    def test_stops_at_git_root_without_config(self, tmp_path):
+        outer = make_project(tmp_path / "outer", 'name = "outer"\n')
+        inner = outer / "inner"
+        (inner / ".git").mkdir(parents=True)
+        assert paths.find_project_root(inner) is None
+
+    def test_never_uses_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        make_project(tmp_path, 'name = "home"\n')
+        (tmp_path / ".git").rmdir()
+        sub = tmp_path / "work"
+        sub.mkdir()
+        assert paths.find_project_root(sub) is None
+
+    def test_use_project_overrides_discovery(self, tmp_path, monkeypatch):
+        write_user(USER)
+        root = make_project(tmp_path / "p", 'name = "p"\ncluster = "gpu"\n')
+        with use_project(root):
+            assert load_settings().project_root == root.resolve()
+        with pytest.raises(ConfigError, match="does not exist"):
+            with use_project(tmp_path / "missing"):
+                pass
+
+
+class TestActivation:
+    def test_get_config_prefers_active(self):
+        write_user(USER)
+        custom = SrunxConfig(log_dir="x")
+        with activate_config(custom):
+            assert get_config() is custom
+            assert active_config() is custom
+        assert active_config() is None
+
+    def test_get_config_uses_default_cluster(self):
+        write_user(USER.replace('default_cluster = "local"', 'default_cluster = "gpu"'))
+        assert get_config().resources.partition == "gpu"
+
+    def test_domain_models_use_active_config(self):
+        from srunx.domain import JobResource
+
+        write_user(USER)
+        cfg = load_settings(reload=True).effective("gpu")
+        with activate_config(cfg):
+            assert JobResource().partition == "gpu"
+            assert JobResource(partition="debug").partition == "debug"
+        assert JobResource().partition is None
+
+
+class TestApplyUnset:
+    def test_resets_to_builtin(self):
+        write_user(USER)
+        cfg = load_settings(reload=True).effective("gpu")
+        cleared = apply_unset(cfg, ["partition", "time"])
+        assert cleared.resources.partition is None
+        assert cleared.resources.time_limit is None
+        assert "resources.partition" not in cleared.sources
+        assert cleared.cluster == "gpu"
+
+    def test_rejects_unknown(self):
+        with pytest.raises(ConfigError):
+            apply_unset(SrunxConfig(), ["nonsense"])
+
+
+class TestPaths:
+    def test_xdg_and_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "c"))
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "s"))
+        assert paths.user_config_path() == tmp_path / "c" / "srunx" / "config.toml"
+        assert paths.db_path() == tmp_path / "s" / "srunx" / "srunx.db"
+        assert paths.locks_dir() == tmp_path / "s" / "srunx" / "locks"
+        assert paths.templates_dir() == tmp_path / "c" / "srunx" / "templates"
+
+    def test_relative_xdg_ignored(self, monkeypatch):
+        monkeypatch.setenv("XDG_STATE_HOME", "relative/dir")
+        assert paths.default_state_dir() == Path.home() / ".local" / "state" / "srunx"
+
+    def test_state_dir_from_user_config(self, tmp_path):
+        write_user(f'state_dir = "{tmp_path / "fast"}"\n')
+        assert paths.db_path() == tmp_path / "fast" / "srunx.db"
+
+    def test_project_paths(self, tmp_path):
+        assert (
+            paths.project_config_path(tmp_path) == tmp_path / ".srunx" / "config.toml"
+        )
+        assert (
+            paths.project_workflows_dir(tmp_path) == tmp_path / ".srunx" / "workflows"
         )
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            user_config_path = Path(tmp_dir) / "config.json"
 
-            with patch("srunx.common.config.get_config_paths") as mock_paths:
-                mock_paths.return_value = [
-                    Path("/etc/srunx/config.json"),  # system
-                    user_config_path,  # user
-                    Path("srunx.json"),  # project
-                ]
-
-                save_user_config(config)
-
-                assert user_config_path.exists()
-                with open(user_config_path) as f:
-                    saved_config = json.load(f)
-
-                assert saved_config["resources"]["nodes"] == 2
-                assert saved_config["resources"]["partition"] == "gpu"
-                assert saved_config["log_dir"] == "custom_logs"
+def test_environment_variables_do_not_set_defaults(monkeypatch):
+    write_user(USER)
+    monkeypatch.setenv("SRUNX_DEFAULT_PARTITION", "env")
+    assert load_settings(reload=True).effective("local").resources.partition is None
+    assert "SRUNX_DEFAULT_PARTITION" in os.environ
 
 
-class TestExampleConfig:
-    """Test example configuration creation."""
+class TestReviewRegressions:
+    def test_partial_container_override_is_merged(self, tmp_path):
+        write_user(
+            USER + '\n[defaults.environment.container]\nimage = "img.sif"\n'
+            'runtime = "apptainer"\n'
+        )
+        root = make_project(
+            tmp_path / "p", 'name = "p"\n[defaults.environment.container]\nnv = true\n'
+        )
+        container = Settings(root).effective("local").environment.container
+        assert container.runtime == "apptainer"
+        assert container.nv is True
 
-    def test_create_example_config(self):
-        """Test creating example configuration."""
-        example = create_example_config()
-        assert isinstance(example, str)
+    def test_invalid_merged_container_still_rejected(self, tmp_path):
+        write_user(USER)
+        root = make_project(
+            tmp_path / "p", 'name = "p"\n[defaults.environment.container]\nnv = true\n'
+        )
+        with pytest.raises(ConfigError, match="apptainer"):
+            Settings(root).effective("local")
 
-        # Parse as JSON to ensure it's valid
-        config_data = json.loads(example)
-        assert "resources" in config_data
-        assert "environment" in config_data
-        assert "log_dir" in config_data
+    def test_bad_container_field_type_rejected(self):
+        write_user('[defaults.environment.container]\nnv = "maybe"\n')
+        with pytest.raises(ConfigError):
+            Settings(None, discover=False)
 
-
-class TestFullConfigLoading:
-    """Test full configuration loading integration."""
-
-    def test_load_config_integration(self):
-        """Test loading configuration with multiple sources."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            # Create a test config file
-            config_path = Path(tmp_dir) / "config.json"
-            test_config = {
-                "resources": {"nodes": 2, "partition": "gpu"},
-                "log_dir": "file_logs",
-            }
-            with open(config_path, "w") as f:
-                json.dump(test_config, f)
-
-            # Mock the config paths to use our test file
-            with patch("srunx.common.config.get_config_paths") as mock_paths:
-                mock_paths.return_value = [config_path]
-
-                # Mock environment variables
-                env_vars = {
-                    "SRUNX_DEFAULT_NODES": "4",  # Should override file
-                    "SRUNX_DEFAULT_CONDA": "env_ml",  # Should be additional
-                }
-
-                with patch.dict(os.environ, env_vars):
-                    config = load_config()
-
-                    # Environment should override file values
-                    assert config.resources.nodes == 4
-                    # File values should be preserved when not overridden
-                    assert config.resources.partition == "gpu"
-                    # Environment should add new values
-                    assert config.environment.conda == "env_ml"
-                    # File values should be preserved
-                    assert config.log_dir == "file_logs"
+    def test_duplicate_mount_names_rejected(self, tmp_path):
+        write_user(USER)
+        root = make_project(
+            tmp_path / "p",
+            'name = "p"\n[clusters.gpu]\nremote_dir = "/r/p"\n'
+            '[[clusters.gpu.mounts]]\nname = "p"\nlocal = "sub"\nremote = "/r/x"\n',
+        )
+        with pytest.raises(ConfigError, match="must be unique"):
+            Settings(root).mounts("gpu")
 
 
-class TestContainerEnvConfig:
-    """Test container-related environment variable configuration (T6.6)."""
-
-    def test_srunx_default_container_no_key_error(self):
-        """Test SRUNX_DEFAULT_CONTAINER env var works without KeyError (AC-9)."""
-        with patch.dict(
-            os.environ,
-            {"SRUNX_DEFAULT_CONTAINER": "nvcr.io/nvidia/pytorch:24.01-py3"},
-        ):
-            result = load_config_from_env()
-
-            assert "environment" in result
-            assert "container" in result["environment"]
-            assert (
-                result["environment"]["container"]["image"]
-                == "nvcr.io/nvidia/pytorch:24.01-py3"
-            )
-
-    def test_srunx_default_container_runtime_alone_is_noop(self):
-        """Test SRUNX_DEFAULT_CONTAINER_RUNTIME alone does not create a container."""
-        with patch.dict(
-            os.environ,
-            {"SRUNX_DEFAULT_CONTAINER_RUNTIME": "apptainer"},
-        ):
-            result = load_config_from_env()
-
-            # Runtime alone should not create a container entry
-            # (runtime without image is not actionable)
-            env = result.get("environment", {})
-            assert "container" not in env
-
-    def test_srunx_default_container_and_runtime_together(self):
-        """Test SRUNX_DEFAULT_CONTAINER and SRUNX_DEFAULT_CONTAINER_RUNTIME together."""
-        with patch.dict(
-            os.environ,
-            {
-                "SRUNX_DEFAULT_CONTAINER": "test.sif",
-                "SRUNX_DEFAULT_CONTAINER_RUNTIME": "apptainer",
-            },
-        ):
-            result = load_config_from_env()
-
-            assert result["environment"]["container"]["image"] == "test.sif"
-            assert result["environment"]["container"]["runtime"] == "apptainer"
-
-    def test_srunx_default_container_runtime_with_image_loads_config(self):
-        """Test SRUNX_DEFAULT_CONTAINER_RUNTIME with SRUNX_DEFAULT_CONTAINER is picked up by load_config()."""
-        with patch("srunx.common.config.get_config_paths") as mock_paths:
-            mock_paths.return_value = []
-            with patch.dict(
-                os.environ,
-                {
-                    "SRUNX_DEFAULT_CONTAINER": "test.sif",
-                    "SRUNX_DEFAULT_CONTAINER_RUNTIME": "singularity",
-                },
-            ):
-                config = load_config()
-
-                assert config.environment.container is not None
-                assert config.environment.container.image == "test.sif"
-                assert config.environment.container.runtime == "singularity"
-
-    def test_srunx_default_container_loads_config(self):
-        """Test SRUNX_DEFAULT_CONTAINER is picked up by load_config()."""
-        with patch("srunx.common.config.get_config_paths") as mock_paths:
-            mock_paths.return_value = []
-            with patch.dict(
-                os.environ,
-                {"SRUNX_DEFAULT_CONTAINER": "my-image:latest"},
-            ):
-                config = load_config()
-
-                assert config.environment.container is not None
-                assert config.environment.container.image == "my-image:latest"
+def test_duplicate_local_roots_rejected(tmp_path):
+    write_user(USER)
+    root = make_project(
+        tmp_path / "p",
+        'name = "p"\n[clusters.gpu]\nremote_dir = "/r/p"\n'
+        '[[clusters.gpu.mounts]]\nname = "again"\nlocal = "."\nremote = "/r/other"\n',
+    )
+    with pytest.raises(ConfigError, match="share the local directory"):
+        Settings(root).mounts("gpu")

@@ -1,8 +1,9 @@
 """Tests for srunx.mcp.tools.sync.
 
-Both tools take ``transport`` (an SSH profile name — there is no local-to-local
-sync and no implicit current-profile fallback) plus ``mount``, which is the
-*only* way to name what is synced: the former free-form ``local_path`` /
+Both tools take an explicit ``cluster`` (an SSH cluster name — there is no
+local-to-local sync and no implicit default cluster), an explicit ``project``
+root (whose ``.srunx/config.toml`` defines the mounts) plus ``mount``, which is
+the *only* way to name what is synced: the former free-form ``local_path`` /
 ``remote_path`` pair was removed so an agent cannot push an arbitrary source to
 an arbitrary destination.
 
@@ -13,7 +14,10 @@ holding no lock and changing nothing.
 """
 
 import inspect
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from srunx.mcp.tools.sync import (
     DEFAULT_MAX_DELETE,
@@ -21,6 +25,25 @@ from srunx.mcp.tools.sync import (
     inspect_mount,
     sync_files,
 )
+
+PROJECT = ""
+
+
+@pytest.fixture(autouse=True)
+def _project(tmp_path: Path) -> None:
+    """A real project root (``use_project`` requires one) whose target is
+    already approved, so the transfer tests exercise rsync wiring rather than
+    the first-sync approval gate (covered in :class:`TestSyncApproval`)."""
+    from srunx.common.config import clear_settings_cache
+    from srunx.sync import approval
+
+    global PROJECT
+    root = tmp_path / "proj"
+    (root / ".srunx").mkdir(parents=True)
+    (root / ".srunx" / "config.toml").write_text('name = "proj"\n')
+    clear_settings_cache()
+    PROJECT = str(root)
+    approval.approve("prod", "/remote/ml")
 
 
 def _profile_with_mount(
@@ -248,15 +271,32 @@ class TestParseItemized:
 class TestSyncFilesGuards:
     """Argument / profile / mount validation before any rsync runs."""
 
-    def test_transport_local_rejected(self):
-        result = sync_files(transport="local", mount="ml")
+    def test_local_cluster_rejected(self):
+        result = sync_files(cluster="local", project=PROJECT, mount="ml")
         assert result["success"] is False
-        assert "SSH profile" in result["error"]
+        assert "not a configured SSH cluster" in result["error"]
 
-    def test_transport_empty_rejected(self):
-        result = sync_files(transport="   ", mount="ml")
+    def test_empty_cluster_rejected(self):
+        result = sync_files(cluster="   ", project=PROJECT, mount="ml")
         assert result["success"] is False
-        assert "SSH profile" in result["error"]
+        assert "cluster name is required" in result["error"]
+
+    def test_project_required(self):
+        result = sync_files(cluster="prod", project="", mount="ml")
+        assert result["success"] is False
+        assert "project is required" in result["error"]
+
+    def test_unknown_project_rejected(self, tmp_path):
+        result = sync_files(
+            cluster="prod", project=str(tmp_path / "nowhere"), mount="ml"
+        )
+        assert result["success"] is False
+        assert "config.toml" in result["error"]
+
+    def test_cluster_and_project_are_required_params(self):
+        params = inspect.signature(sync_files).parameters
+        assert params["cluster"].default is inspect.Parameter.empty
+        assert params["project"].default is inspect.Parameter.empty
 
     def test_only_registered_mounts_can_be_named(self):
         """No free-form source/destination: ``mount`` is required and the
@@ -270,7 +310,7 @@ class TestSyncFilesGuards:
     @patch("srunx.ssh.core.config.ConfigManager")
     def test_negative_max_delete_rejected(self, mock_cm_cls):
         mock_cm_cls.return_value = MagicMock()
-        result = sync_files(transport="prod", mount="ml", max_delete=-1)
+        result = sync_files(cluster="prod", project=PROJECT, mount="ml", max_delete=-1)
         assert result["success"] is False
         assert "max_delete" in result["error"]
 
@@ -281,7 +321,7 @@ class TestSyncFilesGuards:
         Rather than guess, point the caller at ``delete=False``.
         """
         mock_cm_cls.return_value = MagicMock()
-        result = sync_files(transport="prod", mount="ml", max_delete=0)
+        result = sync_files(cluster="prod", project=PROJECT, mount="ml", max_delete=0)
         assert result["success"] is False
         assert "max_delete must be >= 1" in result["error"]
         assert "delete=False" in result["error"]
@@ -292,7 +332,7 @@ class TestSyncFilesGuards:
         cm.get_profile.return_value = None
         mock_cm_cls.return_value = cm
 
-        result = sync_files(transport="missing", mount="ml")
+        result = sync_files(cluster="missing", project=PROJECT, mount="ml")
         assert result["success"] is False
         assert "missing" in result["error"]
 
@@ -302,7 +342,7 @@ class TestSyncFilesGuards:
         cm.get_profile.return_value = _profile_with_mount(name="data")
         mock_cm_cls.return_value = cm
 
-        result = sync_files(transport="prod", mount="nope")
+        result = sync_files(cluster="prod", project=PROJECT, mount="nope")
         assert result["success"] is False
         assert "nope" in result["error"]
         assert "data" in result["error"]  # available mounts surfaced
@@ -312,7 +352,7 @@ class TestSyncFilesGuards:
             "srunx.ssh.core.config.ConfigManager",
             side_effect=RuntimeError("config broken"),
         ):
-            result = sync_files(transport="prod", mount="ml")
+            result = sync_files(cluster="prod", project=PROJECT, mount="ml")
             assert result["success"] is False
             assert "config broken" in result["error"]
 
@@ -334,7 +374,7 @@ class TestSyncFilesTransfer:
         rsync = _rsync_returning(">f+++++++++ train.py\n")
         mock_build.return_value = rsync
 
-        result = sync_files(transport="prod", mount="ml")
+        result = sync_files(cluster="prod", project=PROJECT, mount="ml")
 
         assert result["success"] is True
         assert result["delete"] is False
@@ -361,7 +401,7 @@ class TestSyncFilesTransfer:
         rsync = _rsync_returning("*deleting   stale.pt\n>f+++++++++ train.py\n")
         mock_build.return_value = rsync
 
-        result = sync_files(transport="prod", mount="ml", delete=True)
+        result = sync_files(cluster="prod", project=PROJECT, mount="ml", delete=True)
 
         assert result["success"] is True
         assert result["delete"] is True
@@ -389,7 +429,9 @@ class TestSyncFilesTransfer:
         mock_cm_cls.return_value = cm
         mock_build.return_value = _rsync_returning()
 
-        sync_files(transport="prod", mount="ml", delete=True, max_delete=3)
+        sync_files(
+            cluster="prod", project=PROJECT, mount="ml", delete=True, max_delete=3
+        )
 
         assert mock_build.return_value.push.call_args.kwargs["max_delete"] == 3
 
@@ -401,7 +443,9 @@ class TestSyncFilesTransfer:
         rsync = _rsync_returning("*deleting   a.pt\n*deleting   b.pt\n")
         mock_build.return_value = rsync
 
-        result = sync_files(transport="prod", mount="ml", dry_run=True, delete=True)
+        result = sync_files(
+            cluster="prod", project=PROJECT, mount="ml", dry_run=True, delete=True
+        )
 
         assert result["success"] is True
         assert result["dry_run"] is True
@@ -423,7 +467,7 @@ class TestSyncFilesTransfer:
         stdout = "".join(f"*deleting   ckpt/{i:04d}.pt\n" for i in range(80))
         mock_build.return_value = _rsync_returning(stdout)
 
-        result = sync_files(transport="prod", mount="ml", delete=True)
+        result = sync_files(cluster="prod", project=PROJECT, mount="ml", delete=True)
 
         assert result["entries_deleted"] == 80
         assert len(result["deleted_paths"]) == 80
@@ -443,7 +487,9 @@ class TestSyncFilesTransfer:
         rsync = _rsync_returning(stdout)
         mock_build.return_value = rsync
 
-        result = sync_files(transport="prod", mount="ml", delete=True, max_delete=5)
+        result = sync_files(
+            cluster="prod", project=PROJECT, mount="ml", delete=True, max_delete=5
+        )
 
         assert result["success"] is False
         assert "9 entries" in result["error"]
@@ -468,7 +514,9 @@ class TestSyncFilesTransfer:
         rsync = _rsync_returning(returncode=25, stderr="del limit")
         mock_build.return_value = rsync
 
-        result = sync_files(transport="prod", mount="ml", delete=True, max_delete=5)
+        result = sync_files(
+            cluster="prod", project=PROJECT, mount="ml", delete=True, max_delete=5
+        )
 
         assert result["success"] is False
         assert "more than 5 entries" in result["error"]
@@ -484,7 +532,7 @@ class TestSyncFilesTransfer:
         rsync = _rsync_returning(returncode=23, stderr="permission denied")
         mock_build.return_value = rsync
 
-        result = sync_files(transport="prod", mount="ml", delete=True)
+        result = sync_files(cluster="prod", project=PROJECT, mount="ml", delete=True)
 
         assert result["success"] is False
         assert "preflight failed" in result["error"]
@@ -512,7 +560,9 @@ class TestSyncFilesTransfer:
         ]
         mock_build.return_value = rsync
 
-        result = sync_files(transport="prod", mount="ml", delete=True, max_delete=5)
+        result = sync_files(
+            cluster="prod", project=PROJECT, mount="ml", delete=True, max_delete=5
+        )
 
         assert result["success"] is False
         assert "Nothing was changed" not in result["error"]
@@ -527,7 +577,9 @@ class TestSyncFilesTransfer:
         stdout = "".join(f"*deleting ckpt/{i}.pt\n" for i in range(1500))
         mock_build.return_value = _rsync_returning(stdout)
 
-        result = sync_files(transport="prod", mount="ml", dry_run=True, delete=True)
+        result = sync_files(
+            cluster="prod", project=PROJECT, mount="ml", dry_run=True, delete=True
+        )
 
         assert result["success"] is True
         assert result["entries_deleted"] == 1500
@@ -542,7 +594,7 @@ class TestSyncFilesTransfer:
             returncode=23, stderr="permission denied"
         )
 
-        result = sync_files(transport="prod", mount="ml")
+        result = sync_files(cluster="prod", project=PROJECT, mount="ml")
         assert result["success"] is False
         assert "exit 23" in result["error"]
         assert "permission denied" in result["error"]
@@ -563,7 +615,7 @@ class TestSyncFilesTransfer:
             "srunx.sync.lock.acquire_sync_lock",
             side_effect=SyncLockTimeoutError(Path("/tmp/ml.lock"), 120.0),
         ):
-            result = sync_files(transport="prod", mount="ml")
+            result = sync_files(cluster="prod", project=PROJECT, mount="ml")
 
         assert result["success"] is False
         assert "sync lock" in result["error"]
@@ -590,7 +642,7 @@ class TestInspectMount:
         mock_cm_cls.return_value = cm
         mock_build.return_value = _rsync_returning("*deleting stale.py\n")
 
-        result = inspect_mount(transport="prod", mount="ml")
+        result = inspect_mount(cluster="prod", project=PROJECT, mount="ml")
 
         assert result["success"] is True
         kwargs = mock_build.return_value.push.call_args.kwargs
@@ -611,7 +663,7 @@ class TestInspectMount:
             "*deleting old_train.py\n*deleting ckpt/500.pt\n>f+++++++ train.py\n"
         )
 
-        result = inspect_mount(transport="prod", mount="ml")
+        result = inspect_mount(cluster="prod", project=PROJECT, mount="ml")
 
         assert result["mirror_delete_candidates"] == 2
         assert result["mirror_delete_candidate_paths"] == [
@@ -634,7 +686,7 @@ class TestInspectMount:
         rsync.effective_excludes.return_value = [".git/", "*.pyc", "data/"]
         mock_build.return_value = rsync
 
-        result = inspect_mount(transport="prod", mount="ml")
+        result = inspect_mount(cluster="prod", project=PROJECT, mount="ml")
         assert result["effective_exclude_patterns"] == [".git/", "*.pyc", "data/"]
 
     def test_effective_excludes_include_the_mount_patterns(
@@ -655,7 +707,7 @@ class TestInspectMount:
         rsync = _rsync_returning()
         mock_build.return_value = rsync
 
-        inspect_mount(transport="prod", mount="ml")
+        inspect_mount(cluster="prod", project=PROJECT, mount="ml")
 
         rsync.effective_excludes.assert_called_once_with(["data/raw/", "*.h5"])
 
@@ -667,7 +719,7 @@ class TestInspectMount:
         mock_build.return_value = _rsync_returning()
 
         with patch("srunx.sync.lock.acquire_sync_lock") as mock_lock:
-            result = inspect_mount(transport="prod", mount="ml")
+            result = inspect_mount(cluster="prod", project=PROJECT, mount="ml")
 
         assert result["success"] is True
         mock_lock.assert_not_called()
@@ -681,7 +733,9 @@ class TestInspectMount:
         stdout = "".join(f"*deleting f{i}.pt\n" for i in range(50))
         mock_build.return_value = _rsync_returning(stdout)
 
-        result = inspect_mount(transport="prod", mount="ml", max_paths=10)
+        result = inspect_mount(
+            cluster="prod", project=PROJECT, mount="ml", max_paths=10
+        )
 
         assert result["mirror_delete_candidates"] == 50  # exact
         assert result["mirror_delete_candidate_paths"] == []
@@ -689,7 +743,9 @@ class TestInspectMount:
 
     def test_negative_max_paths_rejected(self, mock_cm_cls, mock_build):
         mock_cm_cls.return_value = MagicMock()
-        result = inspect_mount(transport="prod", mount="ml", max_paths=-1)
+        result = inspect_mount(
+            cluster="prod", project=PROJECT, mount="ml", max_paths=-1
+        )
         assert result["success"] is False
         assert "max_paths" in result["error"]
 
@@ -702,23 +758,24 @@ class TestInspectMount:
             returncode=23, stderr="No such file or directory"
         )
 
-        result = inspect_mount(transport="prod", mount="ml")
+        result = inspect_mount(cluster="prod", project=PROJECT, mount="ml")
 
         assert result["success"] is False
         assert "nothing to inspect" in result["error"]
         assert "delete=False" in result["error"]
 
-    def test_rejects_local_transport(self, mock_cm_cls, mock_build):
-        result = inspect_mount(transport="local", mount="ml")
+    def test_rejects_local_cluster(self, mock_cm_cls, mock_build):
+        mock_cm_cls.return_value.get_profile.return_value = None
+        result = inspect_mount(cluster="local", project=PROJECT, mount="ml")
         assert result["success"] is False
-        assert "SSH profile" in result["error"]
+        assert "not a configured SSH cluster" in result["error"]
 
     def test_unknown_mount_lists_available(self, mock_cm_cls, mock_build):
         cm = MagicMock()
         cm.get_profile.return_value = _profile_with_mount(name="data")
         mock_cm_cls.return_value = cm
 
-        result = inspect_mount(transport="prod", mount="nope")
+        result = inspect_mount(cluster="prod", project=PROJECT, mount="nope")
         assert result["success"] is False
         assert "nope" in result["error"]
         assert "data" in result["error"]
@@ -757,7 +814,7 @@ class TestInspectMountStaleUploads:
             patch.object(M, "local_inventory", return_value=["train.py"]),
         ):
             rsync.effective_excludes.return_value = ["x"]
-            result = inspect_mount(transport="prod", mount="ml")
+            result = inspect_mount(cluster="prod", project=PROJECT, mount="ml")
 
         # The raw candidates still show everything...
         assert result["mirror_delete_candidates"] == 2
@@ -778,7 +835,7 @@ class TestInspectMountStaleUploads:
             patch.object(M, "read", return_value=None),
             patch.object(M, "local_inventory", return_value=[]),
         ):
-            result = inspect_mount(transport="prod", mount="ml")
+            result = inspect_mount(cluster="prod", project=PROJECT, mount="ml")
 
         assert result["stale_uploads_known"] is False
         assert result["stale_uploads"] == 0
@@ -797,7 +854,7 @@ class TestInspectMountStaleUploads:
         with patch.object(
             M, "read", side_effect=M.ManifestUnavailable("corrupt record")
         ):
-            result = inspect_mount(transport="prod", mount="ml")
+            result = inspect_mount(cluster="prod", project=PROJECT, mount="ml")
 
         assert result["success"] is True  # not a hard failure
         assert result["mirror_delete_candidates"] == 1
@@ -823,7 +880,9 @@ class TestInspectMountStaleUploads:
             patch.object(M, "local_inventory", return_value=[]),
         ):
             rsync.effective_excludes.return_value = ["x"]
-            result = inspect_mount(transport="prod", mount="ml", max_paths=5)
+            result = inspect_mount(
+                cluster="prod", project=PROJECT, mount="ml", max_paths=5
+            )
 
         assert result["stale_uploads"] == 20  # exact
         assert result["stale_upload_paths"] == []
@@ -852,7 +911,7 @@ class TestInspectMountStaleUploads:
                 side_effect=lambda *a, **kw: order.append("record"),
             ),
         ):
-            sync_files(transport="prod", mount="ml")
+            sync_files(cluster="prod", project=PROJECT, mount="ml")
 
         assert order == ["lock", "record", "unlock"]
 
@@ -863,11 +922,11 @@ class TestInspectMountStaleUploads:
         mock_build.return_value = _rsync_returning()
 
         with patch("srunx.sync.mount_helpers.record_upload") as rec:
-            sync_files(transport="prod", mount="ml")
+            sync_files(cluster="prod", project=PROJECT, mount="ml")
             assert rec.call_args.kwargs["mirrored"] is False
 
         with patch("srunx.sync.mount_helpers.record_upload") as rec:
-            sync_files(transport="prod", mount="ml", delete=True)
+            sync_files(cluster="prod", project=PROJECT, mount="ml", delete=True)
             assert rec.call_args.kwargs["mirrored"] is True
 
     def test_stale_is_intersected_with_what_is_still_on_the_cluster(
@@ -896,7 +955,76 @@ class TestInspectMountStaleUploads:
             patch.object(M, "local_inventory", return_value=[]),
         ):
             rsync.effective_excludes.return_value = ["x"]
-            result = inspect_mount(transport="prod", mount="ml")
+            result = inspect_mount(cluster="prod", project=PROJECT, mount="ml")
 
         assert result["stale_upload_paths"] == ["tools/probe.py"]
         assert result["stale_uploads"] == 1
+
+
+@patch("srunx.sync.mount_helpers.build_rsync_client")
+@patch("srunx.ssh.core.config.ConfigManager")
+class TestSyncApproval:
+    """The first real sync into a (cluster, remote) target needs approval."""
+
+    def _setup(self, mock_cm_cls, mock_build, remote="/remote/new"):
+        mock_cm_cls.return_value.get_profile.return_value = _profile_with_mount(
+            remote=remote
+        )
+        rsync = _rsync_returning(">f+++++++++ a.py\n")
+        mock_build.return_value = rsync
+        return rsync
+
+    def test_unapproved_target_refused_without_push(self, mock_cm_cls, mock_build):
+        rsync = self._setup(mock_cm_cls, mock_build)
+        with patch("sys.stdin.isatty", return_value=False):
+            result = sync_files(cluster="prod", project=PROJECT, mount="ml")
+        assert result["success"] is False
+        assert "needs approval" in result["error"]
+        rsync.push.assert_not_called()
+
+    def test_approve_new_target_records_and_syncs(self, mock_cm_cls, mock_build):
+        from srunx.sync import approval
+
+        rsync = self._setup(mock_cm_cls, mock_build)
+        result = sync_files(
+            cluster="prod", project=PROJECT, mount="ml", approve_new_target=True
+        )
+        assert result["success"] is True
+        rsync.push.assert_called_once()
+        assert approval.is_approved("prod", "/remote/new")
+
+    def test_dry_run_needs_no_approval(self, mock_cm_cls, mock_build):
+        from srunx.sync import approval
+
+        rsync = self._setup(mock_cm_cls, mock_build)
+        result = sync_files(cluster="prod", project=PROJECT, mount="ml", dry_run=True)
+        assert result["success"] is True
+        rsync.push.assert_called_once()
+        assert not approval.is_approved("prod", "/remote/new")
+
+
+class TestRealProjectMounts:
+    """Mounts come from the project config, resolved without mocks."""
+
+    def test_project_remote_dir_is_the_primary_mount(self, tmp_path, monkeypatch):
+        import os
+
+        from srunx.common.config import clear_settings_cache
+
+        (Path(os.environ["XDG_CONFIG_HOME"]) / "srunx" / "config.toml").write_text(
+            '[clusters.prod]\ntransport = "ssh"\nhostname = "h"\nusername = "u"\n'
+        )
+        (Path(PROJECT) / ".srunx" / "config.toml").write_text(
+            'name = "proj"\n\n[clusters.prod]\nremote_dir = "/remote/proj"\n'
+        )
+        clear_settings_cache()
+        rsync = _rsync_returning()
+        with patch("srunx.sync.mount_helpers.build_rsync_client", return_value=rsync):
+            result = inspect_mount(cluster="prod", project=PROJECT, mount="proj")
+        assert result["success"] is True, result
+        assert result["remote"] == "/remote/proj"
+        assert result["local"] == str(Path(PROJECT).resolve())
+
+        missing = inspect_mount(cluster="prod", project=PROJECT, mount="nope")
+        assert missing["success"] is False
+        assert "proj" in missing["error"]

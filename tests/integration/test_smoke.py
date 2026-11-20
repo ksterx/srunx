@@ -316,29 +316,38 @@ class TestRealisticWorkflows:
 class TestConfigurationIntegration:
     """Test configuration system integration."""
 
-    def test_environment_variable_config(self):
-        """Test configuration through environment variables."""
-        from srunx.common.config import get_config
+    def test_user_config_file_defaults(self):
+        """Defaults come from the user TOML config (no SRUNX_DEFAULT_* env vars)."""
+        import os
 
-        env_vars = {
-            "SRUNX_DEFAULT_NODES": "2",
-            "SRUNX_DEFAULT_GPUS_PER_NODE": "4",
-            "SRUNX_DEFAULT_MEMORY_PER_NODE": "64GB",
-            "SRUNX_DEFAULT_PARTITION": "gpu",
-            "SRUNX_DEFAULT_CONDA": "ml_env",
-        }
+        from srunx.common.config import clear_settings_cache, get_config
+
+        path = Path(os.environ["XDG_CONFIG_HOME"]) / "srunx" / "config.toml"
+        path.write_text(
+            'default_cluster = "local"\n\n'
+            "[defaults.resources]\n"
+            "nodes = 2\n"
+            'memory_per_node = "64GB"\n\n'
+            "[defaults.environment]\n"
+            'conda = "ml_env"\n\n'
+            "[clusters.local]\n"
+            'transport = "local"\n\n'
+            "[clusters.local.defaults.resources]\n"
+            "gpus_per_node = 4\n"
+            'partition = "gpu"\n'
+        )
+        clear_settings_cache()
 
         with pytest.MonkeyPatch().context() as m:
-            for key, value in env_vars.items():
-                m.setenv(key, value)
-
+            # Legacy env defaults are ignored.
+            m.setenv("SRUNX_DEFAULT_NODES", "7")
             config = get_config(reload=True)
 
-            assert config.resources.nodes == 2
-            assert config.resources.gpus_per_node == 4
-            assert config.resources.memory_per_node == "64GB"
-            assert config.resources.partition == "gpu"
-            assert config.environment.conda == "ml_env"
+        assert config.resources.nodes == 2
+        assert config.resources.gpus_per_node == 4
+        assert config.resources.memory_per_node == "64GB"
+        assert config.resources.partition == "gpu"
+        assert config.environment.conda == "ml_env"
 
     def test_config_file_integration(self):
         """Test configuration file loading."""

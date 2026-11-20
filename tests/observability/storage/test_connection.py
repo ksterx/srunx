@@ -9,9 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from srunx.observability.storage import connection as conn_mod
 from srunx.observability.storage.connection import (
-    get_config_dir,
     get_db_path,
     init_db,
     initialized_connection,
@@ -22,36 +20,18 @@ from srunx.observability.storage.connection import (
 # ---- Path resolution ----
 
 
-def test_get_config_dir_uses_xdg_when_set(
+def test_get_db_path_is_under_state_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    assert get_config_dir() == tmp_path / "srunx"
-
-
-def test_get_config_dir_falls_back_without_xdg(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    got = get_config_dir()
-    # Don't assert exact path (platform-dependent); just assert it ends with
-    # 'srunx' and includes the user's home.
-    assert got.name == "srunx"
-    assert str(Path.home()) in str(got)
-
-
-def test_get_db_path_is_under_config_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    assert get_db_path() == tmp_path / "srunx" / "srunx.observability.storage"
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert get_db_path() == tmp_path / "srunx" / "srunx.db"
 
 
 # ---- open_connection ----
 
 
 def test_open_connection_applies_pragmas(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.observability.storage"
+    db = tmp_path / "srunx.db"
     conn = open_connection(db)
     try:
         fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
@@ -66,7 +46,7 @@ def test_open_connection_applies_pragmas(tmp_path: Path) -> None:
 
 
 def test_open_connection_creates_file_with_mode_0600(tmp_path: Path) -> None:
-    db = tmp_path / "sub" / "srunx.observability.storage"
+    db = tmp_path / "sub" / "srunx.db"
     conn = open_connection(db)
     conn.close()
     assert db.exists()
@@ -76,7 +56,7 @@ def test_open_connection_creates_file_with_mode_0600(tmp_path: Path) -> None:
 
 
 def test_open_connection_sets_row_factory(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.observability.storage"
+    db = tmp_path / "srunx.db"
     conn = open_connection(db)
     try:
         conn.execute("CREATE TABLE t (id INTEGER, name TEXT)")
@@ -94,7 +74,7 @@ def test_open_connection_sets_row_factory(tmp_path: Path) -> None:
 
 
 def test_transaction_commits_on_success(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.observability.storage"
+    db = tmp_path / "srunx.db"
     conn = open_connection(db)
     conn.execute("CREATE TABLE t (id INTEGER)")
     with transaction(conn, "IMMEDIATE"):
@@ -105,7 +85,7 @@ def test_transaction_commits_on_success(tmp_path: Path) -> None:
 
 
 def test_transaction_rollback_on_exception(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.observability.storage"
+    db = tmp_path / "srunx.db"
     conn = open_connection(db)
     conn.execute("CREATE TABLE t (id INTEGER)")
     with pytest.raises(RuntimeError):
@@ -118,7 +98,7 @@ def test_transaction_rollback_on_exception(tmp_path: Path) -> None:
 
 
 def test_transaction_rejects_unknown_mode(tmp_path: Path) -> None:
-    db = tmp_path / "srunx.observability.storage"
+    db = tmp_path / "srunx.db"
     conn = open_connection(db)
     with pytest.raises(ValueError):
         with transaction(conn, "BOGUS"):
@@ -129,42 +109,13 @@ def test_transaction_rejects_unknown_mode(tmp_path: Path) -> None:
 # ---- init_db ----
 
 
-def test_init_db_applies_schema_and_removes_legacy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-
-    # Seed a fake legacy DB to prove it gets removed.
-    legacy_dir = tmp_path / "legacy_home" / ".srunx"
-    legacy_dir.mkdir(parents=True)
-    legacy_db = legacy_dir / "history.db"
-    legacy_db.touch()
-    monkeypatch.setattr(conn_mod, "LEGACY_HISTORY_DB_PATH", legacy_db)
-
-    db_path = init_db()
-    assert db_path == tmp_path / "srunx" / "srunx.observability.storage"
-    assert db_path.exists()
-    assert not legacy_db.exists()
-
-    # Schema was applied — v1 migration row exists.
-    conn = sqlite3.connect(db_path)
-    try:
-        names = {
-            r[0] for r in conn.execute("SELECT name FROM schema_version").fetchall()
-        }
-    finally:
-        conn.close()
-    assert "v1_initial" in names
-
-
 def test_init_db_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setattr(conn_mod, "LEGACY_HISTORY_DB_PATH", tmp_path / "nope.db")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
 
     init_db()
     init_db()  # must not raise
 
-    conn = sqlite3.connect(tmp_path / "srunx" / "srunx.observability.storage")
+    conn = sqlite3.connect(tmp_path / "srunx" / "srunx.db")
     try:
         rows = conn.execute(
             "SELECT COUNT(*) FROM schema_version WHERE name = 'v1_initial'"
@@ -188,7 +139,7 @@ def test_connection_usable_from_another_thread(tmp_path: Path) -> None:
     """
     import threading
 
-    db = tmp_path / "srunx.observability.storage"
+    db = tmp_path / "srunx.db"
     conn = open_connection(db)
     try:
         conn.execute("CREATE TABLE t (id INTEGER)")
@@ -220,8 +171,7 @@ def test_connection_usable_from_another_thread(tmp_path: Path) -> None:
 def test_initialized_connection_applies_migrations_on_first_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setattr(conn_mod, "LEGACY_HISTORY_DB_PATH", tmp_path / "nope.db")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
 
     with initialized_connection() as conn:
         names = {
@@ -234,15 +184,14 @@ def test_initialized_connection_applies_migrations_on_first_call(
 def test_initialized_connection_is_idempotent_across_multiple_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setattr(conn_mod, "LEGACY_HISTORY_DB_PATH", tmp_path / "nope.db")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
 
     with initialized_connection():
         pass
     with initialized_connection():
         pass
 
-    conn = sqlite3.connect(tmp_path / "srunx" / "srunx.observability.storage")
+    conn = sqlite3.connect(tmp_path / "srunx" / "srunx.db")
     try:
         count = conn.execute(
             "SELECT COUNT(*) FROM schema_version WHERE name = 'v1_initial'"
@@ -255,8 +204,7 @@ def test_initialized_connection_is_idempotent_across_multiple_calls(
 def test_initialized_connection_closes_on_exception(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setattr(conn_mod, "LEGACY_HISTORY_DB_PATH", tmp_path / "nope.db")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
 
     leaked: list[sqlite3.Connection] = []
     with pytest.raises(RuntimeError):
@@ -268,29 +216,3 @@ def test_initialized_connection_closes_on_exception(
     assert leaked, "context manager did not yield a connection"
     with pytest.raises(sqlite3.ProgrammingError):
         leaked[0].execute("SELECT 1")
-
-
-def test_initialized_connection_honors_delete_legacy_flag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-
-    # Legacy DB seeded in two fake homes so we can test both branches
-    # without cross-talk.
-    legacy_keep = tmp_path / "keep" / "history.db"
-    legacy_keep.parent.mkdir(parents=True)
-    legacy_keep.touch()
-    monkeypatch.setattr(conn_mod, "LEGACY_HISTORY_DB_PATH", legacy_keep)
-
-    with initialized_connection(delete_legacy=False):
-        pass
-    assert legacy_keep.exists(), "delete_legacy=False must preserve legacy DB"
-
-    legacy_gone = tmp_path / "gone" / "history.db"
-    legacy_gone.parent.mkdir(parents=True)
-    legacy_gone.touch()
-    monkeypatch.setattr(conn_mod, "LEGACY_HISTORY_DB_PATH", legacy_gone)
-
-    with initialized_connection(delete_legacy=True):
-        pass
-    assert not legacy_gone.exists(), "delete_legacy=True must remove legacy DB"

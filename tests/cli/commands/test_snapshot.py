@@ -57,8 +57,8 @@ class _Service:
 
 @pytest.fixture
 def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("SRUNX_CLUSTER", raising=False)
     _Service.created = []
     _Service.error = None
     _Service.leased_called = False
@@ -87,7 +87,7 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
 
 def test_snapshot_create_stdout_is_exactly_the_path(env: dict[str, Any]) -> None:
-    result = CliRunner().invoke(app, ["snapshot", "create", "v1", "--profile", "p"])
+    result = CliRunner().invoke(app, ["snapshot", "create", "v1", "--cluster", "p"])
     assert result.exit_code == 0, result.output
     assert result.stdout == PATH + "\n"
     assert result.stderr.count("Snapshot ") == 1  # status line once, not also logged
@@ -98,7 +98,7 @@ def test_snapshot_create_stdout_is_exactly_the_path(env: dict[str, Any]) -> None
 
 
 def test_snapshot_create_writes_no_lease(env: dict[str, Any]) -> None:
-    result = CliRunner().invoke(app, ["snapshot", "create", "--profile", "p"])
+    result = CliRunner().invoke(app, ["snapshot", "create", "--cluster", "p"])
     assert result.exit_code == 0
     assert _Service.leased_called is False
     assert env["plan_kw"]["rev"] is None
@@ -106,7 +106,7 @@ def test_snapshot_create_writes_no_lease(env: dict[str, Any]) -> None:
 
 def test_snapshot_create_rejects_local_transport(env: dict[str, Any]) -> None:
     env["transport"] = "local"
-    result = CliRunner().invoke(app, ["snapshot", "create", "--local"])
+    result = CliRunner().invoke(app, ["snapshot", "create", "--cluster", "local"])
     assert result.exit_code == 2
     assert result.stdout == ""
     assert _Service.created == []
@@ -114,7 +114,7 @@ def test_snapshot_create_rejects_local_transport(env: dict[str, Any]) -> None:
 
 def test_snapshot_create_validation_error_exits_2(env: dict[str, Any]) -> None:
     env["plan_error"] = SnapshotValidationError("tracked changes")
-    result = CliRunner().invoke(app, ["snapshot", "create", "--profile", "p"])
+    result = CliRunner().invoke(app, ["snapshot", "create", "--cluster", "p"])
     assert result.exit_code == 2
     assert result.stdout == ""
     assert _Service.created == []
@@ -124,14 +124,14 @@ def test_snapshot_create_service_validation_error_exits_2(
     env: dict[str, Any],
 ) -> None:
     _Service.error = SnapshotValidationError("root inside mount")
-    result = CliRunner().invoke(app, ["snapshot", "create", "--profile", "p"])
+    result = CliRunner().invoke(app, ["snapshot", "create", "--cluster", "p"])
     assert result.exit_code == 2
     assert result.stdout == ""
 
 
 def test_snapshot_create_remote_error_exits_1(env: dict[str, Any]) -> None:
     _Service.error = SnapshotRemoteError("push failed")
-    result = CliRunner().invoke(app, ["snapshot", "create", "--profile", "p"])
+    result = CliRunner().invoke(app, ["snapshot", "create", "--cluster", "p"])
     assert result.exit_code == 1
     assert result.stdout == ""
     assert "push failed" in result.stderr
@@ -195,8 +195,8 @@ class _InvStore:
 
 @pytest.fixture
 def gc(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("SRUNX_CLUSTER", raising=False)
     state: dict[str, Any] = {
         "store": _InvStore(),
         "transport": "ssh",
@@ -254,7 +254,7 @@ def test_snapshot_list_json_output(gc: dict[str, Any]) -> None:
     gc["report"] = report(
         active(100, "RUNNING"), queue=(row(5, workdir=f"{REPO_DIR}/trees/{OSHA}"),)
     )
-    result = _run("list", "--format", "json", "--profile", "p")
+    result = _run("list", "--format", "json", "--cluster", "p")
     assert result.exit_code == 0, result.output
     data = json.loads(result.stdout)
     (s,) = data["repos"][0]["snapshots"]
@@ -284,7 +284,7 @@ def test_snapshot_list_bad_format_exits_2_before_any_remote_call(
 def test_snapshot_list_and_prune_reject_local_transport(gc: dict[str, Any]) -> None:
     gc["transport"] = "local"
     for cmd in ("list", "prune"):
-        result = _run(cmd, "--local")
+        result = _run(cmd, "--cluster", "local")
         assert result.exit_code == 2, cmd
         assert result.stdout == ""
     assert gc["store"].read_kwargs == []

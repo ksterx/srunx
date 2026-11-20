@@ -58,7 +58,7 @@ def test_positional_script_forwards_env_to_shell_job(runner, tmp_path):
     ):
         result = runner.invoke(
             app,
-            ["sbatch", str(script), "--env", "FOO=bar", "--profile", "test-profile"],
+            ["sbatch", str(script), "--env", "FOO=bar", "--cluster", "test-profile"],
         )
 
     assert result.exit_code == 0, result.output
@@ -94,14 +94,14 @@ def test_quiet_short_flag_is_Q_not_q(runner, tmp_path):
     ):
         result = runner.invoke(
             app,
-            ["sbatch", str(script), "-Q", "--profile", "test-profile"],
+            ["sbatch", str(script), "-Q", "--cluster", "test-profile"],
         )
         assert result.exit_code == 0, result.output
         assert "No such option" not in result.output
 
         result = runner.invoke(
             app,
-            ["sbatch", str(script), "-q", "normal", "--profile", "test-profile"],
+            ["sbatch", str(script), "-q", "normal", "--cluster", "test-profile"],
         )
         assert result.exit_code == 0, result.output
         assert captured["extra_sbatch_args"] == ["--qos=normal"]
@@ -134,7 +134,7 @@ def test_removed_alias_exits_2(runner, tmp_path, alias):
     ):
         result = runner.invoke(
             app,
-            ["sbatch", str(script), alias, "x", "--profile", "test-profile"],
+            ["sbatch", str(script), alias, "x", "--cluster", "test-profile"],
         )
     assert result.exit_code == 2, result.output
 
@@ -168,7 +168,7 @@ def test_wrap_mode_does_not_forward_resource_flags(runner):
                 "echo hi",
                 "-t",
                 "5:00",
-                "--profile",
+                "--cluster",
                 "test-profile",
             ],
         )
@@ -211,7 +211,7 @@ def test_passthrough_forms_reach_extra_sbatch_args(runner, tmp_path, extra_argv)
     ):
         result = runner.invoke(
             app,
-            ["sbatch", str(script), *extra_argv, "--profile", "test-profile"],
+            ["sbatch", str(script), *extra_argv, "--cluster", "test-profile"],
         )
 
     assert result.exit_code == 0, result.output
@@ -265,7 +265,7 @@ def test_log_dir_output_precedence(runner, tmp_path):
                 "L",
                 "--output",
                 "O",
-                "--profile",
+                "--cluster",
                 "test-profile",
             ],
         )
@@ -307,7 +307,7 @@ def test_wrap_mode_forwards_passthrough_only(runner):
                 "-t",
                 "5:00",
                 "--array=1-10",
-                "--profile",
+                "--cluster",
                 "test-profile",
             ],
         )
@@ -373,7 +373,7 @@ def test_help_still_works(runner, tmp_path):
         ),
     ):
         result = runner.invoke(
-            app, ["sbatch", str(script), "-Q", "--profile", "test-profile"]
+            app, ["sbatch", str(script), "-Q", "--cluster", "test-profile"]
         )
     assert result.exit_code == 0, result.output
 
@@ -408,8 +408,8 @@ def snapshot_env(monkeypatch, tmp_path):
     from srunx.cli._helpers import snapshot_submit as ss
     from srunx.snapshot import PreparedSnapshot
 
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("SRUNX_CLUSTER", raising=False)
     state: dict[str, object] = {"plan_calls": [], "service_calls": 0}
 
     def fake_plan(*, script, rev, cwd):
@@ -473,7 +473,7 @@ def _rt_with_ops():
         (["--template", "t"], "--template"),
         (["--sync"], "--sync"),
         (["--force-sync"], "--force-sync"),
-        (["--local"], "--local"),
+        (["--cluster", "local"], "local"),
     ],
 )
 def test_snapshot_rejects_conflicting_option(
@@ -482,8 +482,8 @@ def test_snapshot_rejects_conflicting_option(
     script = tmp_path / "job.sbatch"
     script.write_text("echo\n")
     args = ["sbatch", "--snapshot", str(script), *extra]
-    if flag != "--local":
-        args += ["--profile", "test-profile"]
+    if flag != "local":
+        args += ["--cluster", "test-profile"]
     result = runner.invoke(app, args)
     assert result.exit_code == 2, result.output
     assert snapshot_env["plan_calls"] == []
@@ -491,13 +491,13 @@ def test_snapshot_rejects_conflicting_option(
 
 def test_snapshot_rejects_wrap(runner, snapshot_env):
     result = runner.invoke(
-        app, ["sbatch", "--snapshot", "--wrap", "x", "--profile", "test-profile"]
+        app, ["sbatch", "--snapshot", "--wrap", "x", "--cluster", "test-profile"]
     )
     assert result.exit_code == 2
 
 
 def test_snapshot_requires_script(runner, snapshot_env):
-    result = runner.invoke(app, ["sbatch", "--snapshot", "--profile", "test-profile"])
+    result = runner.invoke(app, ["sbatch", "--snapshot", "--cluster", "test-profile"])
     assert result.exit_code == 2
 
 
@@ -528,7 +528,7 @@ def test_snapshot_rev_implies_snapshot_and_keeps_script_positional(
                 "--snapshot-rev",
                 "v1",
                 str(script),
-                "--profile",
+                "--cluster",
                 "test-profile",
             ],
         )
@@ -556,7 +556,7 @@ def test_snapshot_submit_never_syncs_or_uses_tmp_upload_and_names_from_commit(
         patch("srunx.sync.service.mount_sync_session") as session_mock,
     ):
         result = runner.invoke(
-            app, ["sbatch", "--snapshot", str(script), "--profile", "test-profile"]
+            app, ["sbatch", "--snapshot", str(script), "--cluster", "test-profile"]
         )
     assert result.exit_code == 0, result.output
     sync_mock.assert_not_called()
@@ -582,7 +582,7 @@ def test_snapshot_dry_run_makes_no_remote_call(runner, snapshot_env, tmp_path):
                 "--snapshot",
                 "--dry-run",
                 str(script),
-                "--profile",
+                "--cluster",
                 "test-profile",
             ],
         )
@@ -611,7 +611,7 @@ def test_snapshot_dry_run_no_output_warning_with_absolute_output(
                 "--snapshot",
                 "--dry-run",
                 str(script),
-                "--profile",
+                "--cluster",
                 "test-profile",
                 "--output=/abs/logs/%j.out",
             ],
@@ -634,7 +634,7 @@ def test_snapshot_rejects_clusters_passthrough(runner, snapshot_env, tmp_path, e
     script = tmp_path / "job.sbatch"
     script.write_text("echo\n")
     result = runner.invoke(
-        app, ["sbatch", "--snapshot", str(script), "--profile", "test-profile", *extra]
+        app, ["sbatch", "--snapshot", str(script), "--cluster", "test-profile", *extra]
     )
     assert result.exit_code == 2, result.output
     assert "clusters" in result.output.lower()
@@ -657,7 +657,7 @@ def test_snapshot_rejects_clusters_directive_in_the_committed_script(
     script = tmp_path / "job.sbatch"
     script.write_text("echo\n")
     result = runner.invoke(
-        app, ["sbatch", "--snapshot", str(script), "--profile", "test-profile"]
+        app, ["sbatch", "--snapshot", str(script), "--cluster", "test-profile"]
     )
     assert result.exit_code == 2, result.output
     assert "clusters" in result.output.lower()
@@ -674,10 +674,8 @@ def test_clusters_passthrough_is_still_accepted_without_snapshot(runner, tmp_pat
             script=None,
             wrap=None,
             template=None,
-            local=False,
             sync=None,
             force_sync=False,
-            profile=None,
             sbatch_args=["--clusters=other"],
         )
         is False

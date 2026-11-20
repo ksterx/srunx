@@ -82,7 +82,7 @@ class SlurmRemoteClient:
         self._slurm_path: str | None = None
         # A bound profile enables secret behaviour: the account's remote
         # secret file (``~/.config/srunx/secrets.env``, stored via
-        # ``srunx ssh secret``) is sourced into the submission shell (see
+        # ``srunx cluster secret``) is sourced into the submission shell (see
         # ``_get_slurm_env_setup``) and triggers ``--export=ALL``. The profile
         # name only acts as an on/off gate here — the file path is account
         # (``$HOME``) scoped, so it is not threaded into the store. ``None``
@@ -209,7 +209,7 @@ class SlurmRemoteClient:
     ) -> str:
         """Get environment setup commands for SLURM execution.
 
-        When the account has a secret file (``srunx ssh secret``), it is
+        When the account has a secret file (``srunx cluster secret``), it is
         sourced into the submission shell so its exports enter the job
         environment. Job-level ``job_env_vars`` are then exported as an
         ``export KEY='value'`` prefix (job values win over anything the

@@ -349,7 +349,7 @@ class TestGpusSshParity:
             return_value=(fake_handle, None),
         ):
             result = runner.invoke(
-                app, ["gpus", "--profile", "dgx", "--format", "json"]
+                app, ["gpus", "--cluster", "dgx", "--format", "json"]
             )
 
         assert result.exit_code == 0, result.stdout + (result.stderr or "")
@@ -394,7 +394,7 @@ class TestGpusSshParity:
                 app,
                 [
                     "gpus",
-                    "--profile",
+                    "--cluster",
                     "dgx",
                     "--partition",
                     "gpu",
@@ -417,7 +417,7 @@ class TestGpusSshParity:
     ):
         """Regression guard: local default still uses ResourceMonitor subprocess.
 
-        Without ``--profile``/``$SRUNX_SSH_PROFILE`` the SSH branch
+        Without ``--profile``/``$SRUNX_CLUSTER`` the SSH branch
         must NOT activate — the existing
         :class:`TestResourcesCommand` tests already cover the table
         path, this one explicitly asserts ``source=None`` so the
@@ -432,7 +432,9 @@ class TestGpusSshParity:
             )
             mock_monitor_class.return_value = mock_monitor
 
-            result = runner.invoke(app, ["gpus", "--local", "--format", "json"])
+            result = runner.invoke(
+                app, ["gpus", "--cluster", "local", "--format", "json"]
+            )
 
         assert result.exit_code == 0
         # ``source=None`` means the local subprocess path runs — see

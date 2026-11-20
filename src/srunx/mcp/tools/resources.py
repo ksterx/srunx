@@ -11,19 +11,18 @@ from srunx.mcp.transport import mcp_transport
 
 @mcp.tool()
 def get_resources(
-    partition: str | None = None, transport: str | None = None
+    partition: str | None = None, cluster: str | None = None
 ) -> dict[str, Any]:
     """Get current GPU and node resource availability on the SLURM cluster.
 
     Args:
         partition: Specific partition to check (None for all partitions)
-        transport: Cluster selector — omit / "local" for local SLURM, or an
-            SSH profile name to query that remote cluster.
+        cluster: Cluster name (required; see ``list_clusters``).
     """
     try:
         if partition:
             validate_partition(partition)
-        with mcp_transport(transport) as rt:
+        with mcp_transport(cluster) as rt:
             # Resource queries are not part of the JobOperations Protocol
             # (the local client aggregates via ResourceMonitor; the SSH
             # adapter exposes get_resources). So branch on the resolved

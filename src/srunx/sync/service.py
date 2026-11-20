@@ -109,6 +109,7 @@ def mount_sync_session(
     force_sync: bool = False,
     verbose: bool = False,
     verify_paths: list[str] | None = None,
+    assume_yes: bool = False,
 ) -> Iterator[SyncOutcome]:
     """Acquire the per-mount lock, optionally rsync, hold lock until exit.
 
@@ -156,8 +157,19 @@ def mount_sync_session(
     * rsync non-zero exit → :class:`RuntimeError` (from inner helper).
     """
 
+    # ``sync = false`` mounts (shared storage) are translated but never
+    # rsynced; the lock is still taken for a stable submission window.
+    sync_required = sync_required and mount.sync
     warnings: list[str] = []
     if sync_required:
+        from srunx.sync.approval import SyncNotApprovedError, ensure_approved
+
+        try:
+            ensure_approved(
+                profile_name, mount.local, mount.remote, assume_yes=assume_yes
+            )
+        except SyncNotApprovedError as exc:
+            raise SyncAbortedError(str(exc)) from exc
         local_root = Path(mount.local).expanduser()
         if config.warn_dirty or config.require_clean:
             dirty, summary = is_dirty_git_worktree(local_root)
@@ -198,7 +210,7 @@ def mount_sync_session(
             logger.info("Syncing mount '{}' before submission", mount.name)
             # delete=False (Codex blocker #4): auto-sync must not wipe
             # remote-only outputs (training checkpoints, run logs).
-            # ``srunx ssh sync`` keeps the historical mirror behaviour.
+            # ``srunx cluster sync`` keeps the historical mirror behaviour.
             # ``record_manifest=False``: the upload record is written after the
             # hash check below, for the same reason the marker is. rsync can
             # exit 0 while the remote copy differs, and a record written first
@@ -273,6 +285,7 @@ def ensure_mount_synced(
     mount: MountConfig,
     config: SyncDefaults,
     verbose: bool = False,
+    assume_yes: bool = False,
 ) -> SyncOutcome:
     """Backwards-compatible entry point that performs a one-shot sync.
 
@@ -289,5 +302,6 @@ def ensure_mount_synced(
         config=config,
         sync_required=True,
         verbose=verbose,
+        assume_yes=assume_yes,
     ) as outcome:
         return outcome

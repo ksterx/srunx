@@ -94,7 +94,7 @@ class TestSecretPath:
         path = store.secret_path()
         assert path == _SECRET_PATH
         assert "/secrets/" not in path
-        assert "gmo" not in path
+        assert "gpu" not in path
 
     def test_exists_delegates_to_file_manager(self, store, files):
         files.file_exists.return_value = True
@@ -128,7 +128,7 @@ class TestSetSecret:
         # temp file lives in the same (account) dir as the target and is mv'd
         # over it — no ``secrets/`` subdir, no profile name in the temp name.
         assert temp_path.startswith(f"{_SECRET_DIR}/.secrets.")
-        assert "gmo" not in temp_path
+        assert "gpu" not in temp_path
         assert any(c.startswith("mv -f ") and _SECRET_PATH in c for c in conn.commands)
 
     def test_set_upsert_replaces_existing_key(self, store, conn, files):

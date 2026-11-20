@@ -165,32 +165,39 @@ def _parse_itemized(
     return deleted, deleted_count, transferred
 
 
-def _resolve_mount(transport: str, mount: str) -> tuple[str, Any, Any]:
+def _resolve_mount(
+    cluster: str, mount: str, project: str | None
+) -> tuple[str, Any, Any]:
     """Resolve ``(profile_name, profile, mount_config)`` for a tool call.
 
     Raises :class:`ValueError` with a caller-facing message, which the tools
     turn into their error payload — shared so that both the read-only inspect
     tool and the sync tool reject the same inputs with the same wording.
     """
+    from pathlib import Path
+
+    from srunx.common.config import use_project
     from srunx.ssh.core.config import ConfigManager
 
-    pname = transport.strip() if transport else ""
-    if not pname or pname == "local":
+    pname = cluster.strip() if cluster else ""
+    if not pname:
+        raise ValueError("a cluster name is required (cluster='<name>')")
+    if not project:
         raise ValueError(
-            "an SSH profile name is required (transport='<profile>'); "
-            "there is no local sync"
+            "project is required: the root directory holding .srunx/config.toml "
+            "whose mounts should be used"
         )
-
-    cm = ConfigManager()
-    profile = cm.get_profile(pname)
+    with use_project(Path(project)):
+        profile = ConfigManager().get_profile(pname)
     if not profile:
-        raise ValueError(f"SSH profile '{pname}' not found")
+        raise ValueError(f"'{pname}' is not a configured SSH cluster")
 
     mount_cfg = next((m for m in profile.mounts if m.name == mount), None)
     if not mount_cfg:
         available = [m.name for m in profile.mounts]
         raise ValueError(
-            f"Mount '{mount}' not found in profile '{pname}'. Available: {available}"
+            f"Mount '{mount}' not found for project on cluster '{pname}'. "
+            f"Available: {available}"
         )
     return pname, profile, mount_cfg
 
@@ -255,7 +262,8 @@ def _stale_report(rsync: Any, mount_cfg: Any) -> Any:
 
 @mcp.tool()
 def inspect_mount(
-    transport: str,
+    cluster: str,
+    project: str,
     mount: str,
     max_paths: int = _MAX_REPORTED_DELETIONS,
 ) -> dict[str, Any]:
@@ -281,7 +289,7 @@ def inspect_mount(
     misses an output directory, the case that otherwise buries a few stale
     scripts among dozens of artifacts.
 
-    One exception: output pulled into the local tree with ``srunx ssh sync
+    One exception: output pulled into the local tree with ``srunx cluster sync
     --pull`` becomes a file the next push manages, so it is recorded like any
     other and can be reported as stale once its local copy is removed. Excluding
     the output directories on the mount avoids that, and is worth doing anyway.
@@ -293,11 +301,10 @@ def inspect_mount(
     back to reading the full candidate list yourself in that case.
 
     Args:
-        transport: SSH profile name to inspect. Required — there is no local
-            inspection, and (unlike the CLI) no implicit current-profile
-            fallback. Call ``list_ssh_profiles`` for the available profiles and
-            the mounts each defines.
-        mount: Mount name from that SSH profile.
+        cluster: SSH cluster name (see ``list_clusters``). Required.
+        project: Project root (directory holding ``.srunx/config.toml``)
+            whose mounts are used. Required.
+        mount: Mount name from that project on that cluster.
         max_paths: Cap on how many paths to list. Counts stay exact regardless;
             past the cap the list is omitted rather than shortened, and
             ``mirror_delete_candidate_paths_omitted`` says so.
@@ -320,7 +327,7 @@ def inspect_mount(
         if max_paths < 0:
             raise ValueError(f"max_paths must be >= 0, got {max_paths}")
 
-        pname, profile, mount_cfg = _resolve_mount(transport, mount)
+        pname, profile, mount_cfg = _resolve_mount(cluster, mount, project)
         rsync = build_rsync_client(profile)
 
         # One pass with --delete --dry-run reports both halves at once: what
@@ -375,7 +382,7 @@ def inspect_mount(
             stale = replace(stale, paths=[p for p in stale.paths if p in on_remote])
 
         return ok(
-            profile=pname,
+            cluster=pname,
             mount=mount_cfg.name,
             local=mount_cfg.local,
             remote=mount_cfg.remote,
@@ -409,11 +416,13 @@ def inspect_mount(
 
 @mcp.tool()
 def sync_files(
-    transport: str,
+    cluster: str,
+    project: str,
     mount: str,
     dry_run: bool = False,
     delete: bool = False,
     max_delete: int = DEFAULT_MAX_DELETE,
+    approve_new_target: bool = False,
 ) -> dict[str, Any]:
     """Sync a configured mount from this machine to a remote SLURM cluster.
 
@@ -426,13 +435,11 @@ def sync_files(
     reach for it rather than setting ``delete=True`` to find out what is stale.
 
     Args:
-        transport: SSH profile name to sync against. Required and must name
-            an SSH profile — there is no local-to-local sync, and (unlike
-            the CLI) no implicit current-profile fallback. ``"local"`` is
-            rejected. Call ``list_ssh_profiles`` to see profiles and the
-            mounts each one defines.
-        mount: Mount name from that SSH profile. Only pre-registered mounts
-            can be synced; arbitrary paths are not accepted.
+        cluster: SSH cluster name (see ``list_clusters``). Required.
+        project: Project root (directory holding ``.srunx/config.toml``)
+            whose mounts are used. Required.
+        mount: Mount name from that project on that cluster. Only configured
+            mounts can be synced; arbitrary paths are not accepted.
         dry_run: Preview only. Reports exactly what would be transferred and
             deleted without touching the cluster. Prefer this first whenever
             you are unsure, and always before a ``delete=True`` run.
@@ -451,6 +458,8 @@ def sync_files(
             local directory. Must be >= 1; to sync without deleting, leave
             ``delete`` off. Only applies to a real ``delete=True`` run — a
             ``dry_run`` preview is never capped, so it can show the whole list.
+        approve_new_target: The first real sync into a remote path needs
+            approval. Only pass True when the user confirmed the target.
 
     Returns:
         On success: ``files_transferred``, ``entries_deleted``, and the
@@ -485,12 +494,22 @@ def sync_files(
                 "of capping deletions at zero."
             )
 
-        pname, profile, mount_cfg = _resolve_mount(transport, mount)
+        pname, profile, mount_cfg = _resolve_mount(cluster, mount, project)
+        if not dry_run:
+            from srunx.sync.approval import ensure_approved
+
+            # Non-interactive: raises unless already approved or approved now.
+            ensure_approved(
+                pname,
+                mount_cfg.local,
+                mount_cfg.remote,
+                assume_yes=approve_new_target,
+            )
         rsync = build_rsync_client(profile)
         timeout = get_config().sync.lock_timeout_seconds
 
         # Hold the per-(profile, mount) lock that every srunx writer of a mount
-        # takes — submission auto-sync, workflow runs, `srunx ssh sync`, and the
+        # takes — submission auto-sync, workflow runs, `srunx cluster sync`, and the
         # Web sync route — so an agent-driven sync cannot interleave with any of
         # them and leave a half-written tree on the cluster. The mirror preflight
         # below runs inside the same lock as the push it guards, which is what
@@ -612,7 +631,7 @@ def sync_files(
         )
         omit_paths = deleted_count > _MAX_REPORTED_DELETIONS
         return ok(
-            profile=pname,
+            cluster=pname,
             mount=mount_cfg.name,
             local=mount_cfg.local,
             remote=mount_cfg.remote,

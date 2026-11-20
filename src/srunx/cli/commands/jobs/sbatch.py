@@ -6,6 +6,7 @@ from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 import srunx.slurm.local as _slurm_local  # noqa: E402,I001 — kept so ``patch("srunx.slurm.local.Slurm")`` intercepts all call sites
 from srunx.callbacks import Callback
@@ -14,7 +15,6 @@ from srunx.cli._helpers.sbatch_helpers import (
     _build_extra_sbatch_args,
     _parse_container_args,
     _parse_env_vars,
-    _parse_gres_gpu,
     _print_in_place_sync_preview,
     _resolve_job_name,
     _submit_via_transport,
@@ -24,6 +24,11 @@ from srunx.cli._helpers.sbatch_passthrough import (
     own_option_specs,
     validate_passthrough_args,
 )
+from srunx.cli._helpers.sbatch_resolve import (
+    has_clusters_option,
+    merge_script_defaults,
+    parse_directives,
+)
 from srunx.cli._helpers.snapshot_submit import (
     build_snapshot_plan,
     print_snapshot_dry_run,
@@ -31,9 +36,15 @@ from srunx.cli._helpers.snapshot_submit import (
     require_ssh_transport,
     validate_snapshot_options,
 )
-from srunx.cli._helpers.transport import resolve_transport
-from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
-from srunx.common.config import get_config
+from srunx.cli._helpers.transport import resolve_cluster_name, resolve_transport
+from srunx.cli._helpers.transport_options import ClusterOpt, QuietOpt
+from srunx.common.config import (
+    ConfigError,
+    activate_config,
+    apply_unset,
+    load_settings,
+    use_project,
+)
 from srunx.common.logging import get_logger
 from srunx.domain import (
     Job,
@@ -68,8 +79,27 @@ def sbatch(
             ),
         ),
     ] = None,
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
+    cluster: ClusterOpt = None,
+    project: Annotated[
+        Path | None,
+        typer.Option(
+            "--project",
+            help="Project root (directory holding .srunx/config.toml). "
+            "Default: discovered from the current directory.",
+        ),
+    ] = None,
+    unset: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--unset",
+            help="Drop an inherited config default (e.g. --unset partition). "
+            "Repeatable.",
+        ),
+    ] = None,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Approve a first sync to a new remote path"),
+    ] = False,
     quiet: QuietOpt = False,
     name: Annotated[
         str,
@@ -83,27 +113,27 @@ def sbatch(
         typer.Option("-D", "--chdir", help="Working directory for the job"),
     ] = None,
     # Resource options
-    nodes: Annotated[int, typer.Option("-N", "--nodes", help="Number of nodes")] = 1,
+    nodes: Annotated[
+        int | None, typer.Option("-N", "--nodes", help="Number of nodes")
+    ] = None,
     gpus_per_node: Annotated[
-        int, typer.Option("--gpus-per-node", help="Number of GPUs per node")
-    ] = 0,
+        int | None, typer.Option("--gpus-per-node", help="Number of GPUs per node")
+    ] = None,
     gres: Annotated[
         str | None,
         typer.Option(
             "--gres",
-            help=(
-                "Generic SLURM resource (sbatch --gres). Currently parses "
-                "the ``gpu:N`` form into --gpus-per-node; richer gres "
-                "expressions (``gpu:tesla:2`` etc.) are not yet supported."
-            ),
+            help="Generic SLURM resource (sbatch --gres), passed through verbatim.",
         ),
     ] = None,
     ntasks_per_node: Annotated[
-        int, typer.Option("--ntasks-per-node", help="Number of tasks per node")
-    ] = 1,
+        int | None,
+        typer.Option("--ntasks-per-node", help="Number of tasks per node"),
+    ] = None,
     cpus_per_task: Annotated[
-        int, typer.Option("-c", "--cpus-per-task", help="Number of CPUs per task")
-    ] = 1,
+        int | None,
+        typer.Option("-c", "--cpus-per-task", help="Number of CPUs per task"),
+    ] = None,
     memory: Annotated[
         str | None,
         typer.Option("--mem", help="Memory per node (e.g., '32GB', '1TB')"),
@@ -224,7 +254,7 @@ def sbatch(
             "--snapshot",
             help=(
                 "Submit from a read-only per-commit snapshot of the current git "
-                "repo on the cluster (SSH profiles only; HEAD unless "
+                "repo on the cluster (SSH clusters only; HEAD unless "
                 "--snapshot-rev). The job's default cwd is the snapshot; "
                 "SRUNX_CODE_DIR / SRUNX_SNAPSHOT_SHA are set. No auto-sync."
             ),
@@ -263,7 +293,7 @@ def sbatch(
     * ``srunx sbatch --wrap "cmd ..."`` — wrap a command line into a job
 
     The two are mutually exclusive, mirroring SLURM's own ``sbatch``
-    behaviour. srunx-specific extensions (``--profile`` / ``--conda`` /
+    behaviour. srunx-specific extensions (``--cluster`` / ``--conda`` /
     ``--container`` / ``--template`` etc.) layer on top of the standard
     SLURM flags and are surfaced in this command's --help.
     """
@@ -280,6 +310,147 @@ def sbatch(
             param_hint="<script> / --wrap",
         )
 
+    try:
+        with use_project(project):
+            _sbatch_in_project(**locals())
+    except ConfigError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--cluster / config") from exc
+
+
+def _sbatch_in_project(
+    *,
+    ctx: typer.Context,
+    script: Path | None,
+    wrap: str | None,
+    cluster: str | None,
+    project: Path | None,
+    unset: list[str] | None,
+    yes: bool,
+    quiet: bool,
+    name: str,
+    log_dir: str | None,
+    work_dir: str | None,
+    nodes: int | None,
+    gpus_per_node: int | None,
+    gres: str | None,
+    ntasks_per_node: int | None,
+    cpus_per_task: int | None,
+    memory: str | None,
+    time: str | None,
+    nodelist: str | None,
+    partition: str | None,
+    conda: str | None,
+    venv: str | None,
+    container: str | None,
+    container_runtime: str | None,
+    no_container: bool,
+    env: list[str] | None,
+    dry_run: bool,
+    wait: bool,
+    slack: bool,
+    endpoint: str | None,
+    preset: str | None,
+    template: str | None,
+    sync: bool | None,
+    force_sync: bool,
+    snapshot: bool,
+    snapshot_rev: str | None,
+    verbose: bool,
+    sbatch_arg: list[str] | None,
+) -> None:
+    # Cluster + effective defaults for this (project, cluster) context.
+    settings = load_settings(reload=True)
+    cluster_name, _transport = resolve_cluster_name(cluster=cluster)
+    _, cluster_origin = settings.cluster_source(cluster)
+    config = apply_unset(settings.effective(cluster_name), unset or [])
+
+    with activate_config(config):
+        _sbatch_with_config(
+            ctx=ctx,
+            config=config,
+            cluster_name=cluster_name,
+            cluster_origin=cluster_origin,
+            explicit_cluster=cluster,
+            script=script,
+            wrap=wrap,
+            yes=yes,
+            quiet=quiet,
+            name=name,
+            log_dir=log_dir,
+            work_dir=work_dir,
+            nodes=nodes,
+            gpus_per_node=gpus_per_node,
+            gres=gres,
+            ntasks_per_node=ntasks_per_node,
+            cpus_per_task=cpus_per_task,
+            memory=memory,
+            time=time,
+            nodelist=nodelist,
+            partition=partition,
+            conda=conda,
+            venv=venv,
+            container=container,
+            container_runtime=container_runtime,
+            no_container=no_container,
+            env=env,
+            dry_run=dry_run,
+            wait=wait,
+            slack=slack,
+            endpoint=endpoint,
+            preset=preset,
+            template=template,
+            sync=sync,
+            force_sync=force_sync,
+            snapshot=snapshot,
+            snapshot_rev=snapshot_rev,
+            verbose=verbose,
+            sbatch_arg=sbatch_arg,
+        )
+
+
+def _sbatch_with_config(
+    *,
+    ctx: typer.Context,
+    config: Any,
+    cluster_name: str,
+    cluster_origin: str,
+    explicit_cluster: str | None,
+    script: Path | None,
+    wrap: str | None,
+    yes: bool,
+    quiet: bool,
+    name: str,
+    log_dir: str | None,
+    work_dir: str | None,
+    nodes: int | None,
+    gpus_per_node: int | None,
+    gres: str | None,
+    ntasks_per_node: int | None,
+    cpus_per_task: int | None,
+    memory: str | None,
+    time: str | None,
+    nodelist: str | None,
+    partition: str | None,
+    conda: str | None,
+    venv: str | None,
+    container: str | None,
+    container_runtime: str | None,
+    no_container: bool,
+    env: list[str] | None,
+    dry_run: bool,
+    wait: bool,
+    slack: bool,
+    endpoint: str | None,
+    preset: str | None,
+    template: str | None,
+    sync: bool | None,
+    force_sync: bool,
+    snapshot: bool,
+    snapshot_rev: str | None,
+    verbose: bool,
+    sbatch_arg: list[str] | None,
+) -> None:
+    cluster = cluster_name
     # --snapshot / --snapshot-rev: reject conflicting options (exit 2), then
     # validate the local repo before any remote call.
     snapshot_mode = validate_snapshot_options(
@@ -288,16 +459,14 @@ def sbatch(
         script=script,
         wrap=wrap,
         template=template,
-        local=local,
         sync=sync,
         force_sync=force_sync,
-        profile=profile,
         sbatch_args=sbatch_arg or [],
     )
     snapshot_plan = None
     snapshot_profile_name: str | None = None
     if snapshot_mode:
-        snapshot_profile_name = require_ssh_transport(profile=profile, local=local)
+        snapshot_profile_name = require_ssh_transport(cluster=cluster)
         snapshot_plan = build_snapshot_plan(
             script=script, rev=snapshot_rev, cwd=Path.cwd()
         )
@@ -310,39 +479,71 @@ def sbatch(
     passthrough = validate_passthrough_args(
         sbatch_arg or [], own_option_specs(ctx.command.get_params(ctx))
     )
+    # Slurm's --clusters/-M would send the job somewhere other than the
+    # cluster srunx records it under (design §6).
+    if has_clusters_option(passthrough):
+        raise typer.BadParameter(
+            "--clusters/-M is not supported: choose the target with --cluster.",
+            param_hint="--clusters",
+        )
 
-    # SLURM ``--gres=gpu:N`` overrides ``--gpus-per-node`` so callers
-    # can paste sbatch lines verbatim. Explicit ``--gpus-per-node`` wins
-    # only when ``--gres`` is absent (the "no override" case).
-    gres_gpus = _parse_gres_gpu(gres)
-    if gres_gpus is not None:
-        gpus_per_node = gres_gpus
+    script_text: str | None = None
+    directives: dict[str, str] = {}
+    if script is not None:
+        if snapshot_plan is not None:
+            script_text = snapshot_plan.script_text
+        else:
+            try:
+                script_text = script.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                script_text = None
+        directives = parse_directives(script_text or "")
+        from srunx.cli._helpers.sbatch_helpers import script_sbatch_tokens
 
-    config = get_config()
-
-    # Use defaults from config if not specified
-    if log_dir is None:
-        log_dir = config.log_dir
-    if work_dir is None:
-        work_dir = config.work_dir
+        raw_tokens = [
+            t for line in script_sbatch_tokens(script_text or "") for t in line
+        ]
+        if "--clusters" in directives or has_clusters_option(raw_tokens):
+            raise typer.BadParameter(
+                "The script's #SBATCH --clusters/-M is not supported: choose "
+                "the target with --cluster.",
+                param_hint="--clusters",
+            )
 
     # Parse environment variables
     env_vars = _parse_env_vars(env)
 
-    # Create resources
-    resources = JobResource(
-        nodes=nodes,
-        gpus_per_node=gpus_per_node,
-        ntasks_per_node=ntasks_per_node,
-        cpus_per_task=cpus_per_task,
-        memory_per_node=memory,
-        time_limit=time,
-        nodelist=nodelist,
-        partition=partition,
-    )
+    def typed(param: str) -> bool:
+        return is_commandline(ctx.get_parameter_source(param))
+
+    # Only values the user typed go into the models; everything else is
+    # filled from the activated config by the domain models.
+    resource_values = {
+        "nodes": nodes,
+        "gpus_per_node": gpus_per_node,
+        "ntasks_per_node": ntasks_per_node,
+        "cpus_per_task": cpus_per_task,
+        "memory_per_node": memory,
+        "time_limit": time,
+        "nodelist": nodelist,
+        "partition": partition,
+    }
+    param_names = {"memory_per_node": "memory", "time_limit": "time"}
+    resource_data = {
+        k: v
+        for k, v in resource_values.items()
+        if v is not None and typed(param_names.get(k, k))
+    }
+    # ``--gres`` decides GPUs itself: drop an inherited GPU default rather
+    # than requesting both (the GRES string is passed through untouched).
+    if gres is not None and "gpus_per_node" not in resource_data:
+        resource_data["gpus_per_node"] = 0
+    resources = JobResource.model_validate(resource_data)
 
     # Create environment with explicit handling of defaults
-    env_config: dict[str, Any] = {"env_vars": env_vars}
+    env_config: dict[str, Any] = {}
+    if env_vars:
+        env_config["env_vars"] = {**config.environment.env_vars, **env_vars}
     if conda is not None:
         env_config["conda"] = conda
     if venv is not None:
@@ -440,8 +641,9 @@ def sbatch(
             "command": ["bash", "-c", wrap],
             "resources": resources,
             "environment": environment,
-            "log_dir": log_dir,
         }
+        if log_dir is not None:
+            job_data["log_dir"] = log_dir
         if work_dir is not None:
             job_data["work_dir"] = work_dir
         job = Job.model_validate(job_data)
@@ -488,24 +690,17 @@ def sbatch(
     # ParameterSource); never forward defaults nor config-injected
     # values, so the on-disk ``#SBATCH`` directives stay authoritative
     # for anything the user did not explicitly override.
-    log_dir_user = (
-        log_dir if is_commandline(ctx.get_parameter_source("log_dir")) else None
-    )
+    log_dir_user = log_dir if typed("log_dir") else None
 
-    # R2.8: the two job sources need different treatment here.
-    #
-    # * ShellJob (positional script): resource flags never reach the
-    #   script otherwise (no render step), so we forward everything the
-    #   user typed on the command line + the --log-dir expansion, then
-    #   the passthrough tokens last (so passthrough wins ties per R5).
-    # * Job (--wrap): the rendered template already emits #SBATCH
-    #   --nodes / --cpus-per-task / --mem / --time / --output etc. from
-    #   ``job.resources`` / ``job.log_dir``. Forwarding the same values
-    #   again on the command line would just duplicate the directive —
-    #   nothing to gain and one more place to drift. Only the passthrough
-    #   tokens belong here.
+    # * Positional script: forward what the user typed, then config
+    #   defaults the script itself does not set (design §6), then the
+    #   passthrough tokens last (so passthrough wins ties per R5).
+    # * --wrap: the rendered template already carries every resource
+    #   from ``job.resources`` (config defaults included); only the
+    #   passthrough tokens belong on the command line.
+    merge = None
     if script is not None:
-        extra_sbatch_args = _build_extra_sbatch_args(
+        typed_args = _build_extra_sbatch_args(
             ctx,
             values={
                 "nodes": nodes,
@@ -520,25 +715,47 @@ def sbatch(
             },
             log_dir_user=log_dir_user,
         )
+        if gres is not None:
+            typed_args.append(f"--gres={gres}")
+        explicit_options = {a.split("=", 1)[0] for a in typed_args}
+        explicit_options |= {
+            t.split("=", 1)[0] for t in passthrough if t.startswith("--")
+        }
+        # Short passthrough spellings (``-p x``) count too.
+        from srunx.cli._helpers.sbatch_resolve import DIRECTIVES
 
-        # ``--gres=gpu:N`` was parsed earlier into ``gpus_per_node``; if
-        # the user typed ``--gres`` (not ``--gpus-per-node``) we still
-        # need to forward the resulting value as ``--gpus-per-node=N``,
-        # because ParameterSource for ``gpus_per_node`` shows DEFAULT in
-        # that path. Avoid duplication by stripping any earlier entry.
-        if is_commandline(ctx.get_parameter_source("gres")) and gres is not None:
-            extra_sbatch_args = [
-                a for a in extra_sbatch_args if not a.startswith("--gpus-per-node")
-            ]
-            extra_sbatch_args.append(f"--gpus-per-node={gpus_per_node}")
+        short_to_long = {v: k for k, v in DIRECTIVES.items() if v}
+        explicit_options |= {
+            short_to_long[t[:2]] for t in passthrough if t[:2] in short_to_long
+        }
+        merge = merge_script_defaults(
+            config, directives, explicit_options=explicit_options
+        )
+        for w in merge.warnings:
+            logger.warning(w)
+        inherited = merge.args
+        if load_settings().cluster(cluster_name).transport == "ssh":
+            from srunx.cli._helpers.sbatch_resolve import translate_local_paths
+            from srunx.ssh.core.config import ConfigManager
 
-        extra_sbatch_args += passthrough
+            profile = ConfigManager().get_profile(cluster_name)
+            if profile is not None and profile.mounts:
+                inherited = translate_local_paths(inherited, profile.mounts)
+        extra_sbatch_args = inherited + typed_args + list(passthrough)
     else:
         extra_sbatch_args = list(passthrough)
+        if gres is not None:
+            extra_sbatch_args.insert(0, f"--gres={gres}")
 
     if dry_run:
         console = Console()
         console.print("🔍 Dry run mode - would submit job:")
+        console.print(
+            f"  Cluster: [cyan]{cluster_name}[/cyan]"
+            + (f"  [dim]({escape(cluster_origin)})[/dim]" if cluster_origin else "")
+        )
+        if config.project_root:
+            console.print(f"  Project: {config.project_root}")
         console.print(f"  Name: {job.name}")
         if isinstance(job, Job):
             command_str = (
@@ -547,15 +764,30 @@ def sbatch(
                 else " ".join(job.command or [])
             )
             console.print(f"  Command: {command_str}")
-            console.print(f"  Nodes: {job.resources.nodes}")
-            console.print(f"  GPUs: {job.resources.gpus_per_node}")
+            for field_name, value in job.resources.model_dump().items():
+                source = config.sources.get(f"resources.{field_name}")
+                if typed(param_names.get(field_name, field_name)):
+                    source = "command line"
+                if value is None:
+                    continue
+                console.print(
+                    f"  {field_name}: {value}"
+                    + (f"  [dim]({escape(source)})[/dim]" if source else "")
+                )
         elif isinstance(job, ShellJob):
             console.print(f"  Script: {job.script_path}")
+            for option, value in directives.items():
+                console.print(f"  {option}={value}  [dim](#SBATCH)[/dim]")
+            if merge is not None:
+                for option, (value, source) in merge.forwarded.items():
+                    console.print(f"  {option}={value}  [dim]({escape(source)})[/dim]")
+                for w in merge.warnings:
+                    console.print(f"  [yellow]warning: {escape(w)}[/yellow]")
+        if extra_sbatch_args:
+            console.print(f"  sbatch arguments: {' '.join(extra_sbatch_args)}")
         # #137 part 2: when the dry run targets an SSH in-place
-        # candidate (positional script under a profile mount), also
-        # show rsync's preview of what *would* transfer. Lets the user
-        # spot a stray ``build/`` or ``.cache/`` they forgot to
-        # gitignore before they trigger an actual sync.
+        # candidate (positional script under a mount), also show rsync's
+        # preview of what *would* transfer.
         if snapshot_plan is not None:
             print_snapshot_dry_run(
                 console,
@@ -567,16 +799,16 @@ def sbatch(
             _print_in_place_sync_preview(
                 console=console,
                 script=script,
-                profile_name=profile,
-                local=local,
+                cluster=cluster_name,
                 sync_flag=sync,
                 config=config,
             )
         return
 
+    # The explicit flag (not the resolved name) so the banner reports
+    # where the selection came from.
     with resolve_transport(
-        profile=profile,
-        local=local,
+        cluster=explicit_cluster,
         quiet=quiet,
         callbacks=callbacks,
         submission_source="cli",
@@ -596,6 +828,7 @@ def sbatch(
             force_sync=force_sync,
             inject_job_name=inject_job_name,
             snapshot=snapshot_plan,
+            assume_yes=yes,
         )
         client = (
             _slurm_local.Slurm(callbacks=callbacks)

@@ -32,7 +32,7 @@ from srunx.sync.service import SyncAbortedError, mount_sync_session
 
 @pytest.fixture(autouse=True)
 def isolated_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
 
 
 def _profile(tmp_path: Path) -> tuple[ServerProfile, Path]:
@@ -293,6 +293,7 @@ class TestMountSyncSessionVerifyIntegration:
         ):
             with mount_sync_session(
                 profile_name="alice",
+                assume_yes=True,
                 profile=profile,
                 mount=profile.mounts[0],
                 config=SyncDefaults(),  # verify_remote_hash defaults to False
@@ -335,6 +336,7 @@ class TestMountSyncSessionVerifyIntegration:
         ):
             with mount_sync_session(
                 profile_name="alice",
+                assume_yes=True,
                 profile=profile,
                 mount=profile.mounts[0],
                 config=SyncDefaults(verify_remote_hash=True),
@@ -370,6 +372,7 @@ class TestMountSyncSessionVerifyIntegration:
         ):
             with mount_sync_session(
                 profile_name="alice",
+                assume_yes=True,
                 profile=profile,
                 mount=profile.mounts[0],
                 config=SyncDefaults(verify_remote_hash=True),
@@ -415,6 +418,7 @@ class TestMountSyncSessionVerifyIntegration:
             with pytest.raises(SyncAbortedError):
                 with mount_sync_session(
                     profile_name="alice",
+                    assume_yes=True,
                     profile=profile,
                     mount=profile.mounts[0],
                     config=SyncDefaults(verify_remote_hash=True),

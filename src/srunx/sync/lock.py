@@ -6,7 +6,7 @@ writing to. A file-based ``fcntl.flock`` provides cheap serialization
 across processes on the same machine, which is the only scope we care
 about (rsync writes from a single workstation).
 
-The lock file lives under ``$XDG_CONFIG_HOME/srunx/locks/`` with a
+The lock file lives under ``<state_dir>/locks/`` with a
 sanitised name encoding ``profile`` + ``mount``. It is created on first
 use and left in place afterwards — acquisition is cooperative via
 ``flock`` so leaving an empty file around is harmless and avoids
@@ -25,7 +25,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from srunx.common.config import _user_config_dir
+from srunx.common import paths
 from srunx.common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -99,13 +99,8 @@ def lock_path_for(profile: str, mount: str) -> Path:
     collide after sanitisation (``foo-bar / baz`` vs ``foo / bar-baz``).
     See :func:`_disambiguator`.
     """
-    return (
-        _user_config_dir()
-        / "locks"
-        / (
-            f"{_sanitise(profile)}-{_sanitise(mount)}"
-            f"-{_disambiguator(profile, mount)}.lock"
-        )
+    return paths.locks_dir() / (
+        f"{_sanitise(profile)}-{_sanitise(mount)}-{_disambiguator(profile, mount)}.lock"
     )
 
 

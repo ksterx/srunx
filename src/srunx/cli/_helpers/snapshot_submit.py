@@ -18,6 +18,7 @@ from srunx.cli._helpers.sbatch_helpers import (
     last_option_value,
     script_sbatch_tokens,
 )
+from srunx.cli._helpers.sbatch_resolve import has_clusters_option
 from srunx.cli._helpers.snapshot_gc import slurm_runner
 from srunx.common.exceptions import SbatchSubmitError, TransportError
 from srunx.common.logging import get_logger
@@ -31,17 +32,6 @@ from srunx.snapshot import (
 from srunx.snapshot.remote import DEFAULT_SNAPSHOT_ROOT
 
 logger = get_logger(__name__)
-
-
-def has_clusters_option(tokens: Sequence[str]) -> bool:
-    """True when *tokens* carry sbatch ``-M`` / ``--clusters`` in any spelling."""
-    for tok in tokens:
-        if tok.startswith("-M") and not tok.startswith("--"):
-            return True
-        name = tok.split("=", 1)[0]
-        if name.startswith("--clu") and "--clusters".startswith(name):
-            return True
-    return False
 
 
 def reject_clusters_in_script(script_text: str | None) -> None:
@@ -65,10 +55,8 @@ def validate_snapshot_options(
     script: Path | None,
     wrap: str | None,
     template: str | None,
-    local: bool,
     sync: bool | None,
     force_sync: bool,
-    profile: str | None,
     sbatch_args: Sequence[str] = (),
 ) -> bool:
     """Return True when snapshot mode is requested; reject conflicting options.
@@ -83,7 +71,6 @@ def validate_snapshot_options(
     conflicts = (
         (wrap is not None, "--wrap"),
         (template is not None, "--template"),
-        (local, "--local"),
         (sync is True, "--sync"),
         (force_sync, "--force-sync"),
         (has_clusters_option(sbatch_args), "--clusters/-M"),
@@ -111,15 +98,15 @@ def validate_snapshot_options(
     return True
 
 
-def require_ssh_transport(*, profile: str | None, local: bool) -> str:
-    """Return the SSH profile name; reject a transport that resolves to local (exit 2)."""
+def require_ssh_transport(*, cluster: str | None) -> str:
+    """Return the SSH cluster name; reject a cluster with local transport (exit 2)."""
     from srunx.cli._helpers.transport import peek_scheduler_key
 
-    key = peek_scheduler_key(profile=profile, local=local)
+    key = peek_scheduler_key(cluster=cluster)
     if not key.startswith("ssh:"):
         raise typer.BadParameter(
-            "--snapshot requires an SSH profile (use --profile <name>).",
-            param_hint="--snapshot / --profile",
+            "--snapshot requires an SSH cluster (use --cluster <name>).",
+            param_hint="--snapshot / --cluster",
         )
     return key[len("ssh:") :]
 
@@ -219,7 +206,7 @@ def submit_via_snapshot(
     profile = ConfigManager().get_profile(profile_name)
     if profile is None:
         raise typer.BadParameter(
-            f"SSH profile {profile_name!r} not found.", param_hint="--profile"
+            f"SSH cluster {profile_name!r} not found.", param_hint="--cluster"
         )
 
     for w in plan.warnings:

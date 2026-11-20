@@ -481,3 +481,6 @@ playwright-report/
 .serena/
 specs/
 specs/
+
+# Frontend sources live in a directory named lib/ (not a build output).
+!src/srunx/web/frontend/src/lib/

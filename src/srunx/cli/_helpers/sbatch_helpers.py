@@ -42,6 +42,7 @@ def _submit_via_transport(
     force_sync: bool = False,
     inject_job_name: bool = True,
     snapshot: SnapshotPlan | None = None,
+    assume_yes: bool = False,
 ) -> Any:
     """Dispatch a submit to the right adapter method + optional mount sync.
 
@@ -171,6 +172,7 @@ def _submit_via_transport(
             sync_required=plan.sync_required,
             force_sync=force_sync,
             verbose=verbose,
+            assume_yes=assume_yes,
             # Per-script hash verification (#137 part 5): the local
             # source of truth for the file we're about to ``sbatch``.
             # Gated upstream by ``config.sync.verify_remote_hash``;
@@ -405,44 +407,11 @@ def _resolve_job_name(
     return Path(script).name, True
 
 
-def _parse_gres_gpu(gres: str | None) -> int | None:
-    """Parse a sbatch-style ``--gres=gpu:N`` value into an integer GPU count.
-
-    Returns ``None`` for falsy input; raises :class:`typer.BadParameter`
-    when the resource type is not ``gpu`` or the count is not a positive
-    integer. The intent is to accept the most common SLURM convention
-    (``--gres=gpu:N``) so ``srunx sbatch`` reads identically to
-    ``sbatch``; richer gres forms (``gpu:tesla:2`` etc.) are out of
-    scope for this minimal compatibility layer.
-    """
-    if not gres:
-        return None
-    parts = gres.split(":")
-    if len(parts) != 2 or parts[0] != "gpu":
-        raise typer.BadParameter(
-            f"--gres only supports 'gpu:N' form (got {gres!r}).",
-            param_hint="--gres",
-        )
-    try:
-        count = int(parts[1])
-    except ValueError as exc:
-        raise typer.BadParameter(
-            f"--gres gpu count must be an integer (got {parts[1]!r}).",
-            param_hint="--gres",
-        ) from exc
-    if count < 0:
-        raise typer.BadParameter(
-            "--gres gpu count must be non-negative.", param_hint="--gres"
-        )
-    return count
-
-
 def _print_in_place_sync_preview(
     *,
     console: Console,
     script: Path | None,
-    profile_name: str | None,
-    local: bool,
+    cluster: str,
     sync_flag: bool | None,
     config: Any,
 ) -> None:
@@ -455,22 +424,9 @@ def _print_in_place_sync_preview(
     coloured line — the preview is best-effort and must never abort
     the larger ``--dry-run`` flow.
     """
-    if local or script is None:
+    if script is None:
         return
-
-    from srunx.cli._helpers.transport import peek_scheduler_key
-
-    try:
-        sched_key = peek_scheduler_key(profile=profile_name, local=local)
-    except typer.BadParameter:
-        # ``--profile foo --local`` conflict — already surfaced by the
-        # main resolution path; nothing more to add here.
-        return
-
-    if not sched_key.startswith("ssh:"):
-        return
-
-    resolved_profile_name = sched_key[len("ssh:") :]
+    resolved_profile_name = cluster
 
     from srunx.runtime.submission_plan import resolve_mount_for_path
     from srunx.ssh.core.config import ConfigManager
@@ -481,6 +437,10 @@ def _print_in_place_sync_preview(
 
     mount = resolve_mount_for_path(script, profile)
     if mount is None:
+        return
+    console.print(f"  Mount: {mount.name}  {mount.local} → {mount.remote}")
+    if not mount.sync:
+        console.print("  Sync: disabled for this mount (sync = false)")
         return
 
     sync_enabled = config.sync.auto if sync_flag is None else sync_flag

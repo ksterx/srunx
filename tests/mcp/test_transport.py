@@ -3,43 +3,38 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from srunx.common.exceptions import TransportSelectionError
-from srunx.mcp.transport import MCP_POLICY, mcp_transport, parse_transport
-
-
-class TestParseTransport:
-    def test_none_is_local_no_force(self):
-        assert parse_transport(None) == (None, False)
-
-    def test_local_forces_local(self):
-        assert parse_transport("local") == (None, True)
-
-    def test_profile_name(self):
-        assert parse_transport("dgx") == ("dgx", False)
-
-    def test_profile_name_stripped(self):
-        assert parse_transport("  dgx  ") == ("dgx", False)
-
-    def test_empty_rejected(self):
-        # A typo must not silently fall through to local.
-        with pytest.raises(TransportSelectionError):
-            parse_transport("")
-
-    def test_whitespace_rejected(self):
-        with pytest.raises(TransportSelectionError):
-            parse_transport("   ")
+from srunx.mcp.transport import MCP_POLICY, mcp_transport
+from srunx.transport.registry import resolve_cluster_name
 
 
 class TestMcpPolicy:
-    def test_policy_disables_implicit_rungs(self):
-        # The whole point of the MCP policy: never resolve a remote from
-        # ambient state (env var or current profile).
-        assert MCP_POLICY.allow_env is False
-        assert MCP_POLICY.allow_current_profile is False
+    def test_policy_disables_implicit_selection(self):
+        # MCP never resolves a cluster from ambient state.
+        assert MCP_POLICY.allow_implicit is False
+
+    def test_no_explicit_cluster_is_rejected(self, monkeypatch):
+        # conftest sets ``default_cluster = "local"``; MCP must ignore it,
+        # and $SRUNX_CLUSTER too.
+        monkeypatch.setenv("SRUNX_CLUSTER", "local")
+        with pytest.raises(TransportSelectionError):
+            resolve_cluster_name(cluster=None, policy=MCP_POLICY)
+
+    def test_explicit_cluster_accepted(self):
+        assert resolve_cluster_name(cluster="local", policy=MCP_POLICY) == (
+            "local",
+            "local",
+        )
+
+    def test_mcp_transport_without_cluster_raises(self):
+        with pytest.raises(TransportSelectionError):
+            with mcp_transport(None):
+                pass
 
 
 class TestMcpTransport:
@@ -55,13 +50,40 @@ class TestMcpTransport:
             yield rt
 
         with patch("srunx.mcp.transport.resolve_transport", fake_resolve):
-            with mcp_transport("dgx") as resolved:
+            with mcp_transport("dgx", mount_name="ml") as resolved:
                 assert resolved is rt
-        assert fake_resolve.kwargs["profile"] == "dgx"
-        assert fake_resolve.kwargs["local"] is False
+        assert fake_resolve.kwargs["cluster"] == "dgx"
+        assert fake_resolve.kwargs["mount_name"] == "ml"
         assert fake_resolve.kwargs["banner"] is False
         assert fake_resolve.kwargs["submission_source"] == "mcp"
         assert fake_resolve.kwargs["policy"] is MCP_POLICY
+
+    def test_project_is_applied_during_resolution(self, tmp_path: Path):
+        from srunx.common.config import load_settings
+
+        root = tmp_path / "proj"
+        (root / ".srunx").mkdir(parents=True)
+        (root / ".srunx" / "config.toml").write_text('name = "proj"\n')
+        rt = MagicMock()
+        rt.transport_type = "local"
+        seen: list[Path | None] = []
+
+        @contextmanager
+        def fake_resolve(**kwargs):
+            seen.append(load_settings().project_root)
+            yield rt
+
+        with patch("srunx.mcp.transport.resolve_transport", fake_resolve):
+            with mcp_transport("local", project=str(root)):
+                pass
+        assert seen == [root.resolve()]
+
+    def test_unknown_project_rejected(self, tmp_path: Path):
+        from srunx.common.config import ConfigError
+
+        with pytest.raises(ConfigError):
+            with mcp_transport("local", project=str(tmp_path / "missing")):
+                pass
 
     def test_disconnects_ssh_adapter_on_exit(self):
         """A long-lived MCP server must not leak the SSH session."""
@@ -86,21 +108,6 @@ class TestMcpTransport:
             yield rt
 
         with patch("srunx.mcp.transport.resolve_transport", fake_resolve):
-            with mcp_transport(None):
-                pass
-        rt.job_ops.disconnect.assert_not_called()
-
-    def test_local_passthrough(self):
-        rt = MagicMock()
-        rt.transport_type = "local"
-
-        @contextmanager
-        def fake_resolve(**kwargs):
-            fake_resolve.kwargs = kwargs
-            yield rt
-
-        with patch("srunx.mcp.transport.resolve_transport", fake_resolve):
             with mcp_transport("local"):
                 pass
-        assert fake_resolve.kwargs["profile"] is None
-        assert fake_resolve.kwargs["local"] is True
+        rt.job_ops.disconnect.assert_not_called()

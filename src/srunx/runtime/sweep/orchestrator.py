@@ -127,6 +127,9 @@ class SweepOrchestrator:
                 raise SweepExecutionError(f"sweep materialize failed: {exc!r}") from exc
 
         self._sweep_run_id = sweep_run_id
+        from srunx.runtime.sweep.context import record_sweep_context
+
+        record_sweep_context(sweep_run_id)
         return sweep_run_id
 
     def _materialize_happy_path(

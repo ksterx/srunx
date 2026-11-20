@@ -15,7 +15,7 @@ from srunx.cli._helpers.snapshot_gc import (
     slurm_runner,
 )
 from srunx.cli._helpers.transport import resolve_transport
-from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
+from srunx.cli._helpers.transport_options import ClusterOpt, QuietOpt
 from srunx.common.exceptions import TransportError
 from srunx.common.logging import get_logger
 from srunx.snapshot import (
@@ -51,15 +51,15 @@ def _require_ssh_profile(rt: Any, command: str) -> tuple[str, "ServerProfile"]:
     """Return ``(profile name, profile)``; a transport that is not SSH exits 2."""
     if rt.transport_type != "ssh" or rt.profile_name is None:
         raise typer.BadParameter(
-            f"snapshot {command} requires an SSH profile (use --profile <name>).",
-            param_hint="--profile",
+            f"snapshot {command} requires an SSH cluster (use --cluster <name>).",
+            param_hint="--cluster",
         )
     from srunx.ssh.core.config import ConfigManager
 
     server_profile = ConfigManager().get_profile(rt.profile_name)
     if server_profile is None:
         raise typer.BadParameter(
-            f"SSH profile {rt.profile_name!r} not found.", param_hint="--profile"
+            f"SSH cluster {rt.profile_name!r} not found.", param_hint="--cluster"
         )
     return rt.profile_name, server_profile
 
@@ -98,8 +98,7 @@ def snapshot_create(
         str | None,
         typer.Argument(help="Git revision to snapshot (default: HEAD)."),
     ] = None,
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
+    cluster: ClusterOpt = None,
     quiet: QuietOpt = False,
 ) -> None:
     """Ensure a read-only snapshot of REV exists on the cluster.
@@ -117,7 +116,7 @@ def snapshot_create(
     for w in plan.warnings:
         err.print(f"warning: {w}", style="yellow", markup=False, highlight=False)
 
-    with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+    with resolve_transport(cluster=cluster, quiet=quiet) as rt:
         profile_name, server_profile = _require_ssh_profile(rt, "create")
         service = SnapshotService(profile_name=profile_name, profile=server_profile)
         try:
@@ -147,23 +146,22 @@ def snapshot_list(
             help="Also report each tree's size (walks every tree; slow on network filesystems).",
         ),
     ] = False,
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
+    cluster: ClusterOpt = None,
     quiet: QuietOpt = False,
 ) -> None:
-    """List every repo and snapshot under the profile's snapshot root.
+    """List every repo and snapshot under the cluster's snapshot root.
 
     Shows each snapshot's state, last-requested time, its leases with the live
     state of their jobs, and queued jobs that reference its path. A scheduler
     failure only shows job states as unknown (with a warning); it does not
-    change the exit code. SSH profiles only.
+    change the exit code. SSH clusters only.
     """
     if format not in ("table", "json"):
         raise typer.BadParameter(
             f"unknown format {format!r} (use table or json).", param_hint="--format"
         )
     err = Console(stderr=True)
-    with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+    with resolve_transport(cluster=cluster, quiet=quiet) as rt:
         _, server_profile = _require_ssh_profile(rt, "list")
         store = _build_inventory_store(server_profile)
         try:
@@ -215,8 +213,7 @@ def snapshot_prune(
             "when its working directory or command names the snapshot.",
         ),
     ] = False,
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
+    cluster: ClusterOpt = None,
     quiet: QuietOpt = False,
 ) -> None:
     """Remove snapshots that no pending, running or requeue-able job can use.
@@ -224,7 +221,7 @@ def snapshot_prune(
     Everything that cannot be positively judged dead is kept: if the scheduler
     cannot be queried, nothing is deleted and the exit code is 1. Prints one
     line per snapshot (keep or remove, and why), then asks for confirmation
-    unless --force. SSH profiles only.
+    unless --force. SSH clusters only.
     """
     try:
         older_seconds = parse_duration(older_than)
@@ -233,7 +230,7 @@ def snapshot_prune(
     policy = PrunePolicy(older_than=older_seconds, include_unbound=include_unbound)
     err = Console(stderr=True)
     out = Console()
-    with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+    with resolve_transport(cluster=cluster, quiet=quiet) as rt:
         _, server_profile = _require_ssh_profile(rt, "prune")
         store = _build_inventory_store(server_profile)
         try:

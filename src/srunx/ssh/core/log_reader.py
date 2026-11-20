@@ -112,7 +112,31 @@ class RemoteLogReader:
                     new_stderr_offset,
                 )
 
-            # 3. Last resort: pattern-based file search (full read).
+            # 3. Finished jobs are gone from scontrol/squeue; accounting
+            # still knows them. Use its StdOut/StdErr where the Slurm
+            # version provides them, otherwise look for a log named after
+            # the job ID under its WorkDir (covers ``--output`` paths
+            # relative to the submission directory).
+            acct_out, acct_err, workdir = self._get_log_paths_from_sacct(safe_job_id)
+            if acct_out is None and acct_err is None:
+                acct_out = self._find_log_under_workdir(safe_job_id, workdir)
+            if acct_out or acct_err:
+                if acct_out:
+                    output_content, new_stdout_offset = self._read_file_from_offset(
+                        acct_out, stdout_offset, last_n=last_n
+                    )
+                if acct_err and acct_err != acct_out:
+                    error_content, new_stderr_offset = self._read_file_from_offset(
+                        acct_err, stderr_offset, last_n=last_n
+                    )
+                return (
+                    output_content,
+                    error_content,
+                    new_stdout_offset,
+                    new_stderr_offset,
+                )
+
+            # 4. Last resort: pattern-based file search (full read).
             # Only reached when neither scontrol nor squeue could be
             # used to discover the path — typically a completed job
             # whose record slurmctld has already evicted, or a cluster
@@ -404,6 +428,66 @@ class RemoteLogReader:
 
         return _fetch("StdOut"), _fetch("StdErr")
 
+    def _get_log_paths_from_sacct(
+        self, job_id: str
+    ) -> tuple[str | None, str | None, str | None]:
+        """``(stdout, stderr, workdir)`` of a job from accounting.
+
+        Works after the job has left the controller. ``StdOut`` /
+        ``StdErr`` are only available on Slurm versions whose ``sacct``
+        knows those fields; on older versions the query is repeated with
+        ``WorkDir`` alone. Filename patterns (``%j``, ``%x``, ``%u``, ...)
+        are expanded and relative paths are resolved against ``WorkDir``.
+        """
+        quoted = shlex.quote(job_id)
+        base = f"sacct -j {quoted} -X -n -P"
+        out, _, rc = self._slurm.execute_slurm_command(
+            f"{base} -o StdOut,StdErr,WorkDir,JobName,User 2>/dev/null"
+        )
+        fields = (
+            out.strip().splitlines()[0].split("|") if rc == 0 and out.strip() else []
+        )
+        if len(fields) == 5:
+            stdout_raw, stderr_raw, workdir, name, user = (f.strip() for f in fields)
+        else:
+            out, _, rc = self._slurm.execute_slurm_command(
+                f"{base} -o WorkDir 2>/dev/null"
+            )
+            line = (
+                out.strip().splitlines()[0].strip() if rc == 0 and out.strip() else ""
+            )
+            return None, None, line or None
+
+        def resolve(raw: str) -> str | None:
+            if not raw or raw in {"N/A", "(null)"}:
+                return None
+            path = expand_slurm_filename(raw, job_id=job_id, job_name=name, user=user)
+            if not path.startswith("/") and workdir.startswith("/"):
+                path = f"{workdir.rstrip('/')}/{path}"
+            return path
+
+        return resolve(stdout_raw), resolve(stderr_raw), workdir or None
+
+    def _find_log_under_workdir(self, job_id: str, workdir: str | None) -> str | None:
+        """Newest file under *workdir* whose name carries *job_id* as a token.
+
+        Matches ``*_<id>.log``, ``slurm-<id>.out``, ``<id>.err`` and the like
+        (but not ``<id>`` embedded in a longer number), at most three levels
+        deep. Uses only POSIX ``find`` / ``ls`` options.
+        """
+        if not workdir or not workdir.startswith("/"):
+            return None
+        names = " -o ".join(
+            f"-name {shlex.quote(p)}"
+            for p in (f"*[!0-9]{job_id}.*", f"{job_id}.*", f"*[!0-9]{job_id}")
+        )
+        find_cmd = (
+            f"find {shlex.quote(workdir)} -maxdepth 3 -type f \\( {names} \\) "
+            "-exec ls -t {} + 2>/dev/null | head -n 1"
+        )
+        out, _, _ = self._conn.execute_command(find_cmd)
+        return out.strip() or None
+
     def _get_job_output_by_pattern(
         self, safe_job_id: str, safe_job_name: str | None
     ) -> tuple[str, str]:
@@ -486,3 +570,23 @@ class RemoteLogReader:
                 output_content += stdout_output
 
         return output_content, error_content
+
+
+_FILENAME_TOKEN = re.compile(r"%(%|[jJAxuNn]|a)")
+
+
+def expand_slurm_filename(
+    pattern: str, *, job_id: str, job_name: str, user: str
+) -> str:
+    """Expand the common sbatch filename-pattern tokens.
+
+    ``%j`` / ``%A`` (job ID), ``%x`` (job name), ``%u`` (user) and ``%%``.
+    Tokens that need per-node or per-task context (``%N``, ``%n``, ``%a``,
+    ``%J``) are left untouched; such paths will simply not be found.
+    """
+    values = {"%": "%", "j": job_id, "A": job_id, "x": job_name, "u": user}
+
+    def sub(m: re.Match[str]) -> str:
+        return values.get(m.group(1), m.group(0))
+
+    return _FILENAME_TOKEN.sub(sub, pattern)

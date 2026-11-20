@@ -20,7 +20,7 @@ class TestMonitorJobsTransport:
         runner = CliRunner()
         result = runner.invoke(
             app,
-            ["monitor", "jobs", "--profile", "foo", "--local", "12345"],
+            ["monitor", "jobs", "--cluster", "foo", "--cluster", "local", "12345"],
         )
         assert result.exit_code != 0
 
@@ -42,9 +42,10 @@ class TestMonitorResourcesTransport:
                 "resources",
                 "--min-gpus",
                 "1",
-                "--profile",
+                "--cluster",
                 "foo",
-                "--local",
+                "--cluster",
+                "local",
             ],
         )
         assert result.exit_code != 0

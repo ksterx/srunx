@@ -1,212 +1,103 @@
-import json
-import os
-import tempfile
+"""Tests for srunx.ssh.core.config: ConfigManager over TOML clusters + models."""
+
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
 
+from srunx.common import paths
+from srunx.common.config import clear_settings_cache, use_project
 from srunx.ssh.core.config import ConfigManager, MountConfig, ServerProfile
 
 
-@pytest.fixture
-def temp_config_file(tmp_path):
-    fd, path = tempfile.mkstemp(suffix=".json")
-    os.close(fd)
-    yield path
-    if os.path.exists(path):
-        os.unlink(path)
+def write_user(text: str) -> None:
+    path = paths.user_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    clear_settings_cache()
 
 
-@pytest.fixture
-def sample_config_data():
-    return {
-        "current_profile": "test-profile",
-        "profiles": {
-            "test-profile": {
-                "hostname": "example.com",
-                "username": "testuser",
-                "key_filename": "/home/user/.ssh/test_key",
-                "port": 22,
-                "description": "Test profile",
-                "ssh_host": None,
-                "env_vars": {"WANDB_PROJECT": "proj"},
-            },
-            "dgx-profile": {
-                "hostname": "dgx.example.com",
-                "username": "researcher",
-                "key_filename": "/home/user/.ssh/dgx_key",
-                "port": 2222,
-                "description": "DGX profile",
-                "ssh_host": "dgx1",
-                "env_vars": None,
-            },
-        },
-    }
+USER = """
+default_cluster = "local"
+
+[clusters.local]
+transport = "local"
+
+[clusters.dgx]
+transport = "ssh"
+host = "dgx1"
+description = "DGX"
+
+[clusters.direct]
+transport = "ssh"
+hostname = "example.com"
+username = "me"
+key_filename = "~/.ssh/k"
+port = 2222
+"""
 
 
 class TestConfigManager:
-    def test_init_with_existing_config(self, temp_config_file, sample_config_data):
-        # Write sample config to temp file
-        with open(temp_config_file, "w") as f:
-            json.dump(sample_config_data, f)
+    def test_lists_only_ssh_clusters(self):
+        write_user(USER)
+        profiles = ConfigManager().list_profiles()
+        assert set(profiles) == {"dgx", "direct"}
+        assert profiles["dgx"].ssh_host == "dgx1"
+        assert profiles["direct"].port == 2222
+        assert profiles["direct"].key_filename == str(Path("~/.ssh/k").expanduser())
 
-        config_manager = ConfigManager(temp_config_file)
+    def test_get_profile(self):
+        write_user(USER)
+        cm = ConfigManager()
+        assert cm.get_profile("dgx").description == "DGX"
+        assert cm.get_profile("local") is None
+        assert cm.get_profile("missing") is None
 
-        assert config_manager.config_path == Path(temp_config_file)
-        assert config_manager.config_data == sample_config_data
-
-    def test_init_with_nonexistent_config(self, temp_config_file):
-        # Don't create the file, just use the path
-        config_manager = ConfigManager(temp_config_file)
-
-        expected_data = {"current_profile": None, "profiles": {}}
-        assert config_manager.config_data == expected_data
-
-        # Should have created the file
-        assert os.path.exists(temp_config_file)
-
-    def test_init_with_invalid_json(self, temp_config_file):
-        # Write invalid JSON to file
-        with open(temp_config_file, "w") as f:
-            f.write("invalid json content {")
-
-        with pytest.raises(RuntimeError, match="Failed to load config"):
-            ConfigManager(temp_config_file)
-
-    @patch("pathlib.Path.home")
-    def test_default_config_path(self, mock_home, temp_config_file):
-        temp_dir = Path(temp_config_file).parent
-        mock_home.return_value = temp_dir
-
-        config_manager = ConfigManager()
-        expected_path = temp_dir / ".config" / "srunx" / "config.json"
-
-        assert config_manager.config_path == expected_path
-
-    def test_add_profile(self, temp_config_file):
-        config_manager = ConfigManager(temp_config_file)
-
-        profile = ServerProfile(
-            hostname="new.example.com",
-            username="newuser",
-            key_filename="/home/user/.ssh/new_key",
+    def test_add_update_remove_roundtrip(self):
+        write_user(USER)
+        cm = ConfigManager()
+        cm.add_profile(
+            "new", ServerProfile(hostname="h", username="u", key_filename="/k")
         )
+        assert cm.get_profile("new").hostname == "h"
+        text = paths.user_config_path().read_text()
+        assert "[clusters.new]" in text and 'transport = "ssh"' in text
+        assert cm.update_profile("new", hostname="h2", snapshot_root="/snap")
+        assert cm.get_profile("new").hostname == "h2"
+        assert cm.get_profile("new").snapshot_root == "/snap"
+        assert cm.update_profile("new", snapshot_root=None)
+        assert cm.get_profile("new").snapshot_root is None
+        assert cm.remove_profile("new")
+        assert cm.get_profile("new") is None
+        assert not cm.remove_profile("new")
+        assert not cm.update_profile("new", hostname="x")
 
-        config_manager.add_profile("new-profile", profile)
+    def test_remove_default_cluster_clears_default(self):
+        write_user(USER.replace('default_cluster = "local"', 'default_cluster = "dgx"'))
+        ConfigManager().remove_profile("dgx")
+        assert "default_cluster" not in paths.user_config_path().read_text()
 
-        assert "new-profile" in config_manager.config_data["profiles"]
-        assert (
-            config_manager.config_data["profiles"]["new-profile"]
-            == profile.model_dump()
+    def test_invalid_name_rejected(self):
+        with pytest.raises(ValueError):
+            ConfigManager().add_profile(
+                "a:b", ServerProfile(hostname="h", username="u", key_filename="")
+            )
+
+    def test_mounts_come_from_project(self, tmp_path):
+        write_user(USER)
+        root = tmp_path / "proj"
+        (root / ".srunx").mkdir(parents=True)
+        (root / ".git").mkdir()
+        (root / ".srunx" / "config.toml").write_text(
+            'name = "proj"\n[clusters.dgx]\nremote_dir = "/r/proj"\nsync = false\n'
         )
-
-        # Verify it was saved to file
-        with open(temp_config_file) as f:
-            saved_data = json.load(f)
-        assert saved_data["profiles"]["new-profile"] == profile.model_dump()
-
-    def test_get_profile_existing(self, temp_config_file, sample_config_data):
-        with open(temp_config_file, "w") as f:
-            json.dump(sample_config_data, f)
-
-        config_manager = ConfigManager(temp_config_file)
-        profile = config_manager.get_profile("test-profile")
-
-        assert profile is not None
-        assert profile.hostname == "example.com"
-        assert profile.username == "testuser"
-
-    def test_get_profile_nonexistent(self, temp_config_file):
-        config_manager = ConfigManager(temp_config_file)
-        profile = config_manager.get_profile("nonexistent")
-
-        assert profile is None
-
-    def test_list_profiles(self, temp_config_file, sample_config_data):
-        with open(temp_config_file, "w") as f:
-            json.dump(sample_config_data, f)
-
-        config_manager = ConfigManager(temp_config_file)
-        profiles = config_manager.list_profiles()
-
-        assert len(profiles) == 2
-        assert "test-profile" in profiles
-        assert "dgx-profile" in profiles
-        assert isinstance(profiles["test-profile"], ServerProfile)
-        assert profiles["test-profile"].hostname == "example.com"
-
-    def test_remove_profile_existing(self, temp_config_file, sample_config_data):
-        with open(temp_config_file, "w") as f:
-            json.dump(sample_config_data, f)
-
-        config_manager = ConfigManager(temp_config_file)
-        result = config_manager.remove_profile("test-profile")
-
-        assert result is True
-        assert "test-profile" not in config_manager.config_data["profiles"]
-        # Should clear current profile if it was the removed one
-        assert config_manager.config_data["current_profile"] is None
-
-    def test_remove_profile_nonexistent(self, temp_config_file):
-        config_manager = ConfigManager(temp_config_file)
-        result = config_manager.remove_profile("nonexistent")
-
-        assert result is False
-
-    def test_set_current_profile_existing(self, temp_config_file, sample_config_data):
-        with open(temp_config_file, "w") as f:
-            json.dump(sample_config_data, f)
-
-        config_manager = ConfigManager(temp_config_file)
-        result = config_manager.set_current_profile("dgx-profile")
-
-        assert result is True
-        assert config_manager.config_data["current_profile"] == "dgx-profile"
-
-    def test_set_current_profile_nonexistent(self, temp_config_file):
-        config_manager = ConfigManager(temp_config_file)
-        result = config_manager.set_current_profile("nonexistent")
-        assert result is False
-
-
-class TestLegacyEnvVarsConfig:
-    """REQ-11 / F6: a legacy config.json with a profile ``env_vars`` block must
-    still load (ServerProfile ``extra='ignore'`` drops the stray key)."""
-
-    def test_legacy_env_vars_ignored_on_load(
-        self, temp_config_file, sample_config_data
-    ):
-        # sample_config_data carries a stray ``env_vars`` block on both
-        # profiles — exactly the removed mechanism's persisted shape.
-        with open(temp_config_file, "w") as f:
-            json.dump(sample_config_data, f)
-
-        config_manager = ConfigManager(temp_config_file)
-
-        # Load must not raise, and the profile is usable.
-        profile = config_manager.get_profile("test-profile")
-        assert profile is not None
-        assert profile.hostname == "example.com"
-        # The stray key is dropped from the model (extra=ignore).
-        assert not hasattr(profile, "env_vars")
-
-        # list_profiles round-trips both legacy profiles without error.
-        profiles = config_manager.list_profiles()
-        assert set(profiles) == {"test-profile", "dgx-profile"}
-
-    def test_server_profile_extra_ignore_drops_env_vars(self):
-        profile = ServerProfile.model_validate(
-            {
-                "hostname": "h",
-                "username": "u",
-                "key_filename": "/k",
-                "env_vars": {"WANDB_PROJECT": "proj"},
-            }
-        )
-        assert profile.hostname == "h"
-        assert not hasattr(profile, "env_vars")
+        with use_project(root):
+            (mount,) = ConfigManager().get_profile("dgx").mounts
+        assert mount.name == "proj"
+        assert mount.local == str(root.resolve())
+        assert mount.remote == "/r/proj"
+        assert mount.sync is False
+        assert ConfigManager().get_profile("dgx").mounts == []
 
 
 class TestMountConfigExcludePatterns:
@@ -270,68 +161,6 @@ class TestMountConfigExcludePatterns:
         }
         mount = MountConfig.model_validate(data)
         assert mount.exclude_patterns == ()
-
-    def test_mount_with_excludes_persisted_via_config_manager(self, temp_config_file):
-        cm = ConfigManager(temp_config_file)
-        profile = ServerProfile(hostname="h", username="u", key_filename="/k")
-        cm.add_profile("p", profile)
-
-        mount = MountConfig(
-            name="proj",
-            local="/tmp/local",
-            remote="/remote/proj",
-            exclude_patterns=["data/", "*.bin"],
-        )
-        cm.add_profile_mount("p", mount)
-
-        # Reload from disk — JSON round-trip (tuple → list → tuple)
-        cm2 = ConfigManager(temp_config_file)
-        loaded_profile = cm2.get_profile("p")
-        assert loaded_profile is not None
-        assert len(loaded_profile.mounts) == 1
-        assert loaded_profile.mounts[0].exclude_patterns == ("data/", "*.bin")
-        assert isinstance(loaded_profile.mounts[0].exclude_patterns, tuple)
-
-    def test_mount_without_excludes_persisted_via_config_manager(
-        self, temp_config_file
-    ):
-        cm = ConfigManager(temp_config_file)
-        profile = ServerProfile(hostname="h", username="u", key_filename="/k")
-        cm.add_profile("p", profile)
-
-        mount = MountConfig(name="proj", local="/tmp/local", remote="/remote/proj")
-        cm.add_profile_mount("p", mount)
-
-        cm2 = ConfigManager(temp_config_file)
-        loaded_profile = cm2.get_profile("p")
-        assert loaded_profile is not None
-        assert loaded_profile.mounts[0].exclude_patterns == ()
-
-    def test_add_profile_mount_rejects_duplicate_name(self, temp_config_file):
-        cm = ConfigManager(temp_config_file)
-        cm.add_profile(
-            "p", ServerProfile(hostname="h", username="u", key_filename="/k")
-        )
-        cm.add_profile_mount("p", MountConfig(name="m", local="/tmp/a", remote="/r/a"))
-
-        with pytest.raises(ValueError, match="already exists"):
-            cm.add_profile_mount(
-                "p", MountConfig(name="m", local="/tmp/b", remote="/r/b")
-            )
-
-    def test_add_profile_mount_rejects_duplicate_local(self, temp_config_file):
-        cm = ConfigManager(temp_config_file)
-        cm.add_profile(
-            "p", ServerProfile(hostname="h", username="u", key_filename="/k")
-        )
-        cm.add_profile_mount("p", MountConfig(name="m", local="/tmp/a", remote="/r/a"))
-
-        # Same local under a different name + remote is rejected at the
-        # shared path, so the Web API inherits the guard too.
-        with pytest.raises(ValueError, match="already mounted"):
-            cm.add_profile_mount(
-                "p", MountConfig(name="m2", local="/tmp/a", remote="/r/other")
-            )
 
 
 class TestMountConfigImmutability:
@@ -412,44 +241,6 @@ class TestServerProfileKeyFilenameExpansion:
     def test_empty_string_is_unchanged(self):
         profile = ServerProfile(hostname="h", username="u", key_filename="")
         assert profile.key_filename == ""
-
-    def test_expansion_survives_config_roundtrip(self, temp_config_file):
-        cm = ConfigManager(temp_config_file)
-        cm.add_profile(
-            "p",
-            ServerProfile(hostname="h", username="u", key_filename="~/.ssh/k"),
-        )
-        cm2 = ConfigManager(temp_config_file)
-        loaded = cm2.get_profile("p")
-        assert loaded is not None
-        assert loaded.key_filename == str(Path("~/.ssh/k").expanduser())
-
-
-class TestWebConfigSshKeyExpansion:
-    def test_tilde_is_expanded(self):
-        from srunx.web.config import WebConfig
-
-        cfg = WebConfig(ssh_key_filename="~/.ssh/web_key")
-        assert cfg.ssh_key_filename == str(Path("~/.ssh/web_key").expanduser())
-
-    def test_absolute_path_is_unchanged(self):
-        from srunx.web.config import WebConfig
-
-        cfg = WebConfig(ssh_key_filename="/abs/key")
-        assert cfg.ssh_key_filename == "/abs/key"
-
-    def test_none_is_preserved(self):
-        from srunx.web.config import WebConfig
-
-        cfg = WebConfig(ssh_key_filename=None)
-        assert cfg.ssh_key_filename is None
-
-    def test_env_var_is_expanded(self, monkeypatch):
-        from srunx.web.config import WebConfig
-
-        monkeypatch.setenv("SRUNX_SSH_KEY", "~/.ssh/env_key")
-        cfg = WebConfig()
-        assert cfg.ssh_key_filename == str(Path("~/.ssh/env_key").expanduser())
 
 
 class TestServerProfileSnapshotRoot:

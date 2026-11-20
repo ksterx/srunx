@@ -56,7 +56,7 @@ def _bare_adapter(*, connected: bool = True) -> SlurmSSHClient:
     adapter._key_filename = None
     adapter._port = 22
     adapter._proxy_jump = None
-    adapter._mounts = ()
+    adapter._explicit_mounts = ()
     adapter.submission_source = "web"
 
     # Emulate a live paramiko session so ``is_connected`` returns True.

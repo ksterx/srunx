@@ -25,7 +25,7 @@ Stop juggling `sbatch` scripts, `squeue` loops, and SSH sessions.
 - **Submit & manage** SLURM jobs from CLI, browser, or Python
 - **Orchestrate** multi-step workflows with YAML and dependency graphs
 - **Monitor** GPU availability and job states with Slack notifications
-- **Local or remote, one CLI** — target a local SLURM or any SSH'd cluster with `--profile <name>`; no shell-in, no separate "remote" commands — the same verbs you already know
+- **Local or remote, one CLI** — target a local SLURM or any SSH'd cluster with `--cluster <name>`; no shell-in, no separate "remote" commands — the same verbs you already know
 - **Container-native** — Pyxis, Apptainer, and Singularity support built in
 
 ## Installation
@@ -50,6 +50,9 @@ uv add "srunx[mcp]"
 Submit a job, wait for it, and view the logs — end to end:
 
 ```bash
+# 0. One-time: register a cluster (no implicit default)
+$ srunx cluster add local --local --default
+
 # 1. Submit
 $ srunx sbatch --job-name training --gpus-per-node 2 --conda ml_env --wrap "python train.py"
 ✅ Submitted job training (id=847291)
@@ -70,14 +73,16 @@ srunx flow run workflow.yaml
 
 ### Same commands, remote cluster
 
-Every command above accepts `--profile <name>` and dispatches transparently over SSH — same syntax, same output, same feel as local:
+Every command above accepts `--cluster <name>` and dispatches transparently over SSH — same syntax, same output, same feel as local:
 
 ```bash
-srunx sbatch --profile dgx --job-name training --gpus-per-node 2 --conda ml_env --wrap "python train.py"
-srunx squeue --profile dgx
-srunx tail   --profile dgx 847291 --follow
-srunx flow run pipeline.yaml --profile dgx
+srunx sbatch --cluster dgx --job-name training --gpus-per-node 2 --conda ml_env --wrap "python train.py"
+srunx squeue --cluster dgx
+srunx tail   --cluster dgx 847291 --follow
+srunx flow run pipeline.yaml --cluster dgx
 ```
+
+Without `--cluster`, srunx uses `$SRUNX_CLUSTER`, then the project's `cluster` (from `.srunx/config.toml`), then the user config's `default_cluster` — and errors if none is set. There is no implicit "local" fallback.
 
 srunx rsyncs your code under a per-mount lock, runs `sbatch` in place on the remote, and streams logs back. Your shell never leaves the laptop.
 
@@ -102,7 +107,7 @@ If you need full-featured scientific workflow tooling, Snakemake / Nextflow are 
 
 ## CLI
 
-**Every command below runs locally _or_ against a remote cluster over SSH.** Add `--profile <name>` (or set `$SRUNX_SSH_PROFILE`) and `sbatch` / `squeue` / `sinfo` / `sacct` / `history` / `gpus` / `tail` / `watch` / `flow run` transparently dispatch through the SSH adapter — no shell-in first, no separate "remote" subcommand. `srunx ssh` is just for managing those profiles (add / list / sync / test); it does not run jobs itself.
+**Every command below runs locally _or_ against a remote cluster over SSH.** Add `--cluster <name>` (or set `$SRUNX_CLUSTER`) and `sbatch` / `squeue` / `sinfo` / `sacct` / `history` / `gpus` / `tail` / `watch` / `flow run` transparently dispatch to that cluster (local `sbatch` or the SSH adapter) — no shell-in first, no separate "remote" subcommand. `srunx cluster` is just for managing clusters (list / show / add / update / remove / test / sync / secret); it does not run jobs itself. There is no `-C` short form (`-C` is sbatch's `--constraint`), and Slurm's own `--clusters` / `-M` is rejected.
 
 `Type` column: **SLURM** = mirrors the native SLURM CLI (muscle memory maps directly); **srunx** = srunx-original command with no direct SLURM counterpart.
 
@@ -137,10 +142,11 @@ If you need full-featured scientific workflow tooling, Snakemake / Nextflow are 
 
 | Command | Type | Description |
 |---------|------|-------------|
-| `srunx ssh` | srunx | Manage SSH profiles (add / list / sync / test) — remote execution itself is `--profile` on the commands above |
-| `srunx ssh secret set\|list\|unset` | srunx | Store API keys once per remote account (hidden prompt, `0600` file) |
+| `srunx cluster list\|show\|add\|update\|remove\|test` | srunx | Manage clusters (job targets) — remote execution itself is `--cluster` on the commands above |
+| `srunx cluster sync` | srunx | Rsync a project mount to (or with `--pull`, from) a cluster |
+| `srunx cluster secret set\|list\|unset` | srunx | Store API keys once per remote account (hidden prompt, `0600` file) |
 | `srunx snapshot create\|list\|prune` | srunx | Per-commit read-only code snapshots on a cluster (`sbatch --snapshot`) |
-| `srunx config` | srunx | Manage configuration |
+| `srunx config show\|paths\|init\|init-project\|set\|delete\|unset` | srunx | Manage the TOML configuration (user / project) and inspect where each value comes from |
 | `srunx template` | srunx | Manage job templates |
 | `srunx ui` | srunx | Launch the web dashboard |
 
@@ -153,7 +159,10 @@ A dashboard for visual cluster management. Connect to your SLURM cluster over SS
 ```bash
 srunx ui                # -> http://127.0.0.1:8000
 srunx ui --port 3000    # custom port
+srunx ui --project ~/work/other-repo   # serve extra projects (repeatable)
 ```
+
+The cluster and project are chosen in the sidebar; every API request carries them explicitly.
 
 ### Jobs
 
@@ -175,7 +184,7 @@ GPU and node availability per partition.
 
 ### Explorer
 
-Browse remote files via SSH mounts. Shell scripts can be submitted as sbatch jobs directly from the file tree.
+Browse remote files via the selected project's mounts. Shell scripts can be submitted as sbatch jobs directly from the file tree.
 
 <img src="https://raw.githubusercontent.com/ksterx/srunx/main/docs/assets/images/ui-explorer-sbatch.gif" width="800" alt="Explorer sbatch submission">
 
@@ -262,7 +271,7 @@ srunx flow run --sweep lr=0.001,0.01 --max-parallel 2 train.yaml          # ad-h
 srunx flow run --sweep lr=0.001,0.01 --max-parallel 2 --dry-run train.yaml
 ```
 
-Sweeps are a first-class concept across **CLI, Web UI, and MCP**. Web-triggered sweeps route cells through a bounded `SlurmSSHExecutorPool` against the configured SSH profile, while CLI and MCP runs use the local SLURM client by default. The Web UI surfaces per-cell progress with ETA, filter / sort, and per-cell cancellation.
+Sweeps are a first-class concept across **CLI, Web UI, and MCP**. Cells run on the selected cluster (Web-triggered sweeps on SSH clusters route through a bounded `SlurmSSHExecutorPool`). The Web UI surfaces per-cell progress with ETA, filter / sort, and per-cell cancellation.
 
 Full workflow surface (validation, retries, partial execution, sweep recipes): [Workflows how-to](https://ksterx.github.io/srunx/how-to/workflows/)
 
@@ -284,24 +293,30 @@ Full monitoring options (continuous watch, thresholds, scheduled reports): [Moni
 
 ## Remote SSH
 
-Keep your local editor workflow while the jobs actually run on the cluster. Configure a profile **once**, and every srunx command accepts `--profile <name>` with the same syntax as local:
+Keep your local editor workflow while the jobs actually run on the cluster. Add a cluster **once**, and every srunx command accepts `--cluster <name>` with the same syntax as local:
 
 ```bash
-# One-time setup
-srunx ssh add --profile dgx --ssh-host dgx1
-srunx ssh mount add --profile dgx --mount ml-exp \
-  --local ~/projects/ml-exp --remote /home/user/ml-exp
+# One-time setup (user config: $XDG_CONFIG_HOME/srunx/config.toml)
+srunx cluster add dgx --host dgx1 --default      # host alias from ~/.ssh/config
+srunx cluster test dgx
+
+# Per project: .srunx/config.toml (commit it)
+cd ~/projects/ml-exp
+srunx config init-project                        # name = directory name
+srunx config set cluster dgx --project           # this project's default cluster
+srunx config set remote_dir /home/user/ml-exp --cluster dgx --project
 
 # Same verbs you already use — now against the remote cluster
-srunx sbatch train.sh --profile dgx                   # auto-rsyncs the mount + sbatch runs in-place on the remote path
-srunx squeue --profile dgx                            # live queue on the remote cluster
-srunx tail 847291 --profile dgx --follow              # stream remote logs
-srunx flow run pipeline.yaml --profile dgx            # full DAG: sync once, hold the per-mount lock, submit
+srunx sbatch train.sh                            # auto-rsyncs the project + sbatch runs in-place on the remote path
+srunx squeue                                     # live queue on the remote cluster
+srunx tail 847291 --follow                       # stream remote logs
+srunx flow run pipeline.yaml                     # full DAG: sync once, hold the per-mount lock, submit
 ```
 
-- SSH config hosts, saved profiles, and ProxyJump support
+- SSH config hosts, ProxyJump support; connection settings live only in the user/system config, never in a project file
 - Environment variable passthrough (`--env KEY=VALUE`)
-- File sync via rsync with per-mount locking — auto-detects profile from current directory
+- File sync via rsync with per-mount locking; the first sync to a new remote path asks for confirmation (`--yes` to approve)
+- Layered job defaults (user → cluster → project → project × cluster → script `#SBATCH` → CLI flags); `srunx config show` shows where each value came from
 - `sbatch --snapshot` runs the job from a read-only per-commit copy of your git repo, so later syncs cannot change code under queued jobs
 
 Mount model, sync semantics, snapshots, and in-place execution rules: [SSH sync how-to](https://ksterx.github.io/srunx/how-to/sync/)
@@ -337,12 +352,13 @@ Once connected, the agent can call `run_workflow` with optional sweep and mount 
 run_workflow(
     yaml_path="train.yaml",
     sweep={"matrix": {"lr": [0.001, 0.01]}, "max_parallel": 2},
-    transport="dgx",
-    mount="my-project",
+    cluster="dgx",
+    project="/home/me/ml-exp",
+    mount="ml-exp",
 )
 ```
 
-`transport="<profile>"` selects the remote cluster; the optional `mount=<name>` translates `work_dir` / `log_dir` into that mount's remote paths. `mount` requires `transport` — passing `mount` alone is an error — so the agent can launch mount-aware submissions against a remote cluster without leaving the chat.
+`cluster` is always explicit — MCP tools never fall back to an implicit cluster (call `list_clusters` to see what is configured). `project` is the project root holding `.srunx/config.toml`; it supplies project defaults and the mounts that `mount=<name>` refers to. `mount` translates `work_dir` / `log_dir` into that mount's remote paths and requires an SSH `cluster` plus `project`, so the agent can launch mount-aware submissions against a remote cluster without leaving the chat.
 
 Setup + tool-by-tool usage: [MCP Setup tutorial](https://ksterx.github.io/srunx/tutorials/mcp-setup/) · [MCP Usage how-to](https://ksterx.github.io/srunx/how-to/mcp-usage/) · [MCP Tools reference](https://ksterx.github.io/srunx/reference/mcp-tools/)
 

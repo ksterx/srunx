@@ -79,8 +79,8 @@ def client(  # type: ignore[misc]
 
     # Isolate the srunx DB to a tmp dir so workflow_runs don't leak
     # between tests or into the user's real DB.
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    init_db(delete_legacy=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    init_db()
 
     original = config_mod._config
     config_mod._config = None
@@ -1433,271 +1433,6 @@ class TestWorkflowsRouter:
 # ── Config SSH Connect / Test / Status ───────────────
 
 
-class TestConfigSSHConnect:
-    """Tests for SSH profile connect, test, and status endpoints."""
-
-    def test_connect_profile_not_found(self, client: TestClient) -> None:
-        """POST /api/config/ssh/profiles/{name}/connect with unknown profile returns 404."""
-        from unittest.mock import patch
-
-        mock_cm = MagicMock()
-        mock_cm.get_profile.return_value = None
-
-        with patch(
-            "srunx.web.routers.config._get_config_manager", return_value=mock_cm
-        ):
-            resp = client.post("/api/config/ssh/profiles/nonexistent/connect")
-        assert resp.status_code == 404
-
-    def test_connect_success(self, client: TestClient) -> None:
-        """Successful SSH connect swaps the adapter and returns connected=True."""
-        from unittest.mock import patch
-
-        from srunx.ssh.core.config import ServerProfile
-
-        profile = ServerProfile(
-            hostname="gpu.example.com",
-            username="tester",
-            key_filename="~/.ssh/id_rsa",
-        )
-        mock_cm = MagicMock()
-        mock_cm.get_profile.return_value = profile
-
-        mock_new_adapter = MagicMock()
-        mock_new_adapter.connect.return_value = True
-
-        with (
-            patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
-            patch(
-                "srunx.slurm.clients.ssh.SlurmSSHClient",
-                return_value=mock_new_adapter,
-            ),
-            patch("srunx.web.deps.swap_adapter", return_value=None),
-        ):
-            resp = client.post("/api/config/ssh/profiles/myprofile/connect")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["connected"] is True
-        assert data["profile_name"] == "myprofile"
-        assert data["hostname"] == "gpu.example.com"
-        assert data["error"] is None
-
-    def test_connect_failure_returns_error(self, client: TestClient) -> None:
-        """When SSH connect() returns False, response has connected=False with error."""
-        from unittest.mock import patch
-
-        from srunx.ssh.core.config import ServerProfile
-
-        profile = ServerProfile(
-            hostname="gpu.example.com",
-            username="tester",
-            key_filename="~/.ssh/id_rsa",
-        )
-        mock_cm = MagicMock()
-        mock_cm.get_profile.return_value = profile
-
-        mock_new_adapter = MagicMock()
-        mock_new_adapter.connect.return_value = False
-
-        with (
-            patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
-            patch(
-                "srunx.slurm.clients.ssh.SlurmSSHClient",
-                return_value=mock_new_adapter,
-            ),
-        ):
-            resp = client.post("/api/config/ssh/profiles/myprofile/connect")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["connected"] is False
-        assert data["error"] == "SSH connection failed"
-
-    def test_connect_exception_returns_error(self, client: TestClient) -> None:
-        """When adapter creation raises an exception, response has connected=False."""
-        from unittest.mock import patch
-
-        from srunx.ssh.core.config import ServerProfile
-
-        profile = ServerProfile(
-            hostname="gpu.example.com",
-            username="tester",
-            key_filename="~/.ssh/id_rsa",
-        )
-        mock_cm = MagicMock()
-        mock_cm.get_profile.return_value = profile
-
-        with (
-            patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
-            patch(
-                "srunx.slurm.clients.ssh.SlurmSSHClient",
-                side_effect=ConnectionError("Host unreachable"),
-            ),
-        ):
-            resp = client.post("/api/config/ssh/profiles/myprofile/connect")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["connected"] is False
-        assert "Host unreachable" in (data["error"] or "")
-
-    def test_test_profile_not_found(self, client: TestClient) -> None:
-        """POST /api/config/ssh/profiles/{name}/test with unknown profile returns 404."""
-        from unittest.mock import patch
-
-        mock_cm = MagicMock()
-        mock_cm.get_profile.return_value = None
-
-        with patch(
-            "srunx.web.routers.config._get_config_manager", return_value=mock_cm
-        ):
-            resp = client.post("/api/config/ssh/profiles/unknown/test")
-        assert resp.status_code == 404
-
-    def test_test_ssh_and_slurm_ok(self, client: TestClient) -> None:
-        """Successful test reports SSH connected and SLURM available."""
-        from unittest.mock import patch
-
-        from srunx.ssh.core.config import ServerProfile
-
-        profile = ServerProfile(
-            hostname="gpu.example.com",
-            username="tester",
-            key_filename="~/.ssh/id_rsa",
-        )
-        mock_cm = MagicMock()
-        mock_cm.get_profile.return_value = profile
-
-        mock_adapter = MagicMock()
-        mock_adapter._client.test_connection.return_value = {
-            "ssh_connected": True,
-            "slurm_available": True,
-            "hostname": "gpu.example.com",
-            "user": "tester",
-            "slurm_version": "23.02.7",
-        }
-
-        with (
-            patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
-            patch(
-                "srunx.slurm.clients.ssh.SlurmSSHClient",
-                return_value=mock_adapter,
-            ),
-        ):
-            resp = client.post("/api/config/ssh/profiles/myprofile/test")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ssh_connected"] is True
-        assert data["slurm_available"] is True
-        assert data["hostname"] == "gpu.example.com"
-        assert data["slurm_version"] == "23.02.7"
-        assert data["error"] is None
-
-    def test_test_ssh_ok_slurm_unavailable(self, client: TestClient) -> None:
-        """SSH connects but SLURM commands fail."""
-        from unittest.mock import patch
-
-        from srunx.ssh.core.config import ServerProfile
-
-        profile = ServerProfile(
-            hostname="gpu.example.com",
-            username="tester",
-            key_filename="~/.ssh/id_rsa",
-        )
-        mock_cm = MagicMock()
-        mock_cm.get_profile.return_value = profile
-
-        mock_adapter = MagicMock()
-        mock_adapter._client.test_connection.return_value = {
-            "ssh_connected": True,
-            "slurm_available": False,
-            "hostname": "gpu.example.com",
-            "user": "tester",
-            "slurm_version": "",
-            "error": "sinfo: command not found",
-        }
-
-        with (
-            patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
-            patch(
-                "srunx.slurm.clients.ssh.SlurmSSHClient",
-                return_value=mock_adapter,
-            ),
-        ):
-            resp = client.post("/api/config/ssh/profiles/myprofile/test")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ssh_connected"] is True
-        assert data["slurm_available"] is False
-        assert "sinfo" in (data["error"] or "")
-
-    def test_test_connection_failure(self, client: TestClient) -> None:
-        """When adapter construction raises, error is returned."""
-        from unittest.mock import patch
-
-        from srunx.ssh.core.config import ServerProfile
-
-        profile = ServerProfile(
-            hostname="gpu.example.com",
-            username="tester",
-            key_filename="~/.ssh/id_rsa",
-        )
-        mock_cm = MagicMock()
-        mock_cm.get_profile.return_value = profile
-
-        with (
-            patch("srunx.web.routers.config._get_config_manager", return_value=mock_cm),
-            patch(
-                "srunx.slurm.clients.ssh.SlurmSSHClient",
-                side_effect=OSError("Connection refused"),
-            ),
-        ):
-            resp = client.post("/api/config/ssh/profiles/myprofile/test")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ssh_connected"] is False
-        assert data["slurm_available"] is False
-        assert "Connection refused" in (data["error"] or "")
-
-    def test_ssh_status_connected(
-        self, client: TestClient, mock_adapter: MagicMock
-    ) -> None:
-        """GET /api/config/ssh/status returns connected=True when adapter is set."""
-        from unittest.mock import patch
-
-        with (
-            patch(
-                "srunx.web.deps.get_active_profile_name", return_value="test-profile"
-            ),
-            patch("srunx.web.deps.get_adapter_or_none", return_value=mock_adapter),
-        ):
-            resp = client.get("/api/config/ssh/status")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["connected"] is True
-        assert data["profile_name"] == "test-profile"
-
-    def test_ssh_status_disconnected(self, client: TestClient) -> None:
-        """GET /api/config/ssh/status returns connected=False when no adapter."""
-        from unittest.mock import patch
-
-        with (
-            patch("srunx.web.deps.get_adapter_or_none", return_value=None),
-            patch("srunx.web.deps.get_active_profile_name", return_value=None),
-        ):
-            resp = client.get("/api/config/ssh/status")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["connected"] is False
-        assert data["profile_name"] is None
-
-
 # ── Script Preview ───────────────────────────────────
 
 
@@ -2153,13 +1888,9 @@ class TestWorkflowsRouterInPlace:
         """Patch every profile-resolution lookup the router does.
 
         ``_hold_workflow_mounts_web`` resolves the profile through TWO
-        paths: first via ``ConfigManager`` (the real on-disk SSH
-        profile registry), then via ``get_current_profile`` as
-        fallback. If the developer's machine has any real SSH
-        profile configured, the ConfigManager path returns it and
-        the test's mock is never reached. Patch BOTH layers so the
-        test sees only its synthetic profile regardless of host
-        config.
+        paths: first via ``ConfigManager.get_profile`` for the request's
+        selected cluster, then via ``get_current_profile`` as fallback.
+        Patch BOTH layers so the test sees only its synthetic profile.
         """
         from contextlib import ExitStack
         from unittest.mock import patch
@@ -2179,12 +1910,6 @@ class TestWorkflowsRouterInPlace:
             )
             # Force ConfigManager to find nothing so the fall-through
             # to the patched ``get_current_profile`` actually fires.
-            stack.enter_context(
-                patch(
-                    "srunx.ssh.core.config.ConfigManager.get_current_profile_name",
-                    return_value=None,
-                )
-            )
             stack.enter_context(
                 patch(
                     "srunx.ssh.core.config.ConfigManager.get_profile",

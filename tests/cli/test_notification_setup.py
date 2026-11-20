@@ -18,10 +18,10 @@ from srunx.cli._helpers.notification_setup import attach_notification_watch
 @pytest.fixture
 def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Isolate XDG_CONFIG_HOME so the helper writes into a tmp DB."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     from srunx.observability.storage.connection import init_db
 
-    return init_db(delete_legacy=False)
+    return init_db()
 
 
 def _seed_endpoint_and_job(
@@ -155,8 +155,8 @@ def test_cli_sbatch_with_endpoint_creates_watch_and_subscription(
     from srunx.observability.storage.repositories.watches import WatchRepository
 
     # Isolate the state DB
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    init_db(delete_legacy=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    init_db()
 
     # Seed an enabled endpoint for the CLI to target
     conn = open_connection()
@@ -237,8 +237,8 @@ def test_cli_sbatch_with_unknown_endpoint_still_succeeds(
     from srunx.observability.storage.connection import init_db, open_connection
     from srunx.observability.storage.repositories.watches import WatchRepository
 
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    init_db(delete_legacy=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    init_db()
 
     def fake_submit(self, job, template_path=None, verbose=False, callbacks=None, **kw):
         if isinstance(job, BaseJob):

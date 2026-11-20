@@ -20,8 +20,8 @@ class SweepExecutionError(WorkflowError):
 
 
 class TransportSelectionError(ValueError):
-    """Invalid transport selection (e.g. empty ``--profile`` or
-    ``--profile`` + ``--local`` used together).
+    """Invalid cluster selection (e.g. empty ``--cluster``, no cluster
+    selected, or an unknown cluster).
 
     Raised by the transport resolver (:func:`srunx.transport.registry`)
     so the selection logic stays free of any CLI framework dependency.
@@ -33,7 +33,7 @@ class TransportSelectionError(ValueError):
 
     Attributes:
         param_hint: Which CLI flag(s) the error concerns (e.g.
-            ``"--profile / --local"``). Carried so the CLI translator can
+            ``"--cluster"``). Carried so the CLI translator can
             reproduce the exact ``typer.BadParameter`` UX; ``None`` when
             no specific flag applies.
     """

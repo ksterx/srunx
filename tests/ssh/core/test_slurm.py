@@ -342,7 +342,7 @@ class TestSecretDelivery:
 
     def _bind_secret_store(self, client, *, exists: bool):
         """Bind a profile secret store and stub its remote-facing methods."""
-        client.slurm.bind_profile_name("gmo")
+        client.slurm.bind_profile_name("gpu")
         store = client.slurm._secret_store
         store.exists = Mock(return_value=exists)
         # Account-scoped path: no ``secrets/`` subdir, no profile name.

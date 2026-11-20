@@ -36,7 +36,7 @@ def _bare_adapter(
     adapter._key_filename = None
     adapter._port = 22
     adapter._proxy_jump = None
-    adapter._mounts = ()
+    adapter._explicit_mounts = ()
     adapter.submission_source = "cli"
 
     transport = MagicMock()

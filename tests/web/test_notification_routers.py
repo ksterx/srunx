@@ -17,8 +17,8 @@ def app_client_and_db(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[TestClient, Path]:
     """Fresh app instance + DB path."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    db_path = init_db(delete_legacy=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    db_path = init_db()
 
     from srunx.web.app import create_app
 

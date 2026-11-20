@@ -104,7 +104,9 @@ class TestSqueueTable:
             # Rich auto-shrinks column headers when the (captured) terminal
             # is narrower than the table needs — set COLUMNS so header text
             # doesn't truncate to single characters.
-            result = runner.invoke(app, ["squeue", "--local"], env={"COLUMNS": "200"})
+            result = runner.invoke(
+                app, ["squeue", "--cluster", "local"], env={"COLUMNS": "200"}
+            )
 
         assert result.exit_code == 0
         for shown in (
@@ -136,7 +138,7 @@ class TestSqueueTable:
             client.queue.return_value = mock_jobs
             mock_slurm.return_value = client
             result = runner.invoke(
-                app, ["squeue", "--local", "-a"], env={"COLUMNS": "200"}
+                app, ["squeue", "--cluster", "local", "-a"], env={"COLUMNS": "200"}
             )
 
         assert result.exit_code == 0
@@ -163,7 +165,7 @@ class TestSqueueTable:
             mock_slurm.return_value = client
             result = runner.invoke(
                 app,
-                ["squeue", "--local", "--show-partition", "--show-nodes"],
+                ["squeue", "--cluster", "local", "--show-partition", "--show-nodes"],
                 env={"COLUMNS": "200"},
             )
 
@@ -178,7 +180,7 @@ class TestSqueueTable:
             client = MagicMock()
             client.queue.return_value = []
             mock_slurm.return_value = client
-            result = runner.invoke(app, ["squeue", "--local"])
+            result = runner.invoke(app, ["squeue", "--cluster", "local"])
         assert result.exit_code == 0
         assert "No jobs in queue" in result.stdout
 
@@ -187,7 +189,7 @@ class TestSqueueTable:
             client = MagicMock()
             client.queue.side_effect = RuntimeError("SLURM connection error")
             mock_slurm.return_value = client
-            result = runner.invoke(app, ["squeue", "--local"])
+            result = runner.invoke(app, ["squeue", "--cluster", "local"])
         assert result.exit_code == 1
 
 
@@ -199,7 +201,9 @@ class TestSqueueJson:
             client = MagicMock()
             client.queue.return_value = mock_jobs
             mock_slurm.return_value = client
-            result = runner.invoke(app, ["squeue", "--local", "--format", "json"])
+            result = runner.invoke(
+                app, ["squeue", "--cluster", "local", "--format", "json"]
+            )
 
         assert result.exit_code == 0
         data = json.loads(result.stdout)
@@ -226,7 +230,9 @@ class TestSqueueJson:
             client = MagicMock()
             client.queue.return_value = []
             mock_slurm.return_value = client
-            result = runner.invoke(app, ["squeue", "--local", "--format", "json"])
+            result = runner.invoke(
+                app, ["squeue", "--cluster", "local", "--format", "json"]
+            )
         assert result.exit_code == 0
         assert json.loads(result.stdout) == []
 
@@ -241,7 +247,8 @@ class TestSqueueUserFilter:
             client.queue.return_value = mock_jobs
             mock_slurm.return_value = client
             result = runner.invoke(
-                app, ["squeue", "--local", "--user", "alice", "--format", "json"]
+                app,
+                ["squeue", "--cluster", "local", "--user", "alice", "--format", "json"],
             )
 
         assert result.exit_code == 0
@@ -254,7 +261,9 @@ class TestSqueueUserFilter:
             client = MagicMock()
             client.queue.return_value = mock_jobs
             mock_slurm.return_value = client
-            result = runner.invoke(app, ["squeue", "--local", "--format", "json"])
+            result = runner.invoke(
+                app, ["squeue", "--cluster", "local", "--format", "json"]
+            )
 
         assert result.exit_code == 0
         client.queue.assert_called_once_with(user=None)
@@ -267,14 +276,16 @@ class TestSqueueUserFilter:
             client.queue.return_value = mock_jobs
             mock_slurm.return_value = client
             result = runner.invoke(
-                app, ["squeue", "--local", "--me", "--format", "json"]
+                app, ["squeue", "--cluster", "local", "--me", "--format", "json"]
             )
 
         assert result.exit_code == 0
         client.queue.assert_called_once_with(me=True)
 
     def test_me_and_user_are_incompatible(self, runner: CliRunner) -> None:
-        result = runner.invoke(app, ["squeue", "--local", "--me", "--user", "alice"])
+        result = runner.invoke(
+            app, ["squeue", "--cluster", "local", "--me", "--user", "alice"]
+        )
 
         assert result.exit_code == 2
         assert "cannot be used" in result.output
@@ -293,7 +304,8 @@ class TestSqueueRegexFilters:
                 app,
                 [
                     "squeue",
-                    "--local",
+                    "--cluster",
+                    "local",
                     "--format",
                     "json",
                     "-I",
@@ -307,7 +319,7 @@ class TestSqueueRegexFilters:
         assert [job["job_id"] for job in json.loads(result.stdout)] == [12345, 12346]
 
     def test_invalid_regex_has_usage_exit_code(self, runner: CliRunner) -> None:
-        result = runner.invoke(app, ["squeue", "--local", "--include", "["])
+        result = runner.invoke(app, ["squeue", "--cluster", "local", "--include", "["])
 
         assert result.exit_code == 2
         assert "invalid regular expression" in result.output.lower()
@@ -320,7 +332,7 @@ class TestSqueueJobIdFilter:
             client.queue.return_value = mock_jobs
             mock_slurm.return_value = client
             result = runner.invoke(
-                app, ["squeue", "--local", "-j", "12346", "--format", "json"]
+                app, ["squeue", "--cluster", "local", "-j", "12346", "--format", "json"]
             )
         assert result.exit_code == 0
         data = json.loads(result.stdout)
@@ -343,7 +355,7 @@ class TestSqueueIterate:
             client = MagicMock()
             client.queue.return_value = mock_jobs
             mock_slurm.return_value = client
-            result = runner.invoke(app, ["squeue", "--local", "-i", "0"])
+            result = runner.invoke(app, ["squeue", "--cluster", "local", "-i", "0"])
         assert result.exit_code != 0
         combined = result.stdout + (result.stderr or "")
         assert "positive" in combined.lower()
@@ -359,7 +371,7 @@ class TestSqueueIterate:
             client.queue.return_value = mock_jobs
             mock_slurm.return_value = client
             result = runner.invoke(
-                app, ["squeue", "--local", "-i", "5", "--format", "json"]
+                app, ["squeue", "--cluster", "local", "-i", "5", "--format", "json"]
             )
         assert result.exit_code != 0
         combined = result.stdout + (result.stderr or "")
@@ -391,7 +403,7 @@ class TestSqueueIterate:
             mock_slurm.return_value = client
             result = runner.invoke(
                 app,
-                ["squeue", "--local", "-i", "0.01"],
+                ["squeue", "--cluster", "local", "-i", "0.01"],
                 env={"COLUMNS": "200"},
             )
 

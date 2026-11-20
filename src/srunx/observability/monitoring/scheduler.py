@@ -350,7 +350,7 @@ class ScheduledReporter:
                 .replace("+00:00", "Z")
             )
 
-            init_db(delete_legacy=False)
+            init_db()
             conn = open_connection()
             try:
                 counts = JobRepository(conn).count_by_status_in_range(

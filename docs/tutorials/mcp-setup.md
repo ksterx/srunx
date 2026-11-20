@@ -15,7 +15,7 @@ interaction.
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
 - [uv](https://docs.astral.sh/uv/) installed
-- A working SLURM cluster (local or via SSH profile)
+- A working SLURM cluster (local or via SSH), added with `srunx cluster add`
 
 ## Install srunx with the MCP extra
 
@@ -196,20 +196,21 @@ returns the SLURM job ID.
 
 ### Using a Remote Cluster
 
-If your SLURM cluster is remote, ensure you have an SSH profile configured
-(see [Sync](../how-to/sync.md) for mount setup). Then name the cluster in your
-prompt:
+If your SLURM cluster is remote, add it as an SSH cluster first
+(`srunx cluster add dgx --host <ssh-alias>`; see [Sync](../how-to/sync.md) for
+project mounts). Then name the cluster in your prompt:
 
 ```text
 > List my jobs on the dgx cluster
 ```
 
-Claude Code passes `transport="dgx"` to the underlying tools, routing
-commands through that SSH profile. MCP reads neither environment variables
-nor any "current" profile, so the profile must be named explicitly.
+Claude Code passes `cluster="dgx"` to the underlying tools, routing
+commands to that cluster. Every MCP tool that talks to SLURM needs an explicit
+`cluster` — MCP reads neither `$SRUNX_CLUSTER`, the project's `cluster`, nor
+`default_cluster`. The agent can call `list_clusters` to see what is configured.
 
 ## Next Steps
 
 - [MCP Usage](../how-to/mcp-usage.md) -- task-oriented recipes for common operations
-- [MCP Tools](../reference/mcp-tools.md) -- complete reference for all 14 MCP tools
+- [MCP Tools](../reference/mcp-tools.md) -- complete reference for all 15 MCP tools
 - [MCP Architecture](../explanation/mcp-architecture.md) -- how the MCP integration works under the hood

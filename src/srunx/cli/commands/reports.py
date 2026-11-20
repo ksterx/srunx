@@ -21,7 +21,7 @@ from rich.console import Console
 from rich.table import Table
 
 from srunx.cli._helpers.state_colors import colorize_state
-from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
+from srunx.cli._helpers.transport_options import ClusterOpt, QuietOpt
 from srunx.common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -42,21 +42,18 @@ def history(
     limit: Annotated[
         int, typer.Option("--limit", "-n", help="Number of jobs to show")
     ] = 50,
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
+    cluster: ClusterOpt = None,
     quiet: QuietOpt = False,
 ) -> None:
     """Show srunx's own submission history.
 
     Lists jobs that srunx itself submitted (from the local SQLite at
-    ``$XDG_CONFIG_HOME/srunx/srunx.db``). Jobs submitted outside srunx
+    ``$XDG_STATE_HOME/srunx/srunx.db``). Jobs submitted outside srunx
     — e.g. from a manual ``sbatch`` on the cluster — are **not**
     listed. Use the cluster's own ``sacct`` for that.
 
-    With ``--profile <name>`` (or ``$SRUNX_SSH_PROFILE`` / current
-    profile), results are filtered to jobs that ran against that
-    cluster. Without a transport selector, history from every
-    transport is shown — matching legacy behaviour.
+    With ``--cluster <name>`` results are filtered to that cluster;
+    otherwise history from every cluster is shown.
     """
     try:
         from srunx.cli._helpers.transport import (
@@ -70,9 +67,11 @@ def history(
         # for SSH profiles. ``peek_scheduler_key`` gives us the WHERE
         # filter without paying the round-trip cost of opening an
         # SSH adapter just to read the local SQLite history.
-        source = resolve_transport_source(profile=profile, local=local)
-        scheduler_key = peek_scheduler_key(profile=profile, local=local)
-        emit_transport_banner(label=scheduler_key, source=source, quiet=quiet)
+        scheduler_key: str | None = None
+        if cluster:
+            source = resolve_transport_source(cluster=cluster)
+            scheduler_key = peek_scheduler_key(cluster=cluster)
+            emit_transport_banner(label=cluster, source=source, quiet=quiet)
 
         # ``-j`` is pushed down into the SQL query so it finds jobs
         # older than ``--limit``. Codex follow-up #2 on PR #134.
@@ -210,8 +209,7 @@ def sacct(
         str,
         typer.Option("--format", "-f", help="Output format: table or json."),
     ] = "table",
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
+    cluster: ClusterOpt = None,
     quiet: QuietOpt = False,
 ) -> None:
     """Query SLURM accounting via the real ``sacct`` binary.
@@ -232,7 +230,7 @@ def sacct(
         srunx sacct -u alice -s FAILED
         srunx sacct -a -S now-1day
         srunx sacct --show-steps
-        srunx sacct --profile dgx -j 9876 --format json
+        srunx sacct --cluster dgx -j 9876 --format json
     """
     import json
     from typing import cast
@@ -247,7 +245,7 @@ def sacct(
 
     try:
         job_ids = [int(j) for j in job_filter] if job_filter else None
-        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+        with resolve_transport(cluster=cluster, quiet=quiet) as rt:
             rows: list[SacctRow]
             if rt.transport_type == "ssh":
                 from srunx.slurm.clients.ssh import SlurmSSHClient

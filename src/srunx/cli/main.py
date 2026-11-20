@@ -11,7 +11,8 @@ from typing import Annotated
 import typer
 
 from srunx.cli._helpers.sbatch_passthrough import SbatchCommand
-from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
+from srunx.cli._helpers.transport_options import ClusterOpt, QuietOpt
+from srunx.cli.commands.cluster import cluster_app
 from srunx.cli.commands.config import config_app
 from srunx.cli.commands.jobs.gpus import gpus
 from srunx.cli.commands.jobs.sbatch import sbatch
@@ -25,7 +26,6 @@ from srunx.cli.commands.templates import template_app
 from srunx.cli.commands.ui import ui
 from srunx.cli.watch import watch_app
 from srunx.common.logging import configure_cli_logging
-from srunx.ssh.cli.commands import ssh_app
 
 # Create the main Typer app
 app = typer.Typer(
@@ -71,7 +71,7 @@ flow_app = typer.Typer(help="Workflow management")
 app.add_typer(flow_app, name="flow")
 app.add_typer(config_app, name="config")
 app.add_typer(watch_app, name="watch")
-app.add_typer(ssh_app, name="ssh")
+app.add_typer(cluster_app, name="cluster")
 app.add_typer(template_app, name="template")
 app.add_typer(snapshot_app, name="snapshot")
 
@@ -181,9 +181,12 @@ def flow_run(
             ),
         ),
     ] = None,
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
+    cluster: ClusterOpt = None,
     quiet: QuietOpt = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Approve a first sync to a new remote path"),
+    ] = False,
 ) -> None:
     """Execute workflow from YAML file."""
     # Delegate to the shared implementation in srunx.cli.workflow which
@@ -207,10 +210,10 @@ def flow_run(
         fail_fast=fail_fast,
         max_parallel=max_parallel,
         debug=debug,
-        profile=profile,
-        local=local,
+        cluster=cluster,
         quiet=quiet,
         sync=sync,
+        yes=yes,
     )
 
 

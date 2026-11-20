@@ -1,4 +1,4 @@
-"""CLI implementations for ``srunx ssh secret set/list/unset``.
+"""CLI implementations for ``srunx cluster secret set/list/unset``.
 
 Thin wrappers over :class:`srunx.ssh.core.secret_store.RemoteSecretStore`:
 acquire the value (hidden getpass prompt or ``--from-env``), validate the KEY
@@ -15,65 +15,32 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from ..core.config import ConfigManager
+from ..core.config import ConfigManager, connection_params
 from ..core.connection import SSHConnection
 from ..core.file_manager import RemoteFileManager
 from ..core.secret_store import RemoteSecretStore, _validate_key, _validate_value
-from ..core.ssh_config import get_ssh_config_host
 
 console = Console()
 
 
 def _build_store(
-    profile_name: str, config: str | None
+    profile_name: str, config: str | None = None
 ) -> tuple[SSHConnection, RemoteSecretStore]:
-    """Resolve the profile's connection and return a (connection, store) pair.
+    """Resolve the cluster's connection and return a (connection, store) pair.
 
     The connection is NOT yet connected — the caller opens it. Raises
-    ``typer.Exit`` when the profile is missing.
+    ``typer.Exit`` when the cluster is missing or not an SSH cluster.
     """
-    config_manager = ConfigManager(config)
-    profile = config_manager.get_profile(profile_name)
+    profile = ConfigManager().get_profile(profile_name, with_mounts=False)
     if not profile:
-        console.print(f"[red]Error: Profile '{profile_name}' not found[/red]")
+        console.print(f"[red]Error: SSH cluster '{profile_name}' not found[/red]")
         raise typer.Exit(1)
-
-    # Resolve connection params: ssh_host alias (from ~/.ssh/config) or direct.
-    if profile.ssh_host:
-        ssh_host = get_ssh_config_host(profile.ssh_host, None)
-        if not ssh_host:
-            console.print(
-                f"[red]Error: SSH host '{profile.ssh_host}' not found in ~/.ssh/config[/red]"
-            )
-            raise typer.Exit(1)
-        hostname = ssh_host.hostname or profile.ssh_host
-        username = ssh_host.user or ""
-        key_filename = ssh_host.identity_file
-        port = ssh_host.port or 22
-        proxy_jump = ssh_host.proxy_jump
-    else:
-        hostname = profile.hostname
-        username = profile.username
-        key_filename = profile.key_filename or None
-        port = profile.port
-        proxy_jump = profile.proxy_jump
-        resolved = get_ssh_config_host(profile.hostname, None)
-        if resolved and resolved.hostname:
-            hostname = resolved.hostname
-            if resolved.identity_file and not key_filename:
-                key_filename = resolved.identity_file
-            if resolved.port:
-                port = resolved.port
-            if resolved.proxy_jump and not proxy_jump:
-                proxy_jump = resolved.proxy_jump
-
-    connection = SSHConnection(
-        hostname=hostname,
-        username=username,
-        key_filename=key_filename,
-        port=port,
-        proxy_jump=proxy_jump,
-    )
+    try:
+        params = connection_params(profile)
+    except ValueError as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
+    connection = SSHConnection(**params)
     files = RemoteFileManager(connection)
     store = RemoteSecretStore(connection, files)
     return connection, store
@@ -120,7 +87,7 @@ def set_secret_impl(
             store.set_secret(key, value)
 
         console.print(
-            f"[green]✅ Secret '{key}' stored for profile '{profile_name}'[/green]"
+            f"[green]✅ Secret '{key}' stored for cluster '{profile_name}'[/green]"
         )
 
     except typer.Exit:
@@ -139,12 +106,12 @@ def list_secrets_impl(profile_name: str, config: str | None = None) -> None:
 
         if not keys:
             console.print(
-                f"[yellow]No secrets set for profile '{profile_name}'[/yellow]"
+                f"[yellow]No secrets set for cluster '{profile_name}'[/yellow]"
             )
-            console.print("[dim]Use 'srunx ssh secret set' to add a secret[/dim]")
+            console.print("[dim]Use 'srunx cluster secret set' to add a secret[/dim]")
             return
 
-        table = Table(title=f"Secrets for Profile '{profile_name}'")
+        table = Table(title=f"Secrets for cluster '{profile_name}'")
         table.add_column("Name", style="cyan", no_wrap=True)
         for key in keys:
             table.add_row(key)
@@ -171,7 +138,7 @@ def unset_secret_impl(profile_name: str, key: str, config: str | None = None) ->
             store.unset_secret(key)
 
         console.print(
-            f"[green]✅ Secret '{key}' removed from profile '{profile_name}'[/green]"
+            f"[green]✅ Secret '{key}' removed from cluster '{profile_name}'[/green]"
         )
 
     except typer.Exit:

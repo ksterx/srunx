@@ -11,8 +11,6 @@ from pydantic import BaseModel
 
 from srunx.common.logging import get_logger
 
-from ..config import get_web_config
-
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/files", tags=["files"])
@@ -140,6 +138,7 @@ async def list_mounts_config() -> list[dict[str, Any]]:
             "local": m.local,
             "remote": m.remote,
             "exclude_patterns": m.exclude_patterns,
+            "sync": m.sync,
         }
         for m in profile.mounts
     ]
@@ -155,74 +154,6 @@ async def list_mounts() -> list[MountInfo]:
     if profile is None or not profile.mounts:
         return []
     return [MountInfo(name=m.name, remote=m.remote) for m in profile.mounts]
-
-
-@router.post("/mounts")
-async def add_mount(body: dict) -> dict:
-    """Add a new mount to the current SSH profile."""
-    name = body.get("name", "")
-    local = body.get("local", "")
-    remote = body.get("remote", "")
-    exclude_patterns: list[str] = body.get("exclude_patterns", [])
-
-    if not name or not local or not remote:
-        raise HTTPException(422, "name, local, and remote are required")
-
-    from srunx.ssh.core.config import ConfigManager, MountConfig
-
-    profile = await anyio.to_thread.run_sync(_get_current_profile)
-    if profile is None:
-        raise HTTPException(503, "No SSH profile configured")
-
-    # Check duplicate
-    if any(m.name == name for m in profile.mounts):
-        raise HTTPException(409, f"Mount '{name}' already exists")
-
-    try:
-        mount = MountConfig(
-            name=name,
-            local=local,
-            remote=remote,
-            exclude_patterns=exclude_patterns,
-        )
-    except Exception as e:
-        raise HTTPException(422, str(e)) from e
-
-    cm = ConfigManager()
-    profile_name = get_web_config().ssh_profile or cm.get_current_profile_name()
-    if not profile_name:
-        raise HTTPException(503, "No SSH profile configured")
-    pname = profile_name  # bind for lambda
-    await anyio.to_thread.run_sync(lambda: cm.add_profile_mount(pname, mount))
-
-    return {
-        "name": mount.name,
-        "local": mount.local,
-        "remote": mount.remote,
-        "exclude_patterns": mount.exclude_patterns,
-    }
-
-
-@router.delete("/mounts/{mount_name}")
-async def remove_mount(mount_name: str) -> dict[str, str]:
-    """Remove a mount from the current SSH profile."""
-    from srunx.ssh.core.config import ConfigManager
-
-    profile = await anyio.to_thread.run_sync(_get_current_profile)
-    if profile is None:
-        raise HTTPException(503, "No SSH profile configured")
-
-    if not any(m.name == mount_name for m in profile.mounts):
-        raise HTTPException(404, f"Mount '{mount_name}' not found")
-
-    cm = ConfigManager()
-    profile_name = get_web_config().ssh_profile or cm.get_current_profile_name()
-    if not profile_name:
-        raise HTTPException(503, "No SSH profile configured")
-    pname = profile_name  # bind for lambda
-    await anyio.to_thread.run_sync(lambda: cm.remove_profile_mount(pname, mount_name))
-
-    return {"status": "deleted", "name": mount_name}
 
 
 @router.get("/browse")

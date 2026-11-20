@@ -27,7 +27,7 @@ def get_job_repo(
             repo.record_submission(job_id=12345, name="t", status="PENDING",
                                     submission_source="cli")
     """
-    init_db(db_path, delete_legacy=False)
+    init_db(db_path)
     conn = open_connection(db_path)
     try:
         yield JobRepository(conn), conn

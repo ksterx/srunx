@@ -8,9 +8,10 @@ either (1) finalizes sweeps whose cells are all already terminal, or
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -47,17 +48,43 @@ class ExecutorFactoryBundle:
     - ``cleanup``: optional finalizer invoked after the sweep resume
       returns (success or crash). Used by Web to close a per-sweep
       SSH pool; ``None`` means "nothing to clean up".
+    - ``config`` / ``project_root``: the effective config and project the
+      sweep was submitted under; kept active for the whole resume so cells
+      reloaded from YAML get the same defaults as the original run.
     """
 
     factory: WorkflowJobExecutorFactory
     submission_context: SubmissionRenderContext | None = None
     cleanup: Callable[[], None] | None = None
+    config: Any = None
+    project_root: str | None = None
+
+
+@contextlib.contextmanager
+def _bundle_scope(bundle: ExecutorFactoryBundle | None) -> Iterator[None]:
+    """Activate the bundle's project + config around a resume."""
+    from srunx.common.config import activate_config, project_scope
+
+    if bundle is None or bundle.config is None:
+        yield
+        return
+    with project_scope(bundle.project_root), activate_config(bundle.config):
+        yield
 
 
 # Provider signature: given a :class:`SweepRun`, return a bundle to wire
 # into the resumed orchestrator, or ``None`` to keep the legacy local
 # ``Slurm`` behaviour (CLI-originated sweeps).
 ExecutorFactoryProvider = Callable[[SweepRun], ExecutorFactoryBundle | None]
+
+
+class SweepRecoveryRefused(RuntimeError):
+    """Raised by a provider when the sweep's target cannot be re-established.
+
+    The reconciler then leaves the sweep untouched (no resume) instead of
+    falling back to local Slurm, which could submit cells to the wrong
+    cluster.
+    """
 
 
 class SweepReconciler:
@@ -258,7 +285,11 @@ class SweepReconciler:
         lifespan-startup caller (synchronous) blocks until the resume
         task group has scheduled every pending cell.
         """
-        bundle = cls._resolve_bundle(sweep, executor_factory_provider)
+        try:
+            bundle = cls._resolve_bundle(sweep, executor_factory_provider)
+        except SweepRecoveryRefused as exc:
+            logger.warning(f"reconciler: not resuming sweep {sweep_run_id}: {exc}")
+            return
         try:
             try:
                 orch = cls._build_orchestrator(sweep_run_id, sweep_row, sweep, bundle)
@@ -272,10 +303,12 @@ class SweepReconciler:
                 return
 
             async def _resume() -> None:
-                await orch.resume_from_db(sweep_run_id, pending_cells)
+                with _bundle_scope(bundle):
+                    await orch.resume_from_db(sweep_run_id, pending_cells)
 
             try:
-                anyio.run(_resume)
+                with _bundle_scope(bundle):
+                    anyio.run(_resume)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     f"reconciler: sweep {sweep_run_id} resume raised: {exc!r}"
@@ -300,7 +333,11 @@ class SweepReconciler:
         to a worker thread per :meth:`SweepOrchestrator._run_cell`, so
         the lifespan task group stays responsive while cells run.
         """
-        bundle = cls._resolve_bundle(sweep, executor_factory_provider)
+        try:
+            bundle = cls._resolve_bundle(sweep, executor_factory_provider)
+        except SweepRecoveryRefused as exc:
+            logger.warning(f"reconciler: not resuming sweep {sweep_run_id}: {exc}")
+            return
         try:
             try:
                 orch = cls._build_orchestrator(sweep_run_id, sweep_row, sweep, bundle)
@@ -314,7 +351,8 @@ class SweepReconciler:
                 return
 
             try:
-                await orch.resume_from_db(sweep_run_id, pending_cells)
+                with _bundle_scope(bundle):
+                    await orch.resume_from_db(sweep_run_id, pending_cells)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     f"reconciler: sweep {sweep_run_id} resume raised: {exc!r}"
@@ -338,6 +376,8 @@ class SweepReconciler:
             return None
         try:
             return executor_factory_provider(sweep)
+        except SweepRecoveryRefused:
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 f"reconciler: executor_factory_provider raised for sweep "

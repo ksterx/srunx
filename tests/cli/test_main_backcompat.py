@@ -15,15 +15,11 @@ from typer.testing import CliRunner
 from srunx.cli.main import app
 
 
-class TestDefaultPathSilentBanner:
-    """AC-10.2: flag-less CLI must not emit a transport banner.
+class TestDefaultClusterBanner:
+    """Cluster selection is never silent: the default cluster is announced
+    on stderr (stdout stays clean for scripting)."""
 
-    The banner would change stderr byte-for-byte compared to pre-transport
-    CLI output; legacy scripts that diff stderr (and our own golden tests)
-    must not see any new line.
-    """
-
-    def test_sbatch_emits_no_banner_on_default_path(self):
+    def test_sbatch_announces_default_cluster(self):
         runner = CliRunner()
         with patch("srunx.slurm.local.Slurm") as slurm_cls:
             client = MagicMock()
@@ -33,11 +29,10 @@ class TestDefaultPathSilentBanner:
             slurm_cls.return_value = client
             result = runner.invoke(app, ["sbatch", "--wrap", "echo hi"])
         assert result.exit_code == 0
-        # Banner suppression: no ``●`` bullet + no ``via`` source string.
-        assert "via" not in result.stderr
-        assert "via" not in result.output
+        assert "via default_cluster" in result.stderr
+        assert "via" not in result.stdout
 
-    def test_squeue_emits_no_banner_on_default_path(self):
+    def test_squeue_announces_default_cluster(self):
         runner = CliRunner()
         with patch("srunx.slurm.local.Slurm") as slurm_cls:
             client = MagicMock()
@@ -45,22 +40,22 @@ class TestDefaultPathSilentBanner:
             slurm_cls.return_value = client
             result = runner.invoke(app, ["squeue"])
         assert result.exit_code == 0
-        assert "via" not in result.stderr
+        assert "via default_cluster" in result.stderr
 
 
 class TestExplicitSourceEmitsBanner:
     """AC-7.3: explicit transport sources print a banner on stderr."""
 
-    def test_local_flag_emits_banner(self):
+    def test_cluster_flag_emits_banner(self):
         runner = CliRunner()
         with patch("srunx.slurm.local.Slurm") as slurm_cls:
             client = MagicMock()
             client.queue.return_value = []
             slurm_cls.return_value = client
-            result = runner.invoke(app, ["squeue", "--local"])
+            result = runner.invoke(app, ["squeue", "--cluster", "local"])
         assert result.exit_code == 0
         assert "local" in result.stderr
-        assert "via --local" in result.stderr
+        assert "via --cluster" in result.stderr
 
 
 class TestSSHHappyPath:
@@ -99,7 +94,7 @@ class TestSSHHappyPath:
             "srunx.transport.registry._build_ssh_handle",
             return_value=(handle, pool),
         ):
-            result = runner.invoke(app, ["scancel", "--profile", "dgx", "12345"])
+            result = runner.invoke(app, ["scancel", "--cluster", "dgx", "12345"])
         assert result.exit_code == 0, result.output + result.stderr
         job_ops.cancel.assert_called_once_with(12345)
 
@@ -109,7 +104,7 @@ class TestProfileWhitespaceNormalized:
 
     def test_whitespace_only_profile_rejected(self):
         runner = CliRunner()
-        result = runner.invoke(app, ["squeue", "--profile", "   "])
+        result = runner.invoke(app, ["squeue", "--cluster", "   "])
         assert result.exit_code != 0
         # Error message from typer.BadParameter or similar
         combined = (result.output + result.stderr).lower()

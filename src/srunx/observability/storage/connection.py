@@ -2,19 +2,16 @@
 
 Key invariants enforced here:
 
-- DB path resolution honours ``$XDG_CONFIG_HOME`` with a ``~/.config`` fallback.
+- The DB lives at ``<state_dir>/srunx.db`` (:func:`srunx.common.paths.db_path`).
 - Every opened connection applies ``foreign_keys=ON``, ``journal_mode=WAL``,
   and ``busy_timeout=5000``.
 - The DB file is created with mode ``0o600`` and its parent directory with
   mode ``0o700``.
-- :func:`init_db` deletes the legacy ``~/.srunx/history.db`` (or renames it
-  to ``.broken`` on OSError) — no backward-compat shim.
 """
 
 from __future__ import annotations
 
 import contextlib
-import os
 import sqlite3
 import stat
 from collections.abc import Iterator
@@ -25,26 +22,11 @@ from srunx.common.logging import get_logger
 logger = get_logger(__name__)
 
 
-LEGACY_HISTORY_DB_PATH = Path.home() / ".srunx" / "history.db"
-
-
-def get_config_dir() -> Path:
-    """Return the XDG-compliant srunx config directory.
-
-    Resolves ``$XDG_CONFIG_HOME/srunx`` when the env var is set, otherwise
-    ``~/.config/srunx`` on POSIX, ``~/AppData/Roaming/srunx`` on Windows.
-    """
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    if xdg:
-        return Path(xdg).expanduser() / "srunx"
-    if os.name == "posix":
-        return Path.home() / ".config" / "srunx"
-    return Path.home() / "AppData" / "Roaming" / "srunx"
-
-
 def get_db_path() -> Path:
-    """Return the DB path: ``<config_dir>/srunx.observability.storage``."""
-    return get_config_dir() / "srunx.observability.storage"
+    """Return the DB path: ``<state_dir>/srunx.db``."""
+    from srunx.common import paths
+
+    return paths.db_path()
 
 
 def _ensure_parent_dir(path: Path) -> None:
@@ -135,31 +117,7 @@ def transaction(
         conn.commit()
 
 
-def _delete_legacy_history_db() -> None:
-    """Remove the legacy ``~/.srunx/history.db`` if present.
-
-    On OSError (permission / in-use), rename to ``.broken`` and log a
-    warning rather than block startup.
-    """
-    if not LEGACY_HISTORY_DB_PATH.exists():
-        return
-    try:
-        LEGACY_HISTORY_DB_PATH.unlink()
-        logger.info("Removed legacy history DB at {}", LEGACY_HISTORY_DB_PATH)
-    except OSError:
-        broken = LEGACY_HISTORY_DB_PATH.with_suffix(".db.broken")
-        try:
-            LEGACY_HISTORY_DB_PATH.rename(broken)
-            logger.warning("Could not remove legacy history DB; renamed to {}", broken)
-        except OSError as exc:
-            logger.warning(
-                "Could not remove or rename legacy history DB {}: {}",
-                LEGACY_HISTORY_DB_PATH,
-                exc,
-            )
-
-
-def init_db(db_path: Path | None = None, *, delete_legacy: bool = True) -> Path:
+def init_db(db_path: Path | None = None) -> Path:
     """Initialize the srunx SQLite DB.
 
     Steps:
@@ -167,9 +125,6 @@ def init_db(db_path: Path | None = None, *, delete_legacy: bool = True) -> Path:
     1. Resolve path and ensure parent directory exists (mode ``0o700``).
     2. Create the DB file if missing, set permissions to ``0o600``.
     3. Apply PRAGMAs and run outstanding migrations.
-    4. If ``delete_legacy`` is True (default), remove the legacy
-       ``~/.srunx/history.db``. Passing ``False`` is only used by tests
-       that want the helper to skip the legacy-cleanup path.
 
     Returns the resolved DB path for downstream callers.
     """
@@ -181,16 +136,12 @@ def init_db(db_path: Path | None = None, *, delete_legacy: bool = True) -> Path:
         apply_migrations(conn)
     finally:
         conn.close()
-    if delete_legacy:
-        _delete_legacy_history_db()
     return path
 
 
 @contextlib.contextmanager
 def initialized_connection(
     db_path: Path | None = None,
-    *,
-    delete_legacy: bool = True,
 ) -> Iterator[sqlite3.Connection]:
     """Yield a migration-applied SQLite connection, closed on exit.
 
@@ -200,7 +151,7 @@ def initialized_connection(
     schema is already at the target version, so repeated use from hot
     paths is safe.
     """
-    path = init_db(db_path, delete_legacy=delete_legacy)
+    path = init_db(db_path)
     conn = open_connection(path)
     try:
         yield conn

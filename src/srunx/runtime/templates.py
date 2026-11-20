@@ -28,9 +28,9 @@ def _user_templates_dir() -> Path:
     XDG_CONFIG_HOME-honouring root — flipping ``XDG_CONFIG_HOME`` isolates
     every user-state surface in one go (tests rely on this).
     """
-    from srunx.common.config import _user_config_dir
+    from srunx.common import paths
 
-    return _user_config_dir() / "templates"
+    return paths.templates_dir()
 
 
 def _user_meta_path() -> Path:

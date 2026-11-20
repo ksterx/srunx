@@ -22,7 +22,7 @@ Two functions live here:
 The ``delete`` default change is the user-visible behavioural fix for
 Codex's blocker #4 on PR #134. It later became the default of
 :meth:`RsyncClient.push` itself, so *no* caller inherits mirror
-semantics by accident — the manual ``srunx ssh sync`` command opts in
+semantics by accident — the manual ``srunx cluster sync`` command opts in
 via its ``--delete`` flag, and the Web file/template/job sync routes
 pass ``delete=True`` explicitly.
 """

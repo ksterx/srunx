@@ -85,7 +85,7 @@ class JobMonitor(BaseMonitor):
         :meth:`JobOperations.status`; subsequent calls within
         the same cycle return the cached result. Uses the Protocol
         method rather than :meth:`Slurm.retrieve` so SSH-backed
-        monitors (``srunx monitor jobs --profile ...``) work too —
+        monitors (``srunx watch jobs --cluster ...``) work too —
         ``retrieve`` is a local-Slurm-only legacy name.
         """
         if self._cached_jobs is not None:

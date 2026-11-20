@@ -24,7 +24,7 @@ def _fake_transport(rt):
     """Build a patch target for ``mcp_transport`` yielding *rt*."""
 
     @contextmanager
-    def _cm(transport, *, mount_name=None):
+    def _cm(cluster, **kwargs):
         yield rt
 
     return _cm
@@ -82,7 +82,7 @@ class TestSubmitJob:
     def test_submit_ssh_requires_work_dir(self):
         rt = _make_rt("ssh")
         with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
-            result = submit_job(command="python train.py", transport="prod")
+            result = submit_job(command="python train.py", cluster="prod")
         assert result["success"] is False
         assert "work_dir is required" in result["error"]
         rt.job_ops.submit.assert_not_called()
@@ -111,7 +111,7 @@ class TestSubmitJob:
             result = submit_job(
                 command="python train.py",
                 name="ssh_job",
-                transport="prod",
+                cluster="prod",
                 work_dir="/remote/workdir",
             )
         assert result["success"] is True
@@ -170,7 +170,7 @@ class TestListJobs:
         rt.job_ops.queue.return_value = [job1]
 
         with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
-            result = list_jobs(transport="prod")
+            result = list_jobs(cluster="prod")
         assert result["success"] is True
         assert result["count"] == 1
         assert result["jobs"][0]["job_id"] == "12345"
@@ -222,7 +222,7 @@ class TestGetJobStatus:
         rt.job_ops.status.return_value = job
 
         with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
-            result = get_job_status(job_id="12345", transport="prod")
+            result = get_job_status(job_id="12345", cluster="prod")
         assert result["success"] is True
         assert result["status"] == "COMPLETED"
         rt.job_ops.status.assert_called_once_with(12345)
@@ -252,7 +252,7 @@ class TestCancelJob:
     def test_ssh_cancel(self):
         rt = _make_rt("ssh")
         with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
-            result = cancel_job(job_id="12345", transport="prod")
+            result = cancel_job(job_id="12345", cluster="prod")
         assert result["success"] is True
         assert result["message"] == "Job cancelled"
         rt.job_ops.cancel.assert_called_once_with(12345)
@@ -261,7 +261,7 @@ class TestCancelJob:
         rt = _make_rt("ssh")
         rt.job_ops.cancel.side_effect = RuntimeError("permission denied")
         with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
-            result = cancel_job(job_id="12345", transport="prod")
+            result = cancel_job(job_id="12345", cluster="prod")
         assert result["success"] is False
         assert "permission denied" in result["error"]
 
@@ -295,7 +295,7 @@ class TestGetJobLogs:
             "found_files": ["a.out", "a.err"],
         }
         with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
-            result = get_job_logs(job_id="12345", transport="prod")
+            result = get_job_logs(job_id="12345", cluster="prod")
         assert result["success"] is True
         assert result["stdout"] == "stdout content"
         assert result["stderr"] == "stderr content"
@@ -322,7 +322,7 @@ class TestArrayJobIdGuard:
     def test_status_rejects_array_id_without_calling_ops(self):
         rt = _make_rt("ssh")
         with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
-            result = get_job_status(job_id="12345_7", transport="prod")
+            result = get_job_status(job_id="12345_7", cluster="prod")
         assert result["success"] is False
         assert "array task id" in result["error"].lower()
         rt.job_ops.status.assert_not_called()
@@ -330,7 +330,7 @@ class TestArrayJobIdGuard:
     def test_cancel_rejects_array_id_without_calling_ops(self):
         rt = _make_rt("ssh")
         with patch("srunx.mcp.tools.jobs.mcp_transport", _fake_transport(rt)):
-            result = cancel_job(job_id="12345_7", transport="prod")
+            result = cancel_job(job_id="12345_7", cluster="prod")
         assert result["success"] is False
         rt.job_ops.cancel.assert_not_called()
 
@@ -357,3 +357,58 @@ class TestArrayJobIdGuard:
             result = get_job_status(job_id="100")
         assert result["success"] is True
         rt.job_ops.status.assert_called_once_with(100)
+
+
+class TestExplicitCluster:
+    """MCP tools never fall back to ``default_cluster`` / $SRUNX_CLUSTER."""
+
+    def test_list_jobs_without_cluster_fails(self, monkeypatch):
+        monkeypatch.setenv("SRUNX_CLUSTER", "local")
+        result = list_jobs()
+        assert result["success"] is False
+        assert "cluster" in result["error"].lower()
+
+    def test_submit_without_cluster_fails(self):
+        result = submit_job(command="echo hi")
+        assert result["success"] is False
+
+    def test_unknown_cluster_fails(self):
+        result = cancel_job(job_id="1", cluster="nope")
+        assert result["success"] is False
+
+
+class TestSubmitDefaultsFromConfig:
+    def test_omitted_resources_come_from_project_defaults(self, tmp_path):
+        from srunx.common.config import clear_settings_cache
+
+        root = tmp_path / "proj"
+        (root / ".srunx").mkdir(parents=True)
+        (root / ".srunx" / "config.toml").write_text(
+            'name = "proj"\n\n'
+            "[defaults.resources]\n"
+            "nodes = 3\n\n"
+            "[clusters.local.defaults.resources]\n"
+            'partition = "gpu"\n'
+        )
+        clear_settings_cache()
+        captured = {}
+
+        def fake_submit(job, submission_context=None):
+            captured["job"] = job
+            job.job_id = 1
+            return job
+
+        with patch(
+            "srunx.slurm.local.Slurm.submit", side_effect=fake_submit, autospec=False
+        ):
+            result = submit_job(
+                command="echo hi",
+                cluster="local",
+                project=str(root),
+                gpus_per_node=2,
+            )
+        assert result["success"] is True, result
+        job = captured["job"]
+        assert job.resources.nodes == 3
+        assert job.resources.partition == "gpu"
+        assert job.resources.gpus_per_node == 2

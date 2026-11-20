@@ -12,7 +12,7 @@ sourcing the file in the SSH submission shell (see
 
 Design constraints:
 
-* Secrets never touch local ``config.json``, command-line arguments, or logs —
+* Secrets never touch local config files, command-line arguments, or logs —
   only SFTP writes and the submit-shell ``source`` carry the value.
 * Writes are atomic: the full new file is re-rendered from validated records
   to a temp path in the same directory, ``chmod 0600`` (exit-code-checked,

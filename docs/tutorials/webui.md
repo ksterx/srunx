@@ -9,7 +9,7 @@ This tutorial walks you through installing and starting the srunx Web UI to mana
 ## Prerequisites
 
 - srunx installed (see `installation`)
-- An SSH profile configured for your SLURM cluster (see [User Guide](../how-to/user_guide.md))
+- An SSH cluster configured for your SLURM cluster (see [User Guide](../how-to/user_guide.md#choosing-a-cluster))
 - Python 3.12+
 - Node.js 18+ (for frontend development only; not needed for production use)
 
@@ -24,29 +24,30 @@ uv add srunx
 uv sync
 ```
 
-## Step 2: Configure SSH Connection
+## Step 2: Configure a Cluster
 
-The Web UI connects to your SLURM cluster via SSH. If you already have an srunx SSH profile configured, the Web UI will use it automatically.
+The Web UI connects to your SLURM cluster via SSH, using the clusters defined
+in your user config (`$XDG_CONFIG_HOME/srunx/config.toml`).
 
-Check your current profile:
-
-``` bash
-srunx ssh list
-```
-
-If you don't have a profile, create one:
+List configured clusters:
 
 ``` bash
-srunx ssh add --profile myserver --hostname dgx.example.com --username researcher
+srunx cluster list
 ```
 
-Set it as the current profile:
+If you don't have one, add it (and make it the default):
 
 ``` bash
-# The Web UI auto-detects the current profile
-srunx ssh use --profile myserver
-# myserver is now the default
+srunx cluster add myserver --hostname dgx.example.com --username researcher --default
+srunx cluster test myserver
 ```
+
+You can also add clusters later from **Settings > Clusters**. In the UI the
+cluster is chosen in the sidebar.
+
+To use project mounts (file browser, sync, workflows), start the UI inside a
+project — a directory with `.srunx/config.toml` (create one with
+`srunx config init-project`) — or pass `--project PATH`.
 
 ## Step 3: Start the Server
 
@@ -61,14 +62,9 @@ srunx ui --port 3000
 srunx ui --host 0.0.0.0 --port 8080
 ```
 
-You should see:
-
-``` text
-INFO:     Using current SSH profile: myserver
-INFO:     Connecting to SLURM server via SSH...
-INFO:     SSH connection established
-INFO:     Uvicorn running on http://127.0.0.1:8000
-```
+You should see a startup banner with the URL, the default cluster, and the
+projects being served. No SSH connection is opened at startup; each cluster is
+connected on first use.
 
 Open <http://127.0.0.1:8000> in your browser.
 
@@ -156,15 +152,12 @@ The DAG builder lets you create workflows interactively instead of writing YAML 
 The Settings page lets you manage all srunx configuration from the browser.
 
 1.  Click **Settings** (gear icon) in the sidebar
-2.  On the **General** tab, review default resource allocation (nodes, GPUs, tasks per node, CPUs per task, memory, time limit, partition, nodelist), environment settings (conda, venv, environment variables), and general options (log directory, working directory)
-3.  Click **Save** to persist changes
-4.  Switch to the **SSH Profiles** tab to manage your connection profiles:
-    - Add new profiles with hostname, username, key file, and optional proxy jump
-    - Click **Activate** to switch the active profile
-    - Expand a profile to add or remove mount points
-5.  On the **Notifications** tab, enter a Slack webhook URL to receive job notifications
-6.  The **Environment** tab shows all active `SRUNX_*` variables (read-only)
-7.  The **Project** tab lists projects from your mounts — initialize `srunx.json` for per-project config overrides
+2.  On the **General** tab, pick a scope (User, User · this cluster, Project, Project · this cluster) and edit job defaults (resources, conda / venv, log and working directory). Each field shows its effective value and the file it comes from
+3.  Save to write only the changed keys to that file
+4.  Switch to the **Clusters** tab to add, edit, test, delete, or make a cluster the default
+5.  On the **Notifications** tab, manage notification endpoints (Slack webhooks)
+6.  The **Environment** tab shows srunx-related environment variables that are set (read-only)
+7.  The **Project** tab edits the selected project's `.srunx/config.toml`: its default cluster and, per cluster, the remote directory, sync, and excludes, plus the resolved mounts
 
 !!! note
     See [Settings](../how-to/settings.md) for detailed recipes for each tab.
@@ -176,7 +169,7 @@ The Settings page lets you manage all srunx configuration from the browser.
 The file explorer lets you browse project files and submit scripts directly to SLURM.
 
 1.  Click the **Explorer** button (folder icon) at the top of the sidebar
-2.  The explorer panel opens showing your configured mounts as tree roots
+2.  The explorer panel opens showing the selected project's mounts on the selected cluster as tree roots
 3.  Click a mount to expand it and browse the directory tree
 4.  Right-click a shell script (`.sh`, `.slurm`, `.sbatch`, `.bash`) and select **Submit as sbatch**
 5.  Review the script content, edit the job name if needed, and click **Submit**
@@ -187,20 +180,22 @@ The file explorer lets you browse project files and submit scripts directly to S
 
 ## Step 10: Set Up Mount Points
 
-Mount points let the file browser in the DAG builder map between local directories and remote paths on the SLURM cluster.
+Mount points let the file browser in the DAG builder map between local directories and remote paths on the SLURM cluster. They come from the project config.
 
-1.  Add a mount to your SSH profile:
+1.  In your project, set where the project lives on the cluster:
 
     ``` bash
-    srunx ssh mount add --profile myserver --mount ml-project \
-        --local ~/projects/ml-project \
-        --remote /home/researcher/ml-project
+    cd ~/projects/ml-project
+    srunx config init-project            # if .srunx/config.toml does not exist yet
+    srunx config set remote_dir /home/researcher/ml-project --cluster myserver --project
     ```
 
-2.  Verify the mount was created:
+    Without `remote_dir`, the project maps to a default workspace under the remote `$XDG_DATA_HOME/srunx/workspaces/`.
+
+2.  Verify the mount:
 
     ``` bash
-    srunx ssh mount list --profile myserver
+    srunx cluster show myserver
     ```
 
 3.  In the DAG builder, click a job node to open the property panel

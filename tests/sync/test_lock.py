@@ -32,7 +32,7 @@ from srunx.sync.lock import (
 @pytest.fixture(autouse=True)
 def isolated_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Force ``$XDG_CONFIG_HOME`` into tmp so locks land in a sandbox."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
 
 
 def test_acquire_release_basic() -> None:

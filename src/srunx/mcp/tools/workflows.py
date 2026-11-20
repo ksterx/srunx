@@ -174,8 +174,8 @@ def _resolve_ssh_context(
 ) -> tuple[Any, SubmissionRenderContext | None, Any]:
     """Resolve ``(adapter, submission_context, profile)`` for an SSH run.
 
-    The profile is taken from the caller's explicit ``transport`` (not the
-    current profile — MCP never reads ambient profile state). Returns the
+    The cluster is the caller's explicit ``cluster`` (MCP never reads
+    ambient selection state); mounts come from the caller's ``project``. Returns the
     :class:`SlurmSSHClient` for *profile_name*, the profile object (needed by
     the ShellJob guard), and a :class:`SubmissionRenderContext` pinned to the
     selected mount's ``remote`` as the default work dir — or ``None`` when no
@@ -190,7 +190,7 @@ def _resolve_ssh_context(
     cm = ConfigManager()
     profile = cm.get_profile(profile_name)
     if profile is None:
-        raise ValueError(f"SSH profile '{profile_name}' not found")
+        raise ValueError(f"SSH cluster '{profile_name}' not found")
 
     context: SubmissionRenderContext | None = None
     if mount is not None:
@@ -199,7 +199,9 @@ def _resolve_ssh_context(
             None,
         )
         if mount_found is None:
-            raise ValueError(f"Mount '{mount}' not found in profile '{profile_name}'")
+            raise ValueError(
+                f"Mount '{mount}' not found for the project on '{profile_name}'"
+            )
         # NOTE: default_work_dir is set to the mount's remote root here, unlike
         # the transport registry's _resolve_submission_context (which leaves it
         # None). Workflow jobs without an explicit work_dir should land in the
@@ -225,7 +227,8 @@ def run_workflow(
     dry_run: bool = False,
     args: dict[str, Any] | None = None,
     sweep: dict[str, Any] | None = None,
-    transport: str | None = None,
+    cluster: str | None = None,
+    project: str | None = None,
     mount: str | None = None,
 ) -> dict[str, Any]:
     """Execute a SLURM workflow from a YAML file.
@@ -245,16 +248,52 @@ def run_workflow(
             "max_parallel": int}``. When present, the request goes through
             :class:`SweepOrchestrator` and the response contains
             ``sweep_run_id``.
-        transport: Cluster selector — omit / "local" for local SLURM, or an
-            SSH profile name to run against that remote cluster. Orthogonal to
-            ``mount``: ``transport`` picks *which* cluster, ``mount`` picks the
-            path-translation root within it.
-        mount: Optional mount name within the SSH profile, enabling mount-aware
-            path translation for ``work_dir`` / ``log_dir``. Requires an SSH
-            ``transport``; passing ``mount`` with a local transport is an error.
+        cluster: Cluster name (required; see ``list_clusters``). Its
+            configured defaults fill job fields the YAML leaves unset.
+        project: Project root (directory holding ``.srunx/config.toml``);
+            supplies project defaults and the mounts ``mount`` refers to.
+        mount: Optional project mount name, enabling mount-aware path
+            translation for ``work_dir`` / ``log_dir``. Requires an SSH
+            cluster and ``project``.
     """
     try:
-        from srunx.mcp.transport import parse_transport
+        from srunx.common.config import activate_config, load_settings, project_scope
+        from srunx.mcp.transport import MCP_POLICY
+        from srunx.transport.registry import resolve_cluster_name
+
+        with project_scope(project):
+            cluster_name, kind = resolve_cluster_name(
+                cluster=cluster, policy=MCP_POLICY
+            )
+            with activate_config(load_settings().effective(cluster_name)):
+                return _run_workflow_impl(
+                    yaml_path=yaml_path,
+                    from_job=from_job,
+                    to_job=to_job,
+                    single_job=single_job,
+                    dry_run=dry_run,
+                    args=args,
+                    sweep=sweep,
+                    profile_name=cluster_name if kind == "ssh" else None,
+                    mount=mount,
+                )
+    except Exception as e:
+        return err(str(e))
+
+
+def _run_workflow_impl(
+    *,
+    yaml_path: str,
+    from_job: str | None,
+    to_job: str | None,
+    single_job: str | None,
+    dry_run: bool,
+    args: dict[str, Any] | None,
+    sweep: dict[str, Any] | None,
+    profile_name: str | None,
+    mount: str | None,
+) -> dict[str, Any]:
+    try:
         from srunx.runtime.workflow.runner import WorkflowRunner
         from srunx.slurm.ssh_executor import SlurmSSHExecutorPool
 
@@ -263,14 +302,12 @@ def run_workflow(
         # Also guard the YAML file's own args, which from_yaml merges + evaluates.
         reject_python_prefix_in_yaml_file(yaml_path)
 
-        # Resolve the cluster from the explicit ``transport`` (never the
-        # current profile). ``mount`` is orthogonal: it selects the
-        # path-translation root and is only meaningful on an SSH transport.
-        profile_name, _force_local = parse_transport(transport)
+        # ``mount`` selects the path-translation root and is only
+        # meaningful on an SSH cluster.
         if mount is not None and profile_name is None:
             return err(
-                "mount requires an SSH transport; pass transport='<profile>' "
-                "(there is no mount translation for local runs)"
+                "mount requires an SSH cluster (there is no mount translation "
+                "for local runs)"
             )
 
         submission_context: SubmissionRenderContext | None = None

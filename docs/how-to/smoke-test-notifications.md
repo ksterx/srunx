@@ -13,8 +13,9 @@ Estimated wall time: **~15 minutes**.
 
 ## Prerequisites
 
-- An SSH profile configured for a reachable SLURM cluster
-  (`srunx ssh list` shows it as current).
+- An SSH cluster configured for a reachable SLURM cluster and selected by
+  default (`srunx cluster list`; set it with `srunx cluster add ... --default`
+  or `$SRUNX_CLUSTER`).
 - A Slack Incoming Webhook URL you own — the adapter POSTs to it during
   the test, so use a test channel.
 - Local Python env with the latest changes installed:
@@ -26,11 +27,14 @@ Estimated wall time: **~15 minutes**.
 
 ## Procedure
 
-1. **Isolate the state DB.** The pollers will write to
-   `~/.config/srunx/srunx.observability.storage`. To keep the smoke clean:
+1. **Isolate the state DB.** The pollers write to `<state_dir>/srunx.db`
+   (default `$XDG_STATE_HOME/srunx/srunx.db`). To keep the smoke clean while
+   keeping your cluster config:
    ```bash
-   export XDG_CONFIG_HOME="$(mktemp -d)"
+   export XDG_STATE_HOME="$(mktemp -d)"
    ```
+   (If your user config sets `state_dir`, that wins over `XDG_STATE_HOME`;
+   comment it out for the test.)
 
 2. **Register an endpoint.** Either via the Web UI (Settings →
    Notifications) or the API:
@@ -45,7 +49,7 @@ Estimated wall time: **~15 minutes**.
    ```bash
    uv run srunx ui --port 8000
    ```
-   The banner should say `● connected`.
+   The startup banner should show the default cluster.
 
 4. **Submit a quick job via the CLI with an endpoint subscription.**
    Use `--preset all` — the `job.submitted` event is only delivered
@@ -104,7 +108,7 @@ Estimated wall time: **~15 minutes**.
 6. **Verify persistence.** Before inspecting, stop the web server (Ctrl+C)
    and reopen the DB directly:
    ```bash
-   sqlite3 "$XDG_CONFIG_HOME/srunx/srunx.observability.storage"
+   sqlite3 "$XDG_STATE_HOME/srunx/srunx.db"
    sqlite> SELECT id, status, attempt_count, delivered_at FROM deliveries;
    sqlite> SELECT from_status, to_status, source FROM job_state_transitions;
    ```

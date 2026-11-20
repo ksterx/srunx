@@ -119,7 +119,7 @@ class TestRecordSubmissionMetadata:
 @pytest.fixture
 def _isolated_db(tmp_path, monkeypatch):
     """Redirect the state DB to a per-test tmp dir."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     # Clear any cached config so the fresh XDG_CONFIG_HOME applies.
     import srunx.common.config
 

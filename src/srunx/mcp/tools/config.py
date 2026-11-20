@@ -1,4 +1,4 @@
-"""MCP tools: srunx config + SSH profile listing."""
+"""MCP tools: effective srunx configuration + cluster listing."""
 
 from __future__ import annotations
 
@@ -9,13 +9,30 @@ from srunx.mcp.helpers import err, ok
 
 
 @mcp.tool()
-def get_config() -> dict[str, Any]:
-    """Get the current srunx configuration including resource defaults and environment settings."""
-    try:
-        from srunx.common.config import get_config as _get_config
+def get_config(
+    cluster: str | None = None, project: str | None = None
+) -> dict[str, Any]:
+    """Get the effective job defaults for a cluster (and optionally a project).
 
-        config = _get_config()
+    Every value is reported with the config file it came from (``built-in``
+    when no file sets it).
+
+    Args:
+        cluster: Cluster whose cluster-specific defaults apply. Omit to see
+            only the global defaults.
+        project: Project root (directory holding ``.srunx/config.toml``).
+    """
+    try:
+        from srunx.common.config import load_settings, project_scope
+
+        with project_scope(project):
+            settings = load_settings(project_root=None, reload=True)
+            if cluster is not None:
+                settings.cluster(cluster)
+            config = settings.effective(cluster)
         return ok(
+            cluster=cluster,
+            project=str(settings.project_root) if settings.project_root else None,
             resources=config.resources.model_dump(),
             environment={
                 "conda": config.environment.conda,
@@ -24,42 +41,38 @@ def get_config() -> dict[str, Any]:
             },
             log_dir=config.log_dir,
             work_dir=config.work_dir,
+            sources=config.sources,
         )
     except Exception as e:
         return err(str(e))
 
 
 @mcp.tool()
-def list_ssh_profiles() -> dict[str, Any]:
-    """List all configured SSH connection profiles for remote SLURM clusters.
+def list_clusters(project: str | None = None) -> dict[str, Any]:
+    """List configured clusters (job targets).
 
-    Shows profile names, hostnames, and configured mount points.
+    With ``project``, each SSH cluster also lists that project's mounts on it
+    (the names ``sync_files`` / ``inspect_mount`` / ``run_workflow`` accept).
     """
     try:
-        from srunx.ssh.core.config import ConfigManager
+        from srunx.common.config import load_settings, project_scope
 
-        cm = ConfigManager()
-        profiles = cm.list_profiles()
-        current = cm.get_current_profile_name()
-
-        result = []
-        for name, profile in profiles.items():
-            mounts = [
-                {"name": m.name, "local": m.local, "remote": m.remote}
-                for m in profile.mounts
-            ]
-            result.append(
-                {
+        with project_scope(project):
+            settings = load_settings(reload=True)
+            result = []
+            for name, cfg in sorted(settings.clusters.items()):
+                entry: dict[str, Any] = {
                     "name": name,
-                    "hostname": profile.hostname,
-                    "username": profile.username,
-                    "port": profile.port,
-                    "description": profile.description,
-                    "is_current": name == current,
-                    "mounts": mounts,
+                    "transport": cfg.transport,
+                    "host": cfg.host or cfg.hostname,
+                    "description": cfg.description,
                 }
-            )
-
-        return ok(profiles=result, current=current, count=len(result))
+                if project and cfg.transport == "ssh":
+                    entry["mounts"] = [
+                        {"name": m.name, "local": m.local, "remote": m.remote}
+                        for m in settings.mounts(name)
+                    ]
+                result.append(entry)
+        return ok(clusters=result, count=len(result))
     except Exception as e:
         return err(str(e))

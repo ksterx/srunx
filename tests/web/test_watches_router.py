@@ -39,8 +39,8 @@ def client_and_db(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[tuple[TestClient, Path]]:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    db_path = init_db(delete_legacy=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    db_path = init_db()
 
     app = create_app()
     app.dependency_overrides[get_adapter] = lambda: mock_adapter

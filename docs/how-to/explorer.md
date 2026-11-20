@@ -12,7 +12,7 @@ Click the **Explorer** button (folder icon) at the top of the sidebar. The panel
 
 ## Browse Project Files
 
-The explorer shows one tree root per configured mount. Each mount corresponds to a local project directory.
+The explorer shows one tree root per mount of the project selected in the sidebar, on the selected cluster. Each mount corresponds to a local directory of that project.
 
 1.  Click a mount name to expand it and load the top-level entries
 2.  Click a folder to expand it (directories are loaded lazily on demand)
@@ -50,11 +50,14 @@ Each mount has a **Sync** button. Click it to push local files to the remote SLU
 
 ## Add Mounts
 
-The explorer shows mounts from the active SSH profile. To add mounts:
+Mounts come from the selected project's `.srunx/config.toml`. The project root
+is always a mount (mapped to `[clusters.<name>] remote_dir`, or the remote
+default workspace); extra ones are `[[clusters.<name>.mounts]]` entries. To set
+them up:
 
-- **From Settings**: Navigate to **Settings \> SSH Profiles**, expand a profile, and add a mount (see `settings`)
-- **From CLI**: `srunx ssh mount add --profile <profile> --mount <name> --local <path> --remote <path>`
-- **From DAG builder**: Click the gear icon in the workflow builder toolbar
+- **From Settings**: Navigate to **Settings \> Project** and set the remote directory, sync, and excludes per cluster (see [Settings](settings.md))
+- **From CLI**: `srunx config set remote_dir /abs/remote/path --cluster <name> --project`
+- **Extra mounts**: add a `[[clusters.<name>.mounts]]` table (`name`, `local`, `remote`, optional `sync` / `exclude`) to `.srunx/config.toml` — see [Project Synchronization](sync.md#mount-points)
 
 ## Keyboard Navigation
 

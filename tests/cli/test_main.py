@@ -146,8 +146,7 @@ class TestTyperCLI:
         assert "init" in result.stdout
 
     @patch("srunx.slurm.local.Slurm")
-    @patch("srunx.cli.commands.jobs.sbatch.get_config")
-    def test_sbatch_wrap_basic(self, mock_get_config, mock_slurm_class):
+    def test_sbatch_wrap_basic(self, mock_slurm_class):
         """``srunx sbatch --wrap "cmd"`` submits a Job that runs cmd via bash -c.
 
         Real ``sbatch --wrap`` invokes ``/bin/sh -c "<cmd>"`` on the
@@ -157,10 +156,6 @@ class TestTyperCLI:
         sbatch script ends up running ``srun bash -c '<cmd>'``.
         Closes #138.
         """
-        mock_config = Mock()
-        mock_config.log_dir = "logs"
-        mock_config.work_dir = None
-        mock_get_config.return_value = mock_config
 
         mock_slurm = Mock()
         mock_job = Mock()
@@ -184,10 +179,7 @@ class TestTyperCLI:
         assert submitted_job.command == ["bash", "-c", "python script.py"]
 
     @patch("srunx.slurm.local.Slurm")
-    @patch("srunx.cli.commands.jobs.sbatch.get_config")
-    def test_sbatch_wrap_preserves_shell_operators(
-        self, mock_get_config, mock_slurm_class
-    ):
+    def test_sbatch_wrap_preserves_shell_operators(self, mock_slurm_class):
         """``--wrap "cmd1 && cmd2"`` runs both commands on the compute node.
 
         Regression for #138: the old implementation passed the wrap
@@ -195,10 +187,6 @@ class TestTyperCLI:
         as ``srun cmd1 && cmd2``. ``cmd2`` would silently run on the
         submitting host, not the compute node.
         """
-        mock_config = Mock()
-        mock_config.log_dir = "logs"
-        mock_config.work_dir = None
-        mock_get_config.return_value = mock_config
 
         mock_slurm = Mock()
         mock_job = Mock(job_id=1, name="j", command=[])
@@ -262,15 +250,8 @@ class TestTyperCLI:
         )
 
     @patch("srunx.slurm.local.Slurm")
-    @patch("srunx.cli.commands.jobs.sbatch.get_config")
-    def test_sbatch_positional_script(
-        self, mock_get_config, mock_slurm_class, tmp_path
-    ):
+    def test_sbatch_positional_script(self, mock_slurm_class, tmp_path):
         """``srunx sbatch <script>`` submits a ShellJob referencing the file."""
-        mock_config = Mock()
-        mock_config.log_dir = "logs"
-        mock_config.work_dir = None
-        mock_get_config.return_value = mock_config
 
         script_path = tmp_path / "run.sh"
         script_path.write_text("#!/bin/bash\necho hi\n")
@@ -308,13 +289,8 @@ class TestTyperCLI:
         assert "mutually exclusive" in combined.lower()
 
     @patch("srunx.slurm.local.Slurm")
-    @patch("srunx.cli.commands.jobs.sbatch.get_config")
-    def test_sbatch_gres_sets_gpus_per_node(self, mock_get_config, mock_slurm_class):
-        """``--gres=gpu:4`` overrides ``--gpus-per-node`` (sbatch parity)."""
-        mock_config = Mock()
-        mock_config.log_dir = "logs"
-        mock_config.work_dir = None
-        mock_get_config.return_value = mock_config
+    def test_sbatch_gres_passed_through(self, mock_slurm_class):
+        """``--gres=gpu:4`` reaches sbatch unchanged."""
 
         mock_slurm = Mock()
         mock_job = Mock()
@@ -329,8 +305,9 @@ class TestTyperCLI:
         )
 
         assert result.exit_code == 0, result.stdout
-        submitted_job = mock_slurm.submit.call_args[0][0]
-        assert submitted_job.resources.gpus_per_node == 4
+        # --gres is passed through verbatim (no conversion, design §6).
+        kwargs = mock_slurm.submit.call_args.kwargs
+        assert kwargs["extra_sbatch_args"] == ["--gres=gpu:4"]
 
     @patch("srunx.slurm.local.Slurm")
     def test_scancel_command(self, mock_slurm_class):
@@ -340,7 +317,7 @@ class TestTyperCLI:
         mock_slurm.cancel.return_value = True
         mock_slurm_class.return_value = mock_slurm
 
-        result = self.runner.invoke(app, ["scancel", "12345"])
+        result = self.runner.invoke(app, ["scancel", "12345", "--cluster", "local"])
 
         assert result.exit_code == 0
         assert "Job 12345 cancelled successfully" in result.stdout
@@ -360,160 +337,99 @@ class TestTyperCLI:
         assert "No jobs in queue" in result.stdout
         mock_slurm.queue.assert_called_once()
 
-    @patch("srunx.cli.commands.config.get_config")
-    def test_config_show_command(self, mock_get_config):
-        """Test config show command."""
-        # Mock config
-        mock_config = Mock()
-        mock_config.log_dir = "logs"
-        mock_config.work_dir = "/tmp"
-        mock_config.resources = Mock()
-        mock_config.resources.nodes = 1
-        mock_config.resources.gpus_per_node = 0
-        mock_config.resources.ntasks_per_node = 1
-        mock_config.resources.cpus_per_task = 1
-        mock_config.resources.memory_per_node = None
-        mock_config.resources.time_limit = None
-        mock_config.resources.partition = None
-        mock_config.environment = Mock()
-        mock_config.environment.conda = None
-        mock_config.environment.venv = None
-        mock_config.environment.container = None
-        mock_get_config.return_value = mock_config
+    def test_config_show_command(self):
+        """``config show`` prints effective values with their sources."""
+        from tests.conftest import append_user_config
 
+        append_user_config('[defaults.resources]\npartition = "gpu"')
         result = self.runner.invoke(app, ["config", "show"])
+        assert result.exit_code == 0, result.output
+        assert "Cluster: local" in result.stdout
+        assert "resources.partition" in result.stdout
+        assert "'gpu'" in result.stdout
+        assert "built-in" in result.stdout
 
-        assert result.exit_code == 0
-        mock_get_config.assert_called_once()
-
-    @patch("srunx.cli.commands.config.get_config_paths")
-    def test_config_paths_command(self, mock_get_config_paths):
-        """Test config paths command."""
-        from pathlib import Path
-
-        # Mock paths
-        mock_paths = [Path("/home/user/.config/srunx/config.toml")]
-        mock_get_config_paths.return_value = mock_paths
+    def test_config_paths_command(self):
+        from srunx.common import paths
 
         result = self.runner.invoke(app, ["config", "paths"])
-
         assert result.exit_code == 0
-        assert "Configuration file paths" in result.stdout
-        mock_get_config_paths.assert_called_once()
+        assert str(paths.user_config_path()) in result.stdout
+        assert "state" in result.stdout
 
-    @patch("srunx.cli.commands.config.get_config_paths")
-    def test_config_init_writes_user_config_path(self, mock_get_config_paths, tmp_path):
-        """``srunx config init`` must write the *user* config file.
+    def test_config_init_writes_valid_user_config(self):
+        from srunx.common import paths
+        from srunx.common.config import clear_settings_cache, load_settings
 
-        :func:`srunx.common.config.get_config_paths` returns the three
-        config locations in **lowest → highest** precedence order:
-
-        0. system — ``/etc/srunx/config.json``
-        1. user   — ``$XDG_CONFIG_HOME/srunx/config.json``
-        2. project — ``./srunx.json``
-
-        ``config init`` picked ``paths[0]``, i.e. the system-wide file
-        that a normal (non-root) account cannot write to. The command
-        therefore died with ``Permission denied: '/etc/srunx'`` and
-        created no config file at all — and even when it did succeed
-        (as root) the file it wrote was the *lowest*-precedence layer,
-        so any user- or project-level config shadowed the file the
-        command had just created.
-        """
-        system_path = tmp_path / "etc" / "srunx" / "config.json"
-        user_path = tmp_path / "xdg" / "srunx" / "config.json"
-        project_path = tmp_path / "project" / "srunx.json"
-        mock_get_config_paths.return_value = [system_path, user_path, project_path]
-
+        path = paths.user_config_path()
+        path.unlink()
         result = self.runner.invoke(app, ["config", "init"])
-
         assert result.exit_code == 0, result.output
-        assert user_path.exists(), "config init must write the user config file"
-        assert not system_path.exists(), "config init must not write /etc/srunx"
-        assert not project_path.exists(), "config init must not write a project file"
+        assert path.exists()
+        clear_settings_cache()
+        assert "local" in load_settings().clusters
+        assert oct(path.stat().st_mode & 0o777) == "0o600"
+        assert oct(path.parent.stat().st_mode & 0o777) == "0o700"
 
-    @patch("srunx.cli.commands.config.get_config_paths")
-    def test_config_init_creates_valid_example_config(
-        self, mock_get_config_paths, tmp_path
-    ):
-        """The file ``config init`` writes must be the parseable example config."""
-        import json
+    def test_config_init_does_not_overwrite_without_force(self):
+        from srunx.common import paths
 
-        user_path = tmp_path / "xdg" / "srunx" / "config.json"
-        mock_get_config_paths.return_value = [
-            tmp_path / "etc" / "srunx" / "config.json",
-            user_path,
-            tmp_path / "project" / "srunx.json",
-        ]
-
+        before = paths.user_config_path().read_text()
         result = self.runner.invoke(app, ["config", "init"])
+        assert result.exit_code == 0
+        assert "already exists" in result.stdout
+        assert paths.user_config_path().read_text() == before
 
-        assert result.exit_code == 0, result.output
-        data = json.loads(user_path.read_text(encoding="utf-8"))
-        assert "resources" in data
-        assert "log_dir" in data
+    def test_config_set_delete_unset(self):
+        from srunx.common import paths
+        from srunx.common.config_store import ConfigStore
 
-    @patch("srunx.cli.commands.config.get_config_paths")
-    def test_config_init_force_preserves_ssh_profiles(
-        self, mock_get_config_paths, tmp_path
-    ):
-        """``--force`` resets srunx defaults but keeps SSH profiles.
-
-        The user config file is shared with ``ConfigManager``, so a blind
-        overwrite would delete every registered SSH profile.
-        """
-        import json
-
-        user_path = tmp_path / "xdg" / "srunx" / "config.json"
-        user_path.parent.mkdir(parents=True)
-        profiles = {"dgx": {"hostname": "dgx.example.com", "username": "me"}}
-        user_path.write_text(
-            json.dumps(
-                {
-                    "current_profile": "dgx",
-                    "profiles": profiles,
-                    "resources": {"nodes": 8},
-                }
-            ),
-            encoding="utf-8",
+        r = self.runner.invoke(
+            app, ["config", "set", "resources.partition", "gpu", "--cluster", "local"]
         )
-        mock_get_config_paths.return_value = [
-            tmp_path / "etc" / "srunx" / "config.json",
-            user_path,
-            tmp_path / "project" / "srunx.json",
-        ]
+        assert r.exit_code == 0, r.output
+        data = ConfigStore(paths.user_config_path()).read()
+        assert data["clusters"]["local"]["defaults"]["resources"]["partition"] == "gpu"
+        r = self.runner.invoke(app, ["config", "set", "resources.nodes", "4"])
+        assert r.exit_code == 0, r.output
+        assert (
+            ConfigStore(paths.user_config_path()).read()["defaults"]["resources"][
+                "nodes"
+            ]
+            == 4
+        )
+        r = self.runner.invoke(app, ["config", "unset", "resources.time_limit"])
+        assert r.exit_code == 0, r.output
+        assert ConfigStore(paths.user_config_path()).read()["defaults"]["resources"][
+            "unset"
+        ] == ["time_limit"]
+        r = self.runner.invoke(app, ["config", "delete", "resources.nodes"])
+        assert r.exit_code == 0, r.output
+        assert (
+            "nodes"
+            not in ConfigStore(paths.user_config_path()).read()["defaults"]["resources"]
+        )
 
-        result = self.runner.invoke(app, ["config", "init", "--force"])
+    def test_config_set_rejects_invalid_value(self):
+        r = self.runner.invoke(app, ["config", "set", "resources.nodes", "0"])
+        assert r.exit_code == 1
 
-        assert result.exit_code == 0, result.output
-        data = json.loads(user_path.read_text(encoding="utf-8"))
-        assert data["current_profile"] == "dgx"
-        assert data["profiles"] == profiles
-        assert data["resources"]["nodes"] == 1  # reset to the example value
-
-    @patch("srunx.cli.commands.config.get_config_paths")
-    def test_config_init_makes_config_dir_private(
-        self, mock_get_config_paths, tmp_path
-    ):
-        """The config dir may hold SSH profile details, so it must be 0700."""
-        user_path = tmp_path / "xdg" / "srunx" / "config.json"
-        mock_get_config_paths.return_value = [
-            tmp_path / "etc" / "srunx" / "config.json",
-            user_path,
-            tmp_path / "project" / "srunx.json",
-        ]
-
-        result = self.runner.invoke(app, ["config", "init"])
-
-        assert result.exit_code == 0, result.output
-        assert user_path.parent.stat().st_mode & 0o777 == 0o700
-
-    def test_sbatch_missing_job_source(self):
-        """sbatch requires either a positional script or --wrap."""
-        result = self.runner.invoke(app, ["sbatch"])
-        assert result.exit_code != 0
-        combined = (result.stdout or "") + (result.stderr or "")
-        assert "job source" in combined.lower() or "wrap" in combined.lower()
+    def test_config_init_project_and_project_set(self, tmp_path, monkeypatch):
+        (tmp_path / ".git").mkdir()
+        monkeypatch.chdir(tmp_path)
+        r = self.runner.invoke(app, ["config", "init-project", "--name", "demo"])
+        assert r.exit_code == 0, r.output
+        r = self.runner.invoke(app, ["config", "set", "cluster", "local", "--project"])
+        assert r.exit_code == 0, r.output
+        r = self.runner.invoke(
+            app,
+            ["config", "set", "remote_dir", "/r/demo", "--cluster", "dgx", "--project"],
+        )
+        assert r.exit_code == 0, r.output
+        text = (tmp_path / ".srunx" / "config.toml").read_text()
+        assert 'name = "demo"' in text
+        assert 'cluster = "local"' in text
+        assert 'remote_dir = "/r/demo"' in text
 
     def test_scancel_missing_job_id(self):
         """Test scancel command without required job ID."""
@@ -655,23 +571,14 @@ class TestNoContainerFlag:
         self.runner = CliRunner()
 
     @patch("srunx.slurm.local.Slurm")
-    @patch("srunx.cli.commands.jobs.sbatch.get_config")
-    def test_no_container_suppresses_config_default_on_sbatch(
-        self, mock_get_config, mock_slurm_class
-    ):
+    def test_no_container_suppresses_config_default_on_sbatch(self, mock_slurm_class):
         """Test --no-container on sbatch suppresses config default container."""
-        from srunx.common.config import SrunxConfig
+        from tests.conftest import append_user_config
 
-        # Config has a default container (use model_validate to avoid Pydantic
-        # class identity issues when tests run together)
-        mock_config = SrunxConfig.model_validate(
-            {
-                "environment": {
-                    "container": {"image": "default-image:latest", "runtime": "pyxis"}
-                }
-            }
+        append_user_config(
+            '[defaults.environment.container]\nimage = "default-image:latest"\n'
+            'runtime = "pyxis"'
         )
-        mock_get_config.return_value = mock_config
 
         # Mock Slurm client
         mock_slurm = Mock()
@@ -692,23 +599,14 @@ class TestNoContainerFlag:
         assert submitted_job.environment.container is None
 
     @patch("srunx.slurm.local.Slurm")
-    @patch("srunx.cli.commands.jobs.sbatch.get_config")
-    def test_container_runtime_override_on_sbatch(
-        self, mock_get_config, mock_slurm_class
-    ):
+    def test_container_runtime_override_on_sbatch(self, mock_slurm_class):
         """Test --container-runtime without --container overrides config default (T6.9)."""
-        from srunx.common.config import SrunxConfig
+        from tests.conftest import append_user_config
 
-        # Config has a default pyxis container (use model_validate to avoid Pydantic
-        # class identity issues when tests run together)
-        mock_config = SrunxConfig.model_validate(
-            {
-                "environment": {
-                    "container": {"image": "default-image:latest", "runtime": "pyxis"}
-                }
-            }
+        append_user_config(
+            '[defaults.environment.container]\nimage = "default-image:latest"\n'
+            'runtime = "pyxis"'
         )
-        mock_get_config.return_value = mock_config
 
         # Mock Slurm client
         mock_slurm = Mock()

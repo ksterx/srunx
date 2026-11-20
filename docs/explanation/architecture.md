@@ -14,15 +14,15 @@ srunx is organized as a modular Python library with clear separation of concerns
 src/srunx/
 ├── callbacks.py       # Callback base class (job state notifications)
 ├── utils.py           # Job status helpers
-├── common/            # Config, exceptions, logging
+├── common/            # Layered TOML config, XDG paths, exceptions, logging
 ├── domain/            # Pydantic models: Job / ShellJob / Workflow / JobStatus
 ├── runtime/           # Script rendering, submission planning, workflow runner, sweeps
 ├── slurm/             # SLURM wrappers: local client, SSH client, protocols, state parsing
-├── transport/         # Resolves local vs ssh:<profile>
+├── transport/         # Resolves a cluster name to its transport (local / ssh:<cluster>)
 ├── observability/     # Monitoring, notifications, SQLite state, background pollers
 ├── containers/        # Container runtime adapters (Pyxis, Apptainer)
-├── ssh/               # SSH profiles, SSH SLURM client, ProxyJump
-├── sync/              # rsync client, per-mount lock, owner marker, manifest
+├── ssh/               # SSH connection, SSH SLURM client, ProxyJump, remote secrets
+├── sync/              # rsync client, per-mount lock, owner marker, manifest, first-sync approval
 ├── snapshot/          # Per-commit read-only code snapshots on a cluster
 ├── cli/               # Command-line interface (Typer)
 ├── mcp/               # MCP server for AI agent integration
@@ -35,6 +35,10 @@ common`. A test in `tests/architecture/` enforces this layering.
 
 ## Two Execution Paths
 
+Every command targets a **cluster** — a `[clusters.<name>]` entry in the user
+(or system) config with `transport = "local"` or `"ssh"`. The CLI picks it from
+`--cluster`, `$SRUNX_CLUSTER`, the project's `cluster`, or `default_cluster`
+(and errors if none applies); the Web UI and MCP always name it explicitly.
 srunx has two independent paths for interacting with SLURM:
 
 **Local execution** (`srunx.slurm.local.LocalClient`)  
@@ -54,7 +58,8 @@ Scripts that have no file in a mount (`--wrap`, `--template`, Jinja-rendered
 ShellJobs) are uploaded to `$SRUNX_TEMP_DIR` and submitted from there.
 
 **rsync (subprocess)** — for mounted project directories  
-A profile's mounts map local directories to remote ones. `sbatch` and
+A project's mounts on a cluster (from `.srunx/config.toml`) map local
+directories to remote ones. `sbatch` and
 `flow run` rsync the touched mount (additive by default; `--delete` mirrors)
 under a per-mount lock, then run the script in place at its remote path. rsync
 provides delta transfers and exclude patterns, and works through ProxyJump via
@@ -183,11 +188,11 @@ injected dependencies:
   staged via SFTP.
 
 This keeps the local path and the SSH path on the **same code path**:
-the runner does not branch on execution mode. CLI and MCP sweeps
-without a `transport=` argument pass `executor_factory=None`, which
-preserves the pre-sweep behaviour bit-for-bit -- cells go through the
-`Slurm` singleton exactly as a non-swept workflow would. Web UI
-sweeps, and MCP sweeps with `transport=<profile>`, pass an
+the runner does not branch on execution mode. Sweeps on a local
+cluster pass `executor_factory=None`, which preserves the pre-sweep
+behaviour bit-for-bit -- cells go through the `Slurm` singleton exactly as
+a non-swept workflow would. CLI sweeps use the resolved cluster's executor
+factory; Web UI sweeps, and MCP sweeps on an SSH cluster, pass an
 `executor_factory` backed by a per-sweep `SlurmSSHExecutorPool`.
 
 ### SSH pool and mount-aware rendering
@@ -248,15 +253,16 @@ is a matter of rebuilding the orchestrator with the right
 
 The executor factory is reconstructed via an
 `executor_factory_provider` callback that the Web lifespan injects.
-The provider inspects the persisted sweep (submission source, mount
-profile) and returns either `None` (local path) or a fresh SSH pool
+The provider inspects the persisted sweep (submission source, cluster)
+and returns either `None` (local path) or a fresh SSH pool
 lease factory. This indirection exists because the reconciler itself
 must stay pure with respect to transport choice: it does not know about
-SSH profiles, and it should not have to.
+clusters, and it should not have to.
 
 ## DB schema migrations
 
-The SQLite schema at `$XDG_CONFIG_HOME/srunx/srunx.observability.storage` evolves through
+The SQLite schema at `<state_dir>/srunx.db` (default
+`$XDG_STATE_HOME/srunx/srunx.db`) evolves through
 numbered migrations. Each migration is applied idempotently and leaves a
 row in a `schema_migrations` table; the runtime refuses to start against
 a DB whose latest migration is unknown to the current binary.
@@ -359,8 +365,8 @@ flowchart TD
 
 Mount-based path resolution  
 The file browser bridges local development directories and remote SLURM
-paths. Mount points are stored in the SSH profile configuration and define
-a `local` path (on the developer's machine) and a `remote` path (on the
+paths. Mount points come from the selected project's config on the selected
+cluster and define a `local` path (on the developer's machine) and a `remote` path (on the
 SLURM cluster). When the user browses files, the backend reads the local
 filesystem under the mount root and returns entries with their computed
 remote paths. The frontend never sees local filesystem paths.
@@ -455,21 +461,29 @@ The Settings page is a tab-based configuration interface that exposes the full
 srunx config surface through the Web UI.
 
 Stateless per-request reads  
-The `ConfigManager` is instantiated fresh on every API request, reading
-config from disk each time. This avoids stale in-memory state when the user
-modifies config files outside the Web UI (e.g. via CLI). The tradeoff is
-slightly higher I/O per request, but SSH profile configs are small JSON
-files and the overhead is negligible.
+Settings are loaded from disk on every API request, so edits made outside the
+Web UI (e.g. via the CLI) are picked up immediately. Every request carries the
+cluster and project it is about (`?cluster=` / `?project=`); a middleware binds
+them to the request context, so there is no process-global "current" cluster
+or project and two browser tabs never affect each other.
 
-Mount-based project model  
-Projects are not derived from the current working directory (which is
-meaningless for a web server). Instead, each SSH profile mount defines a
-project: the mount's `local` directory is scanned for `srunx.json`.
-This makes project configuration remote-friendly — the same mount mapping
-used for file browsing and rsync sync also drives per-project settings.
+File-scoped edits  
+The UI never writes the merged, effective config back. `PATCH
+/api/config/file` edits individual keys of one file (the user config or the
+selected project's `.srunx/config.toml`) through the same TOML writer the CLI
+uses. Each read returns a version token; a write with a stale token gets
+`409 Conflict` instead of silently overwriting a concurrent change. `GET
+/api/config` reports the effective values together with the file each one came
+from.
+
+Explicit project model  
+Projects are not guessed per request from the server's working directory. The
+server serves a fixed set of project roots — the project containing the
+directory `srunx ui` was started from, plus every `--project PATH` /
+`SRUNX_WEB_PROJECTS` entry — and a request names one of them by project name.
 
 Environment variable read-only design  
-The `/api/config/env` endpoint exposes active `SRUNX_*` variables for
+The `/api/config/env` endpoint exposes srunx-related environment variables for
 inspection but does not allow modification. Environment variables are set
 at server startup and cannot be safely mutated at runtime. The UI makes
 this explicit by rendering the tab as read-only.
@@ -482,7 +496,8 @@ sidebar for browsing project files and submitting scripts to SLURM.
 Lazy directory loading  
 The explorer does not fetch the entire file tree upfront. Each directory
 is loaded on demand when the user clicks to expand it, calling
-`GET /api/files/browse?mount={name}&path={relative}` per expansion.
+`GET /api/files/browse?mount={name}&path={relative}` (plus the request's
+`cluster` / `project`) per expansion.
 This keeps initial load fast and avoids transferring large directory trees.
 
 Mount-scoped state isolation  
@@ -514,9 +529,26 @@ file browser:
 
 ## Configuration Hierarchy
 
-Configuration is loaded in order of precedence (lowest to highest):
+Configuration is TOML. Files (see `srunx config paths`):
 
-1.  System-wide: `/etc/srunx/config.json`
-2.  User-wide: `~/.config/srunx/config.json`
-3.  Project-wide: `srunx.json` in the working directory
-4.  Environment variables: `SRUNX_DEFAULT_*`
+1.  System: `/etc/srunx/config.toml`
+2.  User: `$XDG_CONFIG_HOME/srunx/config.toml` — clusters (connection
+    settings), `default_cluster`, defaults, notifications, sync, optional
+    `state_dir`, and personal per-project overrides
+3.  Project: `<root>/.srunx/config.toml` — `name`, `cluster`, defaults, and
+    per-cluster `remote_dir` / `sync` / `exclude` / `mounts` / `defaults`. It
+    cannot contain connection settings, so cloning a repository never makes
+    srunx connect to a host you have not configured. It is found by walking up
+    from the current directory, stopping at a git root or `$HOME`
+    (`--project PATH` overrides)
+
+Job defaults are merged from lowest to highest priority: built-in, system
+`defaults`, user `defaults`, user `clusters.<c>.defaults`, project `defaults`,
+project `clusters.<c>.defaults`, script `#SBATCH` / workflow job fields, and
+CLI flags. Any table can list `unset = [...]` keys to clear inherited values.
+Every effective value records the file it came from (`srunx config show`).
+
+State — the SQLite DB, sync locks, the remote-env cache, and approved sync
+targets — lives under `$XDG_STATE_HOME/srunx` or the user config's `state_dir`.
+
+The full design (in Japanese) is in [Clusters & Config Design](../design/clusters.md).

@@ -7,8 +7,8 @@ in PR #134's Codex-driven cleanup so the layering reads correctly
 remain re-exported from here for backward compatibility — every
 existing import site keeps working unchanged.
 
-Web-specific helpers — ``get_current_profile`` (resolves the active
-SSH profile from web config or :class:`ConfigManager`),
+Web-specific helpers — ``get_current_profile`` (the SSH view of the
+request's cluster, with the request project's mounts),
 ``find_mount`` (404-on-missing lookup), and
 ``resolve_mounts_for_workflow`` (longest-prefix mount inference for
 workflow jobs) — stay here.
@@ -29,24 +29,16 @@ from srunx.sync.mount_helpers import (
 
 
 def get_current_profile_name() -> str | None:
-    """Resolve the active SSH profile *name*.
+    """Name of the cluster the current request targets.
 
-    Checks ``SRUNX_SSH_PROFILE`` (via :func:`get_web_config`) first, then
-    falls back to :meth:`ConfigManager.get_current_profile_name`.
-
-    Exposed separately from :func:`get_current_profile` because
-    :class:`ServerProfile` does not carry its own name, yet the name is the
-    key :func:`~srunx.sync.lock.acquire_sync_lock` serialises on — a caller
-    that needs the lock needs the name, not just the profile.
+    Taken from the request's ``?cluster=`` (see :mod:`srunx.web.context`),
+    falling back to the configured default cluster. Exposed separately from
+    :func:`get_current_profile` because the name is the key
+    :func:`~srunx.sync.lock.acquire_sync_lock` serialises on.
     """
-    from srunx.ssh.core.config import ConfigManager
+    from .context import selected_cluster
 
-    from .config import get_web_config
-
-    name = get_web_config().ssh_profile
-    if not name:
-        name = ConfigManager().get_current_profile_name()
-    return name or None
+    return selected_cluster()
 
 
 def get_current_profile() -> ServerProfile | None:
@@ -95,7 +87,7 @@ def locked_sync_mount(
 
     Web routes that sync a mount on their own — the file browser, template
     submission, job submission — must queue on the same lock as every other
-    srunx writer (submission auto-sync, workflow runs, ``srunx ssh sync``, the
+    srunx writer (submission auto-sync, workflow runs, ``srunx cluster sync``, the
     MCP sync tool). Otherwise two syncs interleave and leave a mixed tree, and
     the MCP mirror preflight's "nothing changed between the check and the push"
     guarantee stops holding.
@@ -127,6 +119,15 @@ def locked_sync_mount(
     from srunx.sync.lock import acquire_sync_lock
 
     timeout = get_config().sync.lock_timeout_seconds
+    from srunx.sync.approval import ensure_approved
+
+    mount = find_mount(profile, mount_name)
+    if not mount.sync:
+        # Shared storage: the remote already sees the files.
+        return ""
+    # A sync from the UI is an explicit user action on a target shown in
+    # the UI, so it counts as approval of the target.
+    ensure_approved(profile_name, mount.local, mount.remote, assume_yes=True)
     with acquire_sync_lock(profile_name, mount_name, timeout=timeout):
         return sync_mount_by_name(profile, mount_name, delete=delete)
 

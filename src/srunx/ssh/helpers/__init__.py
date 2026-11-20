@@ -1,1 +1,1 @@
-"""SSH helper utilities for srunx ssh integration."""
+"""SSH helper utilities for srunx SSH clusters."""

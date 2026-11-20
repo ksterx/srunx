@@ -471,11 +471,12 @@ the cross-product before launching.
 
 ### Execution paths
 
-CLI and MCP sweeps (without a `transport=` argument) run cells through the
-local `Slurm` singleton. Web UI sweeps, and MCP sweeps that specify
-`transport=<profile>`, route every cell through a per-sweep
-`SlurmSSHExecutorPool` (capped at `min(max_parallel, 8)` pooled SSH
-connections) which is closed when the background sweep task exits.
+Cells always run on the selected cluster (`--cluster` and the usual
+resolution order for the CLI, the sidebar selection for the Web UI, and the
+required `cluster` argument for MCP). CLI sweeps use that cluster's transport
+(local `sbatch` or SSH). Web UI sweeps, and MCP sweeps on an SSH cluster, route every cell through a per-sweep `SlurmSSHExecutorPool`
+(capped at `min(max_parallel, 8)` pooled SSH connections) which is closed when
+the background sweep task exits.
 
 See also: [MCP sweep recipes](mcp-usage.md#parameter-sweeps) and
 [Web UI sweep recipes](webui.md#run-a-parameter-sweep).

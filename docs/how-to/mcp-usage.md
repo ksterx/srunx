@@ -19,7 +19,10 @@ Ask Claude Code to submit a job with the resources you need:
 > with 4 GPUs, 64GB memory, on the gpu partition, using conda env pytorch
 ```
 
-Claude Code calls `submit_job` and returns the job ID. You can then
+Claude Code calls `submit_job` and returns the job ID. Every SLURM tool needs
+an explicit `cluster`, so include the cluster in your request (see
+[Name the Cluster](#name-the-cluster)). Resources you do not mention come from
+that cluster's configured defaults. You can then
 reference that ID in follow-up prompts:
 
 ``` text
@@ -68,8 +71,8 @@ Retrieve stdout and stderr from completed or running jobs:
 ```
 
 Claude Code calls `get_job_logs` and displays the output. For jobs on a
-remote cluster, name the cluster so it passes `transport="<profile>"` and
-fetches logs from there.
+cluster, name the cluster so it passes `cluster="<name>"` and fetches logs
+from there.
 
 ## Sync Files Before Job Submission
 
@@ -80,23 +83,29 @@ Ensure your latest code is on the remote cluster before submitting:
 > "python train.py" with 2 GPUs on dgx
 ```
 
-Claude Code calls `sync_files` with `transport="<profile>"` plus the mount
-name, then calls `submit_job` with the same `transport="<profile>"`. The
-sync uses your configured mount points from that SSH profile.
+Claude Code calls `sync_files` with `cluster="<name>"`, `project` (the
+project root holding `.srunx/config.toml`), and the mount name, then calls
+`submit_job` with the same `cluster`. The sync uses the mounts that project
+declares for that cluster.
 
 Sync targets are always named mounts — `sync_files` takes a `mount` name
 and nothing else, so an agent cannot push an arbitrary directory to an
-arbitrary remote path. Register the directory as a mount first:
+arbitrary remote path. Declare the mount in the project config first, e.g.
+in `.srunx/config.toml`:
 
-``` bash
-srunx ssh mount add --profile myserver --mount src \
-    --local ./src --remote /home/researcher/workspace/src
+``` toml
+[[clusters.myserver.mounts]]
+name = "src"
+local = "src"                                  # relative to the project root
+remote = "/home/researcher/workspace/src"      # must be absolute
 ```
 
-Give `--remote` an absolute path. An unquoted `~` is expanded by your
-*local* shell before srunx ever sees it, so on a machine whose home
-differs from the cluster's it would register something like
-`/Users/alice/workspace/src` as the remote destination.
+The project root itself is always a mount (named after the project), mapped
+to `[clusters.<name>] remote_dir`.
+
+The first real sync into a remote path that has not been approved yet is
+refused until approved. The agent should ask you, then retry with
+`approve_new_target=True` (the CLI equivalent is `srunx cluster sync --yes`).
 
 Syncing is additive: new and changed files are copied, and files that
 exist only on the cluster (checkpoints, job logs, outputs) are left
@@ -162,12 +171,12 @@ the deletions, then again to execute. A real mirror refuses without
 changing anything if it would delete more than `max_delete` entries
 (default 100).
 
-## Use a Remote Cluster
+## Name the Cluster
 
-Most tools accept a `transport="<profile>"` argument naming the SSH profile
-to route through. MCP reads neither environment variables nor any "current"
-profile — you (or the agent) must name the profile explicitly. You can tell
-Claude Code to operate against a named cluster:
+Every tool that talks to SLURM takes a `cluster` argument, and it is never
+filled in implicitly: MCP reads neither `$SRUNX_CLUSTER`, the project's
+`cluster`, nor `default_cluster`. You (or the agent) must name the cluster.
+Tell Claude Code which cluster to operate against:
 
 ``` text
 > List jobs on the dgx cluster
@@ -181,11 +190,11 @@ Claude Code to operate against a named cluster:
 > Check resources on the gpu partition of the dgx cluster
 ```
 
-Claude Code passes `transport="dgx"` on each of these. To see which
-profiles are configured:
+Claude Code passes `cluster="dgx"` on each of these. To see which
+clusters are configured:
 
 ``` text
-> List my SSH profiles
+> List my srunx clusters
 ```
 
 ## Run Partial Workflows
@@ -213,11 +222,11 @@ Run the same workflow over a cross-product of hyperparameters by passing
 a `sweep=` argument to `run_workflow`. Each cell executes as an
 independent `workflow_run` under one parent `sweep_run`.
 
-### Basic sweep (local Slurm)
+### Basic sweep
 
 ``` text
-> Run the train workflow at /projects/train.yaml with seed 1/2/3 and
-> lr 0.001/0.01, max 2 in parallel
+> Run the train workflow at /projects/train.yaml on the local cluster with
+> seed 1/2/3 and lr 0.001/0.01, max 2 in parallel
 ```
 
 Claude Code calls:
@@ -229,12 +238,11 @@ run_workflow(
         "matrix": {"seed": [1, 2, 3], "lr": [0.001, 0.01]},
         "max_parallel": 2,
     },
+    cluster="local",
 )
 ```
 
-Without `transport=`, cells run through the local `Slurm` singleton.
-
-### Sweep over SSH (``transport=``)
+### Sweep on an SSH cluster with a mount
 
 ``` text
 > Submit the train workflow on the dgx cluster's cookbook2 mount with
@@ -250,15 +258,16 @@ run_workflow(
         "matrix": {"seed": [1, 2, 3]},
         "max_parallel": 2,
     },
-    transport="dgx",
+    cluster="dgx",
+    project="/projects/cookbook2",
     mount="cookbook2",
 )
 ```
 
-With `transport="<profile>"`, cells route through a per-sweep SSH executor
-pool. The optional `mount=` selects the path-translation root and must
-exist on that profile -- unknown names return an error envelope. Passing
-`mount=` without `transport=` is an error.
+On an SSH cluster, cells route through a per-sweep SSH executor pool.
+The optional `mount=` selects the path-translation root and must be one of the
+project's mounts on that cluster -- unknown names return an error envelope.
+Passing `mount=` with a local cluster is an error.
 
 ### Combine ``args`` and ``sweep``
 
@@ -268,6 +277,7 @@ the matrix axes. They can be used together:
 ``` python
 run_workflow(
     yaml_path="/projects/train.yaml",
+    cluster="local",
     args={"dataset": "imagenet"},
     sweep={
         "matrix": {"lr": [0.001, 0.01, 0.1]},
@@ -329,17 +339,19 @@ Review your srunx setup:
 ```
 
 ``` text
-> What SSH profiles do I have configured? Show their mount points.
+> What clusters do I have configured? Show this project's mounts on them.
 ```
 
-These call `get_config` and `list_ssh_profiles` respectively.
+These call `get_config(cluster=..., project=...)` — which reports every value
+with the config file it came from — and `list_clusters(project=...)`
+respectively.
 
 ## Tips
 
 - Claude Code picks the right tool based on your intent. You do not need
   to name tools explicitly.
 - Name the cluster (e.g. "on the dgx cluster") so the agent passes the
-  matching `transport="<profile>"`.
+  matching `cluster="<name>"`.
 - Use "dry run" to preview any destructive operation before executing.
 - Reference job IDs from earlier in the conversation -- Claude Code tracks
   context across turns.

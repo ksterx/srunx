@@ -24,7 +24,7 @@ srunx-specific commands that don't map to a SLURM binary:
 
 - `uv run srunx sbatch <script>` - Submit a sbatch script (positional, like real sbatch)
 - `uv run srunx sbatch --wrap "cmd ..."` - Wrap a command into a SLURM job (mutually exclusive with the positional script)
-- `uv run srunx sbatch --profile <name> ...` - Submit over SSH to a configured profile
+- `uv run srunx sbatch --cluster <name> ...` - Submit to a configured cluster (local or SSH)
 - `uv run srunx squeue` - List active jobs (all users by default — matches native `squeue`). Default columns: Job ID, User, Name, Status, CPUs, GPUs, Elapsed, NodeList
 - `uv run srunx squeue -j <job_id>` - Filter to a specific job (replaces the old `srunx status` for active jobs)
 - `uv run srunx squeue -u <user>` - Filter to a single user
@@ -32,15 +32,15 @@ srunx-specific commands that don't map to a SLURM binary:
 - `uv run srunx squeue -a` - Shortcut for all opt-in columns at once
 - `uv run srunx squeue -i <seconds>` - Live refresh: re-query and redraw in place every N seconds (like native `squeue -i`). Ctrl+C exits
 - `uv run srunx squeue --format json` - JSON always includes every field regardless of show flags
-- `uv run srunx scancel <job_id>` - Cancel a job
+- `uv run srunx scancel <job_id>` - Cancel a job (without `--cluster`, the job's cluster is looked up in srunx history; 0 or >1 matches is an error — same for `tail`)
 - `uv run srunx sinfo` - Partition / state / nodelist listing (same columns as native SLURM `sinfo`)
-- `uv run srunx sinfo --profile <name>` - Query a remote cluster via SSH adapter (#139)
+- `uv run srunx sinfo --cluster <name>` - Query a remote cluster via SSH adapter (#139)
 - `uv run srunx sinfo --partition gpu --format json` - Partition rows as JSON
 - `uv run srunx gpus` - GPU aggregate summary (what the old `srunx sinfo` showed)
-- `uv run srunx gpus --profile <name> --partition gpu` - GPU summary scoped to one partition on a remote cluster
+- `uv run srunx gpus --cluster <name> --partition gpu` - GPU summary scoped to one partition on a remote cluster
 - `uv run srunx history` - DB-backed submission history (srunx's own SQLite). Only jobs submitted via srunx are listed
 - `uv run srunx history -j <job_id>` - Filter history to a specific job (replaces `srunx status` for finished jobs)
-- `uv run srunx history --profile <name>` - Scope history to a single cluster's jobs (`scheduler_key` filter)
+- `uv run srunx history --cluster <name>` - Scope history to a single cluster's jobs (`scheduler_key` filter: `local` / `ssh:<cluster>`)
 - `uv run srunx sacct` - Real SLURM `sacct` wrapper (cluster accounting DB — includes manual sbatch jobs, needs slurmdbd). Default columns: Job ID, User, Name, Partition, State, ExitCode, Elapsed
 - `uv run srunx sacct -a -S now-1day` - All users over the last day (like native `sacct -a -S now-1day`)
 - `uv run srunx sacct -j <job_id>` / `-u <user>` / `-s FAILED,TIMEOUT` / `-p <partition>` - Standard sacct filters
@@ -52,7 +52,7 @@ srunx-specific commands that don't map to a SLURM binary:
 `-t` / `-p` / `-w` / `-D`) and `--gres=gpu:N`. `-n` is also accepted, but
 (per the parity section below) as a real-sbatch passthrough for
 `--ntasks`, not a modeled srunx option. srunx-specific extensions
-(`--profile` / `--conda` / `--venv` / `--container` / `--template` / etc.)
+(`--cluster` / `--project` / `--conda` / `--venv` / `--container` / `--template` / etc.)
 layer on top. `status` was intentionally dropped — use `squeue -j <id>` for
 active jobs or `history -j <id>` for finished jobs.
 
@@ -104,14 +104,29 @@ spelling, same meaning, everywhere:
   syntax) — `squeue`/`history` mis-track array jobs submitted via
   `--array`. Not fixed by this passthrough; tracked separately.
 
+##### Script defaults (`#SBATCH` vs config)
+`srunx sbatch script.sh` parses the script's `#SBATCH` directives (the set in
+`DIRECTIVES` in `src/srunx/cli/_helpers/sbatch_resolve.py`) and forwards a
+configured default only for options the script does not set and the user did
+not type. Built-in defaults are never forwarded (Slurm has its own). A warning
+is printed when the script contradicts a *cluster-specific* default
+(`[clusters.<c>.defaults]`). `--gres` is passed through verbatim (and covers
+`gpus_per_node`). `--clusters` / `-M` is rejected anywhere (CLI, passthrough,
+or `#SBATCH`) — srunx's own `--cluster` picks the target. `--unset KEY`
+(repeatable) drops an inherited default for one submission; `--dry-run` shows
+the selected cluster and each value's source.
+
 ##### Auto-sync + in-place execution
 
-When the positional script lives under one of the SSH profile's mounts
-(`mount.local`), srunx:
+When the positional script lives under one of the current project's mounts on
+the target SSH cluster (`mount.local`), srunx:
 
 1. **Auto-rsyncs** that mount to the remote (`mount.remote`) under a
    per-mount file lock (default ON; opt out with `--no-sync` or
-   `[sync] auto = false`).
+   `[sync] auto = false`). The first sync to a remote path that has not been
+   approved before asks for confirmation; `--yes`/`-y` approves it
+   non-interactively (approved targets are recorded in the state dir, see
+   `src/srunx/sync/approval.py`).
 2. Translates the script path to its remote equivalent and invokes
    `sbatch` **directly on the remote file** — no tmp copy, no
    ``-o $SLURM_LOG_DIR/%x_%j.log`` auto-injection, your script's own
@@ -125,50 +140,78 @@ with Jinja substitution) always go through the historical
 ``$SRUNX_TEMP_DIR`` upload path because the rendered bytes have no
 canonical home in the mount.
 
-Sync defaults are configured under `[sync]` in
-`~/.config/srunx/config.json`:
+Mounts come from the project config: the project root maps to
+`[clusters.<c>] remote_dir` (default: the remote
+`$XDG_DATA_HOME/srunx/workspaces/<name>-<hash>`), plus any extra
+`[[clusters.<c>.mounts]]` (`name` / `local` / `remote` / `sync` / `exclude`).
 
-```json
-{
-  "sync": {
-    "auto": true,
-    "lock_timeout_seconds": 120,
-    "warn_dirty": true,
-    "require_clean": false
-  }
-}
+Sync settings live under `[sync]` in the user (or system) config
+(`$XDG_CONFIG_HOME/srunx/config.toml`):
+
+```toml
+[sync]
+auto = true
+lock_timeout_seconds = 120
+warn_dirty = true
+require_clean = false
+owner_check = true
+verify_remote_hash = false
 ```
 
-Per-invocation overrides:
+Per-invocation overrides: `srunx sbatch --sync` / `--no-sync` /
+`--force-sync`. (The old `SRUNX_SYNC_*` env vars no longer exist.)
 
-- `srunx sbatch --sync` / `--no-sync`
-- `SRUNX_SYNC_AUTO=0` / `SRUNX_SYNC_REQUIRE_CLEAN=1` etc.
+##### Configuration (TOML, layered)
+Files (see `src/srunx/common/paths.py`; `srunx config paths` lists them):
 
-##### Transport Selection (unified CLI)
+- System `/etc/srunx/config.toml` and user `$XDG_CONFIG_HOME/srunx/config.toml`:
+  `default_cluster`, optional `state_dir`, `[defaults]`, `[clusters.<c>]`
+  (connection + `[clusters.<c>.defaults]`), `[notifications]`, `[sync]`, and
+  personal per-project overrides `[projects.<name>.clusters.<c>]`.
+- Project `<root>/.srunx/config.toml` (meant to be committed): required
+  `name`, optional `cluster`, `[defaults]`, `[clusters.<c>]` with
+  `remote_dir` / `sync` / `exclude` / `[[mounts]]` / `defaults`. Connection
+  settings are not allowed. Discovered by walking up from cwd, stopping at a git
+  root or `$HOME`; `--project PATH` overrides. Project workflows live in
+  `<root>/.srunx/workflows/`.
+- State (`$XDG_STATE_HOME/srunx`, or `state_dir`): `srunx.db`, `locks/`,
+  remote-env cache, approved sync targets.
+
+Job-default precedence (low → high): built-in, system `defaults`, user
+`defaults`, user `clusters.<c>.defaults`, project `defaults`, project
+`clusters.<c>.defaults`, script `#SBATCH` / workflow job fields, CLI flags.
+Any table may contain `unset = [...]` to clear an inherited key.
+`SRUNX_DEFAULT_*` env vars no longer exist.
+
+- `uv run srunx config show [--cluster C] [--project PATH]` - Effective config with each value's source
+- `uv run srunx config paths` - Files read, in precedence order, plus the state dir
+- `uv run srunx config init [--force]` / `config init-project [PATH] [--name N]`
+- `uv run srunx config set KEY VALUE [--cluster C] [--project]` - `resources.*` / `environment.*` / `log_dir` / `work_dir` go under `defaults` (or `clusters.<c>.defaults` with `--cluster`); other keys are top-level or `clusters.<c>.<key>`. `--project` edits the project file (`--project-path` to pick it)
+- `uv run srunx config delete KEY` / `config unset KEY` (both take `--cluster` / `--project` / `--project-path`) - Remove a key from one file / add it to that table's `unset`
+
+##### Cluster selection (unified CLI)
 `--quiet`'s short flag is `-Q` (not `-q`) to match real sbatch/squeue/scancel,
 where `-q` is short for `--qos` (a value-taking option). On `sbatch`, `-q <value>`
 already works as the `--qos` passthrough (see the sbatch section above). On the
 other commands (`squeue` / `scancel` / `sinfo` / …), which have no `--qos`, `-q`
 is simply an unknown option and exits 2.
 
-All job-management commands above accept `--profile <name>` / `--local` /
-`--quiet`. Resolution order:
-1. `--profile <name>` (explicit)
-2. `--local` (mutually exclusive with `--profile`)
-3. `$SRUNX_SSH_PROFILE` environment variable
-4. current SSH profile (set via `srunx ssh use <name>`), unless
-   `cli.use_current_profile = false`
-5. local SLURM fallback (silent, preserves legacy CLI behaviour)
+All job-management commands above accept `--cluster <name>` / `--quiet`
+(no `-C` short form: `-C` is sbatch's `--constraint`). Resolution order:
+1. `--cluster <name>`
+2. `$SRUNX_CLUSTER` (the only selection env var)
+3. the project's `cluster` (`.srunx/config.toml`)
+4. the user config's `default_cluster`
+5. otherwise an error — there is no implicit local fallback
 
-When a non-default transport is selected, a 1-line banner is emitted on stderr
-— e.g. `● Connected to user@host (profile: <name> · via --profile)` for SSH,
-or `● Local SLURM (via --local)`. `--quiet` suppresses it; the silent default
-(step 5) never prints one. (MCP applies the same resolver but with steps 3–4
-disabled — it never reads env or the current profile, only an explicit
-`transport`.)
+A one-line banner on stderr always names the cluster and why it was chosen —
+e.g. `● Connected to user@host (cluster: <name> · via --cluster)` for SSH, or
+`● Local SLURM (cluster: <name> · via default_cluster)`. `--quiet` suppresses
+it. MCP never resolves implicitly: every tool takes an explicit `cluster`.
 
-`srunx ssh submit` / `srunx ssh logs` have been removed — use `srunx sbatch
---profile <name> <script>` / `srunx tail --profile <name> <job_id>` instead.
+`--profile` / `--local` / `$SRUNX_SSH_PROFILE` / `srunx ssh ...` are gone.
+History is keyed by (cluster, job_id); the DB scheduler key is `local` or
+`ssh:<cluster>`.
 
 #### Watching / monitoring
 - `uv run srunx watch jobs <job_id>` - Block until a job reaches a terminal state
@@ -180,34 +223,26 @@ disabled — it never reads env or the current profile, only an explicit
 - `uv run srunx watch resources --min-gpus 4 --partition gpu` - Scoped to one partition
 - `uv run srunx watch cluster --schedule 1h --notify $WEBHOOK` - Periodic cluster reports
 
-#### SSH Integration
-The `ssh` subcommands are flat: profile names are passed via `--profile` and
-mount names via `--mount` (no `profile` / `mount` positional sub-noun).
-- `uv run srunx ssh list` - List SSH connection profiles
-- `uv run srunx ssh add --profile <name>` - Add SSH connection profile
-- `uv run srunx ssh use --profile <name>` - Set the current profile
-- `uv run srunx ssh show [--profile <name>]` - Show a profile (current if omitted)
-- `uv run srunx ssh remove --profile <name>` - Remove a profile
-- `uv run srunx ssh update --profile <name> ...` - Update profile fields
-- `uv run srunx ssh update --profile <name> --snapshot-root <path>` - Set where `--snapshot` stores per-commit snapshots on the cluster (absolute or `~`-relative, charset `[A-Za-z0-9._/~+-]`, no `..`; empty string resets to the default `~/.local/share/srunx/snapshots`). Must lie outside every mount (`ssh sync --delete` mirrors mounts)
-- `uv run srunx ssh mount add --profile <profile> --mount <name> --local <path> --remote <path>` - Add mount point
-- `uv run srunx ssh mount list --profile <profile>` - List mount points
-- `uv run srunx ssh mount remove --profile <profile> --mount <name>` - Remove mount point
-- `uv run srunx ssh secret set <KEY> --profile <profile>` - Store a secret for a profile (value via hidden getpass prompt, or `--from-env VAR`; NO inline value argument)
-- `uv run srunx ssh secret list [--profile <profile>]` - List secret KEY names for a profile (values are never printed)
-- `uv run srunx ssh secret unset <KEY> --profile <profile>` - Remove a secret from a profile
-- `uv run srunx ssh test --profile <name>` - Test connectivity for a profile
-- `uv run srunx ssh test --host <alias>` - Test an `~/.ssh/config` host alias
-- `uv run srunx ssh sync` - Sync current directory's mount (auto-detect profile and mount from cwd)
-- `uv run srunx ssh sync --profile <profile> --mount <name>` - Sync a specific mount
-- `uv run srunx ssh sync --dry-run` - Preview sync without transferring
-- `uv run srunx ssh sync --delete` - Mirror: also delete destination files missing from the source
+#### Clusters
+- `uv run srunx cluster list` - List configured clusters
+- `uv run srunx cluster show [NAME] [--project PATH]` - Connection, defaults, and the project's mounts on it
+- `uv run srunx cluster add NAME --local | --host ALIAS | --hostname H [--username U --key-file K --port P --proxy-jump J --description D --snapshot-root R] [--default]` - Add a cluster to the user config
+- `uv run srunx cluster update NAME ...` - Change connection settings
+- `uv run srunx cluster update NAME --snapshot-root <path>` - Set where `--snapshot` stores per-commit snapshots on the cluster (absolute or `~`-relative, charset `[A-Za-z0-9._/~+-]`, no `..`; empty string resets to the default `~/.local/share/srunx/snapshots`). Must lie outside every mount (`cluster sync --delete` mirrors mounts)
+- `uv run srunx cluster remove NAME` - Remove a cluster from the user config
+- `uv run srunx cluster test [NAME]` - Check reachability (and cache the remote `$HOME` / XDG dirs)
+- `uv run srunx cluster secret set NAME KEY [--from-env VAR]` - Store a secret (value via hidden getpass prompt, or `--from-env VAR`; NO inline value argument)
+- `uv run srunx cluster secret list [NAME]` - List secret KEY names (values are never printed)
+- `uv run srunx cluster secret unset NAME KEY` - Remove a secret
+- `uv run srunx cluster sync [NAME] [--mount M] [--project PATH]` - Sync a project mount (default: the one owning cwd)
+- `uv run srunx cluster sync --dry-run` / `--pull` / `-e PATTERN` / `--yes`
+- `uv run srunx cluster sync --delete` - Mirror: also delete destination files missing from the source
 
 ##### Sync is additive by default
 `RsyncClient.push()` defaults to `delete=False`, so **no** caller inherits
 mirror semantics by accident — a sync adds and updates, and leaves
 destination-only files (checkpoints, job logs, job outputs) alone. Mirroring
-is opt-in per call site: `srunx ssh sync --delete`, the Web
+is opt-in per call site: `srunx cluster sync --delete`, the Web
 file/template/job sync routes (`delete=True` explicit), and MCP
 `sync_files(delete=True)`. This is the standing fix for the incident where
 auto-sync silently pruned remote-only outputs; see
@@ -258,18 +293,18 @@ also records the gaps left open on purpose.
 Auto-sync runs the script from a mutable mount at job *start*, so a later sync
 changes the code under pending, running, and requeued jobs. `--snapshot` runs
 the job from a read-only, per-commit git worktree on the cluster instead
-(SSH profiles only; issue #247).
+(SSH clusters only; issue #247).
 
-- `uv run srunx sbatch --snapshot job.sbatch --profile <name>` - Snapshot HEAD of the repo in cwd and submit the script from it
-- `uv run srunx sbatch --snapshot-rev <REV> job.sbatch --profile <name>` - Snapshot another revision (implies `--snapshot`)
-- `uv run srunx snapshot create [REV] --profile <name>` - Ensure the snapshot exists; stdout is only the absolute snapshot path (status on stderr), no lease is written
-- `uv run srunx snapshot list [--profile <name>] [-f/--format table|json] [--size]` - Every repo and snapshot under the profile's snapshot root: state (`complete` / `incomplete` / `missing`), last-requested time (marker mtime), each lease (state, job id, profile, cluster, live job state) and queued jobs that reference the snapshot path. A scheduler failure only shows job states as `unknown` with a warning (exit stays 0). JSON carries every field
-- `uv run srunx snapshot prune [--older-than 7d] [-n/--dry-run] [-f/--force] [--include-unbound] [--profile <name>]` - Remove snapshots no pending, running or requeue-able job can use. Prints one `keep` / `remove` line per snapshot with the reason, then asks `Remove <n> snapshot(s)?` unless `-f`; `-n` prints the plan only
+- `uv run srunx sbatch --snapshot job.sbatch --cluster <name>` - Snapshot HEAD of the repo in cwd and submit the script from it
+- `uv run srunx sbatch --snapshot-rev <REV> job.sbatch --cluster <name>` - Snapshot another revision (implies `--snapshot`)
+- `uv run srunx snapshot create [REV] --cluster <name>` - Ensure the snapshot exists; stdout is only the absolute snapshot path (status on stderr), no lease is written
+- `uv run srunx snapshot list [--cluster <name>] [-f/--format table|json] [--size]` - Every repo and snapshot under the cluster's snapshot root: state (`complete` / `incomplete` / `missing`), last-requested time (marker mtime), each lease (state, job id, profile, cluster, live job state) and queued jobs that reference the snapshot path. A scheduler failure only shows job states as `unknown` with a warning (exit stays 0). JSON carries every field
+- `uv run srunx snapshot prune [--older-than 7d] [-n/--dry-run] [-f/--force] [--include-unbound] [--cluster <name>]` - Remove snapshots no pending, running or requeue-able job can use. Prints one `keep` / `remove` line per snapshot with the reason, then asks `Remove <n> snapshot(s)?` unless `-f`; `-n` prints the plan only
 
 Behaviour:
 - Layout: `<snapshot_root>/<repo_id>/{repo.git, trees/<sha>/, trees/<sha>.complete, leases/<id>.json, .lock}`. `repo_id` is `<repo name>-<12 hex of the root commit>`, shared by every linked worktree of one repo. The commit is pushed (only missing objects) to the bare repo with the remote git binary the probe validated (>= 2.17); the cluster needs no GitHub access.
 - The script path is the one in the commit (the local file need not exist, and job name / `#SBATCH` directives are read from the commit). Default job cwd is the snapshot dir matching your local cwd, else the snapshot top; `-D/--chdir` still wins. Job env gains `SRUNX_CODE_DIR` (snapshot path) and `SRUNX_SNAPSHOT_SHA`; these override a same-named `--env`. `jobs.metadata` records `{"snapshot": {repo_id, sha, path, lease_id}}`.
-- No auto-sync, no mount lock, the script need not be under a mount. Rejected with exit 2: `--wrap`, `--template`, `--local` / a transport that resolves to local, an explicit `--sync`, `--force-sync`, a missing positional script. `--no-sync` is accepted. `--dry-run` validates locally and prints the plan with no remote call.
+- No auto-sync, no mount lock, the script need not be under a mount. Rejected with exit 2: `--wrap`, `--template`, a local cluster, an explicit `--sync`, `--force-sync`, a missing positional script. `--no-sync` is accepted. `--dry-run` validates locally and prints the plan with no remote call.
 - Local validation fails closed (exit 2): not a git repo, shallow clone, submodule, LFS filter, script missing / symlink / directory in the commit, and tracked changes whenever the commit equals HEAD (untracked files only warn). Remote, push, lock, and sbatch errors exit 1.
 - Lease: a `provisional` lease is written before `sbatch` and rewritten as `bound` (with the job id) after. It is deleted only on a confirmed sbatch rejection (non-zero exit, no job id, and an `sbatch: error:` line in the output; a bare non-zero exit is not evidence); any indeterminate outcome keeps it and warns with its path, so a later prune cannot remove code under a job that may exist.
 - **The snapshot is read-only, so the job cannot write into its default cwd.** srunx warns (does not reject) when `--chdir` is missing or relative and `--output` is missing or relative, or `--error` is relative. Pass an absolute `--output` / `--error` (or `--log-dir`) or an absolute `-D`. Relative paths in `-D/-o/-e` resolve inside the snapshot.
@@ -277,7 +312,7 @@ Behaviour:
 - Reuse trusts a tree that is a real directory at the same HEAD with a regular marker file; it does not re-hash contents. srunx requires every directory from `/` down to the snapshot root, repo dir, `trees/` and `leases/` to be owned by you (ancestors: you or root) and not replaceable by other users (not group/other-writable, except sticky dirs like `/tmp`). A directory you own with no group/other execute bit and no ACL (for example `$HOME` at 0700) shields everything below it, so a group-writable `~/.local` under it is fine; otherwise it exits 1 with code 32 naming the directory. Fix it with `chmod go-w <dir>` or choose a `snapshot_root` under a private directory.
 - `chmod -R a-w` only prevents accidental writes; it is not tamper protection. Prefer `snapshot prune` (below) to deleting by hand. If you must, make only the directories writable (`find <tree> -type d -exec chmod u+rwx {} +`) before `rm -rf`; a recursive `chmod -R u+w` would also change files hardlinked from outside the store.
 
-Prune (`snapshot list` / `snapshot prune`, SSH profiles only; `--local` or a local transport exits 2):
+Prune (`snapshot list` / `snapshot prune`, SSH clusters only; a local cluster exits 2):
 - Fail closed: a snapshot is removed only when every fact needed to call it dead was positively confirmed; everything else is kept. If the scheduler cannot be queried (`squeue` fails, a section is missing, a row cannot be parsed, no SLURM runner) nothing is deleted and the exit code is 1; an unavailable `sacct` or `scontrol` only makes the affected jobs `unknown` (kept). There is no flag to assume unknown jobs finished.
 - Job states come from the cluster through the SSH client's SLURM environment (the discovered SLURM directory is put on `PATH`), judged only by stdout and exit codes (stderr is never inspected): `squeue -h -a -t all` for the current user, `sacct` (`State`, `End`, `Cluster`; `End` as epoch seconds), `scontrol show config` for `MinJobAge` (best effort) and `scontrol show job` for ids nobody else answered. Any `squeue -t all` row, in any state (finished jobs stay in the scheduler's memory and can be requeued), makes the job active; `scontrol` can never make a job terminal. Terminal needs no `squeue` row and only terminal `sacct` rows. A missing clock or `sacct` output section fails the whole query (nothing is deleted, exit 1); an unavailable `sacct` makes the jobs `unknown`, and so does one malformed `sacct` row (nothing in that section is trusted).
 - A bound lease's terminal state is used only when the lease records the cluster it was submitted to and that name equals the `Cluster` of the job's `sacct` rows (`lease from another cluster`, `lease cannot be verified against this cluster` otherwise). The cluster is recorded at bind time with one bounded lookup, `squeue -h -j <id> -O Cluster` (answered by slurmctld, no accounting lag) and then `sacct -j <id> -X -n -P -o Cluster`, each wrapped in `timeout 10` when available; it never fails the submission. A lease without a recorded cluster (lookup failed, or written by an older srunx) is never verifiable: its snapshot is kept with `lease cluster unknown` until removed by hand. No time- or profile-based guess is made (a profile is not a cluster, and a job id alone is not an identity). `sbatch --snapshot` rejects `-M/--clusters` (exit 2), including as a `#SBATCH` directive in the script, because the lease would name the wrong cluster.
@@ -288,26 +323,24 @@ Prune (`snapshot list` / `snapshot prune`, SSH profiles only; `--local` or a loc
 - Reuse refreshes the marker: `snapshot create` / `sbatch --snapshot` of an existing snapshot touches `trees/<sha>.complete` under the lock, so its mtime means "last requested". If the touch fails or does not advance, the reuse fails (remote exit 33) rather than handing out a snapshot prune may delete.
 - Deletion: the decision is made locally from one read-only inventory; per repo, one remote script takes the Phase 1 lock, requires `repo.git` to be a real directory you own (else every sha is `FAILED repo-git` and nothing is touched), recomputes each snapshot's fingerprint (marker and tree mtime, every entry of `leases/` that names the sha, with mtimes) and removes a sha only if unchanged (otherwise `CHANGED`, reported as kept, not an error). Per sha, in order: rename the tree to `trees/.trash.<sha>.<token>` (if that fails nothing else is touched), remove the marker, delete the `refs/srunx/snapshots/<sha>` ref, delete exactly the expected lease files; each step is checked and a failure reports `FAILED <sha> <step>` and stops that sha. Then `git worktree prune`. The results are printed and flushed before the lock-free trash sweep (only exact `.trash.<40 hex>.<32 hex>` real directories you own; others are reported and left), so a sweep cut short by a timeout still reports the removals (with a warning and exit 1) and the next prune finishes it. A leftover trash directory from an interrupted prune is cleaned by the next real prune, not by `-n`.
 - Never touched: `.lock`, `repo.git`, the repo directory, `trees/`, `leases/`, unrecognised entries, anything in a skipped repo. No `git gc` is run (objects of a pruned commit are reclaimed by git's own gc later). Emptied repo directories stay until removed by hand.
-- Exit codes: option errors, `--older-than` below the floor or `MinJobAge + 10 min`, a non-SSH transport, an unknown profile and a literal root/mount conflict exit 2; inventory failure, scheduler failure, a lock timeout or script failure in any repo (the other repos are still processed) and any `FAILED` sha exit 1; a declined prompt or `-n` exits 0, a closed stdin aborts with 1.
+- Exit codes: option errors, `--older-than` below the floor or `MinJobAge + 10 min`, a non-SSH cluster, an unknown cluster and a literal root/mount conflict exit 2; inventory failure, scheduler failure, a lock timeout or script failure in any repo (the other repos are still processed) and any `FAILED` sha exit 1; a declined prompt or `-n` exits 0, a closed stdin aborts with 1.
 
-##### Account secrets (`ssh secret`)
+##### Account secrets (`cluster secret`)
 Secrets (API keys etc.) are stored in a single **remote** `0600` file per
-account (not per profile), `$HOME/.config/srunx/secrets.env` (parent dir
+account (not per cluster), `$HOME/.config/srunx/secrets.env` (parent dir
 `~/.config/srunx` is `0700`), as `export KEY='...'` lines. The path is keyed by
-remote account (`$HOME`), not by local profile name — the SSH connection you
-pick via `--profile` selects the account, so the same file is shared by any
-profile pointing at that account (this avoids rename-orphaning and profile-name
+remote account (`$HOME`), not by local cluster name — the cluster you
+pick selects the account, so the same file is shared by any
+cluster pointing at that account (this avoids rename-orphaning and cluster-name
 mismatches between machines). The value is captured only via a hidden getpass
 prompt or `--from-env VAR` — never an inline command argument — and never
-lands in the local `config.json`, command-line args, or log output. Writes are
+lands in the local config, command-line args, or log output. Writes are
 atomic (temp file in the same dir + `mv`) with a symlink/foreign-owner guard.
 `secret list` prints KEY names only. The old `srunx ssh env` /
 profile-`custom_env_vars` mechanism (which stored env vars in local plaintext
-config) has been removed entirely with no backward-compat shim; a legacy
-`config.json` that still carries a profile `env_vars` block still loads (the
-stray key is silently dropped).
+config) has been removed entirely.
 
-On submit over SSH, when the profile's secret file exists srunx sources it into
+On submit over SSH, when the account's secret file exists srunx sources it into
 the submission shell — `if [ -r '<path>' ]; then set -a; . '<path>'; set +a; fi`
 (non-blocking: always exits 0 so an unreadable/removed file never fails the
 actual squeue/scancel/sbatch) — before the job-level `--env` exports (a `--env`
@@ -320,8 +353,8 @@ export policy wins.
 #### Workflows
 - `uv run srunx flow run <yaml_file>` - Execute workflow from YAML
 - `uv run srunx flow run <yaml_file> --validate` - Validate without executing (replaces the old `flow validate` subcommand)
-- `uv run srunx flow run <yaml_file> --profile <name>` - Run over SSH; auto-syncs each touched mount **once** + holds the per-mount lock across every job in the workflow (Phase 2 of #135)
-- `uv run srunx flow run <yaml_file> --profile <name> --no-sync` - Skip rsync but still hold the per-mount lock (race-free submission against existing remote state)
+- `uv run srunx flow run <yaml_file> --cluster <name>` - Run on an SSH cluster; auto-syncs each touched mount **once** + holds the per-mount lock across every job in the workflow (Phase 2 of #135)
+- `uv run srunx flow run <yaml_file> --cluster <name> --no-sync` - Skip rsync but still hold the per-mount lock (race-free submission against existing remote state)
 - ShellJobs whose `script_path` lives under a synced mount and whose Jinja-rendered bytes match the source bytes are **executed in place** on the remote — the user's own `#SBATCH --output=` directives win, no tmp copy.
 
 #### `--wrap` (real sbatch parity)
@@ -367,10 +400,11 @@ without grep:
    the test file moves. Use the public API for resource discovery —
    e.g. `from srunx.runtime.templates import get_template_path` for
    built-in templates, `importlib.resources` for package data.
-6. **Test isolation in `tests/conftest.py`:** the autouse fixtures
-   `_isolate_xdg_config_home`, `_isolate_legacy_history_db`, and
-   `reset_config` neutralise developer-machine state (XDG config,
-   legacy history DB, SRUNX_* env vars). When adding a new env-driven
+6. **Test isolation in `tests/conftest.py`:** the autouse fixture
+   `_isolate_srunx_dirs` (and the `reset_config` fixture) neutralise
+   developer-machine state: `XDG_CONFIG_HOME` / `XDG_STATE_HOME` point at
+   tmp dirs, the user config gets a single `local` cluster as
+   `default_cluster`, and `$SRUNX_CLUSTER` is cleared. When adding a new env-driven
    surface, extend these fixtures rather than relying on
    `@patch.dict(os.environ, {}, clear=True)` (which over-clears and
    clobbers the XDG isolation set by the autouse fixtures).
@@ -405,9 +439,9 @@ uv run srunx gpus --partition gpu
 uv run srunx sinfo --partition gpu
 ```
 
-#### SSH Integration
-- `uv run srunx sbatch train.sh --profile dgx-server --job-name remote_training`
-- `uv run srunx ssh add --profile myserver --hostname dgx.example.com --username researcher`
+#### Clusters
+- `uv run srunx cluster add myserver --hostname dgx.example.com --username researcher`
+- `uv run srunx sbatch train.sh --cluster myserver --job-name remote_training`
 
 #### Workflows
 - `uv run srunx flow run workflow.yaml`
@@ -424,7 +458,8 @@ src/srunx/
 ├── utils.py           # get_job_status + job_status_msg
 │
 ├── common/            # Shared infrastructure
-│   ├── config.py      # SrunxConfig + load/save helpers
+│   ├── config.py      # TOML config: file schemas, Settings (layered merge + sources), cluster resolution, mounts
+│   ├── paths.py       # XDG config / state / project paths + project discovery
 │   ├── exceptions.py  # WorkflowError / TransportError / JobNotFoundError / ...
 │   ├── logging.py     # configure_{cli,workflow}_logging + get_logger
 │   └── _version.py    # hatch-vcs auto-generated
@@ -451,7 +486,7 @@ src/srunx/
 │   ├── parsing.py     # GPU_TRES_RE, parse_slurm_datetime, parse_slurm_duration
 │   └── states.py      # SLURM state normalisation
 │
-├── transport/         # Transport resolver (local vs ssh:<profile>)
+├── transport/         # Cluster → transport resolver (scheduler key `local` / `ssh:<cluster>`)
 │   └── registry.py    # TransportHandle / resolve_transport / _build_ssh_handle
 │
 ├── observability/     # Monitoring + notifications + state persistence
@@ -463,23 +498,23 @@ src/srunx/
 │   ├── notifications/ # Notification domain (Slack + future channels)
 │   │   ├── sanitize.py, presets.py, service.py, legacy_slack.py, formatting.py
 │   │   └── adapters/  # DeliveryAdapter + SlackWebhookAdapter + registry
-│   └── storage/       # SQLite persistence at $XDG_CONFIG_HOME/srunx/srunx.observability.storage
+│   └── storage/       # SQLite persistence at <state_dir>/srunx.db
 │       ├── connection.py, migrations.py, models.py, cli_helpers.py
 │       └── repositories/  # JobRepository, DeliveryRepository, EndpointRepository, ...
 │
 ├── containers/        # Container runtime adapters (ContainerRuntime / PyxisRuntime / ApptainerRuntime / LaunchSpec)
-├── ssh/               # SSH profile management + SSHSlurmClient + ProxyJump
+├── ssh/               # SSH connection (ServerProfile view of a cluster) + SSHSlurmClient + ProxyJump
 │   ├── core/          # client.py, slurm.py, connection.py, proxy_client.py, file_manager.py, log_reader.py, config.py, ssh_config.py
-│   ├── cli/           # ssh_app: profile CRUD + sync + test
+│   ├── cli/           # secret_impl (backs `srunx cluster secret`)
 │   └── helpers/       # proxy_helper
-├── sync/              # rsync client + per-mount lock + owner_marker + hash_verify
+├── sync/              # rsync client + per-mount lock + owner_marker + hash_verify + approval (first-sync target approval)
 ├── snapshot/          # per-commit read-only git snapshots (local_git, lease, remote scripts, service) + prune (inventory scripts, job_states, pure prune.decide); integrations layer
 │
 ├── cli/               # Typer CLI surface
 │   ├── main.py        # Thin Typer root (app, flow_app, sub-app registration)
 │   ├── watch.py       # watch app (jobs / resources / cluster)
 │   ├── workflow.py    # flow run executor (_execute_workflow)
-│   ├── commands/      # Per-command-group modules: jobs (sbatch/squeue/scancel/sinfo/gpus/tail), reports (history), config, templates, snapshot, ui
+│   ├── commands/      # Per-command-group modules: jobs (sbatch/squeue/scancel/sinfo/gpus/tail), reports (history), cluster, config, templates, snapshot, ui
 │   └── _helpers/      # debug_callback, sbatch_helpers, notification_setup, transport_options
 │
 ├── mcp/               # MCP server for AI agent integration (FastMCP tool surface)
@@ -593,16 +628,15 @@ Constraints:
 - Web UI + MCP sweep submissions can route through the configured SSH adapter
   via a per-sweep `SlurmSSHExecutorPool` (capped at `min(max_parallel, 8)`
   pooled connections); the pool is closed when the orchestrator returns.
-  MCP opts in explicitly with the `transport="<profile>"` tool arg; when
-  omitted MCP stays on the local `Slurm` singleton (same as CLI). MCP reads
-  neither env nor current-profile — only an explicit `transport`. The
+  MCP tools always take an explicit `cluster` argument — MCP never reads
+  `$SRUNX_CLUSTER`, the project's `cluster`, or `default_cluster`. The
   orchestrator's default `executor_factory=None` preserves local-SLURM
   behaviour bit-for-bit.
-- MCP `run_workflow(transport="<profile>", mount=...)` applies the same
+- MCP `run_workflow(cluster=..., project=..., mount=...)` applies the same
   ShellJob script-root guard as the Web sweep path (paths outside every
-  profile mount's `local` root are rejected before render), so the MCP and
-  Web security surfaces match. `mount` requires `transport`; passing `mount`
-  alone is an error.
+  project mount's `local` root are rejected before render), so the MCP and
+  Web security surfaces match. `mount` requires an SSH `cluster` and the
+  `project` whose mounts it names.
 - MCP-originated sweep cells record `workflow_runs.triggered_by='mcp'`
   (V4 migration widened the CHECK allowlist); parent
   `sweep_runs.submission_source` is `'mcp'` for the same sweep so cell
@@ -625,11 +659,9 @@ at first-cell-start and at final terminal.
 ### Notification + State Persistence (new in 2026-Q2)
 
 srunx stores durable state in a SQLite DB at
-**`$XDG_CONFIG_HOME/srunx/srunx.observability.storage`** (or
-`~/.config/srunx/srunx.observability.storage` when the env var is unset). The
-filename is that odd because it was derived from the defining module's dotted
-path; it is kept as-is because renaming it would orphan every existing local DB
-without a migration. See `get_db_path()` in
+**`<state_dir>/srunx.db`** — `$XDG_STATE_HOME/srunx/srunx.db` (default
+`~/.local/state/srunx/srunx.db`), or under the user config's `state_dir` when
+set (e.g. to keep it off an NFS home). See `get_db_path()` in
 `src/srunx/observability/storage/connection.py`. Schema lives in
 `src/srunx/observability/storage/migrations.py`.
 
