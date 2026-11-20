@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -163,7 +164,8 @@ class TestSbatchWithClusterDefaults:
         script.write_text("echo\n")
         result = runner.invoke(app, ["sbatch", str(script), *args])
         assert result.exit_code == 2
-        assert "--cluster" in result.output
+        # Rich colours option names in error panels (e.g. on GitHub Actions).
+        assert "--cluster" in re.sub(r"\x1b\[[0-9;]*m", "", result.output)
 
     def test_clusters_directive_rejected(self, tmp_path):
         script = tmp_path / "run.sh"
