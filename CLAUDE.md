@@ -32,7 +32,7 @@ srunx-specific commands that don't map to a SLURM binary:
 - `uv run srunx squeue -a` - Shortcut for all opt-in columns at once
 - `uv run srunx squeue -i <seconds>` - Live refresh: re-query and redraw in place every N seconds (like native `squeue -i`). Ctrl+C exits
 - `uv run srunx squeue --format json` - JSON always includes every field regardless of show flags
-- `uv run srunx scancel <job_id>` - Cancel a job (without `--cluster`, the job's cluster is looked up in srunx history; 0 or >1 matches is an error — same for `tail`)
+- `uv run srunx scancel <job_id>` - Cancel a job (without `--cluster`, the job's cluster is looked up in srunx history; 0 or >1 matches is an error — same for `tail`; the banner then says `via job history`). `tail` finds logs of finished jobs via `sacct` (`StdOut`/`StdErr` when the Slurm version has them, otherwise a file named after the job ID under `WorkDir`)
 - `uv run srunx sinfo` - Partition / state / nodelist listing (same columns as native SLURM `sinfo`)
 - `uv run srunx sinfo --cluster <name>` - Query a remote cluster via SSH adapter (#139)
 - `uv run srunx sinfo --partition gpu --format json` - Partition rows as JSON

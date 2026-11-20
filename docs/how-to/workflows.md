@@ -295,6 +295,13 @@ Dry run (show what would be executed):
 srunx flow run pipeline.yaml --dry-run
 ```
 
+The first sync of a project mount to a new remote path asks for confirmation;
+pass `--yes` / `-y` to approve it non-interactively (for example in CI):
+
+```bash
+srunx flow run pipeline.yaml --cluster gpu --yes
+```
+
 ### Monitoring Workflows
 
 srunx provides built-in workflow monitoring:

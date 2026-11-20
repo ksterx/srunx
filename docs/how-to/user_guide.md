@@ -166,7 +166,16 @@ type; srunx's built-in defaults are never forwarded, because Slurm has its own.
 
 - A warning is printed when the script contradicts a cluster-specific default
   (`[clusters.<name>.defaults]`), since that default usually exists for a reason.
-- `--gres` is passed through verbatim.
+- Long-option abbreviations (`--part=gpu`) and bundled short options
+  (`-vp gpu`) in `#SBATCH` lines are recognised like sbatch does.
+- Alternative spellings of the same resource count as set: a script's
+  `--mem-per-cpu` / `--mem-per-gpu` suppresses an inherited `--mem`,
+  `--cpus-per-gpu` an inherited `--cpus-per-task`, and `--gres` / `--gpus` /
+  `--gpus-per-task` an inherited `--gpus-per-node`.
+- `--gres` is passed through verbatim; with `--wrap` it also drops an
+  inherited `gpus_per_node`.
+- On an SSH cluster, inherited `work_dir` / `log_dir` values that are absolute
+  local paths under a mount are translated to the remote path.
 - `--unset KEY` (repeatable) drops an inherited default for this submission,
   e.g. `--unset partition`.
 - `--dry-run` shows the selected cluster and where each value came from.
@@ -451,8 +460,15 @@ A one-line banner on stderr names the cluster and why it was picked; `-Q` /
 `--constraint`).
 
 `srunx scancel <id>` and `srunx tail <id>` without `--cluster` look the job up
-in srunx's history: exactly one match selects its cluster; no match, or matches
-on several clusters, is an error asking for `--cluster`.
+in srunx's history: exactly one match selects its cluster (the banner says
+`via job history`); no match, or matches on several clusters, is an error asking
+for `--cluster`.
+
+`srunx tail` also finds logs of finished jobs, which Slurm no longer reports
+through `scontrol` / `squeue`: it asks accounting (`sacct`) for the job's
+`StdOut` / `StdErr` where the Slurm version provides them, and otherwise looks
+for a file named after the job ID under the job's `WorkDir` (this covers
+`--output=logs/%x_%j.log`-style relative paths).
 
 ## Configuration
 
@@ -520,7 +536,7 @@ srunx config show [--cluster gpu]    # effective values and the file each came f
 
 srunx config set resources.partition gpu                 # user [defaults]
 srunx config set resources.partition gpu --cluster gpu   # user [clusters.gpu.defaults]
-srunx config set resources.time_limit 04:00:00 --project # project [defaults] (quoted: bare 04:00:00 is a TOML time)
+srunx config set resources.time_limit 04:00:00 --project # project [defaults]
 srunx config delete resources.partition                  # inherit again
 srunx config unset resources.partition --project         # explicitly clear (adds to unset)
 ```
