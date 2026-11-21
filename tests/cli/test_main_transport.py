@@ -25,7 +25,7 @@ class TestSbatchScriptVsWrap:
         runner = CliRunner()
         script = tmp_path / "run.sh"
         script.write_text("#!/bin/bash\necho hi\n")
-        result = runner.invoke(app, ["sbatch", str(script), "--wrap", "echo hi"])
+        result = runner.invoke(app, ["sbatch", "--wrap", "echo hi", str(script)])
         assert result.exit_code != 0
         # Typer emits the BadParameter message to either output stream
         # depending on how the Click error formatter is configured;

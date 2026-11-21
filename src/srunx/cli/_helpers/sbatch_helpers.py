@@ -242,7 +242,7 @@ def _build_extra_sbatch_args(
     confuses three different cases:
 
     * ``srunx sbatch script.sh`` — no flag typed, planner default 1.
-    * ``srunx sbatch script.sh --nodes 1`` — explicit 1, must
+    * ``srunx sbatch --nodes 1 script.sh`` — explicit 1, must
       override any ``#SBATCH --nodes=8`` in the script.
     * ``srunx sbatch script.sh`` with config providing ``work_dir``
       — config injected, user did NOT type ``-D``, so the script's

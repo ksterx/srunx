@@ -247,7 +247,7 @@ def test_in_place_no_explicit_j_suppresses_job_name(
     profile = _stub_profile(tmp_path, mount_local, "/r/ml-project")
     job_ops = _patch_transport(monkeypatch, profile)
 
-    result = CliRunner().invoke(app, ["sbatch", str(script), "--cluster", "ml-cluster"])
+    result = CliRunner().invoke(app, ["sbatch", "--cluster", "ml-cluster", str(script)])
     assert result.exit_code == 0, result.stdout + result.stderr
 
     # No -J → don't inject --job-name; let the script's directive win.
@@ -267,7 +267,7 @@ def test_in_place_explicit_j_injects_job_name(
     job_ops = _patch_transport(monkeypatch, profile)
 
     result = CliRunner().invoke(
-        app, ["sbatch", str(script), "--cluster", "ml-cluster", "-J", "explicit"]
+        app, ["sbatch", "--cluster", "ml-cluster", "-J", "explicit", str(script)]
     )
     assert result.exit_code == 0, result.stdout + result.stderr
     assert job_ops.submit_remote_sbatch.call_args.kwargs["job_name"] == "explicit"
@@ -286,7 +286,7 @@ def test_in_place_no_directive_injects_basename(
     profile = _stub_profile(tmp_path, mount_local, "/r/ml-project")
     job_ops = _patch_transport(monkeypatch, profile)
 
-    result = CliRunner().invoke(app, ["sbatch", str(script), "--cluster", "ml-cluster"])
+    result = CliRunner().invoke(app, ["sbatch", "--cluster", "ml-cluster", str(script)])
     assert result.exit_code == 0, result.stdout + result.stderr
     assert job_ops.submit_remote_sbatch.call_args.kwargs["job_name"] == "plain.sbatch"
     assert "Job name: plain.sbatch" in result.stdout
@@ -307,7 +307,7 @@ def test_temp_upload_no_explicit_j_suppresses_job_name(
     job_ops = _patch_transport(monkeypatch, profile)
 
     result = CliRunner().invoke(
-        app, ["sbatch", str(outside), "--cluster", "ml-cluster"]
+        app, ["sbatch", "--cluster", "ml-cluster", str(outside)]
     )
     assert result.exit_code == 0, result.stdout + result.stderr
 
@@ -328,7 +328,7 @@ def test_temp_upload_explicit_j_injects_job_name(
     job_ops = _patch_transport(monkeypatch, profile)
 
     result = CliRunner().invoke(
-        app, ["sbatch", str(outside), "--cluster", "ml-cluster", "-J", "explicit"]
+        app, ["sbatch", "--cluster", "ml-cluster", "-J", "explicit", str(outside)]
     )
     assert result.exit_code == 0, result.stdout + result.stderr
     job_ops.submit.assert_called_once()
@@ -352,7 +352,7 @@ def test_temp_upload_no_directive_injects_basename(
     job_ops = _patch_transport(monkeypatch, profile)
 
     result = CliRunner().invoke(
-        app, ["sbatch", str(outside), "--cluster", "ml-cluster"]
+        app, ["sbatch", "--cluster", "ml-cluster", str(outside)]
     )
     assert result.exit_code == 0, result.stdout + result.stderr
     job_ops.submit.assert_called_once()

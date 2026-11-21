@@ -39,7 +39,7 @@ class TestRewriteFiveFormsEquivalent:
         [
             ["--array=1-10", "s.sh"],
             ["--array", "1-10", "s.sh"],
-            ["s.sh", "--array", "1-10"],
+            ["--array", "1-10", "--", "s.sh"],
             ["-a", "1-10", "s.sh"],
             ["-a1-10", "s.sh"],
         ],
@@ -92,12 +92,12 @@ def test_rewrite_sbatch_arg_value_not_reinterpreted():
 
 def test_rewrite_double_dash_passthrough():
     result = rewrite_sbatch_argv(["--", "--array", "1-10"], _own())
-    assert result == ["--", "--array", "1-10"]
+    assert result == ["--script-arg=1-10", "--", "--array"]
 
 
 def test_rewrite_unknown_token_untouched():
-    result = rewrite_sbatch_argv(["--profil", "dgx", "s.sh"], _own())
-    assert result == ["--profil", "dgx", "s.sh"]
+    result = rewrite_sbatch_argv(["--profil", "s.sh"], _own())
+    assert result == ["--profil", "s.sh"]
 
 
 def test_rewrite_optional_arg_option_takes_equals_only():
@@ -116,8 +116,8 @@ def test_rewrite_trailing_value_option_left_bare():
     """The rewrite leaves a bare value-taking option alone; rejecting it is
     :func:`validate_passthrough_args`' job (see
     ``TestRejectBareValueTakingOption``)."""
-    result = rewrite_sbatch_argv(["s.sh", "--array"], _own())
-    assert result == ["s.sh", "--sbatch-arg=--array"]
+    result = rewrite_sbatch_argv(["--array"], _own())
+    assert result == ["--sbatch-arg=--array"]
 
 
 class TestRejectBareValueTakingOption:
@@ -361,3 +361,42 @@ class TestOwnOptionsDiscovered:
             "--wrap",
             "sleep 60",
         ]
+
+
+class TestRewriteScriptArgs:
+    """Like real sbatch, every token after the script belongs to the script."""
+
+    def test_tokens_after_script_become_script_args(self):
+        result = rewrite_sbatch_argv(
+            ["--cluster", "c", "-p", "gpu", "s.sh", "cfg.yaml", "--prepare-only"],
+            _own(),
+        )
+        assert result == [
+            "--cluster",
+            "c",
+            "-p",
+            "gpu",
+            "--script-arg=cfg.yaml",
+            "--script-arg=--prepare-only",
+            "s.sh",
+        ]
+
+    def test_srunx_options_after_script_go_to_script(self):
+        result = rewrite_sbatch_argv(["s.sh", "--cluster", "x", "--dry-run"], _own())
+        assert result == [
+            "--script-arg=--cluster",
+            "--script-arg=x",
+            "--script-arg=--dry-run",
+            "s.sh",
+        ]
+
+    def test_option_values_are_not_the_script(self):
+        result = rewrite_sbatch_argv(["-t", "5:00", "--array", "1-3", "s.sh"], _own())
+        assert result == ["-t", "5:00", "--sbatch-arg=--array=1-3", "s.sh"]
+
+    def test_double_dash_before_script(self):
+        result = rewrite_sbatch_argv(["--", "-odd.sh", "a"], _own())
+        assert result == ["--script-arg=a", "--", "-odd.sh"]
+
+    def test_trailing_double_dash_kept(self):
+        assert rewrite_sbatch_argv(["--dry-run", "--"], _own()) == ["--dry-run", "--"]

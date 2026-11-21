@@ -83,6 +83,7 @@ import typer
 from srunx.cli._helpers.click_compat import OptionLike, is_option
 
 SBATCH_ARG_OPT = "--sbatch-arg"
+SCRIPT_ARG_OPT = "--script-arg"
 
 # long -> (short | None, takes_value)
 #
@@ -312,14 +313,15 @@ def rewrite_sbatch_argv(args: Sequence[str], own: Sequence[OwnOptionSpec]) -> li
     while i < n:
         tok = args[i]
 
-        if seen_dashdash:
-            out.append(tok)
-            i += 1
-            continue
+        if seen_dashdash or (tok != "--" and not tok.startswith("-")) or tok == "-":
+            # First bare positional is the script; like real sbatch, every
+            # later token belongs to the script, not to srunx.
+            script_args = [f"{SCRIPT_ARG_OPT}={a}" for a in args[i + 1 :]]
+            tail = ["--", tok] if seen_dashdash else [tok]
+            return [*out, *script_args, *tail]
 
         if tok == "--":
             seen_dashdash = True
-            out.append(tok)
             i += 1
             continue
 
@@ -410,9 +412,8 @@ def rewrite_sbatch_argv(args: Sequence[str], own: Sequence[OwnOptionSpec]) -> li
             i += 2 if consumed_next else 1
             continue
 
-        out.append(tok)
-        i += 1
-
+    if seen_dashdash:
+        out.append("--")
     return out
 
 

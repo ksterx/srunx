@@ -618,6 +618,10 @@ class ShellJob(BaseJob):
     script_vars: dict[str, str | int | float | bool] = Field(
         default_factory=dict, description="Shell script variables"
     )
+    script_args: list[str] = Field(
+        default_factory=list,
+        description="Arguments passed to the script (sbatch script.sh ARGS...)",
+    )
 
 
 JobType = BaseJob | Job | ShellJob

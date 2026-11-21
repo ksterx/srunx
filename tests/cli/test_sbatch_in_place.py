@@ -131,7 +131,7 @@ def test_sbatch_in_place_under_mount_calls_remote_submit(
     monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", _record_rsync)
 
     runner = CliRunner()
-    result = runner.invoke(app, ["sbatch", str(script), "--cluster", "ml-cluster"])
+    result = runner.invoke(app, ["sbatch", "--cluster", "ml-cluster", str(script)])
 
     assert result.exit_code == 0, result.stdout + result.stderr
 
@@ -174,7 +174,7 @@ def test_sbatch_outside_mount_falls_back_to_temp_upload(
 
     runner = CliRunner()
     result = runner.invoke(
-        app, ["sbatch", str(outside_script), "--cluster", "ml-cluster"]
+        app, ["sbatch", "--cluster", "ml-cluster", str(outside_script)]
     )
 
     assert result.exit_code == 0, result.stdout + result.stderr
@@ -198,13 +198,7 @@ def test_no_sync_skips_rsync_but_still_runs_in_place(
         runner = CliRunner()
         result = runner.invoke(
             app,
-            [
-                "sbatch",
-                str(script),
-                "--cluster",
-                "ml-cluster",
-                "--no-sync",
-            ],
+            ["sbatch", "--cluster", "ml-cluster", "--no-sync", str(script)],
         )
 
     assert result.exit_code == 0, result.stdout + result.stderr
@@ -261,7 +255,7 @@ def test_sync_failure_aborts_submission(
     monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", _boom)
 
     runner = CliRunner()
-    result = runner.invoke(app, ["sbatch", str(script), "--cluster", "ml-cluster"])
+    result = runner.invoke(app, ["sbatch", "--cluster", "ml-cluster", str(script)])
 
     assert result.exit_code != 0
     combined = (result.stdout or "") + (result.stderr or "")
@@ -288,7 +282,6 @@ def test_extra_sbatch_args_forwarded_in_place(
         app,
         [
             "sbatch",
-            str(script),
             "--cluster",
             "ml-cluster",
             "-N",
@@ -297,6 +290,7 @@ def test_extra_sbatch_args_forwarded_in_place(
             "gpu:2",
             "-t",
             "1:00:00",
+            str(script),
         ],
     )
 
@@ -327,14 +321,7 @@ def test_extra_sbatch_args_forwarded_temp_upload(
     runner = CliRunner()
     result = runner.invoke(
         app,
-        [
-            "sbatch",
-            str(outside_script),
-            "--cluster",
-            "ml-cluster",
-            "-t",
-            "5:00",
-        ],
+        ["sbatch", "--cluster", "ml-cluster", "-t", "5:00", str(outside_script)],
     )
 
     assert result.exit_code == 0, result.stdout + result.stderr
@@ -387,7 +374,7 @@ def test_lock_is_held_during_submit(
     job_ops.submit_remote_sbatch.side_effect = _check_lock_held
 
     runner = CliRunner()
-    result = runner.invoke(app, ["sbatch", str(script), "--cluster", "ml-cluster"])
+    result = runner.invoke(app, ["sbatch", "--cluster", "ml-cluster", str(script)])
 
     assert result.exit_code == 0, result.stdout + result.stderr
     # The contended acquire timed out → the outer lock was held the
@@ -424,7 +411,7 @@ def test_sbatch_failure_after_sync_uses_distinct_message(
     )
 
     runner = CliRunner()
-    result = runner.invoke(app, ["sbatch", str(script), "--cluster", "ml-cluster"])
+    result = runner.invoke(app, ["sbatch", "--cluster", "ml-cluster", str(script)])
 
     assert result.exit_code != 0
     combined = (result.stdout or "") + (result.stderr or "")
@@ -451,7 +438,7 @@ def test_default_resource_flags_not_forwarded(
     monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", lambda *a, **k: None)
 
     runner = CliRunner()
-    result = runner.invoke(app, ["sbatch", str(script), "--cluster", "ml-cluster"])
+    result = runner.invoke(app, ["sbatch", "--cluster", "ml-cluster", str(script)])
 
     assert result.exit_code == 0, result.stdout + result.stderr
     extra = job_ops.submit_remote_sbatch.call_args.kwargs["extra_sbatch_args"]
@@ -481,7 +468,7 @@ def test_explicit_default_override_is_forwarded(
     runner = CliRunner()
     result = runner.invoke(
         app,
-        ["sbatch", str(script), "--cluster", "ml-cluster", "-N", "1"],
+        ["sbatch", "--cluster", "ml-cluster", "-N", "1", str(script)],
     )
 
     assert result.exit_code == 0, result.stdout + result.stderr
@@ -520,7 +507,7 @@ def test_config_workdir_does_not_inject_chdir(
     monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", lambda *a, **k: None)
 
     runner = CliRunner()
-    result = runner.invoke(app, ["sbatch", str(script), "--cluster", "ml-cluster"])
+    result = runner.invoke(app, ["sbatch", "--cluster", "ml-cluster", str(script)])
 
     assert result.exit_code == 0, result.stdout + result.stderr
     extra = job_ops.submit_remote_sbatch.call_args.kwargs["extra_sbatch_args"]
@@ -573,7 +560,7 @@ def test_dry_run_shows_in_place_sync_preview(
     runner = CliRunner()
     result = runner.invoke(
         app,
-        ["sbatch", str(script), "--cluster", "ml-cluster", "--dry-run"],
+        ["sbatch", "--cluster", "ml-cluster", "--dry-run", str(script)],
     )
 
     assert result.exit_code == 0, result.stdout + result.stderr
@@ -616,14 +603,7 @@ def test_dry_run_no_sync_message_when_sync_disabled(
     runner = CliRunner()
     result = runner.invoke(
         app,
-        [
-            "sbatch",
-            str(script),
-            "--cluster",
-            "ml-cluster",
-            "--dry-run",
-            "--no-sync",
-        ],
+        ["sbatch", "--cluster", "ml-cluster", "--dry-run", "--no-sync", str(script)],
     )
 
     assert result.exit_code == 0, result.stdout + result.stderr
@@ -658,7 +638,7 @@ def test_verbose_forwards_to_sync_mount_by_name(
     runner = CliRunner()
     result = runner.invoke(
         app,
-        ["sbatch", str(script), "--cluster", "ml-cluster", "--verbose"],
+        ["sbatch", "--cluster", "ml-cluster", "--verbose", str(script)],
     )
 
     assert result.exit_code == 0, result.stdout + result.stderr
@@ -685,7 +665,7 @@ def test_no_verbose_keeps_quiet_default(
     monkeypatch.setattr("srunx.sync.service.sync_mount_by_name", _record)
 
     runner = CliRunner()
-    result = runner.invoke(app, ["sbatch", str(script), "--cluster", "ml-cluster"])
+    result = runner.invoke(app, ["sbatch", "--cluster", "ml-cluster", str(script)])
 
     assert result.exit_code == 0, result.stdout + result.stderr
     assert rsync_calls == [{"name": "ml", "delete": False, "verbose": False}]
@@ -713,7 +693,7 @@ def test_dry_run_preview_silent_for_local_transport(
 
     runner = CliRunner()
     result = runner.invoke(
-        app, ["sbatch", str(script), "--cluster", "local", "--dry-run"]
+        app, ["sbatch", "--cluster", "local", "--dry-run", str(script)]
     )
 
     assert result.exit_code == 0, result.stdout + result.stderr

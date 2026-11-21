@@ -39,6 +39,7 @@ def _sbatch_invocation(
     script_path: str,
     env_vars: dict[str, str],
     extra_sbatch_args: Sequence[str] | None = None,
+    script_args: Sequence[str] = (),
 ) -> tuple[list[str], dict[str, str] | None]:
     """Build the local ``sbatch`` argv + subprocess environment.
 
@@ -73,10 +74,10 @@ def _sbatch_invocation(
             list(env_vars),
         )
     if not env_vars:
-        return ["sbatch", "--parsable", *extra, script_path], None
+        return ["sbatch", "--parsable", *extra, script_path, *script_args], None
     sbatch_bin = shutil.which("sbatch") or "sbatch"
     return (
-        [sbatch_bin, "--parsable", "--export=ALL", *extra, script_path],
+        [sbatch_bin, "--parsable", "--export=ALL", *extra, script_path, *script_args],
         {**os.environ, **env_vars},
     )
 
@@ -209,7 +210,10 @@ class LocalClient:
                 # --export=ALL + composed env only when env vars are present
                 # (see _sbatch_invocation) — Job branch documents the rationale.
                 sbatch_cmd, proc_env = _sbatch_invocation(
-                    script_path, job.environment.env_vars, extra_sbatch_args
+                    script_path,
+                    job.environment.env_vars,
+                    extra_sbatch_args,
+                    job.script_args,
                 )
                 try:
                     result = subprocess.run(

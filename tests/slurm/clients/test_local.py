@@ -180,6 +180,22 @@ class TestExtraSbatchArgs:
         ]
         assert env is not None and env["FOO"] == "bar"
 
+    def test_sbatch_invocation_script_args_after_script(self):
+        from srunx.slurm.clients.local import _sbatch_invocation
+
+        argv, _env = _sbatch_invocation(
+            "/tmp/s.sh", {}, ["--time=5:00"], ["cfg.yaml", "--prepare-only"]
+        )
+
+        assert argv == [
+            "sbatch",
+            "--parsable",
+            "--time=5:00",
+            "/tmp/s.sh",
+            "cfg.yaml",
+            "--prepare-only",
+        ]
+
     def test_sbatch_invocation_extra_sbatch_args_order_without_env(self):
         from srunx.slurm.clients.local import _sbatch_invocation
 

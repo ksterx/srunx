@@ -513,6 +513,7 @@ class SlurmSSHClient:
                 dependency=dependency,
                 extra_sbatch_args=extra_sbatch_args,
                 job_env_vars=job_env_vars,
+                script_args=list(getattr(callbacks_job, "script_args", None) or ()),
             )
         if not result.job_id:
             raise SbatchIndeterminateError(
@@ -773,6 +774,7 @@ class SlurmSSHClient:
                     job_name=job.name if inject_job_name else None,
                     job_env_vars=job.environment.env_vars,
                     extra_sbatch_args=extra_sbatch_args,
+                    script_args=list(getattr(job, "script_args", None) or ()),
                 )
         except paramiko.AuthenticationException as exc:
             raise TransportAuthError(f"SSH authentication failed: {exc}") from exc
@@ -1174,18 +1176,21 @@ class SlurmSSHClient:
             # on the JobOperations.submit protocol); the SSH adapter realizes
             # it as the remote export prefix + ``--export=ALL``.
             job_env_vars = job.environment.env_vars
+            script_args = list(getattr(job, "script_args", None) or ())
             if in_place_remote_path is not None:
                 result = self._client.slurm.submit_remote_sbatch_file(
                     in_place_remote_path,
                     submit_cwd=in_place_submit_cwd,
                     job_name=job.name,
                     job_env_vars=job_env_vars,
+                    script_args=script_args,
                 )
             else:
                 result = self._client.slurm.submit_sbatch_job(
                     script_content,
                     job_name=job.name,
                     job_env_vars=job_env_vars,
+                    script_args=script_args,
                 )
             if result is None or not result.job_id:
                 raise RuntimeError(f"Failed to submit job '{job.name}' via SSH")

@@ -267,7 +267,7 @@ class TestTyperCLI:
         mock_slurm_class.return_value = mock_slurm
 
         result = self.runner.invoke(
-            app, ["sbatch", str(script_path), "--job-name", "test_job"]
+            app, ["sbatch", "--job-name", "test_job", str(script_path)]
         )
 
         assert result.exit_code == 0, result.stdout
@@ -282,7 +282,7 @@ class TestTyperCLI:
         script_path.write_text("#!/bin/bash\necho hi\n")
         result = self.runner.invoke(
             app,
-            ["sbatch", str(script_path), "--wrap", "python script.py"],
+            ["sbatch", "--wrap", "python script.py", str(script_path)],
         )
         assert result.exit_code != 0
         combined = (result.stdout or "") + (result.stderr or "")

@@ -153,6 +153,19 @@ srunx's reading of the submission result (`--parsable`, `--test-only`,
 `--quiet`, `--wrap`, `--help`, `--version`) are rejected with exit 2. Long-option
 abbreviations are not recognized.
 
+As with real `sbatch`, every token after the script path is passed to the
+script (`$1`, `$2`, ... in the script), so put srunx and sbatch options before
+the script:
+
+``` bash
+srunx sbatch --cluster gpu -p gpu train.sh config/a.yaml --prepare-only
+```
+
+Here `train.sh` receives `config/a.yaml --prepare-only`. Writing
+`srunx sbatch train.sh --cluster gpu` passes `--cluster gpu` to the script
+instead of choosing the cluster. Use `--` before the script when its name
+starts with `-`. `--wrap` takes no script arguments.
+
 Submit to another cluster by adding `--cluster <name>`; see
 [Choosing a Cluster](#choosing-a-cluster) and
 [Project Synchronization](sync.md) for auto-sync and `--snapshot`.

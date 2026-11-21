@@ -98,6 +98,7 @@ class TestSSHAdapterRun:
             dependency=None,
             job_env_vars=None,
             extra_sbatch_args=None,
+            script_args=None,
         ):
             submit_calls.append({"content": script_content, "name": job_name})
             sj = MagicMock()
@@ -618,6 +619,7 @@ class TestSSHAdapterRunSubmissionContext:
             dependency=None,
             job_env_vars=None,
             extra_sbatch_args=None,
+            script_args=None,
         ):
             captured["content"] = script_content
             sj = MagicMock()
@@ -683,6 +685,7 @@ class TestSSHAdapterRunSubmissionContext:
             dependency=None,
             job_env_vars=None,
             extra_sbatch_args=None,
+            script_args=None,
         ):
             captured["content"] = script_content
             sj = MagicMock()
@@ -737,6 +740,7 @@ class TestSSHAdapterRunSubmissionContext:
             dependency=None,
             job_env_vars=None,
             extra_sbatch_args=None,
+            script_args=None,
         ):
             captured["content"] = script_content
             sj = MagicMock()
@@ -792,6 +796,7 @@ class TestSSHAdapterRunSubmissionContext:
             dependency=None,
             job_env_vars=None,
             extra_sbatch_args=None,
+            script_args=None,
         ):
             sj = MagicMock()
             sj.job_id = "4242"
@@ -937,6 +942,7 @@ class TestSubmitForwardsJobEnv:
             dependency=None,
             job_env_vars=None,
             extra_sbatch_args=None,
+            script_args=None,
         ):
             captured["job_env_vars"] = job_env_vars
             sj = MagicMock()
@@ -977,6 +983,7 @@ class TestSubmitForwardsJobEnv:
             dependency=None,
             job_env_vars=None,
             extra_sbatch_args=None,
+            script_args=None,
         ):
             captured["extra_sbatch_args"] = extra_sbatch_args
             sj = MagicMock()
