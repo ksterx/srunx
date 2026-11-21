@@ -87,8 +87,8 @@ later sync changes the code under jobs that are still pending or get requeued.
 repository on the cluster instead (SSH clusters only):
 
 ``` bash
-srunx sbatch --snapshot train.sbatch --cluster myserver          # snapshot of HEAD
-srunx sbatch --snapshot-rev v1.2.0 train.sbatch --cluster myserver
+srunx sbatch --snapshot --cluster myserver train.sbatch          # snapshot of HEAD
+srunx sbatch --snapshot-rev v1.2.0 --cluster myserver train.sbatch
 
 srunx snapshot create [REV] --cluster myserver   # build only; prints the snapshot path
 srunx snapshot list --cluster myserver [--size] [-f json]

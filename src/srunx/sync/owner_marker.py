@@ -4,8 +4,8 @@ Without this marker srunx can't tell which workstation last pushed to
 a mount, so the following sequence silently destroys work:
 
     laptop$  cd ~/proj && vim train.sbatch       # edit
-    laptop$  srunx sbatch train.sbatch --cluster X    # syncs new bytes
-    desktop$ srunx sbatch train.sbatch --cluster X    # different
+    laptop$  srunx sbatch --cluster X train.sbatch    # syncs new bytes
+    desktop$ srunx sbatch --cluster X train.sbatch    # different
                                                       # workstation, syncs
                                                       # *its own* old bytes
                                                       # over the laptop's

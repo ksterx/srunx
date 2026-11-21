@@ -115,7 +115,7 @@ If you need full-featured scientific workflow tooling, Snakemake / Nextflow are 
 
 | Command | Type | Description |
 |---------|------|-------------|
-| `srunx sbatch <script>` / `srunx sbatch --wrap "<cmd>"` | SLURM | Submit a SLURM job (native sbatch options such as `--array` / `--qos` pass through) |
+| `srunx sbatch [options] <script> [args...]` / `srunx sbatch --wrap "<cmd>"` | SLURM | Submit a SLURM job (native sbatch options such as `--array` / `--qos` pass through; as with sbatch, options go before the script and tokens after it go to the script) |
 | `srunx scancel <id>` | SLURM | Cancel a job |
 
 ### Status & accounting

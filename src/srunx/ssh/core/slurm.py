@@ -372,6 +372,7 @@ class SlurmRemoteClient:
         *,
         job_env_vars: dict[str, str] | None = None,
         extra_sbatch_args: list[str] | None = None,
+        script_args: list[str] | None = None,
     ) -> SlurmJob | None:
         """Submit an sbatch job with script content.
 
@@ -428,6 +429,8 @@ class SlurmRemoteClient:
             for arg in extra_sbatch_args or ():
                 cmd += f" {shlex.quote(arg)}"
             cmd += f" {quote_shell_path(remote_script_path)}"
+            for arg in script_args or ():
+                cmd += f" {shlex.quote(arg)}"
 
             stdout, stderr, exit_code = self.execute_slurm_command(
                 cmd, job_env_vars=job_env_vars, source_secret=secret_present
@@ -526,6 +529,7 @@ class SlurmRemoteClient:
         dependency: str | None = None,
         extra_sbatch_args: list[str] | None = None,
         job_env_vars: dict[str, str] | None = None,
+        script_args: list[str] | None = None,
     ) -> SlurmJob | None:
         """Like :meth:`submit_remote_sbatch_file_checked` but returns ``None`` on failure.
 
@@ -540,6 +544,7 @@ class SlurmRemoteClient:
                 dependency=dependency,
                 extra_sbatch_args=extra_sbatch_args,
                 job_env_vars=job_env_vars,
+                script_args=script_args,
             )
         except SbatchSubmitError as e:
             self.logger.error(f"Remote sbatch submission failed: {e}")
@@ -554,6 +559,7 @@ class SlurmRemoteClient:
         dependency: str | None = None,
         extra_sbatch_args: list[str] | None = None,
         job_env_vars: dict[str, str] | None = None,
+        script_args: list[str] | None = None,
     ) -> SlurmJob:
         """Submit a script that already exists on the remote cluster.
 
@@ -626,6 +632,7 @@ class SlurmRemoteClient:
             for arg in extra_sbatch_args or ():
                 cmd_parts.append(shlex.quote(arg))
             cmd_parts.append(shlex.quote(remote_path))
+            cmd_parts.extend(shlex.quote(a) for a in script_args or ())
 
             cmd = " ".join(cmd_parts)
             if submit_cwd:

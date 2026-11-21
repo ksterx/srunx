@@ -296,8 +296,8 @@ changes the code under pending, running, and requeued jobs. `--snapshot` runs
 the job from a read-only, per-commit git worktree on the cluster instead
 (SSH clusters only; issue #247).
 
-- `uv run srunx sbatch --snapshot job.sbatch --cluster <name>` - Snapshot HEAD of the repo in cwd and submit the script from it
-- `uv run srunx sbatch --snapshot-rev <REV> job.sbatch --cluster <name>` - Snapshot another revision (implies `--snapshot`)
+- `uv run srunx sbatch --snapshot --cluster <name> job.sbatch` - Snapshot HEAD of the repo in cwd and submit the script from it
+- `uv run srunx sbatch --snapshot-rev <REV> --cluster <name> job.sbatch` - Snapshot another revision (implies `--snapshot`)
 - `uv run srunx snapshot create [REV] --cluster <name>` - Ensure the snapshot exists; stdout is only the absolute snapshot path (status on stderr), no lease is written
 - `uv run srunx snapshot list [--cluster <name>] [-f/--format table|json] [--size]` - Every repo and snapshot under the cluster's snapshot root: state (`complete` / `incomplete` / `missing`), last-requested time (marker mtime), each lease (state, job id, profile, cluster, live job state) and queued jobs that reference the snapshot path. A scheduler failure only shows job states as `unknown` with a warning (exit stays 0). JSON carries every field
 - `uv run srunx snapshot prune [--older-than 7d] [-n/--dry-run] [-f/--force] [--include-unbound] [--cluster <name>]` - Remove snapshots no pending, running or requeue-able job can use. Prints one `keep` / `remove` line per snapshot with the reason, then asks `Remove <n> snapshot(s)?` unless `-f`; `-n` prints the plan only
@@ -414,7 +414,7 @@ without grep:
 
 #### Job Submission
 - `uv run srunx sbatch --wrap "python train.py" --job-name ml_job --gpus-per-node 1`
-- `uv run srunx sbatch train.sh --conda ml_env --nodes 2`
+- `uv run srunx sbatch --conda ml_env --nodes 2 train.sh`
 - `uv run srunx sbatch --wrap "python eval.py" --gres=gpu:4`  # SLURM-native --gres form
 
 #### Monitoring Workflows
@@ -442,7 +442,7 @@ uv run srunx sinfo --partition gpu
 
 #### Clusters
 - `uv run srunx cluster add myserver --hostname dgx.example.com --username researcher`
-- `uv run srunx sbatch train.sh --cluster myserver --job-name remote_training`
+- `uv run srunx sbatch --cluster myserver --job-name remote_training train.sh`
 
 #### Workflows
 - `uv run srunx flow run workflow.yaml`

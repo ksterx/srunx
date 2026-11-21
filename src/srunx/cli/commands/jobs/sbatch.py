@@ -1,6 +1,7 @@
 """``srunx sbatch`` — submit a SLURM job (script or --wrap)."""
 
 import os
+import shlex
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -21,6 +22,7 @@ from srunx.cli._helpers.sbatch_helpers import (
 )
 from srunx.cli._helpers.sbatch_passthrough import (
     SBATCH_ARG_OPT,
+    SCRIPT_ARG_OPT,
     own_option_specs,
     validate_passthrough_args,
 )
@@ -284,12 +286,22 @@ def sbatch(
             ),
         ),
     ] = None,
+    script_arg: Annotated[
+        list[str] | None,
+        typer.Option(
+            SCRIPT_ARG_OPT,
+            hidden=True,
+            help="Argument for the script (tokens after the script path).",
+        ),
+    ] = None,
 ) -> None:
     """Submit a SLURM job (matches the SLURM ``sbatch`` invocation shape).
 
     Two input modes:
 
-    * ``srunx sbatch script.sh``        — submit a sbatch script (positional)
+    * ``srunx sbatch [OPTIONS] script.sh [ARGS...]`` — submit a sbatch
+      script; like real ``sbatch``, every token after the script path is
+      passed to the script, so srunx options must come before it
     * ``srunx sbatch --wrap "cmd ..."`` — wrap a command line into a job
 
     The two are mutually exclusive, mirroring SLURM's own ``sbatch``
@@ -302,6 +314,11 @@ def sbatch(
     if script is not None and wrap is not None:
         raise typer.BadParameter(
             "Positional script and --wrap are mutually exclusive.",
+            param_hint="<script> / --wrap",
+        )
+    if script_arg and script is None:
+        raise typer.BadParameter(
+            "Script arguments require a script; --wrap takes no arguments.",
             param_hint="<script> / --wrap",
         )
     if script is None and wrap is None:
@@ -357,6 +374,7 @@ def _sbatch_in_project(
     snapshot_rev: str | None,
     verbose: bool,
     sbatch_arg: list[str] | None,
+    script_arg: list[str] | None,
 ) -> None:
     # Cluster + effective defaults for this (project, cluster) context.
     settings = load_settings(reload=True)
@@ -405,6 +423,7 @@ def _sbatch_in_project(
             snapshot_rev=snapshot_rev,
             verbose=verbose,
             sbatch_arg=sbatch_arg,
+            script_arg=script_arg,
         )
 
 
@@ -449,6 +468,7 @@ def _sbatch_with_config(
     snapshot_rev: str | None,
     verbose: bool,
     sbatch_arg: list[str] | None,
+    script_arg: list[str] | None,
 ) -> None:
     cluster = cluster_name
     # --snapshot / --snapshot-rev: reject conflicting options (exit 2), then
@@ -634,6 +654,7 @@ def _sbatch_with_config(
             "name": effective_name,
             "script_path": str(script),
             "environment": environment,
+            "script_args": list(script_arg or ()),
         }
         job = ShellJob.model_validate(shell_data)
     else:
@@ -788,6 +809,10 @@ def _sbatch_with_config(
                 )
         elif isinstance(job, ShellJob):
             console.print(f"  Script: {job.script_path}")
+            if job.script_args:
+                console.print(
+                    f"  Script arguments: {escape(shlex.join(job.script_args))}"
+                )
             for option, value in directives.items():
                 console.print(f"  {option}={value}  [dim](#SBATCH)[/dim]")
             if merge is not None:

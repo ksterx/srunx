@@ -183,6 +183,34 @@ class TestExtraSbatchArgsWiring:
         assert tokens[dep_idx + 2] == "--array=1-10"
         assert dep_idx + 2 < script_idx
 
+    def test_script_args_follow_script_quoted_temp_upload(self, client):
+        client.files.write_remote_file = Mock()
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = self._capture(client)
+
+        client.slurm.submit_sbatch_job(
+            "#!/bin/bash\necho hi",
+            job_name="test_job",
+            extra_sbatch_args=["--time=5:00"],
+            script_args=["cfg.yaml", "--prepare-only", "a b; $(rm -rf /)"],
+        )
+
+        tokens = shlex.split(captured["cmd"])
+        assert tokens[-3:] == ["cfg.yaml", "--prepare-only", "a b; $(rm -rf /)"]
+        assert tokens.index("--time=5:00") < len(tokens) - 4
+
+    def test_script_args_follow_script_quoted_in_place(self, client):
+        client.files.validate_remote_script = Mock(return_value=(True, ""))
+        captured = self._capture(client)
+
+        client.slurm.submit_remote_sbatch_file(
+            "/remote/run.sh",
+            job_name="test_job",
+            script_args=["cfg.yaml", "$HOME"],
+        )
+
+        assert "/remote/run.sh cfg.yaml '$HOME';" in captured["cmd"]
+
     def test_extra_sbatch_args_shell_metachars_quoted(self, client):
         client.files.write_remote_file = Mock()
         client.files.validate_remote_script = Mock(return_value=(True, ""))

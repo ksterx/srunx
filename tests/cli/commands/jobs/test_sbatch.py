@@ -58,7 +58,7 @@ def test_positional_script_forwards_env_to_shell_job(runner, tmp_path):
     ):
         result = runner.invoke(
             app,
-            ["sbatch", str(script), "--env", "FOO=bar", "--cluster", "test-profile"],
+            ["sbatch", "--env", "FOO=bar", "--cluster", "test-profile", str(script)],
         )
 
     assert result.exit_code == 0, result.output
@@ -94,14 +94,14 @@ def test_quiet_short_flag_is_Q_not_q(runner, tmp_path):
     ):
         result = runner.invoke(
             app,
-            ["sbatch", str(script), "-Q", "--cluster", "test-profile"],
+            ["sbatch", "-Q", "--cluster", "test-profile", str(script)],
         )
         assert result.exit_code == 0, result.output
         assert "No such option" not in result.output
 
         result = runner.invoke(
             app,
-            ["sbatch", str(script), "-q", "normal", "--cluster", "test-profile"],
+            ["sbatch", "-q", "normal", "--cluster", "test-profile", str(script)],
         )
         assert result.exit_code == 0, result.output
         assert captured["extra_sbatch_args"] == ["--qos=normal"]
@@ -134,7 +134,7 @@ def test_removed_alias_exits_2(runner, tmp_path, alias):
     ):
         result = runner.invoke(
             app,
-            ["sbatch", str(script), alias, "x", "--cluster", "test-profile"],
+            ["sbatch", alias, "x", "--cluster", "test-profile", str(script)],
         )
     assert result.exit_code == 2, result.output
 
@@ -211,7 +211,7 @@ def test_passthrough_forms_reach_extra_sbatch_args(runner, tmp_path, extra_argv)
     ):
         result = runner.invoke(
             app,
-            ["sbatch", str(script), *extra_argv, "--cluster", "test-profile"],
+            ["sbatch", *extra_argv, "--cluster", "test-profile", str(script)],
         )
 
     assert result.exit_code == 0, result.output
@@ -260,13 +260,13 @@ def test_log_dir_output_precedence(runner, tmp_path):
             app,
             [
                 "sbatch",
-                str(script),
                 "--log-dir",
                 "L",
                 "--output",
                 "O",
                 "--cluster",
                 "test-profile",
+                str(script),
             ],
         )
 
@@ -330,7 +330,7 @@ class TestRejectedPassthroughExitsViaCli:
     def test_bare_rejected_spellings(self, runner, tmp_path, extra_argv):
         script = tmp_path / "run.sh"
         script.write_text("#!/bin/bash\necho hi\n")
-        result = runner.invoke(app, ["sbatch", str(script), *extra_argv])
+        result = runner.invoke(app, ["sbatch", *extra_argv, str(script)])
         assert result.exit_code == 2, result.output
 
     @pytest.mark.parametrize(
@@ -342,7 +342,7 @@ class TestRejectedPassthroughExitsViaCli:
         script.write_text("#!/bin/bash\necho hi\n")
         result = runner.invoke(
             app,
-            ["sbatch", str(script), f"--sbatch-arg={value}"],
+            ["sbatch", f"--sbatch-arg={value}", str(script)],
         )
         assert result.exit_code == 2, result.output
 
@@ -373,7 +373,7 @@ def test_help_still_works(runner, tmp_path):
         ),
     ):
         result = runner.invoke(
-            app, ["sbatch", str(script), "-Q", "--cluster", "test-profile"]
+            app, ["sbatch", "-Q", "--cluster", "test-profile", str(script)]
         )
     assert result.exit_code == 0, result.output
 
@@ -481,7 +481,7 @@ def test_snapshot_rejects_conflicting_option(
 ):
     script = tmp_path / "job.sbatch"
     script.write_text("echo\n")
-    args = ["sbatch", "--snapshot", str(script), *extra]
+    args = ["sbatch", "--snapshot", *extra, str(script)]
     if flag != "local":
         args += ["--cluster", "test-profile"]
     result = runner.invoke(app, args)
@@ -527,9 +527,9 @@ def test_snapshot_rev_implies_snapshot_and_keeps_script_positional(
                 "sbatch",
                 "--snapshot-rev",
                 "v1",
-                str(script),
                 "--cluster",
                 "test-profile",
+                str(script),
             ],
         )
     assert result.exit_code == 0, result.output
@@ -556,7 +556,7 @@ def test_snapshot_submit_never_syncs_or_uses_tmp_upload_and_names_from_commit(
         patch("srunx.sync.service.mount_sync_session") as session_mock,
     ):
         result = runner.invoke(
-            app, ["sbatch", "--snapshot", str(script), "--cluster", "test-profile"]
+            app, ["sbatch", "--snapshot", "--cluster", "test-profile", str(script)]
         )
     assert result.exit_code == 0, result.output
     sync_mock.assert_not_called()
@@ -581,9 +581,9 @@ def test_snapshot_dry_run_makes_no_remote_call(runner, snapshot_env, tmp_path):
                 "sbatch",
                 "--snapshot",
                 "--dry-run",
-                str(script),
                 "--cluster",
                 "test-profile",
+                str(script),
             ],
         )
     assert result.exit_code == 0, result.output
@@ -610,10 +610,10 @@ def test_snapshot_dry_run_no_output_warning_with_absolute_output(
                 "sbatch",
                 "--snapshot",
                 "--dry-run",
-                str(script),
                 "--cluster",
                 "test-profile",
                 "--output=/abs/logs/%j.out",
+                str(script),
             ],
         )
     assert result.exit_code == 0, result.output
@@ -634,7 +634,7 @@ def test_snapshot_rejects_clusters_passthrough(runner, snapshot_env, tmp_path, e
     script = tmp_path / "job.sbatch"
     script.write_text("echo\n")
     result = runner.invoke(
-        app, ["sbatch", "--snapshot", str(script), "--cluster", "test-profile", *extra]
+        app, ["sbatch", "--snapshot", "--cluster", "test-profile", *extra, str(script)]
     )
     assert result.exit_code == 2, result.output
     assert "clusters" in result.output.lower()
@@ -657,7 +657,7 @@ def test_snapshot_rejects_clusters_directive_in_the_committed_script(
     script = tmp_path / "job.sbatch"
     script.write_text("echo\n")
     result = runner.invoke(
-        app, ["sbatch", "--snapshot", str(script), "--cluster", "test-profile"]
+        app, ["sbatch", "--snapshot", "--cluster", "test-profile", str(script)]
     )
     assert result.exit_code == 2, result.output
     assert "clusters" in result.output.lower()

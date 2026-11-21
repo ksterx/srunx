@@ -117,7 +117,7 @@ class TestSbatchWithClusterDefaults:
         append_user_config('[clusters.local.defaults.resources]\npartition = "cpu"')
         script = tmp_path / "run.sh"
         script.write_text("echo hi\n")
-        result = runner.invoke(app, ["sbatch", str(script), "-p", "debug"])
+        result = runner.invoke(app, ["sbatch", "-p", "debug", str(script)])
         assert result.exit_code == 0, result.output
         assert local_slurm.submit.call_args.kwargs["extra_sbatch_args"] == [
             "--partition=debug"
@@ -144,6 +144,34 @@ class TestSbatchWithClusterDefaults:
         assert result.exit_code == 0, result.output
         assert local_slurm.submit.call_args.args[0].resources.partition == "proj"
 
+    def test_script_args_reach_job(self, tmp_path, local_slurm):
+        script = tmp_path / "run.sh"
+        script.write_text("echo\n")
+        result = runner.invoke(
+            app,
+            ["sbatch", "-p", "gpu", str(script), "cfg.yaml", "--cluster", "x"],
+        )
+        assert result.exit_code == 0, result.output
+        job = local_slurm.submit.call_args.args[0]
+        assert job.script_args == ["cfg.yaml", "--cluster", "x"]
+        assert (
+            "--partition=gpu"
+            in local_slurm.submit.call_args.kwargs["extra_sbatch_args"]
+        )
+
+    def test_dry_run_shows_script_args(self, tmp_path):
+        script = tmp_path / "run.sh"
+        script.write_text("echo\n")
+        result = runner.invoke(
+            app, ["sbatch", "--dry-run", str(script), "a b", "--prepare-only"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Script arguments: 'a b' --prepare-only" in result.stdout
+
+    def test_wrap_rejects_script_args(self):
+        result = runner.invoke(app, ["sbatch", "--wrap", "echo", "--script-arg=x"])
+        assert result.exit_code == 2
+
     def test_dry_run_shows_cluster_and_sources(self, tmp_path):
         append_user_config('[clusters.local.defaults.resources]\npartition = "cpu"')
         script = tmp_path / "run.sh"
@@ -162,7 +190,7 @@ class TestSbatchWithClusterDefaults:
     def test_clusters_option_rejected(self, tmp_path, args):
         script = tmp_path / "run.sh"
         script.write_text("echo\n")
-        result = runner.invoke(app, ["sbatch", str(script), *args])
+        result = runner.invoke(app, ["sbatch", *args, str(script)])
         assert result.exit_code == 2
         # Rich colours option names in error panels (e.g. on GitHub Actions).
         assert "--cluster" in re.sub(r"\x1b\[[0-9;]*m", "", result.output)
@@ -263,7 +291,7 @@ class TestReviewRegressions:
         append_user_config("[defaults.resources]\ngpus_per_node = 4")
         script = tmp_path / "run.sh"
         script.write_text("echo\n")
-        r = runner.invoke(app, ["sbatch", str(script), "--gres", "gpu:1"])
+        r = runner.invoke(app, ["sbatch", "--gres", "gpu:1", str(script)])
         assert r.exit_code == 0, r.output
         assert local_slurm.submit.call_args.kwargs["extra_sbatch_args"] == [
             "--gres=gpu:1"
@@ -273,7 +301,7 @@ class TestReviewRegressions:
         append_user_config('[defaults.resources]\npartition = "gpu"')
         script = tmp_path / "run.sh"
         script.write_text("echo\n")
-        r = runner.invoke(app, ["sbatch", str(script), "--sbatch-arg=--parti=x"])
+        r = runner.invoke(app, ["sbatch", "--sbatch-arg=--parti=x", str(script)])
         assert r.exit_code == 0, r.output
         assert local_slurm.submit.call_args.kwargs["extra_sbatch_args"] == ["--parti=x"]
 
@@ -355,7 +383,7 @@ def test_non_cluster_spellings_not_detected(tokens):
 def test_sbatch_arg_cluster_abbreviation_rejected(tmp_path):
     script = tmp_path / "run.sh"
     script.write_text("echo\n")
-    r = runner.invoke(app, ["sbatch", str(script), "--sbatch-arg=--cl=other"])
+    r = runner.invoke(app, ["sbatch", "--sbatch-arg=--cl=other", str(script)])
     assert r.exit_code == 2
 
 
@@ -559,7 +587,7 @@ class TestCodeDir:
         script = root / "run.sh"
         script.write_text("echo\n")
         monkeypatch.chdir(root)
-        r = runner.invoke(app, ["sbatch", str(script), "--env", "SRUNX_CODE_DIR=/x"])
+        r = runner.invoke(app, ["sbatch", "--env", "SRUNX_CODE_DIR=/x", str(script)])
         assert r.exit_code == 0, r.output
         env = local_slurm.submit.call_args.args[0].environment.env_vars
         assert env["SRUNX_CODE_DIR"] == str(root.resolve())
@@ -578,7 +606,7 @@ class TestCodeDir:
         )
         script = tmp_path / "run.sh"
         script.write_text("echo\n")
-        r = runner.invoke(app, ["sbatch", str(script), "--env", "A=1"])
+        r = runner.invoke(app, ["sbatch", "--env", "A=1", str(script)])
         assert r.exit_code == 0, r.output
         env = local_slurm.submit.call_args.args[0].environment.env_vars
         assert env["DATA_ROOT"] == "/data"
