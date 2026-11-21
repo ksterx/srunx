@@ -549,3 +549,65 @@ def test_update_system_only_cluster_is_rejected(monkeypatch, tmp_path):
     r = runner.invoke(app, ["cluster", "update", "sys", "--hostname", "x"])
     assert r.exit_code == 1
     assert "system config" in r.output
+
+
+class TestCodeDir:
+    """$SRUNX_CODE_DIR points at the project's code on the target."""
+
+    def test_local_cluster_uses_project_root(self, tmp_path, monkeypatch, local_slurm):
+        root = _project(tmp_path / "p", 'name = "p"\n')
+        script = root / "run.sh"
+        script.write_text("echo\n")
+        monkeypatch.chdir(root)
+        r = runner.invoke(app, ["sbatch", str(script), "--env", "SRUNX_CODE_DIR=/x"])
+        assert r.exit_code == 0, r.output
+        env = local_slurm.submit.call_args.args[0].environment.env_vars
+        assert env["SRUNX_CODE_DIR"] == str(root.resolve())
+
+    def test_no_project_no_variable(self, tmp_path, local_slurm):
+        script = tmp_path / "run.sh"
+        script.write_text("echo\n")
+        r = runner.invoke(app, ["sbatch", str(script)])
+        assert r.exit_code == 0, r.output
+        env = local_slurm.submit.call_args.args[0].environment.env_vars
+        assert "SRUNX_CODE_DIR" not in env
+
+    def test_cluster_env_vars_reach_the_job(self, tmp_path, local_slurm):
+        append_user_config(
+            '[clusters.local.defaults.environment.env_vars]\nDATA_ROOT = "/data"'
+        )
+        script = tmp_path / "run.sh"
+        script.write_text("echo\n")
+        r = runner.invoke(app, ["sbatch", str(script), "--env", "A=1"])
+        assert r.exit_code == 0, r.output
+        env = local_slurm.submit.call_args.args[0].environment.env_vars
+        assert env["DATA_ROOT"] == "/data"
+        assert env["A"] == "1"
+
+    def test_ssh_uses_mount_owning_the_script(self, tmp_path):
+        from srunx.cli._helpers.sbatch_resolve import code_dir_for
+
+        append_user_config('[clusters.gpu]\ntransport = "ssh"\nhost = "gpu"')
+        root = _project(
+            tmp_path / "p",
+            'name = "p"\n[clusters.gpu]\nremote_dir = "/r/p"\n'
+            '[[clusters.gpu.mounts]]\nname = "tools"\nlocal = "../tools"\n'
+            'remote = "/r/tools"\n',
+        )
+        (tmp_path / "tools").mkdir()
+        from srunx.common.config import use_project
+
+        with use_project(root):
+            assert code_dir_for("gpu", root / "a" / "run.sh") == "/r/p"
+            assert code_dir_for("gpu", tmp_path / "tools" / "t.sh") == "/r/tools"
+            assert code_dir_for("gpu", None) == "/r/p"
+            assert code_dir_for("gpu", tmp_path / "elsewhere.sh") == "/r/p"
+
+    def test_dry_run_shows_code_dir(self, tmp_path, monkeypatch):
+        root = _project(tmp_path / "p", 'name = "p"\n')
+        script = root / "run.sh"
+        script.write_text("echo\n")
+        monkeypatch.chdir(root)
+        r = runner.invoke(app, ["sbatch", "--dry-run", str(script)])
+        assert r.exit_code == 0, r.output
+        assert f"SRUNX_CODE_DIR: {root.resolve()}" in r.stdout

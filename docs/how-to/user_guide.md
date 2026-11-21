@@ -183,6 +183,40 @@ type; srunx's built-in defaults are never forwarded, because Slurm has its own.
   use srunx's `--cluster` instead.
 - `--yes` / `-y` approves the first sync to a new remote path without a prompt.
 
+#### Cluster-independent paths in scripts
+
+Paths that differ between clusters belong in the config, not in the script.
+
+- **Your code:** every `srunx sbatch` exports `$SRUNX_CODE_DIR`, the location
+  of the project's code on the target. On an SSH cluster it is the remote root
+  of the mount holding the script (normally the project's `remote_dir`); on a
+  local cluster it is the project root; with `--snapshot` it is the snapshot
+  directory. It is not set when there is no project. srunx's value wins over a
+  same-named `--env`.
+- **Data and caches:** put them in per-cluster environment variables.
+
+```toml
+# ~/.config/srunx/config.toml
+[clusters.gpu.defaults.environment.env_vars]
+DATA_ROOT = "/lustre/proj/data"
+HF_HOME = "/lustre/me/.cache/huggingface"
+
+[clusters.hr.defaults.environment.env_vars]
+DATA_ROOT = "/home/grp/proj/data"
+HF_HOME = "/home/grp/me/.cache/huggingface"
+```
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=train
+python "$SRUNX_CODE_DIR/train.py" --data "$DATA_ROOT/foo"
+```
+
+The same script then runs unchanged with `--cluster gpu`, `--cluster hr` and
+`--snapshot`. Values are passed as written (`~` and `$VAR` are not expanded on
+your machine) and reach the job through the submission environment
+(`--export=ALL`).
+
 #### Secrets on a remote cluster
 
 API keys can be stored once per remote account instead of being typed into

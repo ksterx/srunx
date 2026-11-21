@@ -265,3 +265,47 @@ def merge_script_defaults(
             result.args += [f"--output={pattern}", f"--error={pattern}"]
             result.forwarded["--output"] = (pattern, log_source)
     return result
+
+
+CODE_DIR_ENV = "SRUNX_CODE_DIR"
+
+
+def code_dir_for(cluster: str, script: Any | None) -> str | None:
+    """Where the project's code lives on *cluster* for this submission.
+
+    Exported to the job as ``$SRUNX_CODE_DIR`` so scripts can refer to their
+    code the same way whether they run from a synced mount or from a commit
+    snapshot (which sets the variable to the snapshot path itself):
+
+    * SSH cluster: the remote root of the mount holding the script, else of
+      the project's primary mount;
+    * local cluster: the project root;
+    * ``None`` when there is no project / mount to point at.
+    """
+    from pathlib import Path
+
+    from srunx.common.config import load_settings
+
+    settings = load_settings()
+    if settings.cluster(cluster).transport == "local":
+        return str(settings.project_root) if settings.project_root else None
+
+    from srunx.runtime.submission_plan import resolve_mount_among
+    from srunx.ssh.core.config import ConfigManager
+
+    profile = ConfigManager().get_profile(cluster)
+    if profile is None or not profile.mounts:
+        return None
+    if script is not None:
+        mount = resolve_mount_among(Path(script).expanduser().resolve(), profile.mounts)
+        if mount is not None:
+            return mount.remote
+    primary = next(
+        (
+            m
+            for m in profile.mounts
+            if settings.project is not None and m.name == settings.project.name
+        ),
+        None,
+    )
+    return primary.remote if primary is not None else None

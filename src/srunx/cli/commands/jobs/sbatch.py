@@ -542,8 +542,18 @@ def _sbatch_with_config(
 
     # Create environment with explicit handling of defaults
     env_config: dict[str, Any] = {}
-    if env_vars:
-        env_config["env_vars"] = {**config.environment.env_vars, **env_vars}
+    # $SRUNX_CODE_DIR: the project's code location on the target, so a script
+    # can use the same paths from a mount or a snapshot (snapshot submission
+    # overrides it with the snapshot path). srunx's value wins over --env.
+    from srunx.cli._helpers.sbatch_resolve import CODE_DIR_ENV, code_dir_for
+
+    code_dir = None if snapshot_plan is not None else code_dir_for(cluster_name, script)
+    if env_vars or code_dir:
+        env_config["env_vars"] = {
+            **config.environment.env_vars,
+            **env_vars,
+            **({CODE_DIR_ENV: code_dir} if code_dir else {}),
+        }
     if conda is not None:
         env_config["conda"] = conda
     if venv is not None:
@@ -756,6 +766,8 @@ def _sbatch_with_config(
         )
         if config.project_root:
             console.print(f"  Project: {config.project_root}")
+        if code_dir:
+            console.print(f"  SRUNX_CODE_DIR: {code_dir}")
         console.print(f"  Name: {job.name}")
         if isinstance(job, Job):
             command_str = (
