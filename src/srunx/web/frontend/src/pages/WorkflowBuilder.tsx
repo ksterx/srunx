@@ -21,7 +21,6 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft, Plus, Save, Settings, Variable } from "lucide-react";
 import { useWorkflowBuilder } from "../hooks/use-workflow-builder.ts";
 import { JobPropertyPanel } from "../components/JobPropertyPanel.tsx";
-import { MountSettings } from "../components/MountSettings.tsx";
 import { KeyValueEditor, type KVEntry } from "../components/KeyValueEditor.tsx";
 import { workflows as workflowsApi, files as filesApi } from "../lib/api.ts";
 import type { BuilderJob, DependencyType, Mount } from "../lib/types.ts";
@@ -352,7 +351,6 @@ export function WorkflowBuilder() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [loadingWorkflow, setLoadingWorkflow] = useState(isEditMode);
-  const [showMountSettings, setShowMountSettings] = useState(false);
   const [showArgsEditor, setShowArgsEditor] = useState(false);
   const [argsEntries, setArgsEntries] = useState<KVEntry[]>([]);
 
@@ -467,19 +465,6 @@ export function WorkflowBuilder() {
     },
     [deleteSelected],
   );
-
-  /* ── Mount settings close handler ──────────── */
-
-  const handleMountSettingsClose = useCallback(() => {
-    setShowMountSettings(false);
-    // Refresh mounts list after settings change
-    filesApi
-      .mounts()
-      .then(setMounts)
-      .catch(() => {
-        /* ignore */
-      });
-  }, []);
 
   /* ── Default work_dir from selected mount ── */
 
@@ -666,8 +651,8 @@ export function WorkflowBuilder() {
 
         <button
           className="btn btn-ghost"
-          onClick={() => setShowMountSettings(true)}
-          title="Manage mounts"
+          onClick={() => navigate("/settings?tab=project")}
+          title="Manage mounts (project config)"
           style={{ padding: "6px 8px" }}
         >
           <Settings size={16} />
@@ -832,11 +817,6 @@ export function WorkflowBuilder() {
           onSelect={(depType) => updateEdgeType(selectedEdge.id, depType)}
           onClose={() => setSelectedEdge(null)}
         />
-      )}
-
-      {/* ── Mount settings modal ───────────────── */}
-      {showMountSettings && (
-        <MountSettings onClose={handleMountSettingsClose} />
       )}
     </div>
   );

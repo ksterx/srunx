@@ -154,7 +154,7 @@ export function Jobs() {
         });
       } else {
         // ON: use the configured default endpoint + preset.
-        const defaults = srunxConfig?.notifications;
+        const defaults = srunxConfig?.values.notifications;
         const endpointName = defaults?.default_endpoint_name ?? null;
         const preset = (defaults?.default_preset ??
           "terminal") as NotificationPreset;

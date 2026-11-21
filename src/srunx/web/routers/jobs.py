@@ -358,6 +358,7 @@ def _submit_in_place(
         # CLI invocation can't rsync different bytes between our sync
         # and our submission.
         with mount_sync_session(
+            assume_yes=True,
             profile_name=adapter.scheduler_key.removeprefix("ssh:"),
             profile=profile,
             mount=mount,

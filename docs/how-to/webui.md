@@ -8,26 +8,39 @@ Practical recipes for common Web UI tasks.
 
 ## Connect to a Different Cluster
 
-**Using an SSH profile:**
+The Web UI works with the clusters in your user config. Pick the cluster in the
+**sidebar**; the choice is kept in the browser and sent with every API request
+(`?cluster=<name>`), so there is no server-side "current cluster" and two tabs
+can target different clusters.
+
+Add a cluster from **Settings > Clusters** or from the CLI:
 
 ``` bash
-SRUNX_SSH_PROFILE=other-cluster srunx ui
+srunx cluster add other-cluster --host other-login      # alias from ~/.ssh/config
+srunx cluster add direct --hostname slurm.example.com --username user \
+    --key-file ~/.ssh/id_ed25519
 ```
 
-**Using direct connection parameters:**
+The sidebar initially selects the project's `cluster`, else `default_cluster`.
+The Web UI talks to SLURM over SSH, so SLURM pages need an SSH cluster; a
+cluster with `transport = "local"` is rejected for those requests.
+
+## Serve Several Projects
+
+The project containing the directory you start `srunx ui` from is always
+served. Add more with `--project` (repeatable) or `SRUNX_WEB_PROJECTS`
+(paths separated by `:`):
 
 ``` bash
-SRUNX_SSH_HOSTNAME=slurm.example.com SRUNX_SSH_USERNAME=user srunx ui
+srunx ui --project ~/work/repo-a --project ~/work/repo-b
+SRUNX_WEB_PROJECTS=~/work/repo-a:~/work/repo-b srunx ui
 ```
 
-**With a custom SSH key:**
-
-``` bash
-SRUNX_SSH_HOSTNAME=slurm.example.com \
-SRUNX_SSH_USERNAME=user \
-SRUNX_SSH_KEY=~/.ssh/id_ed25519 \
-srunx ui
-```
+Each project is a directory containing `.srunx/config.toml`. Select the project
+in the sidebar; it is sent as `?project=<name>` and decides the mounts and
+project defaults the UI uses. Workflows are stored per mount in
+`<mount local path>/.srunx/workflows/` (for the project-root mount, that is the
+project's own `.srunx/workflows/`).
 
 ## Change the Server Port
 
@@ -111,7 +124,7 @@ The builder performs client-side validation before submitting:
 
 The file browser lets you pick files and directories from your local project tree, automatically translating them to remote paths.
 
-1.  Ensure you have at least one mount configured (see [Web UI tutorial](../tutorials/webui.md) Step 8)
+1.  Select a project and an SSH cluster in the sidebar; the project needs at least one mount on that cluster (see [Manage Mount Points](#manage-mount-points))
 2.  In the property panel, click the **folder icon** next to Command, Work Dir, or Log Dir
 3.  Select a mount from the **Project** dropdown
 4.  Browse the directory tree by clicking folders to expand them
@@ -123,29 +136,19 @@ The file browser lets you pick files and directories from your local project tre
 
 ## Manage Mount Points
 
-Mount points define local-to-remote directory mappings for the file browser.
-
-**Add a mount:**
-
-``` bash
-srunx ssh mount add --profile myserver --mount ml-project \
-    --local ~/projects/ml-project \
-    --remote /home/researcher/ml-project
-```
-
-**List mounts:**
+Mount points map the selected project's local directories to remote paths on
+the selected cluster. They are declared in the project config
+(`.srunx/config.toml`): the project root maps to `[clusters.<name>] remote_dir`
+(or the remote default workspace), and extra mounts come from
+`[[clusters.<name>.mounts]]`. See [Project Synchronization](sync.md#mount-points).
 
 ``` bash
-srunx ssh mount list --profile myserver
+srunx config set remote_dir /home/researcher/ml-project --cluster myserver --project
+srunx cluster show myserver      # lists the project's mounts on myserver
 ```
 
-**Remove a mount:**
-
-``` bash
-srunx ssh mount remove --profile myserver --mount ml-project
-```
-
-Mounts are stored in the SSH profile configuration. The `--local` path is the directory on your local machine; `--remote` is the corresponding path on the SLURM cluster.
+The **Project** tab in Settings edits `remote_dir`, sync, and excludes per
+cluster and shows the resolved mounts.
 
 ## Sync Files Before Running
 
@@ -160,10 +163,7 @@ The file browser shows local files, but workflows execute on the remote cluster.
 **From the command line:**
 
 ``` bash
-rsync -avz --delete \
-    -e "ssh -i ~/.ssh/id_ed25519" \
-    ~/projects/ml-project/ \
-    researcher@dgx.example.com:/home/researcher/ml-project/
+srunx cluster sync myserver --mount ml-project
 ```
 
 !!! warning
@@ -240,9 +240,8 @@ under one parent `sweep_run`.
   per-cell DAG view and logs
 
 !!! note
-    Sweep submissions always route through the configured SSH adapter via
-    a per-sweep pool. If no SSH profile is configured, the `RUN SWEEP`
-    button is disabled.
+    Sweep submissions route through the selected SSH cluster via a
+    per-sweep connection pool.
 
 ## Cancel a Running Workflow
 
@@ -272,19 +271,6 @@ The update overwrites the existing YAML file on disk. The same validation rules 
 !!! warning
     Deletion is permanent. There is no undo. Active runs for the deleted workflow are not affected (they continue to track job statuses in memory), but you will not be able to start new runs.
 
-## Manage Mounts from the Web UI
-
-In addition to the CLI, mounts can be managed directly from the DAG builder.
-
-1.  In the DAG builder, click the **gear icon** in the toolbar to open Mount Settings
-2.  The modal shows all configured mounts with their name, local path, and remote path
-3.  To add a new mount, fill in the name, local path, and remote path fields, then click **Add**
-4.  To remove a mount, click the **trash icon** on the corresponding row
-5.  Changes are saved immediately to the SSH profile configuration (`~/.config/srunx/config.json`)
-
-!!! note
-    Mounts added through the Web UI are identical to those added via `srunx ssh mount add`. Both methods modify the same configuration file.
-
 ## View Job Logs from a Workflow Run
 
 1.  During or after a workflow run, click a job node in the DAG view
@@ -292,22 +278,17 @@ In addition to the CLI, mounts can be managed directly from the DAG builder.
 3.  Click **View Logs** to see stdout and stderr output
 4.  For running jobs, log content is polled and refreshed automatically
 
-## Run Without SSH (Frontend Only)
+## Run Without a Cluster (Frontend Only)
 
-For frontend development or demos, the server can start without an SSH connection:
+For frontend development or demos, the server can start without any cluster
+configured:
 
 ``` bash
 srunx ui
 ```
 
-If no SSH profile is configured, the server starts with a warning:
-
-``` text
-No SSH configuration provided. Set SRUNX_SSH_PROFILE or
-SRUNX_SSH_HOSTNAME + SRUNX_SSH_USERNAME to connect to a SLURM cluster.
-```
-
-SLURM endpoints will return `503 Service Unavailable`, but the frontend loads normally.
+The startup banner then reports that no cluster is configured. SLURM endpoints return `503 Service Unavailable` while no
+cluster is selected, but the frontend loads normally.
 
 ## Develop the Frontend
 

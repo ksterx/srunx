@@ -17,9 +17,9 @@ from srunx.observability.storage.connection import init_db
 @pytest.fixture
 def app_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """A fresh app instance with an isolated tmp DB."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     # Pre-initialize the DB so the first API call doesn't race on schema creation.
-    init_db(delete_legacy=False)
+    init_db()
 
     from srunx.web.app import create_app
 

@@ -36,6 +36,7 @@ dependencies = [
     "slack-sdk>=3.41.0",
     "typer>=0.24.1",
     "apscheduler>=3.11.2",
+    "tomlkit>=0.15.2",
 ]
 
 [project.urls]
@@ -135,6 +136,7 @@ markers = [
     "unit: Unit tests",
     "integration: Integration tests",
     "slow: Slow tests",
+    "real_approval: do not pre-approve sync targets (tests/cli)",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",

@@ -68,7 +68,7 @@ hide:
 
     ---
 
-    Claude Code and other MCP clients drive srunx over stdio — including `run_workflow(sweep=..., transport=...)`.
+    Claude Code and other MCP clients drive srunx over stdio — including `run_workflow(sweep=..., cluster=...)`.
 
 -   :material-file-code-outline:{ .lg .middle } __Jinja templates__
 

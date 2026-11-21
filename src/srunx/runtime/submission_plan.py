@@ -184,7 +184,7 @@ def plan_sbatch_submission(
         warnings.append(
             f"Running without syncing '{mount.name}'. The remote may "
             f"be out of date; re-run with --sync or rerun "
-            f"'srunx ssh sync' to refresh."
+            f"'srunx cluster sync' to refresh."
         )
 
     return SubmissionPlan(

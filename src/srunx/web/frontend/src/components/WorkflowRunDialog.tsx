@@ -184,8 +184,8 @@ export function WorkflowRunDialog({
         if (cancelled) return;
         setEndpointList(fetched);
 
-        const defaultName = cfg?.notifications?.default_endpoint_name ?? null;
-        const defaultPreset = cfg?.notifications?.default_preset;
+        const defaultName = cfg?.values.notifications?.default_endpoint_name ?? null;
+        const defaultPreset = cfg?.values.notifications?.default_preset;
         if (defaultPreset && isKnownPreset(defaultPreset)) {
           setPreset(defaultPreset);
         }

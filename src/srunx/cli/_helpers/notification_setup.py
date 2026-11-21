@@ -67,7 +67,7 @@ def attach_notification_watch(
             EndpointRepository,
         )
 
-        init_db(delete_legacy=False)
+        init_db()
         conn = open_connection()
         try:
             endpoint_repo = EndpointRepository(conn)

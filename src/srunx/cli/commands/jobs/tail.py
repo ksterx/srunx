@@ -6,8 +6,8 @@ from typing import Annotated, Any
 import typer
 
 import srunx.slurm.local as _slurm_local  # noqa: E402,I001 — kept so ``patch("srunx.slurm.local.Slurm")`` intercepts all call sites
-from srunx.cli._helpers.transport import resolve_transport
-from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
+from srunx.cli._helpers.transport import job_target, resolve_transport
+from srunx.cli._helpers.transport_options import ClusterOpt, QuietOpt
 from srunx.common.exceptions import JobNotFoundError, TransportError
 
 
@@ -134,8 +134,7 @@ def tail(
         str | None,
         typer.Option("--name", help="Job name for better log file detection"),
     ] = None,
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
+    cluster: ClusterOpt = None,
     quiet: QuietOpt = False,
 ) -> None:
     """Display job logs with optional real-time streaming.
@@ -166,7 +165,10 @@ def tail(
     effective_last: int | None = None if show_all else last
 
     try:
-        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+        cluster, source = job_target(job_id, cluster)
+        with resolve_transport(
+            cluster=cluster, source_override=source, quiet=quiet
+        ) as rt:
             if rt.transport_type == "local":
                 # Local keeps the interactive ``Slurm.tail_log`` path for
                 # follow + last_n + file-discovery behaviour the Protocol

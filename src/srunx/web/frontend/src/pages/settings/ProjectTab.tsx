@@ -1,471 +1,364 @@
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
+import { FolderOpen, Save, Server, HardDrive } from "lucide-react";
 import {
-  FolderOpen,
-  Plus,
-  Save,
-  Check,
-  ChevronDown,
-  ChevronUp,
-} from "lucide-react";
-import { config as configApi } from "../../lib/api.ts";
-import type {
-  ProjectInfo,
-  SrunxConfig,
-  ResourceDefaultsConfig,
-  EnvironmentDefaultsConfig,
-} from "../../lib/types.ts";
+  config as configApi,
+  projects as projectsApi,
+  ConfigConflictError,
+} from "../../lib/api.ts";
+import { refreshSelection, useSelection } from "../../lib/selection.ts";
+import type { ConfigFile, ProjectDetail } from "../../lib/types.ts";
 import { ErrorBanner } from "../../components/ErrorBanner.tsx";
+import {
+  FieldRow,
+  NoticeBox,
+  SuccessBanner,
+  getIn,
+  monoSmall,
+} from "./shared.tsx";
 
-type FieldRowProps = {
-  label: string;
-  children: React.ReactNode;
+type ClusterDraft = {
+  remote_dir: string;
+  sync: "" | "true" | "false";
+  exclude: string;
 };
 
-function FieldRow({ label, children }: FieldRowProps) {
+function draftFrom(file: ConfigFile | null, cluster: string): ClusterDraft {
+  const table = getIn(file?.data, `clusters.${cluster}`) as
+    | Record<string, unknown>
+    | undefined;
+  const sync = table?.sync;
+  const exclude = table?.exclude;
+  return {
+    remote_dir: typeof table?.remote_dir === "string" ? table.remote_dir : "",
+    sync: sync === true ? "true" : sync === false ? "false" : "",
+    exclude: Array.isArray(exclude) ? exclude.join("\n") : "",
+  };
+}
+
+function sameDraft(a: ClusterDraft, b: ClusterDraft): boolean {
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: "var(--sp-6)",
-        padding: "var(--sp-2) 0",
-        borderBottom: "1px solid var(--border-ghost)",
-      }}
-    >
-      <div
-        style={{
-          fontSize: "0.85rem",
-          fontWeight: 500,
-          color: "var(--text-primary)",
-        }}
-      >
-        {label}
-      </div>
-      <div style={{ flexShrink: 0, minWidth: 200 }}>{children}</div>
-    </div>
+    a.remote_dir === b.remote_dir && a.sync === b.sync && a.exclude === b.exclude
   );
 }
 
 export function ProjectTab() {
-  const [projects, setProjects] = useState<ProjectInfo[]>([]);
+  const { project, clusters } = useSelection();
+  const [detail, setDetail] = useState<ProjectDetail | null>(null);
+  const [file, setFile] = useState<ConfigFile | null>(null);
+  const [pinned, setPinned] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, ClusterDraft>>({});
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [expandedMount, setExpandedMount] = useState<string | null>(null);
-  const [editConfig, setEditConfig] = useState<SrunxConfig | null>(null);
-  const [saving, setSaving] = useState(false);
+  const clearSuccess = useCallback(() => setSuccess(null), []);
 
   const load = useCallback(async () => {
+    if (!project) {
+      setLoading(false);
+      return;
+    }
     try {
       setLoading(true);
-      const p = await configApi.listProjects();
-      setProjects(p);
+      const [d, f] = await Promise.all([
+        projectsApi.get(project),
+        configApi.getFile("project"),
+      ]);
+      setDetail(d);
+      setFile(f);
+      setPinned(typeof f.data.cluster === "string" ? f.data.cluster : "");
+      setDrafts({});
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load projects");
+      setError(e instanceof Error ? e.message : "Failed to load project");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [project]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  useEffect(() => {
-    if (success) {
-      const t = setTimeout(() => setSuccess(null), 3000);
-      return () => clearTimeout(t);
-    }
-  }, [success]);
-
-  const handleExpand = async (mountName: string) => {
-    if (expandedMount === mountName) {
-      setExpandedMount(null);
-      setEditConfig(null);
-      return;
-    }
-    setExpandedMount(mountName);
+  const patch = async (
+    key: string,
+    body: { set?: Record<string, unknown>; delete?: string[] },
+    message: string,
+  ) => {
+    if (!file) return;
     try {
-      const resp = await configApi.getProject(mountName);
-      setEditConfig(resp.config);
-    } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "Failed to load project config",
-      );
-    }
-  };
-
-  const handleInit = async (mountName: string) => {
-    try {
-      setSaving(true);
-      const resp = await configApi.initProject(mountName);
-      setEditConfig(resp.config);
-      setSuccess(`Initialized srunx.json for "${mountName}"`);
-      await load();
-      setExpandedMount(mountName);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to initialize");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleSave = async () => {
-    if (!expandedMount || !editConfig) return;
-    try {
-      setSaving(true);
+      setSaving(key);
       setError(null);
-      const resp = await configApi.updateProject(expandedMount, editConfig);
-      setEditConfig(resp.config);
-      setSuccess(`Project config saved for "${expandedMount}"`);
+      await configApi.patchFile({
+        scope: "project",
+        version: file.version,
+        ...body,
+      });
+      setSuccess(message);
       await load();
+      if (key === "cluster") await refreshSelection();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save");
+      if (e instanceof ConfigConflictError) {
+        // Reload first: ``load`` clears the error banner on success.
+        await load();
+        setError(
+          "The project config changed on disk since it was loaded. Reloaded — please re-apply your edits.",
+        );
+      } else {
+        setError(e instanceof Error ? e.message : "Failed to save");
+      }
     } finally {
-      setSaving(false);
+      setSaving(null);
     }
   };
 
-  const updateResources = (patch: Partial<ResourceDefaultsConfig>) => {
-    if (!editConfig) return;
-    setEditConfig({
-      ...editConfig,
-      resources: { ...editConfig.resources, ...patch },
-    });
-  };
-
-  const updateEnvironment = (patch: Partial<EnvironmentDefaultsConfig>) => {
-    if (!editConfig) return;
-    setEditConfig({
-      ...editConfig,
-      environment: { ...editConfig.environment, ...patch },
-    });
-  };
-
-  if (loading) {
-    return <div className="panel skeleton" style={{ height: 200 }} />;
+  if (!project) {
+    return (
+      <NoticeBox>
+        No project is selected. Start <code>srunx ui</code> inside a project
+        (a directory with <code>.srunx/config.toml</code>) or pass{" "}
+        <code>--project</code>.
+      </NoticeBox>
+    );
   }
+
+  if (loading && !detail) {
+    return <div className="panel skeleton" style={{ height: 300 }} />;
+  }
+
+  const savedPinned =
+    typeof file?.data.cluster === "string" ? file.data.cluster : "";
+
+  const saveCluster = (name: string) => {
+    const draft = drafts[name];
+    if (!draft) return;
+    const base = `clusters.${name}`;
+    const set: Record<string, unknown> = {};
+    const del: string[] = [];
+    if (draft.remote_dir.trim()) set[`${base}.remote_dir`] = draft.remote_dir.trim();
+    else del.push(`${base}.remote_dir`);
+    if (draft.sync) set[`${base}.sync`] = draft.sync === "true";
+    else del.push(`${base}.sync`);
+    const exclude = draft.exclude
+      .split(/[\n,]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (exclude.length > 0) set[`${base}.exclude`] = exclude;
+    else del.push(`${base}.exclude`);
+    // Only delete keys that actually exist to keep the file tidy.
+    const existing = draftFrom(file, name);
+    const filteredDel = del.filter((k) => {
+      const leaf = k.split(".").pop() as keyof ClusterDraft;
+      return existing[leaf] !== "";
+    });
+    void patch(
+      `cluster:${name}`,
+      { set, delete: filteredDel },
+      `Saved settings for cluster "${name}"`,
+    );
+  };
 
   return (
     <div
       style={{ display: "flex", flexDirection: "column", gap: "var(--sp-4)" }}
     >
       <ErrorBanner error={error} />
-      {success && (
-        <motion.div
-          initial={{ opacity: 0, y: -8 }}
-          animate={{ opacity: 1, y: 0 }}
-          style={{
-            padding: "var(--sp-3) var(--sp-4)",
-            background: "var(--st-completed-dim)",
-            border: "1px solid rgba(52,211,153,0.3)",
-            borderRadius: "var(--radius-md)",
-            color: "var(--st-completed)",
-            fontFamily: "var(--font-mono)",
-            fontSize: "0.8rem",
-          }}
-        >
-          <Check size={14} style={{ verticalAlign: -2, marginRight: 6 }} />
-          {success}
-        </motion.div>
-      )}
+      <SuccessBanner message={success} onDone={clearSuccess} />
 
-      {projects.length === 0 && (
-        <div className="panel">
-          <div
-            className="panel-body"
-            style={{ textAlign: "center", padding: "var(--sp-8)" }}
-          >
-            <p
-              style={{
-                color: "var(--text-muted)",
-                fontSize: "0.85rem",
-                marginBottom: "var(--sp-2)",
-              }}
-            >
-              No projects found
-            </p>
-            <p style={{ color: "var(--text-muted)", fontSize: "0.75rem" }}>
-              Projects are derived from mounts in the active SSH profile. Add
-              mounts in the SSH Profiles tab first.
-            </p>
-          </div>
+      {/* Project overview */}
+      <motion.div className="panel">
+        <div className="panel-header">
+          <h3>
+            <FolderOpen size={14} style={{ marginRight: 8, verticalAlign: -2 }} />
+            Project "{project}"
+          </h3>
         </div>
-      )}
+        <div className="panel-body">
+          <FieldRow label="Root">
+            <span style={monoSmall}>{detail?.root}</span>
+          </FieldRow>
+          <FieldRow label="Config file">
+            <span style={monoSmall}>
+              {file?.path}
+              {file && !file.exists ? " (will be created)" : ""}
+            </span>
+          </FieldRow>
+          <FieldRow
+            label="Cluster"
+            description="Cluster this project uses by default"
+          >
+            <div style={{ display: "flex", gap: "var(--sp-2)" }}>
+              <select
+                className="input"
+                aria-label="Project cluster"
+                value={pinned}
+                onChange={(e) => setPinned(e.target.value)}
+                style={{ flex: 1 }}
+              >
+                <option value="">(user default)</option>
+                {clusters.map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+                {pinned && !clusters.some((c) => c.name === pinned) && (
+                  <option value={pinned}>{pinned} (unknown)</option>
+                )}
+              </select>
+              <button
+                className="btn btn-primary"
+                disabled={saving !== null || pinned === savedPinned}
+                onClick={() =>
+                  patch(
+                    "cluster",
+                    pinned ? { set: { cluster: pinned } } : { delete: ["cluster"] },
+                    pinned
+                      ? `Project cluster set to "${pinned}"`
+                      : "Project cluster cleared",
+                  )
+                }
+                style={{ padding: "var(--sp-2)" }}
+              >
+                <Save size={14} />
+              </button>
+            </div>
+          </FieldRow>
+        </div>
+      </motion.div>
 
-      {projects.map((proj) => {
-        const isExpanded = expandedMount === proj.mount_name;
-
+      {/* Per-cluster settings */}
+      {clusters.map((c) => {
+        const saved = draftFrom(file, c.name);
+        const draft = drafts[c.name] ?? saved;
+        const dirty = !sameDraft(draft, saved);
+        const setDraft = (p: Partial<ClusterDraft>) =>
+          setDrafts((d) => ({ ...d, [c.name]: { ...draft, ...p } }));
+        const mounts = detail?.mounts[c.name] ?? [];
         return (
-          <div key={proj.mount_name} className="panel">
+          <motion.div
+            key={c.name}
+            className="panel"
+            data-testid={`project-cluster-${c.name}`}
+          >
             <div
               className="panel-header"
-              style={{ cursor: "pointer" }}
-              onClick={() => handleExpand(proj.mount_name)}
+              style={{ display: "flex", justifyContent: "space-between" }}
             >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "var(--sp-3)",
-                }}
+              <h3>
+                <Server size={14} style={{ marginRight: 8, verticalAlign: -2 }} />
+                On cluster "{c.name}"
+              </h3>
+              <button
+                className="btn btn-primary"
+                disabled={saving !== null || !dirty}
+                onClick={() => saveCluster(c.name)}
               >
-                <FolderOpen size={14} />
-                <h3 style={{ textTransform: "none", letterSpacing: 0 }}>
-                  {proj.mount_name}
-                </h3>
-                <span
-                  className={
-                    proj.config_exists
-                      ? "badge badge-completed"
-                      : "badge badge-cancelled"
+                <Save size={14} />
+                {saving === `cluster:${c.name}` ? "Saving..." : "Save"}
+              </button>
+            </div>
+            <div className="panel-body">
+              <FieldRow
+                label="Remote directory"
+                description="Where the project root is synced on this cluster"
+              >
+                <input
+                  className="input"
+                  type="text"
+                  aria-label={`Remote directory (${c.name})`}
+                  value={draft.remote_dir}
+                  placeholder="e.g. /home/me/projects/foo"
+                  onChange={(e) => setDraft({ remote_dir: e.target.value })}
+                  style={{ width: "100%" }}
+                />
+              </FieldRow>
+              <FieldRow label="Sync" description="Rsync the project before runs">
+                <select
+                  className="input"
+                  value={draft.sync}
+                  onChange={(e) =>
+                    setDraft({ sync: e.target.value as ClusterDraft["sync"] })
                   }
-                  style={{ fontSize: "0.6rem" }}
+                  style={{ width: "100%" }}
                 >
-                  {proj.config_exists ? "srunx.json" : "NO CONFIG"}
-                </span>
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "var(--sp-3)",
-                }}
+                  <option value="">(default: on)</option>
+                  <option value="true">on</option>
+                  <option value="false">off</option>
+                </select>
+              </FieldRow>
+              <FieldRow
+                label="Exclude"
+                description="Rsync exclude patterns, one per line"
               >
-                <span
+                <textarea
+                  className="input"
+                  value={draft.exclude}
+                  rows={3}
+                  onChange={(e) => setDraft({ exclude: e.target.value })}
                   style={{
+                    width: "100%",
                     fontFamily: "var(--font-mono)",
-                    fontSize: "0.7rem",
-                    color: "var(--text-muted)",
+                    fontSize: "0.8rem",
+                  }}
+                />
+              </FieldRow>
+
+              <div style={{ paddingTop: "var(--sp-4)" }}>
+                <div
+                  style={{
+                    fontSize: "0.85rem",
+                    fontWeight: 500,
+                    color: "var(--text-primary)",
+                    marginBottom: "var(--sp-2)",
                   }}
                 >
-                  {proj.local_path}
-                </span>
-                {isExpanded ? (
-                  <ChevronUp size={14} />
+                  Resolved mounts
+                </div>
+                {mounts.length === 0 ? (
+                  <div style={monoSmall}>
+                    No mounts on this cluster (set a remote directory or add{" "}
+                    <code>[[clusters.{c.name}.mounts]]</code> to the project
+                    config).
+                  </div>
                 ) : (
-                  <ChevronDown size={14} />
+                  mounts.map((m) => (
+                    <div
+                      key={m.name}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "var(--sp-3)",
+                        padding: "var(--sp-2) var(--sp-3)",
+                        marginBottom: "var(--sp-1)",
+                        background: "var(--bg-base)",
+                        borderRadius: "var(--radius-md)",
+                        border: "1px solid var(--border-ghost)",
+                        fontFamily: "var(--font-mono)",
+                        fontSize: "0.78rem",
+                      }}
+                    >
+                      <HardDrive size={13} style={{ flexShrink: 0 }} />
+                      <span style={{ color: "var(--accent)", minWidth: 100 }}>
+                        {m.name}
+                      </span>
+                      <span
+                        style={{ color: "var(--text-secondary)", flex: 1 }}
+                      >
+                        {m.local} → {m.remote}
+                      </span>
+                      <span style={monoSmall}>
+                        {m.sync ? "sync" : "no sync"}
+                        {m.exclude.length > 0
+                          ? ` · ${m.exclude.length} excludes`
+                          : ""}
+                      </span>
+                    </div>
+                  ))
                 )}
               </div>
             </div>
-
-            {isExpanded && (
-              <div className="panel-body">
-                {/* Path info */}
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1fr",
-                    gap: "var(--sp-3)",
-                    marginBottom: "var(--sp-4)",
-                  }}
-                >
-                  <div>
-                    <span
-                      style={{
-                        fontSize: "0.7rem",
-                        color: "var(--text-muted)",
-                        textTransform: "uppercase",
-                        letterSpacing: "0.08em",
-                      }}
-                    >
-                      Local
-                    </span>
-                    <div
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "0.8rem",
-                        color: "var(--text-secondary)",
-                        marginTop: 2,
-                      }}
-                    >
-                      {proj.local_path}
-                    </div>
-                  </div>
-                  <div>
-                    <span
-                      style={{
-                        fontSize: "0.7rem",
-                        color: "var(--text-muted)",
-                        textTransform: "uppercase",
-                        letterSpacing: "0.08em",
-                      }}
-                    >
-                      Remote
-                    </span>
-                    <div
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "0.8rem",
-                        color: "var(--text-secondary)",
-                        marginTop: 2,
-                      }}
-                    >
-                      {proj.remote_path}
-                    </div>
-                  </div>
-                </div>
-
-                {!proj.config_exists && !editConfig ? (
-                  <button
-                    className="btn btn-primary"
-                    onClick={() => handleInit(proj.mount_name)}
-                    disabled={saving}
-                  >
-                    <Plus size={14} />
-                    Initialize srunx.json
-                  </button>
-                ) : editConfig ? (
-                  <div>
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        marginBottom: "var(--sp-3)",
-                        borderBottom: "1px solid var(--border-ghost)",
-                        paddingBottom: "var(--sp-3)",
-                      }}
-                    >
-                      <span
-                        style={{
-                          fontSize: "0.75rem",
-                          fontWeight: 500,
-                          textTransform: "uppercase",
-                          letterSpacing: "0.08em",
-                          color: "var(--text-muted)",
-                        }}
-                      >
-                        Project Config
-                      </span>
-                      <button
-                        className="btn btn-primary"
-                        onClick={handleSave}
-                        disabled={saving}
-                        style={{ fontSize: "0.7rem", padding: "4px 10px" }}
-                      >
-                        <Save size={12} />
-                        {saving ? "Saving..." : "Save"}
-                      </button>
-                    </div>
-
-                    <FieldRow label="Nodes">
-                      <input
-                        className="input"
-                        type="number"
-                        value={editConfig.resources.nodes}
-                        min={1}
-                        onChange={(e) => {
-                          const n = Number(e.target.value);
-                          if (!Number.isNaN(n)) updateResources({ nodes: n });
-                        }}
-                        style={{ width: "100%" }}
-                      />
-                    </FieldRow>
-                    <FieldRow label="GPUs per Node">
-                      <input
-                        className="input"
-                        type="number"
-                        value={editConfig.resources.gpus_per_node}
-                        min={0}
-                        onChange={(e) => {
-                          const n = Number(e.target.value);
-                          if (!Number.isNaN(n))
-                            updateResources({ gpus_per_node: n });
-                        }}
-                        style={{ width: "100%" }}
-                      />
-                    </FieldRow>
-                    <FieldRow label="Partition">
-                      <input
-                        className="input"
-                        type="text"
-                        value={editConfig.resources.partition ?? ""}
-                        onChange={(e) =>
-                          updateResources({ partition: e.target.value || null })
-                        }
-                        placeholder="e.g. gpu"
-                        style={{ width: "100%" }}
-                      />
-                    </FieldRow>
-                    <FieldRow label="Time Limit">
-                      <input
-                        className="input"
-                        type="text"
-                        value={editConfig.resources.time_limit ?? ""}
-                        onChange={(e) =>
-                          updateResources({
-                            time_limit: e.target.value || null,
-                          })
-                        }
-                        placeholder="e.g. 2:00:00"
-                        style={{ width: "100%" }}
-                      />
-                    </FieldRow>
-                    <FieldRow label="Memory per Node">
-                      <input
-                        className="input"
-                        type="text"
-                        value={editConfig.resources.memory_per_node ?? ""}
-                        onChange={(e) =>
-                          updateResources({
-                            memory_per_node: e.target.value || null,
-                          })
-                        }
-                        placeholder="e.g. 32GB"
-                        style={{ width: "100%" }}
-                      />
-                    </FieldRow>
-                    <FieldRow label="Conda">
-                      <input
-                        className="input"
-                        type="text"
-                        value={editConfig.environment.conda ?? ""}
-                        onChange={(e) =>
-                          updateEnvironment({ conda: e.target.value || null })
-                        }
-                        placeholder="e.g. ml_env"
-                        style={{ width: "100%" }}
-                      />
-                    </FieldRow>
-                    <FieldRow label="Log Directory">
-                      <input
-                        className="input"
-                        type="text"
-                        value={editConfig.log_dir}
-                        onChange={(e) =>
-                          setEditConfig({
-                            ...editConfig,
-                            log_dir: e.target.value || "logs",
-                          })
-                        }
-                        placeholder="logs"
-                        style={{ width: "100%" }}
-                      />
-                    </FieldRow>
-                    <FieldRow label="Working Directory">
-                      <input
-                        className="input"
-                        type="text"
-                        value={editConfig.work_dir ?? ""}
-                        onChange={(e) =>
-                          setEditConfig({
-                            ...editConfig,
-                            work_dir: e.target.value || null,
-                          })
-                        }
-                        placeholder="e.g. /scratch/username"
-                        style={{ width: "100%" }}
-                      />
-                    </FieldRow>
-                  </div>
-                ) : null}
-              </div>
-            )}
-          </div>
+          </motion.div>
         );
       })}
     </div>

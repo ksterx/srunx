@@ -7,36 +7,20 @@ local SLURM and an SSH-backed cluster. Higher layers call
 :class:`~srunx.slurm.protocols.JobOperations` / queue client /
 executor factory regardless of which transport was selected.
 
-Resolution priority (see REQ-1):
-
-    1. ``--profile <name>``
-    2. ``--local``
-    3. ``$SRUNX_SSH_PROFILE`` (gated by ``policy.allow_env``)
-    4. current SSH profile via ``srunx ssh use`` (gated by
-       ``policy.allow_current_profile`` + ``cli.use_current_profile``)
-    5. local fallback (silent, preserves AC-10.2)
-
-Banner emission (REQ-7): explicit sources print a one-line banner to
-stderr; the default path stays silent so existing scripts that rely on
-byte-exact CLI output keep working.
+Cluster selection (design §5): ``--cluster`` > ``$SRUNX_CLUSTER`` >
+project ``cluster`` > user ``default_cluster`` > error. There is no
+implicit local fallback; a local cluster is one with
+``transport = "local"``.
 
 The SSH-related imports (``SlurmSSHClient``, ``SlurmSSHExecutorPool``,
 ``SubmissionRenderContext``, ``ConfigManager``) are gated inside
 :func:`_build_ssh_handle` so the local fallback path never pays the
 paramiko import cost (R-3).
 
-Manual verification cheatsheet:
-
-    $ srunx squeue                          # banner suppressed (default → local)
-    $ srunx squeue --local                  # banner: ● Local SLURM (via --local)
-    $ srunx squeue --profile foo            # banner: ● Connected to … (profile: foo · via --profile)
-    $ SRUNX_SSH_PROFILE=foo srunx squeue    # banner: ● Connected to … (… · via $SRUNX_SSH_PROFILE)
-    $ srunx squeue --quiet                  # banner suppressed for any source
 """
 
 from __future__ import annotations
 
-import os
 import sys
 import threading
 from collections.abc import Callable, Iterator, Sequence
@@ -66,33 +50,20 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-TransportSource = Literal["--profile", "--local", "env", "current-profile", "default"]
+TransportSource = Literal["--cluster", "env", "project", "config", "history"]
 
 
 @dataclass(frozen=True)
 class TransportPolicy:
-    """Which implicit rungs of the resolution ladder are honoured.
+    """Whether implicit cluster selection is honoured.
 
-    The 5-step ladder (``--profile`` > ``--local`` > ``$SRUNX_SSH_PROFILE``
-    > current-profile > local) is the single source of truth for picking a
-    transport. Different entry points want different subsets of the
-    *implicit* rungs:
-
-    * **CLI execution** (sbatch / squeue / ...) — both implicit rungs on:
-      env vars and the active SSH profile are convenient and visible (a
-      banner shows where the command runs). This is the default.
-    * **MCP** — both off: an API surface must not run against a remote
-      cluster because of ambient machine state (an env var or a profile
-      someone ran ``srunx ssh use`` on). MCP passes an explicit profile or
-      stays local.
-
-    Explicit ``--profile`` / ``--local`` are never gated — they are caller
-    intent, not ambient state. Only the env and current-profile rungs are
-    policy-controlled.
+    The CLI honours ``$SRUNX_CLUSTER``, the project's ``cluster`` and the
+    user's ``default_cluster``. API surfaces (MCP) must not pick a cluster
+    from ambient state, so they pass ``allow_implicit=False`` and require
+    an explicit cluster.
     """
 
-    allow_env: bool = True
-    allow_current_profile: bool = True
+    allow_implicit: bool = True
 
 
 DEFAULT_POLICY = TransportPolicy()
@@ -135,6 +106,7 @@ class TransportHandle:
     queue_client: Client
     executor_factory: WorkflowJobExecutorFactory | None
     submission_context: SubmissionRenderContext | None
+    cluster_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -161,6 +133,10 @@ class ResolvedTransport:
         return self.handle.profile_name
 
     @property
+    def cluster_name(self) -> str | None:
+        return self.handle.cluster_name
+
+    @property
     def transport_type(self) -> Literal["local", "ssh"]:
         return self.handle.transport_type
 
@@ -182,13 +158,12 @@ class ResolvedTransport:
 
 
 def _emit_banner(resolved: ResolvedTransport, quiet: bool) -> None:
-    """Emit the one-line transport banner on stderr.
-
-    REQ-7 / AC-10.2: the default source (no flag, no env) stays silent
-    so existing scripts that diff stderr byte-for-byte keep passing.
-    ``quiet=True`` suppresses the banner even for explicit sources.
-    """
-    emit_transport_banner(label=resolved.label, source=resolved.source, quiet=quiet)
+    emit_transport_banner(
+        label=resolved.label,
+        source=resolved.source,
+        quiet=quiet,
+        transport=resolved.transport_type,
+    )
 
 
 def emit_transport_banner(
@@ -196,46 +171,33 @@ def emit_transport_banner(
     label: str,
     source: TransportSource,
     quiet: bool,
+    transport: str = "local",
 ) -> None:
-    """Emit the transport banner without building a full handle.
+    """Print a one-line "where does this run" banner on stderr.
 
-    Used by commands that only need banner + conflict detection (e.g.
-    ``srunx monitor resources``, which is local-only in Phase 5b).
-    Keeps the SF7 short-circuit path byte-for-byte identical to the
-    full :func:`resolve_transport` output so scripts that diff stderr
-    don't see a regression when we skip the SSH handle build.
-
-    REQ-7 / AC-10.2: ``source='default'`` stays silent and ``quiet=True``
-    suppresses the banner even for explicit sources.
+    Always shown (cluster selection is never silent) unless ``quiet``.
+    A fresh Console per call picks up the current ``sys.stderr``.
     """
-    if quiet or source == "default":
+    if quiet:
         return
-    # Construct a fresh Console each call so the emitter picks up the
-    # *current* ``sys.stderr``. pytest's capture swaps ``sys.stderr``
-    # between tests, and a module-level cached Console would hold a
-    # stale reference and raise "I/O operation on closed file" on the
-    # second invocation. Construction is cheap (~µs) and banner
-    # emission is not on any hot path.
-    #
-    # Rich markup: a colored dot flags transport kind (cyan for SSH,
-    # yellow for local), the connection target is the headline, the
-    # profile name + decision source trail in dim so "where am I
-    # running" reads at a glance without stealing focus.
-    is_ssh = label.startswith("ssh:")
-    dot_color = "cyan" if is_ssh else "yellow"
     source_display = {
-        "--profile": "via --profile",
-        "--local": "via --local",
-        "env": "via $SRUNX_SSH_PROFILE",
-        "current-profile": "via current profile",
+        "--cluster": "via --cluster",
+        "env": "via $SRUNX_CLUSTER",
+        "project": "via .srunx/config.toml",
+        "config": "via default_cluster",
+        "history": "via job history",
     }.get(source, f"via {source}")
-    if is_ssh:
+    if transport == "ssh":
+        dot_color = "cyan"
         body = _format_ssh_banner_body(
-            profile_name=label.removeprefix("ssh:"),
-            source_display=source_display,
+            profile_name=label, source_display=source_display
         )
     else:
-        body = f"[bold]Local SLURM[/bold]  [dim italic]({source_display})[/dim italic]"
+        dot_color = "yellow"
+        body = (
+            f"[bold]Local SLURM[/bold]  "
+            f"[dim italic](cluster: {label} · {source_display})[/dim italic]"
+        )
     Console(file=sys.stderr).print(f"[{dot_color}]●[/{dot_color}]  {body}")
 
 
@@ -263,7 +225,7 @@ def _format_ssh_banner_body(*, profile_name: str, source_display: str) -> str:
     profile = _lookup_profile_silently(profile_name)
     if profile is None:
         return (
-            f"[bold]SSH profile: {profile_name}[/bold]  "
+            f"[bold]Cluster: {profile_name}[/bold]  "
             f"[dim italic]({source_display})[/dim italic]"
         )
 
@@ -298,7 +260,7 @@ def _format_ssh_banner_body(*, profile_name: str, source_display: str) -> str:
         target = profile.ssh_host
     else:
         return (
-            f"[bold]SSH profile: {profile_name}[/bold]  "
+            f"[bold]Cluster: {profile_name}[/bold]  "
             f"[dim italic]({source_display})[/dim italic]"
         )
 
@@ -306,7 +268,7 @@ def _format_ssh_banner_body(*, profile_name: str, source_display: str) -> str:
         target += f" via {profile.proxy_jump}"
     return (
         f"[bold]Connected to[/bold] [cyan]{target}[/cyan]  "
-        f"[dim italic](profile: {profile_name} · {source_display})[/dim italic]"
+        f"[dim italic](cluster: {profile_name} · {source_display})[/dim italic]"
     )
 
 
@@ -329,108 +291,81 @@ def _lookup_profile_silently(name: str) -> ServerProfile | None:
         return None
 
 
-def _current_profile_name() -> str | None:
-    """Return the active SSH profile set via ``srunx ssh use``, or None.
+def scheduler_key_for(cluster: str, transport: str) -> str:
+    """DB scheduler key of *cluster* (``local`` or ``ssh:<name>``).
 
-    Respects :attr:`srunx.common.config.CliTransportConfig.use_current_profile` —
-    when the user has opted out (``cli.use_current_profile = false``), this
-    function returns ``None`` so ``resolve_transport`` falls straight
-    through to local.
-
-    Any failure (config file missing, ConfigManager import error) is
-    swallowed and treated as "no current profile" — the resolver must
-    never raise from this path.
+    The key encodes the transport kind so pollers can route without a
+    config lookup; together with ``job_id`` it is the job ref of design §8
+    (at most one local cluster exists, so ``local`` stays unambiguous).
     """
-    try:
-        from srunx.common.config import get_config
-        from srunx.ssh.core.config import ConfigManager
-    except ImportError:
-        return None
-    try:
-        if not get_config().cli.use_current_profile:
-            return None
-        name = ConfigManager().get_current_profile_name()
-    except Exception as exc:  # noqa: BLE001 — defensive
-        logger.debug("Could not read current SSH profile: {}", exc)
-        return None
-    if not name:
-        return None
-    return name.strip() or None
+    return "local" if transport == "local" else f"ssh:{cluster}"
 
 
-def _resolve_source_and_profile(
-    *, profile: str | None, local: bool, policy: TransportPolicy = DEFAULT_POLICY
-) -> tuple[TransportSource, str | None]:
-    """Return the resolved ``(source, profile_name)`` pair.
+def _resolve_source_and_cluster(
+    *,
+    cluster: str | None,
+    policy: TransportPolicy = DEFAULT_POLICY,
+) -> tuple[TransportSource, str, Literal["local", "ssh"]]:
+    """Return ``(source, cluster name, transport kind)`` (design §5).
 
-    Shared core between :func:`peek_scheduler_key`,
-    :func:`resolve_transport_source`, and :func:`resolve_transport` so the
-    5-way priority ladder lives in one place.
+    ``--cluster`` > ``$SRUNX_CLUSTER`` > project ``cluster`` >
+    ``default_cluster``; never an implicit local fallback. Implicit rungs
+    are skipped when ``policy.allow_implicit`` is False (MCP / Web).
 
-    Priority:
-
-        1. ``--profile <name>``
-        2. ``--local``
-        3. ``$SRUNX_SSH_PROFILE`` (skipped when ``policy.allow_env`` is False)
-        4. active SSH profile (``srunx ssh use``) when ``cli.use_current_profile``
-           is True (skipped when ``policy.allow_current_profile`` is False)
-        5. local fallback (silent)
-
-    The explicit rungs (1, 2) are never gated by *policy* — they are caller
-    intent. Only the implicit rungs (3, 4) are policy-controlled, so an API
-    surface (MCP) can opt out of resolving a remote from ambient state.
-
-    Raises :class:`~srunx.common.exceptions.TransportSelectionError` on an
-    empty ``--profile`` or a ``--profile`` + ``--local`` conflict, so every
-    entry point fails consistently without coupling the resolver to a CLI
-    framework. The CLI layer translates this into ``typer.BadParameter``.
+    Raises:
+        TransportSelectionError: empty ``--cluster``, no cluster selected,
+            unknown cluster, or invalid configuration.
     """
-    profile = profile.strip() if profile else profile
-    if profile == "":
+    from srunx.common.config import ConfigError, load_settings
+
+    cluster = cluster.strip() if cluster else cluster
+    if cluster == "":
         raise TransportSelectionError(
-            "--profile cannot be empty or whitespace.",
-            param_hint="--profile",
+            "--cluster cannot be empty or whitespace.", param_hint="--cluster"
         )
-    if profile and local:
-        raise TransportSelectionError(
-            "--profile and --local cannot be used together.",
-            param_hint="--profile / --local",
-        )
-    if profile:
-        return "--profile", profile
-    if local:
-        return "--local", None
-    if policy.allow_env:
-        env_profile = os.environ.get("SRUNX_SSH_PROFILE", "").strip()
-        if env_profile:
-            return "env", env_profile
-    if policy.allow_current_profile:
-        current = _current_profile_name()
-        if current:
-            return "current-profile", current
-    return "default", None
+    try:
+        settings = load_settings(reload=True)
+        if cluster:
+            source: TransportSource = "--cluster"
+            name = cluster
+        elif not policy.allow_implicit:
+            raise TransportSelectionError(
+                "A cluster must be specified explicitly.", param_hint="cluster"
+            )
+        else:
+            found, origin = settings.cluster_source()
+            if found is None:
+                settings.resolve_cluster(None)  # raises with guidance
+            assert found is not None
+            name = found
+            source = (
+                "env"
+                if origin.startswith("$")
+                else (
+                    "project"
+                    if settings.project_path and origin == str(settings.project_path)
+                    else "config"
+                )
+            )
+        cfg = settings.cluster(name)
+    except ConfigError as exc:
+        raise TransportSelectionError(str(exc), param_hint="--cluster") from exc
+    return source, name, cfg.transport
 
 
 def resolve_transport_source(
     *,
-    profile: str | None = None,
-    local: bool = False,
+    cluster: str | None = None,
     policy: TransportPolicy = DEFAULT_POLICY,
 ) -> TransportSource:
-    """Return the :data:`TransportSource` ``resolve_transport`` would pick.
-
-    Pure helper that mirrors the source-detection limb of
-    :func:`resolve_transport` so callers using
-    :func:`emit_transport_banner` directly don't have to duplicate the
-    precedence rules. Raises
-    :class:`~srunx.common.exceptions.TransportSelectionError` on the same
-    ``--profile`` + ``--local`` conflict.
-    """
-    source, _ = _resolve_source_and_profile(profile=profile, local=local, policy=policy)
+    """Return the :data:`TransportSource` ``resolve_transport`` would pick."""
+    source, _, _ = _resolve_source_and_cluster(cluster=cluster, policy=policy)
     return source
 
 
-def _build_local_handle(slurm: Slurm | None = None) -> TransportHandle:
+def _build_local_handle(
+    slurm: Slurm | None = None, cluster_name: str | None = None
+) -> TransportHandle:
     """Build a :class:`TransportHandle` for local SLURM.
 
     Reuses *slurm* when provided (keeps singleton semantics inside a
@@ -452,6 +387,7 @@ def _build_local_handle(slurm: Slurm | None = None) -> TransportHandle:
         queue_client=local,
         executor_factory=factory,
         submission_context=None,
+        cluster_name=cluster_name,
     )
 
 
@@ -564,7 +500,7 @@ def _build_ssh_handle(
             default ``'web'``; CLI passes ``'cli'``; MCP passes ``'mcp'``.
         mount_name: Explicit mount selection for path translation. When
             ``None`` and the profile declares exactly one mount we
-            auto-select it so ``flow run --profile`` gets mount
+            auto-select it so ``flow run --cluster`` gets mount
             translation out of the box. Multi-mount profiles fall back
             to ``allow_cwd_mount``, then to "no translation".
         allow_cwd_mount: Let a multi-mount profile fall back to the
@@ -592,8 +528,8 @@ def _build_ssh_handle(
     profile = cm.get_profile(profile_name)
     if profile is None:
         raise TransportError(
-            f"SSH profile '{profile_name}' not found. "
-            "Configure via 'srunx ssh add' or check 'srunx ssh list'."
+            f"Cluster '{profile_name}' not found or not an SSH cluster. "
+            "Check 'srunx cluster list'."
         )
 
     try:
@@ -639,6 +575,7 @@ def _build_ssh_handle(
             queue_client=adapter,
             executor_factory=pool.lease,
             submission_context=render_context,
+            cluster_name=profile_name,
         )
         return handle, pool
     except Exception:
@@ -657,26 +594,22 @@ def _build_ssh_handle(
 
 def peek_scheduler_key(
     *,
-    profile: str | None = None,
-    local: bool = False,
+    cluster: str | None = None,
     policy: TransportPolicy = DEFAULT_POLICY,
 ) -> str:
-    """Return the scheduler_key ``resolve_transport`` would pick.
+    """Return the scheduler_key ``resolve_transport`` would pick (no side effects)."""
+    _, name, transport = _resolve_source_and_cluster(cluster=cluster, policy=policy)
+    return scheduler_key_for(name, transport)
 
-    Pure function with no side effects — used by callers that need to
-    bind callback state (e.g. ``NotificationWatchCallback.scheduler_key``)
-    before entering the transport context manager. Resolution order
-    matches :func:`resolve_transport` including the current-profile
-    fallback (see :func:`_resolve_source_and_profile`).
 
-    Raises :class:`~srunx.common.exceptions.TransportSelectionError` on the
-    same ``--profile`` + ``--local`` conflict so callers fail consistently
-    whether they peek first or go straight to :func:`resolve_transport`.
-    """
-    _, resolved_profile = _resolve_source_and_profile(
-        profile=profile, local=local, policy=policy
-    )
-    return f"ssh:{resolved_profile}" if resolved_profile else "local"
+def resolve_cluster_name(
+    *,
+    cluster: str | None = None,
+    policy: TransportPolicy = DEFAULT_POLICY,
+) -> tuple[str, Literal["local", "ssh"]]:
+    """Return ``(cluster name, transport kind)`` ``resolve_transport`` would pick."""
+    _, name, transport = _resolve_source_and_cluster(cluster=cluster, policy=policy)
+    return name, transport
 
 
 def _build_transport_label(handle: TransportHandle) -> str:
@@ -694,8 +627,8 @@ def _build_transport_label(handle: TransportHandle) -> str:
 @contextmanager
 def resolve_transport(
     *,
-    profile: str | None = None,
-    local: bool = False,
+    cluster: str | None = None,
+    source_override: TransportSource | None = None,
     quiet: bool = False,
     banner: bool = True,
     callbacks: Sequence[Callback] | None = None,
@@ -705,71 +638,25 @@ def resolve_transport(
     pool_size: int = 2,
     policy: TransportPolicy = DEFAULT_POLICY,
 ) -> Iterator[ResolvedTransport]:
-    """Resolve transport for one invocation.
+    """Resolve the target cluster and yield its transport for one invocation.
 
-    Resolution order (REQ-1, Phase 2 extended):
-
-        1. ``--profile <name>``
-        2. ``--local``
-        3. ``$SRUNX_SSH_PROFILE`` (gated by ``policy.allow_env``)
-        4. active SSH profile (``srunx ssh use``) when
-           ``cli.use_current_profile`` is True (gated by
-           ``policy.allow_current_profile``)
-        5. local fallback (silent)
-
-    Args:
-        profile: Value of ``--profile`` (explicit SSH profile name).
-        local: Value of ``--local`` (force local transport, overriding
-            ``$SRUNX_SSH_PROFILE``).
-        quiet: Suppress the stderr transport banner even for explicit
-            sources.
-        banner: Emit the one-line banner. Set ``False`` for tests or
-            library-style callers that don't want any stderr output.
-        callbacks: Optional callbacks to forward into the SSH adapter
-            singleton and every pooled clone. Non-SSH paths ignore
-            ``callbacks`` (local ``Slurm`` callbacks are wired at the
-            ``Slurm`` callsite, not here).
-        submission_source: Origin tag for ``jobs.submission_source``.
-            Defaults to ``'cli'`` which is correct for every CLI entry
-            point; the value is a no-op on the local path and is passed
-            through to :class:`SlurmSSHClient` on SSH.
-        mount_name: Explicit mount selection forwarded to the SSH
-            handle builder for path translation. ``None`` triggers
-            single-mount auto-selection.
-        allow_cwd_mount: Forwarded to the SSH handle builder. Defaults
-            to ``False`` so long-lived callers (Web app, MCP server)
-            stay deterministic; the CLI wrapper in
-            ``srunx.cli._helpers.transport`` turns it on.
-        pool_size: Pool size forwarded to the SSH executor pool. Default
-            ``2`` matches single-shot CLI usage; long-lived callers pass
-            a larger value.
-        policy: Which implicit ladder rungs to honour. Defaults to
-            :data:`DEFAULT_POLICY` (env + current-profile on, the CLI
-            behaviour). MCP passes ``TransportPolicy(allow_env=False,
-            allow_current_profile=False)`` so an explicit ``profile`` is
-            the only way to reach SSH.
-
-    Yields:
-        A :class:`ResolvedTransport` for the duration of the ``with``
-        block. SSH pools are closed on exit.
+    Cluster selection follows design §5 (see
+    :func:`_resolve_source_and_cluster`). SSH pools are closed on exit.
 
     Raises:
-        TransportSelectionError: When ``--profile`` and ``--local`` are
-            both set, or ``--profile`` is empty (REQ-1, AC-1.2). The CLI
-            layer translates this into ``typer.BadParameter``.
-        TransportError: When an explicit / env-selected SSH profile is
-            unknown or the adapter factory rejects it.
+        TransportSelectionError: no / unknown cluster or invalid config.
+        TransportError: the SSH adapter could not be built.
     """
-    source, resolved_profile = _resolve_source_and_profile(
-        profile=profile, local=local, policy=policy
+    source, name, transport = _resolve_source_and_cluster(
+        cluster=cluster, policy=policy
     )
 
     pool: Any = None
     handle: TransportHandle
 
-    if resolved_profile is not None:
+    if transport == "ssh":
         handle, pool = _build_ssh_handle(
-            resolved_profile,
+            name,
             callbacks=callbacks,
             submission_source=submission_source,
             mount_name=mount_name,
@@ -777,19 +664,28 @@ def resolve_transport(
             pool_size=pool_size,
         )
     else:
-        handle = _build_local_handle()
+        handle = _build_local_handle(cluster_name=name)
 
     resolved = ResolvedTransport(
-        label=_build_transport_label(handle),
-        source=source,
+        label=name,
+        source=source_override or source,
         handle=handle,
     )
 
     if banner:
         _emit_banner(resolved, quiet)
 
+    from srunx.common.config import activate_config, active_config, load_settings
+
+    current = active_config()
+    config = (
+        current
+        if current is not None and current.cluster == name
+        else load_settings().effective(name)
+    )
     try:
-        yield resolved
+        with activate_config(config):
+            yield resolved
     finally:
         if pool is not None:
             try:

@@ -35,7 +35,7 @@ def _bare_adapter(callbacks: list[Callback] | None = None) -> SlurmSSHClient:
     adapter._key_filename = None
     adapter._port = 22
     adapter._proxy_jump = None
-    adapter._mounts = ()
+    adapter._explicit_mounts = ()
     # Review fix #7: submission_source is mutable per-handle state the
     # transport registry sets; tests that bypass __init__ must provide
     # a default so submit()/run() branches that rely on it don't AttributeError.
@@ -449,7 +449,7 @@ class TestSSHAdapterRunInPlace:
         script.write_text("#!/bin/bash\necho hi\n")
 
         adapter = _bare_adapter()
-        adapter._mounts = (
+        adapter._explicit_mounts = (
             MountConfig(name="ml", local=str(mount_local), remote="/r/ml"),
         )
 

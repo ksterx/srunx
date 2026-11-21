@@ -15,7 +15,7 @@ from srunx.mcp.tools.resources import get_resources
 
 def _fake_transport(rt):
     @contextmanager
-    def _cm(transport, *, mount_name=None):
+    def _cm(cluster, **kwargs):
         yield rt
 
     return _cm
@@ -45,7 +45,7 @@ class TestGetResources:
         mock_monitor.get_partition_resources.return_value = snapshot
         mock_monitor_cls.return_value = mock_monitor
 
-        result = get_resources(partition="gpu")
+        result = get_resources(partition="gpu", cluster="local")
         assert result["success"] is True
         assert result["total_gpus"] == 8
         assert result["gpus_available"] == 5
@@ -56,7 +56,7 @@ class TestGetResources:
         rt.transport_type = "ssh"
         rt.job_ops.get_resources.return_value = {"gpu": {"total": 4, "available": 2}}
         with patch("srunx.mcp.tools.resources.mcp_transport", _fake_transport(rt)):
-            result = get_resources(partition="gpu", transport="prod")
+            result = get_resources(partition="gpu", cluster="prod")
         assert result["success"] is True
         assert result["partition"] == "gpu"
         assert result["resources"] == {"gpu": {"total": 4, "available": 2}}
@@ -67,7 +67,7 @@ class TestGetResources:
         rt.transport_type = "ssh"
         rt.job_ops.get_resources.return_value = {"all": {"total": 8}}
         with patch("srunx.mcp.tools.resources.mcp_transport", _fake_transport(rt)):
-            result = get_resources(transport="prod")
+            result = get_resources(cluster="prod")
         assert result["success"] is True
         assert result["partition"] is None
         rt.job_ops.get_resources.assert_called_once_with(None)

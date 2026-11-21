@@ -30,6 +30,14 @@ def ui(
         int,
         typer.Option(help="Vite dev server port (dev mode only)"),
     ] = 3000,
+    project: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--project",
+            help="Project root to serve (repeatable). The project containing "
+            "the current directory is always included.",
+        ),
+    ] = None,
 ) -> None:
     """Launch the srunx Web UI."""
     import uvicorn
@@ -41,6 +49,13 @@ def ui(
     config.host = host
     config.port = port
     config.verbose = verbose
+    for root in project or []:
+        config.projects.append(str(root.expanduser().resolve()))
+    if config.projects:
+        # Propagate to --reload / dev workers, which rebuild WebConfig.
+        import os
+
+        os.environ["SRUNX_WEB_PROJECTS"] = os.pathsep.join(config.projects)
 
     # Refuse to expose an unauthenticated API on a non-loopback interface.
     try:

@@ -50,8 +50,8 @@ def client(  # type: ignore[misc]
     from srunx.ssh.core.config import MountConfig, ServerProfile
     from srunx.web.config import get_web_config
 
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    init_db(delete_legacy=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    init_db()
 
     original = config_mod._config
     config_mod._config = None

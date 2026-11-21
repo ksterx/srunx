@@ -255,19 +255,19 @@ class TestGetDefaultRemotePath:
             returncode=0, stdout="/home/user/projects/myrepo\n"
         )
         path = RsyncClient.get_default_remote_path()
-        assert path == "~/.config/srunx/workspace/myrepo/"
+        assert path == "~/.local/share/srunx/workspaces/myrepo/"
 
     @patch("srunx.sync.rsync.subprocess.run")
     def test_not_git_repo(self, mock_run: MagicMock):
         mock_run.return_value = MagicMock(returncode=128, stdout="")
         path = RsyncClient.get_default_remote_path()
-        assert path.startswith("~/.config/srunx/workspace/")
+        assert path.startswith("~/.local/share/srunx/workspaces/")
         assert path.endswith("/")
 
     @patch("srunx.sync.rsync.subprocess.run", side_effect=FileNotFoundError)
     def test_git_not_installed(self, mock_run: MagicMock):
         path = RsyncClient.get_default_remote_path()
-        assert path.startswith("~/.config/srunx/workspace/")
+        assert path.startswith("~/.local/share/srunx/workspaces/")
         assert path.endswith("/")
 
     @patch("srunx.sync.rsync.subprocess.run")
@@ -276,7 +276,7 @@ class TestGetDefaultRemotePath:
             returncode=0, stdout="/other/project/otherrepo\n"
         )
         path = RsyncClient.get_default_remote_path("/other/project/otherrepo")
-        assert path == "~/.config/srunx/workspace/otherrepo/"
+        assert path == "~/.local/share/srunx/workspaces/otherrepo/"
         # Verify cwd was passed to subprocess
         assert mock_run.call_args[1]["cwd"] == "/other/project/otherrepo"
 
@@ -291,8 +291,11 @@ class TestFormatRemote:
         client = _make_rsync_client(
             hostname="server.example.com", username="researcher"
         )
-        result = client._format_remote("~/.config/srunx/workspace/proj/")
-        assert result == "researcher@server.example.com:~/.config/srunx/workspace/proj/"
+        result = client._format_remote("~/.local/share/srunx/workspaces/proj/")
+        assert (
+            result
+            == "researcher@server.example.com:~/.local/share/srunx/workspaces/proj/"
+        )
 
     def test_tilde_not_quoted(self):
         client = _make_rsync_client(hostname="h", username="u")
@@ -313,13 +316,13 @@ class TestPush:
 
         with patch("srunx.sync.rsync.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            result = client.push(tmp_path, "~/.config/srunx/workspace/test/")
+            result = client.push(tmp_path, "~/.local/share/srunx/workspaces/test/")
 
         assert result.success
         call_args = mock_run.call_args[0][0]
         sep_idx = call_args.index("--")
         assert call_args[sep_idx + 1].endswith("/")
-        assert call_args[sep_idx + 2] == "u@h:~/.config/srunx/workspace/test/"
+        assert call_args[sep_idx + 2] == "u@h:~/.local/share/srunx/workspaces/test/"
         # A plain push adds and updates only. Mirror semantics are opt-in:
         # inheriting --delete by default is what silently ate remote-only
         # checkpoints before, so no caller gets it without asking.
@@ -332,7 +335,9 @@ class TestPush:
 
         with patch("srunx.sync.rsync.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            result = client.push(test_file, "~/.config/srunx/workspace/test/script.py")
+            result = client.push(
+                test_file, "~/.local/share/srunx/workspaces/test/script.py"
+            )
 
         assert result.success
         call_args = mock_run.call_args[0][0]
@@ -346,14 +351,14 @@ class TestPush:
             patch("srunx.sync.rsync.subprocess.run") as mock_run,
             patch(
                 "srunx.sync.rsync.RsyncClient.get_default_remote_path",
-                return_value="~/.config/srunx/workspace/myrepo/",
+                return_value="~/.local/share/srunx/workspaces/myrepo/",
             ),
         ):
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             client.push(tmp_path)
 
         call_args = mock_run.call_args[0][0]
-        assert "~/.config/srunx/workspace/myrepo/" in call_args[-1]
+        assert "~/.local/share/srunx/workspaces/myrepo/" in call_args[-1]
 
     def test_push_no_delete(self, tmp_path: Path):
         client = _make_rsync_client(hostname="h", username="u")
@@ -796,7 +801,7 @@ class TestSyncProject:
             mock_push.return_value = RsyncResult(returncode=0, stdout="", stderr="")
             remote_path = client.sync_project()
 
-        assert "~/.config/srunx/workspace/" in remote_path
+        assert "~/.local/share/srunx/workspaces/" in remote_path
 
     def test_sync_project_no_key_raises(self):
         from srunx.ssh.core.client import SSHSlurmClient

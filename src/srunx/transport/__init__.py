@@ -1,7 +1,7 @@
 """Transport resolution layer for CLI unification.
 
-``resolve_transport()`` picks between local SLURM and SSH (per ``--profile`` /
-``$SRUNX_SSH_PROFILE``) and hands the CLI a uniform ``ResolvedTransport``
+``resolve_transport()`` picks the target cluster (``--cluster`` /
+``$SRUNX_CLUSTER`` / project / ``default_cluster``) and hands the CLI a uniform ``ResolvedTransport``
 carrying ``JobOperations`` + ``WorkflowJobExecutorFactory`` + optional
 ``SubmissionRenderContext``.
 """

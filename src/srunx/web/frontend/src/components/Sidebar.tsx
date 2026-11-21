@@ -12,11 +12,10 @@ import {
   ChevronRight,
   FolderTree,
   Server,
-  Loader2,
+  FolderOpen,
   ChevronUp as ChevronUpIcon,
 } from "lucide-react";
 import {
-  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -24,8 +23,11 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { config as configApi } from "../lib/api.ts";
-import type { SSHProfilesResponse } from "../lib/types.ts";
+import {
+  selectCluster,
+  selectProject,
+  useSelection,
+} from "../lib/selection.ts";
 
 type NavItem = {
   to: string;
@@ -64,13 +66,7 @@ function readStoredCollapsed(): boolean {
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState<boolean>(readStoredCollapsed);
-  const [profileData, setProfileData] = useState<SSHProfilesResponse | null>(
-    null,
-  );
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [connecting, setConnecting] = useState<string | null>(null);
-  const [connectedProfile, setConnectedProfile] = useState<string | null>(null);
-
+  const selection = useSelection();
   // Persist collapsed state
   useEffect(() => {
     try {
@@ -102,59 +98,6 @@ export function Sidebar() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
-
-  const loadProfiles = useCallback(async () => {
-    try {
-      const [profiles, status] = await Promise.all([
-        configApi.sshProfiles(),
-        configApi.sshStatus(),
-      ]);
-      setProfileData(profiles);
-      setConnectedProfile(status.profile_name);
-    } catch {
-      // silent
-    }
-  }, []);
-
-  useEffect(() => {
-    loadProfiles();
-  }, [loadProfiles]);
-
-  const handleSwitchProfile = async (name: string) => {
-    setConnecting(name);
-    try {
-      const res = await configApi.connectSSHProfile(name);
-      if (res.connected) {
-        setConnectedProfile(name);
-      }
-    } catch {
-      // silent
-    } finally {
-      setConnecting(null);
-      setProfileOpen(false);
-      await loadProfiles();
-    }
-  };
-
-  // Close dropdown on outside click (checks both container and portal popover)
-  const profileRef = useRef<HTMLDivElement>(null);
-  const profileBtnRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!profileOpen) return;
-    const handler = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (!target) return;
-      const insideAnchor = profileRef.current?.contains(target) ?? false;
-      const insidePopover = Boolean(
-        target.closest?.('[data-profile-popover="true"]'),
-      );
-      if (!insideAnchor && !insidePopover) {
-        setProfileOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [profileOpen]);
 
   return (
     <motion.aside
@@ -333,102 +276,41 @@ export function Sidebar() {
         ))}
       </nav>
 
-      {/* Profile switcher — available in both states */}
-      {profileData && (
+      {/* Project / cluster selectors — available in both states */}
+      {selection.ready && (
         <div
-          ref={profileRef}
           style={{
             padding: "8px 0",
             borderTop: "1px solid var(--border-ghost)",
-            position: "relative",
             flexShrink: 0,
           }}
         >
-          <button
-            ref={profileBtnRef}
-            onClick={() => setProfileOpen((v) => !v)}
-            title={
-              collapsed ? (connectedProfile ?? "No connection") : undefined
-            }
-            aria-label="Switch SSH profile"
-            style={{
-              position: "relative",
-              width: "100%",
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-              height: 38,
-              paddingLeft: NAV_PAD_LEFT,
-              paddingRight: collapsed ? NAV_PAD_LEFT : 12,
-              justifyContent: "flex-start",
-              border: "none",
-              background: profileOpen ? "var(--bg-hover)" : "transparent",
-              color: "var(--text-secondary)",
-              cursor: "pointer",
-              fontFamily: "var(--font-mono)",
-              fontSize: "0.78rem",
-              transition: "background var(--duration-fast)",
-            }}
-            onMouseEnter={(e) => {
-              if (!profileOpen)
-                e.currentTarget.style.background = "var(--bg-hover)";
-            }}
-            onMouseLeave={(e) => {
-              if (!profileOpen)
-                e.currentTarget.style.background = "transparent";
-            }}
-          >
-            <Server
-              size={18}
-              style={{
-                flexShrink: 0,
-                color: connectedProfile
-                  ? "var(--st-completed)"
-                  : "var(--text-muted)",
-              }}
+          {selection.projects.length > 0 && (
+            <SelectionSwitcher
+              kind="project"
+              icon={<FolderOpen size={18} />}
+              collapsed={collapsed}
+              current={selection.project}
+              placeholder="No project"
+              items={selection.projects.map((p) => ({
+                name: p.name,
+                hint: p.cluster ?? undefined,
+              }))}
+              onSelect={selectProject}
             />
-            <AnimatePresence initial={false}>
-              {!collapsed && (
-                <motion.span
-                  key="profile-label"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.12 }}
-                  style={{
-                    flex: 1,
-                    textAlign: "left",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                    minWidth: 0,
-                  }}
-                >
-                  {connectedProfile ?? "No connection"}
-                </motion.span>
-              )}
-            </AnimatePresence>
-            {!collapsed && (
-              <ChevronUpIcon
-                size={12}
-                style={{
-                  color: "var(--text-muted)",
-                  flexShrink: 0,
-                  transform: profileOpen ? "rotate(180deg)" : "rotate(0deg)",
-                  transition: "transform var(--duration-fast)",
-                }}
-              />
-            )}
-          </button>
-
-          <ProfilePopover
-            open={profileOpen}
-            anchorRef={profileBtnRef}
+          )}
+          <SelectionSwitcher
+            kind="cluster"
+            icon={<Server size={18} />}
             collapsed={collapsed}
-            profiles={Object.keys(profileData.profiles)}
-            connectedProfile={connectedProfile}
-            connecting={connecting}
-            onSwitch={handleSwitchProfile}
+            current={selection.cluster}
+            placeholder="No cluster"
+            items={selection.clusters.map((c) => ({
+              name: c.name,
+              hint:
+                c.name === selection.defaultCluster ? "default" : c.transport,
+            }))}
+            onSelect={selectCluster}
           />
         </div>
       )}
@@ -527,25 +409,159 @@ function SidebarNavLink({
   );
 }
 
-type ProfilePopoverProps = {
+type SelectionItem = { name: string; hint?: string };
+
+type SelectionSwitcherProps = {
+  kind: "cluster" | "project";
+  icon: React.ReactNode;
+  collapsed: boolean;
+  current: string | null;
+  placeholder: string;
+  items: SelectionItem[];
+  onSelect: (name: string) => void;
+};
+
+function SelectionSwitcher({
+  kind,
+  icon,
+  collapsed,
+  current,
+  placeholder,
+  items,
+  onSelect,
+}: SelectionSwitcherProps) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+
+  // Close dropdown on outside click (checks both button and portal popover)
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      const insideAnchor = btnRef.current?.contains(target) ?? false;
+      const insidePopover = Boolean(
+        target.closest?.(`[data-selection-popover="${kind}"]`),
+      );
+      if (!insideAnchor && !insidePopover) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open, kind]);
+
+  const label = current ?? placeholder;
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={() => setOpen((v) => !v)}
+        title={collapsed ? `${kind}: ${label}` : undefined}
+        aria-label={`Select ${kind}`}
+        data-testid={`${kind}-switcher`}
+        style={{
+          position: "relative",
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          height: 38,
+          paddingLeft: NAV_PAD_LEFT,
+          paddingRight: collapsed ? NAV_PAD_LEFT : 12,
+          justifyContent: "flex-start",
+          border: "none",
+          background: open ? "var(--bg-hover)" : "transparent",
+          color: "var(--text-secondary)",
+          cursor: "pointer",
+          fontFamily: "var(--font-mono)",
+          fontSize: "0.78rem",
+          transition: "background var(--duration-fast)",
+        }}
+        onMouseEnter={(e) => {
+          if (!open) e.currentTarget.style.background = "var(--bg-hover)";
+        }}
+        onMouseLeave={(e) => {
+          if (!open) e.currentTarget.style.background = "transparent";
+        }}
+      >
+        <span
+          style={{
+            flexShrink: 0,
+            display: "flex",
+            color: current ? "var(--st-completed)" : "var(--text-muted)",
+          }}
+        >
+          {icon}
+        </span>
+        <AnimatePresence initial={false}>
+          {!collapsed && (
+            <motion.span
+              key={`${kind}-label`}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.12 }}
+              style={{
+                flex: 1,
+                textAlign: "left",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                minWidth: 0,
+              }}
+            >
+              {label}
+            </motion.span>
+          )}
+        </AnimatePresence>
+        {!collapsed && (
+          <ChevronUpIcon
+            size={12}
+            style={{
+              color: "var(--text-muted)",
+              flexShrink: 0,
+              transform: open ? "rotate(180deg)" : "rotate(0deg)",
+              transition: "transform var(--duration-fast)",
+            }}
+          />
+        )}
+      </button>
+
+      <SelectionPopover
+        kind={kind}
+        open={open}
+        anchorRef={btnRef}
+        collapsed={collapsed}
+        items={items}
+        current={current}
+        onSelect={(name) => {
+          setOpen(false);
+          onSelect(name);
+        }}
+      />
+    </>
+  );
+}
+
+type SelectionPopoverProps = {
+  kind: "cluster" | "project";
   open: boolean;
   anchorRef: React.RefObject<HTMLButtonElement | null>;
   collapsed: boolean;
-  profiles: string[];
-  connectedProfile: string | null;
-  connecting: string | null;
-  onSwitch: (name: string) => void;
+  items: SelectionItem[];
+  current: string | null;
+  onSelect: (name: string) => void;
 };
 
-function ProfilePopover({
+function SelectionPopover({
+  kind,
   open,
   anchorRef,
   collapsed,
-  profiles,
-  connectedProfile,
-  connecting,
-  onSwitch,
-}: ProfilePopoverProps) {
+  items,
+  current,
+  onSelect,
+}: SelectionPopoverProps) {
   const [pos, setPos] = useState<{
     top: number;
     left: number;
@@ -562,7 +578,7 @@ function ProfilePopover({
       const popoverWidth = collapsed ? 200 : r.width;
       // Approximate popover height (n rows × 38px + padding). Kept simple — the
       // browser clamps via viewport; exact height isn't needed for positioning.
-      const estHeight = Math.min(48 + profiles.length * 38, 320);
+      const estHeight = Math.min(48 + Math.max(items.length, 1) * 38, 320);
       if (collapsed) {
         // To the right of the button, bottom-aligned with it.
         setPos({
@@ -587,7 +603,7 @@ function ProfilePopover({
       window.removeEventListener("resize", compute);
       window.removeEventListener("scroll", compute, true);
     };
-  }, [open, collapsed, profiles.length, anchorRef]);
+  }, [open, collapsed, items.length, anchorRef]);
 
   if (typeof document === "undefined") return null;
 
@@ -595,7 +611,7 @@ function ProfilePopover({
     <AnimatePresence>
       {open && pos && (
         <motion.div
-          data-profile-popover="true"
+          data-selection-popover={kind}
           initial={{ opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 4 }}
@@ -605,24 +621,48 @@ function ProfilePopover({
             top: pos.top,
             left: pos.left,
             width: pos.width,
+            maxHeight: 320,
+            overflowY: "auto",
             background: "var(--bg-surface)",
             border: "1px solid var(--border-subtle)",
             borderRadius: 8,
             boxShadow: "var(--shadow-dropdown)",
-            overflow: "hidden",
             zIndex: 1000,
           }}
         >
-          {profiles.map((name) => {
-            const isCurrent = name === connectedProfile;
-            const isConnecting = connecting === name;
+          <div
+            style={{
+              padding: "8px 14px 4px",
+              fontSize: "0.65rem",
+              fontFamily: "var(--font-display)",
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: "var(--text-muted)",
+            }}
+          >
+            {kind === "cluster" ? "Cluster" : "Project"}
+          </div>
+          {items.length === 0 && (
+            <div
+              style={{
+                padding: "10px 14px",
+                fontSize: "0.78rem",
+                color: "var(--text-muted)",
+              }}
+            >
+              {kind === "cluster"
+                ? "No clusters — add one in Settings"
+                : "No projects"}
+            </div>
+          )}
+          {items.map(({ name, hint }) => {
+            const isCurrent = name === current;
             return (
               <button
                 key={name}
                 onClick={() => {
-                  if (!isCurrent && !isConnecting) onSwitch(name);
+                  if (!isCurrent) onSelect(name);
                 }}
-                disabled={isConnecting}
                 style={{
                   width: "100%",
                   display: "flex",
@@ -638,10 +678,10 @@ function ProfilePopover({
                   textAlign: "left",
                 }}
               >
-                {isConnecting ? (
-                  <Loader2 size={13} className="spin" />
-                ) : (
+                {kind === "cluster" ? (
                   <Server size={13} />
+                ) : (
+                  <FolderOpen size={13} />
                 )}
                 <span
                   style={{
@@ -653,14 +693,14 @@ function ProfilePopover({
                 >
                   {name}
                 </span>
-                {isCurrent && (
+                {hint && (
                   <span
                     style={{
                       fontSize: "0.68rem",
-                      color: "var(--st-completed)",
+                      color: "var(--text-muted)",
                     }}
                   >
-                    connected
+                    {hint}
                   </span>
                 )}
               </button>

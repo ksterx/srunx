@@ -64,6 +64,7 @@ export async function setupMockRoutes(page: Page) {
           name: "ml-project",
           local: "/home/user/ml-project",
           remote: "/home/user/ml-project",
+          sync: true,
         },
       ],
     });
@@ -244,54 +245,78 @@ export async function setupMockRoutes(page: Page) {
   // page stays in its loading skeleton forever and no tab buttons
   // appear. Individual tests can still override these routes with
   // their own handlers if they need richer behaviour.
+  // Clusters / projects: empty lists keep the selection store from adding
+  // ``?cluster=&project=`` params, so the exact-path globs above still match.
+  await page.route("**/api/clusters?*", (route) => {
+    return route.fulfill({ json: { default: null, clusters: [] } });
+  });
+  await page.route("**/api/clusters", (route) => {
+    return route.fulfill({ json: { default: null, clusters: [] } });
+  });
+  await page.route("**/api/projects?*", (route) => {
+    return route.fulfill({ json: [] });
+  });
+  await page.route("**/api/projects", (route) => {
+    return route.fulfill({ json: [] });
+  });
   await page.route("**/api/config", (route) => {
-    if (route.request().method() === "PATCH") {
-      return route.fulfill({ status: 200, json: { ok: true } });
-    }
     return route.fulfill({
       json: {
-        resources: {
-          nodes: 1,
-          gpus_per_node: 0,
-          ntasks_per_node: 1,
-          cpus_per_task: 1,
-          memory_per_node: null,
-          time_limit: null,
-          nodelist: null,
-          partition: null,
+        cluster: null,
+        project: null,
+        project_root: null,
+        values: {
+          resources: {
+            nodes: 1,
+            gpus_per_node: 0,
+            ntasks_per_node: 1,
+            cpus_per_task: 1,
+            memory_per_node: null,
+            time_limit: null,
+            nodelist: null,
+            partition: null,
+          },
+          environment: {
+            conda: null,
+            venv: null,
+            container: null,
+            env_vars: {},
+          },
+          notifications: {
+            default_endpoint_name: null,
+            default_preset: "terminal",
+          },
+          sync: {
+            auto: true,
+            lock_timeout_seconds: 120,
+            warn_dirty: true,
+            require_clean: false,
+            owner_check: true,
+            verify_remote_hash: false,
+          },
+          log_dir: "logs",
+          work_dir: null,
         },
-        environment: {
-          conda: null,
-          venv: null,
-          container: null,
-          env_vars: {},
-        },
-        notifications: {
-          slack_webhook_url: null,
-          default_endpoint_name: null,
-          default_preset: "terminal",
-        },
-        log_dir: "logs",
-        work_dir: null,
+        sources: {},
       },
     });
   });
-  await page.route("**/api/config/paths", (route) => {
+  await page.route(/\/api\/config\/paths(\?.*)?$/, (route) => {
     return route.fulfill({ json: [] });
   });
-  await page.route("**/api/config/env", (route) => {
-    return route.fulfill({ json: { items: [] } });
-  });
-  await page.route("**/api/config/projects", (route) => {
+  await page.route(/\/api\/config\/env(\?.*)?$/, (route) => {
     return route.fulfill({ json: [] });
   });
-  await page.route("**/api/config/ssh/status*", (route) => {
+  await page.route("**/api/config/file*", (route) => {
     return route.fulfill({
-      json: { available: false, profile: null, hostname: null },
+      json: {
+        scope: "user",
+        path: "/home/user/.config/srunx/config.toml",
+        exists: true,
+        version: "v1",
+        data: {},
+      },
     });
-  });
-  await page.route("**/api/config/ssh/profiles*", (route) => {
-    return route.fulfill({ json: { profiles: {}, current: null } });
   });
 }
 

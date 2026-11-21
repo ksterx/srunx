@@ -363,3 +363,72 @@ class TestSqueueFallback:
         # ``tail -n 10 /x/y/z.log<lots of spaces>`` if strip was missed).
         for c in tail_calls:
             assert "/x/y/z.log  " not in c
+
+
+class TestFinishedJobLogFromAccounting:
+    """A finished job is gone from scontrol/squeue; accounting is consulted."""
+
+    def test_uses_sacct_stdout_when_available(self, client):
+        def _exec(cmd):
+            if "sacct" in cmd and "StdOut" in cmd:
+                return ("logs/%x_%j.out|/abs/%u-%j.err|/proj|train|alice\n", "", 0)
+            if "cat" in cmd and "/proj/logs/train_77.out" in cmd:
+                return ("out\n", "", 0)
+            if "wc -c" in cmd and "/proj/logs/train_77.out" in cmd:
+                return ("4\n", "", 0)
+            if "cat" in cmd and "/abs/alice-77.err" in cmd:
+                return ("err\n", "", 0)
+            if "wc -c" in cmd and "/abs/alice-77.err" in cmd:
+                return ("4\n", "", 0)
+            return ("", "", 1)
+
+        client.connection.execute_command = Mock(side_effect=_exec)
+        stdout, stderr, out_off, err_off = client.logs.get_job_output("77")
+        assert (stdout, stderr, out_off, err_off) == ("out\n", "err\n", 4, 4)
+
+    def test_searches_workdir_when_sacct_lacks_stdout(self, client):
+        workdir = "/grp/proj"
+        log = "/grp/proj/logs/trial_51053.log"
+        seen: list[str] = []
+
+        def _exec(cmd):
+            seen.append(cmd)
+            if "sacct" in cmd and "StdOut" in cmd:
+                return ("", 'sacct: error: Invalid field requested: "StdOut"', 1)
+            if "sacct" in cmd and "WorkDir" in cmd:
+                return (f"{workdir}\n", "", 0)
+            if cmd.startswith("find /grp/proj -maxdepth 3"):
+                return (f"{log}\n", "", 0)
+            if "cat" in cmd and log in cmd:
+                return ("hello from job\n", "", 0)
+            if "wc -c" in cmd and log in cmd:
+                return ("15\n", "", 0)
+            return ("", "", 1)
+
+        client.connection.execute_command = Mock(side_effect=_exec)
+        stdout, stderr, out_off, _ = client.logs.get_job_output("51053")
+        assert stdout == "hello from job\n"
+        assert stderr == ""
+        assert out_off == 15
+        find = next(c for c in seen if c.startswith("find /grp/proj"))
+        assert "'*[!0-9]51053.*'" in find
+        assert "-printf" not in find  # POSIX find only
+
+    def test_no_workdir_falls_back_to_patterns(self, client):
+        def _exec(cmd):
+            if "sacct" in cmd:
+                return ("", "", 0)
+            return ("", "", 1)
+
+        client.connection.execute_command = Mock(side_effect=_exec)
+        stdout, _, _, _ = client.logs.get_job_output("51053")
+        assert stdout == ""
+
+
+def test_expand_slurm_filename():
+    from srunx.ssh.core.log_reader import expand_slurm_filename
+
+    assert (
+        expand_slurm_filename("%x_%j-%A.%u.%%.%N", job_id="9", job_name="t", user="u")
+        == "t_9-9.u.%.%N"
+    )

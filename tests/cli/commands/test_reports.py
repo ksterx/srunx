@@ -98,7 +98,9 @@ class TestSacctLocalCLI:
             "srunx.slurm.accounting.fetch_sacct_rows_local",
             return_value=sample_rows,
         ):
-            result = runner.invoke(app, ["sacct", "--local"], env={"COLUMNS": "200"})
+            result = runner.invoke(
+                app, ["sacct", "--cluster", "local"], env={"COLUMNS": "200"}
+            )
 
         assert result.exit_code == 0, result.stdout + (result.stderr or "")
         assert "2780" in result.stdout
@@ -116,7 +118,7 @@ class TestSacctLocalCLI:
         ):
             result = runner.invoke(
                 app,
-                ["sacct", "--local", "--show-steps"],
+                ["sacct", "--cluster", "local", "--show-steps"],
                 env={"COLUMNS": "200"},
             )
 
@@ -131,7 +133,9 @@ class TestSacctLocalCLI:
             "srunx.slurm.accounting.fetch_sacct_rows_local",
             return_value=sample_rows,
         ):
-            result = runner.invoke(app, ["sacct", "--local"], env={"COLUMNS": "200"})
+            result = runner.invoke(
+                app, ["sacct", "--cluster", "local"], env={"COLUMNS": "200"}
+            )
 
         assert result.exit_code == 0
         for shown in (
@@ -161,7 +165,8 @@ class TestSacctLocalCLI:
                 app,
                 [
                     "sacct",
-                    "--local",
+                    "--cluster",
+                    "local",
                     "--show-account",
                     "--show-times",
                 ],
@@ -179,7 +184,9 @@ class TestSacctLocalCLI:
             "srunx.slurm.accounting.fetch_sacct_rows_local",
             return_value=sample_rows,
         ):
-            result = runner.invoke(app, ["sacct", "--local", "--format", "json"])
+            result = runner.invoke(
+                app, ["sacct", "--cluster", "local", "--format", "json"]
+            )
 
         assert result.exit_code == 0
         data = json.loads(result.stdout)
@@ -209,7 +216,7 @@ class TestSacctLocalCLI:
             "srunx.slurm.accounting.fetch_sacct_rows_local",
             return_value=[],
         ):
-            result = runner.invoke(app, ["sacct", "--local"])
+            result = runner.invoke(app, ["sacct", "--cluster", "local"])
         assert result.exit_code == 0
         assert "No accounting records" in result.stdout
 
@@ -230,7 +237,8 @@ class TestSacctLocalCLI:
                 app,
                 [
                     "sacct",
-                    "--local",
+                    "--cluster",
+                    "local",
                     "-j",
                     "2780",
                     "-j",
@@ -268,7 +276,9 @@ class TestSacctLocalCLI:
             "srunx.slurm.accounting.fetch_sacct_rows_local",
             return_value=sample_rows,
         ) as fetch:
-            result = runner.invoke(app, ["sacct", "--local", "-a", "-u", "alice"])
+            result = runner.invoke(
+                app, ["sacct", "--cluster", "local", "-a", "-u", "alice"]
+            )
 
         assert result.exit_code == 0
         kwargs = fetch.call_args.kwargs
@@ -307,7 +317,7 @@ class TestSacctSshRouting:
         ):
             result = runner.invoke(
                 app,
-                ["sacct", "--profile", "dgx", "--format", "json"],
+                ["sacct", "--cluster", "dgx", "--format", "json"],
             )
 
         assert result.exit_code == 0, result.stdout + (result.stderr or "")

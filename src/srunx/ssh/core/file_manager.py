@@ -176,7 +176,7 @@ class RemoteFileManager:
             local_path: Local project root to sync. If None, uses git toplevel
                 or cwd.
             remote_path: Remote destination. If None, uses the default
-                ``~/.config/srunx/workspace/{repo_name}/``.
+                ``~/.local/share/srunx/workspaces/{repo_name}/``.
             delete: Remove remote files not present locally. **Defaults to
                 False**, matching :meth:`RsyncClient.push`: a wrapper that
                 re-introduced mirror-by-default would defeat that guarantee

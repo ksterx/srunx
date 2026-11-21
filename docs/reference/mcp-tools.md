@@ -15,6 +15,12 @@ All tools return a JSON object with a `success` boolean. On success,
 additional fields carry the result data. On failure, an `error` string
 describes what went wrong.
 
+Every tool that talks to SLURM takes an explicit `cluster` argument (a name
+from `list_clusters`). MCP never falls back to `$SRUNX_CLUSTER`, a project's
+`cluster`, or `default_cluster`; calling such a tool without `cluster` returns
+an error. Tools that use project mounts or project defaults take `project`:
+the project root directory holding `.srunx/config.toml`.
+
 ## Job Management
 
 ### submit_job
@@ -27,10 +33,10 @@ Submit a SLURM job.
 |----|----|----|----|----|
 | `command` | str | Yes |  | Shell command to execute (e.g. `"python train.py --epochs 100"`) |
 | `name` | str | No | `"job"` | Job name for identification in the SLURM queue |
-| `nodes` | int | No | `1` | Number of compute nodes to allocate |
-| `gpus_per_node` | int | No | `0` | Number of GPUs per node (0 for CPU-only) |
-| `ntasks_per_node` | int | No | `1` | Number of tasks per node |
-| `cpus_per_task` | int | No | `1` | Number of CPUs per task |
+| `nodes` | int \| null | No | `null` | Number of compute nodes to allocate |
+| `gpus_per_node` | int \| null | No | `null` | Number of GPUs per node (0 for CPU-only) |
+| `ntasks_per_node` | int \| null | No | `null` | Number of tasks per node |
+| `cpus_per_task` | int \| null | No | `null` | Number of CPUs per task |
 | `memory_per_node` | str \| null | No | `null` | Memory per node (e.g. `"32GB"`, `"64G"`) |
 | `time_limit` | str \| null | No | `null` | Wall time limit (e.g. `"4:00:00"`, `"1-00:00:00"`) |
 | `partition` | str \| null | No | `null` | SLURM partition name (e.g. `"gpu"`, `"cpu"`) |
@@ -38,9 +44,14 @@ Submit a SLURM job.
 | `conda` | str \| null | No | `null` | Conda environment name to activate before running |
 | `venv` | str \| null | No | `null` | Path to Python virtual environment to activate |
 | `env_vars` | dict \| null | No | `null` | Additional environment variables as key-value pairs |
-| `log_dir` | str | No | `"logs"` | Directory for stdout/stderr log files |
-| `work_dir` | str \| null | No | `null` | Working directory for the job (defaults to cwd; required when `transport` is set) |
-| `transport` | str \| null | No | `null` | SSH profile name to submit through. Omit (or pass `"local"`) for local SLURM |
+| `log_dir` | str \| null | No | `null` | Directory for stdout/stderr log files |
+| `work_dir` | str \| null | No | `null` | Working directory for the job (defaults to cwd; required on an SSH cluster) |
+| `cluster` | str | Yes |  | Cluster name (see `list_clusters`). Required — MCP never picks a cluster implicitly |
+| `project` | str \| null | No | `null` | Project root whose `.srunx/config.toml` defaults apply |
+
+Omitted resource / environment arguments come from the cluster's configured
+defaults (user config, plus the project's when `project` is given), not from
+fixed values.
 
 **Return value:**
 
@@ -61,13 +72,13 @@ Submit a SLURM job.
 
 ### list_jobs
 
-List current user's SLURM jobs in the queue.
+List SLURM jobs in the queue (all users, like `squeue`).
 
 **Parameters:**
 
 | Name        | Type        | Required | Default | Description                                                                       |
 |-------------|-------------|----------|---------|-----------------------------------------------------------------------------------|
-| `transport` | str \| null | No       | `null`  | SSH profile name to query through. Omit (or pass `"local"`) for local SLURM |
+| `cluster` | str | Yes |  | Cluster name (see `list_clusters`). Required — MCP never picks a cluster implicitly |
 
 **Return value:**
 
@@ -96,7 +107,7 @@ Get the status of a specific SLURM job.
 | Name | Type | Required | Default | Description |
 |----|----|----|----|----|
 | `job_id` | str | Yes |  | SLURM job ID to check (numeric, e.g. `"12345"` or `"12345_1"`) |
-| `transport` | str \| null | No | `null` | SSH profile name to query through. Omit (or pass `"local"`) for local SLURM |
+| `cluster` | str | Yes |  | Cluster name (see `list_clusters`). Required — MCP never picks a cluster implicitly |
 
 **Return value:**
 
@@ -120,7 +131,7 @@ Cancel a running or pending SLURM job.
 | Name        | Type        | Required | Default | Description                                                                  |
 |-------------|-------------|----------|---------|------------------------------------------------------------------------------|
 | `job_id`    | str         | Yes      |         | SLURM job ID to cancel                                                       |
-| `transport` | str \| null | No       | `null`  | SSH profile name to cancel through. Omit (or pass `"local"`) for local SLURM |
+| `cluster` | str | Yes |  | Cluster name (see `list_clusters`). Required — MCP never picks a cluster implicitly |
 
 **Return value:**
 
@@ -142,7 +153,7 @@ Get stdout/stderr logs for a SLURM job.
 |----|----|----|----|----|
 | `job_id` | str | Yes |  | SLURM job ID |
 | `job_name` | str \| null | No | `null` | Job name to help locate log files |
-| `transport` | str \| null | No | `null` | SSH profile name to fetch logs through. Omit (or pass `"local"`) for local SLURM |
+| `cluster` | str | Yes |  | Cluster name (see `list_clusters`). Required — MCP never picks a cluster implicitly |
 
 **Return value:**
 
@@ -157,7 +168,7 @@ Get stdout/stderr logs for a SLURM job.
 ```
 
 !!! note
-    The `log_files` field is populated the same way for every transport
+    The `log_files` field is populated the same way for every cluster
     (local and SSH) — it lists the discovered log files, or `[]` when none
     were found.
 
@@ -172,7 +183,7 @@ Get current GPU and node resource availability on the SLURM cluster.
 | Name | Type | Required | Default | Description |
 |----|----|----|----|----|
 | `partition` | str \| null | No | `null` | Specific partition to check (null for all partitions) |
-| `transport` | str \| null | No | `null` | SSH profile name to query through. Omit (or pass `"local"`) for local SLURM |
+| `cluster` | str | Yes |  | Cluster name (see `list_clusters`). Required — MCP never picks a cluster implicitly |
 
 **Return value (local):**
 
@@ -193,7 +204,7 @@ Get current GPU and node resource availability on the SLURM cluster.
 
 **Return value (SSH):**
 
-When `transport` selects an SSH profile, the return carries a `resources`
+When `cluster` is an SSH cluster, the return carries a `resources`
 list — one aggregated metrics object per partition (the same fields as the
 local return, plus `timestamp` / `has_available_gpus`). With an explicit
 `partition` the list has a single element; with `partition` omitted it has
@@ -236,7 +247,7 @@ be executed with `run_workflow`.
 | `jobs` | list\[dict\] | Yes |  | List of job definitions (see schema below) |
 | `output_path` | str | Yes |  | File path to write the YAML (e.g. `"workflow.yaml"`) |
 | `args` | dict \| null | No | `null` | Template variables for Jinja2 templating in job definitions |
-| `default_project` | str \| null | No | `null` | Default SSH mount name for file syncing |
+| `default_project` | str \| null | No | `null` | Default project mount name for file syncing |
 
 **Job definition schema:**
 
@@ -312,8 +323,9 @@ prerequisites to complete.
 | `dry_run` | bool | No | `false` | Show what would be executed without running |
 | `args` | dict \| null | No | `null` | Mapping merged over the YAML `args` section before Jinja rendering. `python:`-prefixed values are rejected |
 | `sweep` | dict \| null | No | `null` | Sweep spec (see schema below). When present, the workflow is routed through `SweepOrchestrator` and the return shape changes |
-| `transport` | str \| null | No | `null` | SSH profile name to run through. When set, the run is routed through that cluster's adapter. Default (null) keeps execution on the local SLURM client |
-| `mount` | str \| null | No | `null` | Mount name (from the profile named by `transport`) used as the path-translation root for `work_dir` / `log_dir`. Requires `transport`; passing `mount` without `transport` is an error |
+| `cluster` | str | Yes |  | Cluster name (see `list_clusters`). Required — MCP never picks a cluster implicitly | Its configured defaults fill job fields the YAML leaves unset |
+| `project` | str \| null | No | `null` | Project root (directory holding `.srunx/config.toml`); supplies project defaults and the mounts `mount` refers to |
+| `mount` | str \| null | No | `null` | Project mount name used as the path-translation root for `work_dir` / `log_dir`. Requires an SSH `cluster` and `project` |
 
 **`sweep` schema:**
 
@@ -383,10 +395,10 @@ per-job `results` map:
 
 Errors are returned with `{"success": false, "error": "..."}`:
 
-- Mount not present in the profile named by `transport` →
-  `"Mount '<name>' not found in profile '<transport>'"`
-- `mount=` passed without `transport=` →
-  `"mount requires an SSH transport; pass transport='<profile>' (there is no mount translation for local runs)"`
+- Mount not present for the project on that cluster →
+  `"Mount '<name>' not found for the project on '<cluster>'"`
+- `mount=` passed with a local cluster →
+  `"mount requires an SSH cluster (there is no mount translation for local runs)"`
 - A `ShellJob`'s `script_path` resolves outside every mount's `local`
   root →
   `"Script path '<path>' is outside allowed directories"`
@@ -403,12 +415,12 @@ Errors are returned with `{"success": false, "error": "..."}`:
   exposes progress through `GET /api/sweep_runs/{id}`.
 - `max_parallel` is required in YAML and defaults to `4` when the MCP
   caller omits it.
-- When `transport=` is combined with `sweep`, every cell is submitted
+- On an SSH cluster, a `sweep` submits every cell
   through a shared `SlurmSSHExecutorPool(size=min(max_parallel, 8))` so
   concurrent cells reuse a small set of SSH sessions against the
   cluster. The pool is closed when the tool call returns.
-- MCP reads neither environment variables nor the current SSH profile;
-  the cluster is selected only by an explicit `transport`.
+- MCP reads neither `$SRUNX_CLUSTER`, the project's `cluster`, nor
+  `default_cluster`; the cluster is selected only by an explicit `cluster`.
 - Matrix values must be scalar (`str`, `int`, `float`, `bool`); nested
   lists or dicts are rejected at load time.
 - The total cell count is capped at 1000 as a safety valve.
@@ -506,8 +518,9 @@ import and run.
 
 | Name | Type | Required | Default | Description |
 |----|----|----|----|----|
-| `transport` | str | Yes |  | SSH profile name to inspect. No current-profile fallback — it must be explicit |
-| `mount` | str | Yes |  | Mount name from that SSH profile |
+| `cluster` | str | Yes |  | SSH cluster name. No implicit fallback — it must be explicit |
+| `project` | str | Yes |  | Project root (directory holding `.srunx/config.toml`) whose mounts are used |
+| `mount` | str | Yes |  | Mount name from that project on that cluster |
 | `max_paths` | int | No | `1000` | Cap on how many paths to list. Counts stay exact; past the cap the list is omitted, never shortened |
 
 **Return value:**
@@ -555,7 +568,7 @@ import and run.
     - A job **overwrote** a file srunx uploaded (or recreated it at the same
       path). The record stores path names, not content, so what is on the
       cluster now may be the job's version rather than the one srunx sent.
-    - Output **pulled** into the local tree with `srunx ssh sync --pull`
+    - Output **pulled** into the local tree with `srunx cluster sync --pull`
       becomes a file the next push manages, so it is recorded like any other.
 
     Excluding the output directories avoids both, and is worth doing anyway.
@@ -579,7 +592,7 @@ running sync. The trade is that its snapshot can be a moment stale.
 ### sync_files
 
 Sync a configured mount from the local machine to a remote SLURM cluster
-using rsync. Only mounts registered on the SSH profile can be synced —
+using rsync. Only mounts of the given project on that cluster can be synced —
 there is no free-form path mode, so an arbitrary source cannot be pushed
 to an arbitrary destination.
 
@@ -587,11 +600,13 @@ to an arbitrary destination.
 
 | Name | Type | Required | Default | Description |
 |----|----|----|----|----|
-| `transport` | str | Yes |  | SSH profile name to sync through. There is no current-profile fallback — it must be explicit |
-| `mount` | str | Yes |  | Mount name from that SSH profile. Call `list_ssh_profiles` to see the mounts each profile defines |
+| `cluster` | str | Yes |  | SSH cluster name. There is no implicit fallback — it must be explicit |
+| `project` | str | Yes |  | Project root (directory holding `.srunx/config.toml`) whose mounts are used |
+| `mount` | str | Yes |  | Mount name from that project on that cluster. Call `list_clusters(project=...)` to see the mounts |
 | `dry_run` | bool | No | `false` | Preview only: report what would be transferred and deleted without touching the cluster |
 | `delete` | bool | No | `false` | Mirror — also DELETE cluster files that no longer exist locally. Destroys remote-only data (checkpoints, job logs, outputs) |
 | `max_delete` | int | No | `100` | Refuse the mirror, changing nothing, if it would delete more than this many *entries*. Must be `>= 1` |
+| `approve_new_target` | bool | No | `false` | The first real sync into a remote path needs approval (the same approval as the CLI's `--yes`). Only pass `true` when the user confirmed the target |
 
 !!! note "`max_delete` counts entries, not files"
     Entries are files **and** directories, matching rsync's own
@@ -645,16 +660,24 @@ the count stays exact, and the list is never silently shortened.
 
 ### get_config
 
-Get the current srunx configuration including resource defaults and
-environment settings.
+Get the effective job defaults for a cluster (and optionally a project). Every
+value is reported with the config file it came from (`built-in` when no file
+sets it).
 
-**Parameters:** None.
+**Parameters:**
+
+| Name | Type | Required | Default | Description |
+|----|----|----|----|----|
+| `cluster` | str \| null | No | `null` | Cluster whose cluster-specific defaults apply. Omit to see only the global defaults |
+| `project` | str \| null | No | `null` | Project root (directory holding `.srunx/config.toml`) |
 
 **Return value:**
 
 ``` json
 {
   "success": true,
+  "cluster": "dgx",
+  "project": "/home/user/projects/ml-project",
   "resources": {
     "nodes": 1,
     "gpus_per_node": 0,
@@ -662,7 +685,7 @@ environment settings.
     "cpus_per_task": 1,
     "memory_per_node": null,
     "time_limit": null,
-    "partition": null,
+    "partition": "gpu",
     "nodelist": null
   },
   "environment": {
@@ -671,30 +694,36 @@ environment settings.
     "env_vars": {}
   },
   "log_dir": "logs",
-  "work_dir": null
+  "work_dir": null,
+  "sources": {
+    "resources.partition": "/home/user/.config/srunx/config.toml [clusters.dgx]"
+  }
 }
 ```
 
-### list_ssh_profiles
+### list_clusters
 
-List all configured SSH connection profiles for remote SLURM clusters.
-Shows profile names, hostnames, and configured mount points.
+List configured clusters (job targets). With `project`, each SSH cluster also
+lists that project's mounts on it — the names `sync_files`, `inspect_mount`, and
+`run_workflow` accept.
 
-**Parameters:** None.
+**Parameters:**
+
+| Name | Type | Required | Default | Description |
+|----|----|----|----|----|
+| `project` | str \| null | No | `null` | Project root whose mounts to include |
 
 **Return value:**
 
 ``` json
 {
   "success": true,
-  "profiles": [
+  "clusters": [
     {
       "name": "dgx",
-      "hostname": "dgx.example.com",
-      "username": "researcher",
-      "port": 22,
+      "transport": "ssh",
+      "host": "dgx-login",
       "description": "Main DGX cluster",
-      "is_current": true,
       "mounts": [
         {
           "name": "ml-project",
@@ -704,7 +733,9 @@ Shows profile names, hostnames, and configured mount points.
       ]
     }
   ],
-  "current": "dgx",
   "count": 1
 }
 ```
+
+`mounts` is present only when `project` is given and the cluster is an SSH
+cluster.

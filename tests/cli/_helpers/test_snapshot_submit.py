@@ -121,10 +121,8 @@ _OK: dict[str, Any] = {
     "script": Path("job.sbatch"),
     "wrap": None,
     "template": None,
-    "local": False,
     "sync": None,
     "force_sync": False,
-    "profile": "p",
 }
 
 
@@ -153,7 +151,6 @@ def test_validate_snapshot_rev_implies_snapshot() -> None:
     [
         ({"wrap": "x", "script": None}, "--wrap"),
         ({"template": "t"}, "--template"),
-        ({"local": True}, "--local"),
         ({"sync": True}, "--sync"),
         ({"force_sync": True}, "--force-sync"),
     ],

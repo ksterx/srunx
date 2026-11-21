@@ -26,10 +26,10 @@ from srunx.observability.notifications.attach import (
 
 @pytest.fixture
 def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     from srunx.observability.storage.connection import init_db
 
-    return init_db(delete_legacy=False)
+    return init_db()
 
 
 def _seed(*, endpoint_name: str = "primary", disabled: bool = False) -> tuple[int, int]:

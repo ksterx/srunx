@@ -125,8 +125,10 @@ class SlurmSSHClient:
         self._key_filename: str | None = None
         self._port: int = port
         self._proxy_jump: str | None = None
-        self._mounts: tuple[MountConfig, ...] = (
-            tuple(mounts) if mounts is not None else ()
+        # ``None`` = resolve the current project's mounts on demand (they
+        # depend on the request / command project, not on this adapter).
+        self._explicit_mounts: tuple[MountConfig, ...] | None = (
+            tuple(mounts) if mounts is not None else None
         )
 
         # Callbacks attached to this client; invoked by :meth:`run` on the
@@ -135,11 +137,9 @@ class SlurmSSHClient:
 
         if profile_name:
             cm = ConfigManager()
-            profile = cm.get_profile(profile_name)
+            profile = cm.get_profile(profile_name, with_mounts=False)
             if not profile:
-                raise ValueError(f"SSH profile '{profile_name}' not found")
-
-            self._mounts = tuple(profile.mounts) if profile.mounts else ()
+                raise ValueError(f"SSH cluster '{profile_name}' not found")
 
             # Resolve connection: ssh_host (from ~/.ssh/config) or direct fields.
             if profile.ssh_host:
@@ -211,6 +211,15 @@ class SlurmSSHClient:
             raise ValueError("Either profile_name or (hostname, username) required")
 
     # ── Public introspection ──────────────────────
+
+    @property
+    def _mounts(self) -> tuple[MountConfig, ...]:
+        if self._explicit_mounts is not None:
+            return self._explicit_mounts
+        if not self._profile_name:
+            return ()
+        profile = ConfigManager().get_profile(self._profile_name)
+        return tuple(profile.mounts) if profile is not None else ()
 
     @property
     def scheduler_key(self) -> str:
@@ -581,7 +590,7 @@ class SlurmSSHClient:
 
         Ensures the SSH connection is live before reading — callers that
         reach this method via a fresh :class:`SlurmSSHClient` (e.g. CLI
-        ``srunx logs --profile foo``, which builds the client via
+        ``srunx tail --cluster foo``, which builds the client via
         :func:`srunx.transport.registry._build_ssh_handle` without the
         Web app's startup connect) would otherwise hit
         ``SSH client is not connected`` on the first call.

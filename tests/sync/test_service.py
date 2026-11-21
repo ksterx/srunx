@@ -24,7 +24,7 @@ from srunx.sync.service import SyncAbortedError, ensure_mount_synced
 
 @pytest.fixture(autouse=True)
 def isolated_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
 
 
 def _profile(tmp_path: Path, mount_local: Path) -> ServerProfile:
@@ -63,6 +63,7 @@ class TestEnsureMountSynced:
         ):
             outcome = ensure_mount_synced(
                 profile_name="alice",
+                assume_yes=True,
                 profile=profile,
                 mount=profile.mounts[0],
                 config=config,
@@ -93,6 +94,7 @@ class TestEnsureMountSynced:
         ):
             outcome = ensure_mount_synced(
                 profile_name="alice",
+                assume_yes=True,
                 profile=profile,
                 mount=profile.mounts[0],
                 config=config,
@@ -119,6 +121,7 @@ class TestEnsureMountSynced:
             with pytest.raises(SyncAbortedError, match="uncommitted changes"):
                 ensure_mount_synced(
                     profile_name="alice",
+                    assume_yes=True,
                     profile=profile,
                     mount=profile.mounts[0],
                     config=config,
@@ -143,6 +146,7 @@ class TestEnsureMountSynced:
         ):
             outcome = ensure_mount_synced(
                 profile_name="alice",
+                assume_yes=True,
                 profile=profile,
                 mount=profile.mounts[0],
                 config=config,
@@ -175,6 +179,7 @@ class TestEnsureMountSynced:
             with pytest.raises(RuntimeError, match="permission denied"):
                 ensure_mount_synced(
                     profile_name="alice",
+                    assume_yes=True,
                     profile=profile,
                     mount=profile.mounts[0],
                     config=SyncDefaults(owner_check=False),

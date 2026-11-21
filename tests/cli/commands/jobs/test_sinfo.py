@@ -80,7 +80,7 @@ class TestSinfoLocalPath:
             "srunx.slurm.partitions.fetch_sinfo_rows_local",
             return_value=sample_rows,
         ):
-            result = runner.invoke(app, ["sinfo", "--local"])
+            result = runner.invoke(app, ["sinfo", "--cluster", "local"])
 
         assert result.exit_code == 0, result.stdout + (result.stderr or "")
         # Native-sinfo columns must all be present in the rendered table.
@@ -109,7 +109,9 @@ class TestSinfoLocalPath:
             "srunx.slurm.partitions.fetch_sinfo_rows_local",
             return_value=sample_rows,
         ):
-            result = runner.invoke(app, ["sinfo", "--local", "--format", "json"])
+            result = runner.invoke(
+                app, ["sinfo", "--cluster", "local", "--format", "json"]
+            )
 
         assert result.exit_code == 0
         data = json.loads(result.stdout)
@@ -132,7 +134,9 @@ class TestSinfoLocalPath:
             "srunx.slurm.partitions.fetch_sinfo_rows_local",
             return_value=sample_rows,
         ) as fetch:
-            result = runner.invoke(app, ["sinfo", "--local", "--partition", "gpu"])
+            result = runner.invoke(
+                app, ["sinfo", "--cluster", "local", "--partition", "gpu"]
+            )
 
         assert result.exit_code == 0
         fetch.assert_called_once_with("gpu")
@@ -142,7 +146,7 @@ class TestSinfoLocalPath:
             "srunx.slurm.partitions.fetch_sinfo_rows_local",
             side_effect=RuntimeError("sinfo not on PATH"),
         ):
-            result = runner.invoke(app, ["sinfo", "--local"])
+            result = runner.invoke(app, ["sinfo", "--cluster", "local"])
         assert result.exit_code == 1
         assert "Error" in result.stdout
 
@@ -179,7 +183,7 @@ class TestSinfoSshPath:
         ):
             result = runner.invoke(
                 app,
-                ["sinfo", "--profile", "dgx", "--format", "json"],
+                ["sinfo", "--cluster", "dgx", "--format", "json"],
             )
 
         assert result.exit_code == 0, result.stdout + (result.stderr or "")
@@ -224,7 +228,7 @@ class TestSinfoSshPath:
                 app,
                 [
                     "sinfo",
-                    "--profile",
+                    "--cluster",
                     "dgx",
                     "--partition",
                     "gpu",

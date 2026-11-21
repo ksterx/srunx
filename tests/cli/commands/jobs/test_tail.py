@@ -104,7 +104,7 @@ class TestTailFollowSsh:
         ):
             result = runner.invoke(
                 app,
-                ["tail", "12345", "--follow", "--interval", "0.01", "--profile", "dgx"],
+                ["tail", "12345", "--follow", "--interval", "0.01", "--cluster", "dgx"],
             )
 
         assert result.exit_code == 0, result.stdout + (result.stderr or "")
@@ -158,7 +158,7 @@ class TestTailFollowSsh:
                     "--follow",
                     "--interval",
                     "0.01",
-                    "--profile",
+                    "--cluster",
                     "dgx",
                     "--last",
                     "50",
@@ -185,7 +185,7 @@ class TestTailFollowSsh:
         ):
             result = runner.invoke(
                 app,
-                ["tail", "12345", "--profile", "dgx", "--last", "50"],
+                ["tail", "12345", "--cluster", "dgx", "--last", "50"],
             )
         assert result.exit_code == 0
         job_ops.tail_log_incremental.assert_called_once_with(12345, 0, 0, last_n=50)
@@ -201,7 +201,7 @@ class TestTailFollowSsh:
             "srunx.transport.registry._build_ssh_handle",
             return_value=(self._fake_handle(job_ops), None),
         ):
-            result = runner.invoke(app, ["tail", "12345", "--profile", "dgx"])
+            result = runner.invoke(app, ["tail", "12345", "--cluster", "dgx"])
         assert result.exit_code == 0
         job_ops.tail_log_incremental.assert_called_once_with(12345, 0, 0, last_n=10)
 
@@ -216,7 +216,7 @@ class TestTailFollowSsh:
             "srunx.transport.registry._build_ssh_handle",
             return_value=(self._fake_handle(job_ops), None),
         ):
-            result = runner.invoke(app, ["tail", "12345", "--profile", "dgx", "--all"])
+            result = runner.invoke(app, ["tail", "12345", "--cluster", "dgx", "--all"])
         assert result.exit_code == 0
         job_ops.tail_log_incremental.assert_called_once_with(12345, 0, 0, last_n=None)
 
@@ -261,7 +261,7 @@ class TestTailFollowSsh:
         ):
             result = runner.invoke(
                 app,
-                ["tail", "12345", "--follow", "--interval", "0.01", "--profile", "dgx"],
+                ["tail", "12345", "--follow", "--interval", "0.01", "--cluster", "dgx"],
             )
 
         assert result.exit_code == 0

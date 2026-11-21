@@ -33,8 +33,8 @@ def client_and_db(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[tuple[TestClient, Path]]:
     """Fresh app instance + tmp-isolated state DB."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    db_path = init_db(delete_legacy=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    db_path = init_db()
 
     import srunx.web.config as config_mod
 

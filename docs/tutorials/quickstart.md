@@ -6,6 +6,22 @@ description: Submit your first SLURM job with srunx in minutes — sbatch wrappi
 
 This guide will help you get started with srunx quickly.
 
+## Configure a Cluster
+
+srunx always submits to a named cluster, and there is no implicit default.
+Register at least one, and make it the default:
+
+``` bash
+srunx cluster add local --local --default            # SLURM on this machine
+# or, for a remote login node reached over SSH:
+srunx cluster add gpu --host gpu-login --default     # alias from ~/.ssh/config
+srunx cluster test gpu
+```
+
+This writes `$XDG_CONFIG_HOME/srunx/config.toml`. Any command can target
+another cluster with `--cluster <name>` (or `$SRUNX_CLUSTER`). See
+[Choosing a Cluster](../how-to/user_guide.md#choosing-a-cluster).
+
 ## Basic Job Submission
 
 Submit a simple Python script:

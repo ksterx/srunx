@@ -35,39 +35,29 @@ class TestSimpleSSHIntegration:
                     assert client.connection.sftp_client == mock_sftp
 
     def test_profile_creation_and_usage(self):
-        """Test creating and using SSH profiles."""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False
-        ) as config_file:
-            config_path = config_file.name
+        """Clusters added via ConfigManager are persisted in the user TOML."""
+        from srunx.common import paths
 
-        try:
-            config_manager = ConfigManager(config_path)
+        config_manager = ConfigManager()
 
-            # Create a profile
-            profile = ServerProfile(
-                hostname="dgx.example.com",
-                username="researcher",
-                key_filename="/home/user/.ssh/dgx_key",
-                port=22,
-                description="Test DGX server",
-            )
+        profile = ServerProfile(
+            hostname="dgx.example.com",
+            username="researcher",
+            key_filename="/home/user/.ssh/dgx_key",
+            port=22,
+            description="Test DGX server",
+        )
 
-            config_manager.add_profile("dgx_test", profile)
+        config_manager.add_profile("dgx_test", profile)
 
-            # Verify profile was saved
-            loaded_profile = config_manager.get_profile("dgx_test")
-            assert loaded_profile is not None
-            assert loaded_profile.hostname == "dgx.example.com"
-            assert loaded_profile.username == "researcher"
+        loaded_profile = ConfigManager().get_profile("dgx_test")
+        assert loaded_profile is not None
+        assert loaded_profile.hostname == "dgx.example.com"
+        assert loaded_profile.username == "researcher"
 
-            # Test profile listing
-            profiles = config_manager.list_profiles()
-            assert "dgx_test" in profiles
-            assert len(profiles) == 1
-
-        finally:
-            Path(config_path).unlink(missing_ok=True)
+        profiles = config_manager.list_profiles()
+        assert list(profiles) == ["dgx_test"]
+        assert "[clusters.dgx_test]" in paths.user_config_path().read_text()
 
     def test_job_submission_workflow(self):
         """Test basic job submission workflow."""

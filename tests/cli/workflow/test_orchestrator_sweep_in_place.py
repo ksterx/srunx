@@ -36,9 +36,11 @@ from srunx.ssh.core.config import MountConfig, ServerProfile
 
 @pytest.fixture(autouse=True)
 def isolated_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-    monkeypatch.setenv("SRUNX_SYNC_OWNER_CHECK", "0")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("SRUNX_CLUSTER", raising=False)
+    from tests.conftest import append_user_config
+
+    append_user_config("[sync]\nowner_check = false")
 
 
 def _make_profile(*mounts: MountConfig) -> ServerProfile:
@@ -335,7 +337,7 @@ class TestCLISweepInPlace:
 
         runner = CliRunner()
         result = runner.invoke(
-            app, ["flow", "run", str(yaml_path), "--profile", "ml-cluster"]
+            app, ["flow", "run", str(yaml_path), "--cluster", "ml-cluster"]
         )
 
         assert result.exit_code == 0, result.stdout + (result.stderr or "")
@@ -399,7 +401,7 @@ class TestCLISweepInPlace:
 
         runner = CliRunner()
         result = runner.invoke(
-            app, ["flow", "run", str(yaml_path), "--profile", "ml-cluster"]
+            app, ["flow", "run", str(yaml_path), "--cluster", "ml-cluster"]
         )
 
         assert result.exit_code == 0, result.stdout + (result.stderr or "")

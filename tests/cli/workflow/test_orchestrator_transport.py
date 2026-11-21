@@ -26,6 +26,6 @@ class TestFlowRunTransport:
         runner = CliRunner()
         result = runner.invoke(
             app,
-            ["flow", "run", "--profile", "foo", "--local", str(yaml_file)],
+            ["flow", "run", "--cluster", "foo", "--cluster", "local", str(yaml_file)],
         )
         assert result.exit_code != 0

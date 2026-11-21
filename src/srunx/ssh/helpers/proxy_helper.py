@@ -14,23 +14,23 @@ def suggest_port_forwarding(host: str, ssh_config_path: str | None = None):
         return
 
     print(f"Host '{host}' uses ProxyJump: {ssh_host.proxy_jump}")
-    print("\nTo use this host with srunx ssh, consider these alternatives:")
+    print("\nTo use this host with srunx, consider these alternatives:")
     print("\n1. SSH Port Forwarding:")
     print(
         f"   ssh -L <local_port>:{ssh_host.hostname}:{ssh_host.port} {ssh_host.proxy_jump}"
     )
-    print("   Then create a profile pointing to localhost:<local_port>")
+    print("   Then add a cluster pointing to localhost:<local_port>")
 
-    print("\n2. Create a direct connection profile:")
-    print("   If you have direct access to the target host, create a profile with:")
+    print("\n2. Add a direct-connection cluster:")
+    print("   If you have direct access to the target host, add a cluster with:")
     print(
-        f"   srunx ssh add --profile {host}-direct --hostname <real_hostname> "
+        f"   srunx cluster add {host}-direct --hostname <real_hostname> "
         f"--username {ssh_host.user} --key-file {ssh_host.identity_file}"
     )
 
     print("\n3. Use SSH config with a bastion setup:")
     print(
-        "   Configure your SSH client to handle ProxyJump automatically outside of srunx ssh"
+        "   Configure your SSH client to handle ProxyJump automatically outside of srunx"
     )
 
 
@@ -77,7 +77,7 @@ def main():
         print("\n" + "=" * 50)
         suggest_port_forwarding(args.host, args.ssh_config)
     else:
-        print(f"\nHost '{args.host}' should work directly with srunx ssh.")
+        print(f"\nHost '{args.host}' should work directly with srunx.")
 
     if args.test_connection and not ssh_host.proxy_jump:
         print(f"\nTesting connectivity to {ssh_host.hostname}:{ssh_host.port}...")

@@ -7,7 +7,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
+from srunx.cli._helpers.transport_options import ClusterOpt, QuietOpt
 from srunx.common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -47,8 +47,7 @@ def sinfo(
         str,
         typer.Option("--format", "-f", help="Output format: table or json"),
     ] = "table",
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
+    cluster: ClusterOpt = None,
     quiet: QuietOpt = False,
 ) -> None:
     """Display partition / node state — same information as native ``sinfo``.
@@ -58,15 +57,15 @@ def sinfo(
     ``NODES``, ``STATE``, ``NODELIST``. For the GPU-aggregate summary
     that used to live here, see ``srunx gpus``.
 
-    With ``--profile <name>`` (or ``$SRUNX_SSH_PROFILE`` / current
-    profile) the query runs against the remote cluster via the SSH
+    The query runs against the selected cluster (``--cluster`` /
+    ``$SRUNX_CLUSTER`` / project / ``default_cluster``) via its
     adapter. Local mode shells out to the head-node ``sinfo`` binary.
 
     Examples:
         srunx sinfo
         srunx sinfo --partition gpu
         srunx sinfo --format json
-        srunx sinfo --profile dgx-server --partition gpu
+        srunx sinfo --cluster dgx-server --partition gpu
     """
     import json
     from typing import cast
@@ -79,7 +78,7 @@ def sinfo(
     )
 
     try:
-        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+        with resolve_transport(cluster=cluster, quiet=quiet) as rt:
             rows: list[PartitionRow]
             if rt.transport_type == "ssh":
                 # Cast Protocol → concrete ``SlurmSSHClient`` so we

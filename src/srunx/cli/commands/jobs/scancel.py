@@ -6,20 +6,22 @@ import typer
 from rich.console import Console
 
 import srunx.slurm.local as _slurm_local  # noqa: E402,I001 — kept so ``patch("srunx.slurm.local.Slurm")`` intercepts all call sites
-from srunx.cli._helpers.transport import resolve_transport
-from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
+from srunx.cli._helpers.transport import job_target, resolve_transport
+from srunx.cli._helpers.transport_options import ClusterOpt, QuietOpt
 from srunx.common.exceptions import JobNotFoundError, TransportError
 
 
 def scancel(
     job_id: Annotated[int, typer.Argument(help="Job ID to cancel")],
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
+    cluster: ClusterOpt = None,
     quiet: QuietOpt = False,
 ) -> None:
     """Cancel a running job."""
     try:
-        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+        cluster, source = job_target(job_id, cluster)
+        with resolve_transport(
+            cluster=cluster, source_override=source, quiet=quiet
+        ) as rt:
             if rt.transport_type == "local":
                 client = _slurm_local.Slurm()
                 client.cancel(job_id)

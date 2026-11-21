@@ -1,5 +1,5 @@
 ---
-description: Comprehensive guide to srunx CLI commands for SLURM — sbatch / squeue / scancel / sinfo, plus profiles, conda/venv setup, and SSH integration.
+description: Comprehensive guide to srunx CLI commands for SLURM — sbatch / squeue / scancel / sinfo, plus clusters, layered configuration, conda/venv setup, and SSH integration.
 ---
 
 # User Guide
@@ -109,7 +109,7 @@ srunx sbatch --wrap "python train.py" \
 
 #### Suppressing Default Containers
 
-If a default container is configured (via `SRUNX_DEFAULT_CONTAINER` or config file), you can suppress it for individual jobs:
+If a default container is configured (via `environment.container` in a config file), you can suppress it for individual jobs:
 
 ``` bash
 srunx sbatch --wrap "python train.py" --no-container
@@ -153,8 +153,69 @@ srunx's reading of the submission result (`--parsable`, `--test-only`,
 `--quiet`, `--wrap`, `--help`, `--version`) are rejected with exit 2. Long-option
 abbreviations are not recognized.
 
-Submit over SSH by adding `--profile <name>`; see
+Submit to another cluster by adding `--cluster <name>`; see
+[Choosing a Cluster](#choosing-a-cluster) and
 [Project Synchronization](sync.md) for auto-sync and `--snapshot`.
+
+#### Script directives and config defaults
+
+When you submit a script (`srunx sbatch train.sh`), srunx reads its `#SBATCH`
+directives. Configured defaults (for example a partition from your config) are
+forwarded to `sbatch` only for options the script does not set and you did not
+type; srunx's built-in defaults are never forwarded, because Slurm has its own.
+
+- A warning is printed when the script contradicts a cluster-specific default
+  (`[clusters.<name>.defaults]`), since that default usually exists for a reason.
+- Long-option abbreviations (`--part=gpu`) and bundled short options
+  (`-vp gpu`) in `#SBATCH` lines are recognised like sbatch does.
+- Alternative spellings of the same resource count as set: a script's
+  `--mem-per-cpu` / `--mem-per-gpu` suppresses an inherited `--mem`,
+  `--cpus-per-gpu` an inherited `--cpus-per-task`, and `--gres` / `--gpus` /
+  `--gpus-per-task` an inherited `--gpus-per-node`.
+- `--gres` is passed through verbatim; with `--wrap` it also drops an
+  inherited `gpus_per_node`.
+- On an SSH cluster, inherited `work_dir` / `log_dir` values that are absolute
+  local paths under a mount are translated to the remote path.
+- `--unset KEY` (repeatable) drops an inherited default for this submission,
+  e.g. `--unset partition`.
+- `--dry-run` shows the selected cluster and where each value came from.
+- Slurm's `--clusters` / `-M` is rejected everywhere (flags and `#SBATCH`);
+  use srunx's `--cluster` instead.
+- `--yes` / `-y` approves the first sync to a new remote path without a prompt.
+
+#### Cluster-independent paths in scripts
+
+Paths that differ between clusters belong in the config, not in the script.
+
+- **Your code:** every `srunx sbatch` exports `$SRUNX_CODE_DIR`, the location
+  of the project's code on the target. On an SSH cluster it is the remote root
+  of the mount holding the script (normally the project's `remote_dir`); on a
+  local cluster it is the project root; with `--snapshot` it is the snapshot
+  directory. It is not set when there is no project. srunx's value wins over a
+  same-named `--env`.
+- **Data and caches:** put them in per-cluster environment variables.
+
+```toml
+# ~/.config/srunx/config.toml
+[clusters.gpu.defaults.environment.env_vars]
+DATA_ROOT = "/lustre/proj/data"
+HF_HOME = "/lustre/me/.cache/huggingface"
+
+[clusters.hr.defaults.environment.env_vars]
+DATA_ROOT = "/home/grp/proj/data"
+HF_HOME = "/home/grp/me/.cache/huggingface"
+```
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=train
+python "$SRUNX_CODE_DIR/train.py" --data "$DATA_ROOT/foo"
+```
+
+The same script then runs unchanged with `--cluster gpu`, `--cluster hr` and
+`--snapshot`. Values are passed as written (`~` and `$VAR` are not expanded on
+your machine) and reach the job through the submission environment
+(`--export=ALL`).
 
 #### Secrets on a remote cluster
 
@@ -163,9 +224,9 @@ scripts. The value is read from a hidden prompt (or `--from-env VAR`) and is
 never placed on a command line:
 
 ``` bash
-srunx ssh secret set HF_TOKEN --profile myserver
-srunx ssh secret list --profile myserver        # names only
-srunx ssh secret unset HF_TOKEN --profile myserver
+srunx cluster secret set myserver HF_TOKEN
+srunx cluster secret list myserver              # names only
+srunx cluster secret unset myserver HF_TOKEN
 ```
 
 Secrets live in a `0600` file at `~/.config/srunx/secrets.env` on the cluster.
@@ -402,40 +463,142 @@ print(f"Job {result.job_id} status: {status}")
 2.  **Use dependencies wisely**: Minimize blocking dependencies
 3.  **Handle failures**: Design for partial workflow recovery
 
+## Choosing a Cluster
+
+A **cluster** is a job target defined in your user config — either the local
+`sbatch` or a host reached over SSH:
+
+``` bash
+srunx cluster add local --local                 # submit with the local sbatch
+srunx cluster add gpu --host gpu-login --default  # alias from ~/.ssh/config
+srunx cluster list
+srunx cluster show gpu
+srunx cluster test gpu
+```
+
+Other subcommands: `srunx cluster update`, `srunx cluster remove`,
+`srunx cluster sync`, and `srunx cluster secret set|list|unset`.
+
+Every job command (`sbatch`, `squeue`, `scancel`, `sinfo`, `gpus`, `tail`,
+`history`, `sacct`, `watch`, `flow run`, `snapshot`) accepts `--cluster <name>`.
+Without it, the cluster is chosen in this order:
+
+1.  `--cluster <name>`
+2.  `$SRUNX_CLUSTER`
+3.  the project's `cluster` (in `.srunx/config.toml`)
+4.  `default_cluster` in the user config
+5.  otherwise an error — there is no implicit local fallback
+
+A one-line banner on stderr names the cluster and why it was picked; `-Q` /
+`--quiet` hides it. There is no `-C` short form (`-C` is sbatch's
+`--constraint`).
+
+`srunx scancel <id>` and `srunx tail <id>` without `--cluster` look the job up
+in srunx's history: exactly one match selects its cluster (the banner says
+`via job history`); no match, or matches on several clusters, is an error asking
+for `--cluster`.
+
+`srunx tail` also finds logs of finished jobs, which Slurm no longer reports
+through `scontrol` / `squeue`: it asks accounting (`sacct`) for the job's
+`StdOut` / `StdErr` where the Slurm version provides them, and otherwise looks
+for a file named after the job ID under the job's `WorkDir` (this covers
+`--output=logs/%x_%j.log`-style relative paths).
+
 ## Configuration
+
+Configuration is TOML, merged from several files:
+
+| File | Contents |
+|----|----|
+| `/etc/srunx/config.toml` | System config (same schema as the user config) |
+| `$XDG_CONFIG_HOME/srunx/config.toml` | User config: `default_cluster`, `[clusters.<name>]`, `[defaults]`, `[notifications]`, `[sync]`, optional `state_dir`, personal per-project overrides `[projects.<name>.clusters.<cluster>]` |
+| `<project>/.srunx/config.toml` | Project config (commit it): `name`, `cluster`, `[defaults]`, `[clusters.<cluster>]` (`remote_dir`, `sync`, `exclude`, `[[mounts]]`, `defaults`). No connection settings |
+
+The project config is found by walking up from the current directory, stopping
+at a git repository root or `$HOME`; `--project PATH` overrides it. Project
+workflows live in `<project>/.srunx/workflows/`.
+
+State (the history DB `srunx.db`, sync locks, the remote-env cache, approved
+sync targets) lives in `$XDG_STATE_HOME/srunx` (default
+`~/.local/state/srunx`), or in `state_dir` when set in the user config — for
+example to keep the DB off an NFS home.
+
+### Default precedence
+
+Job defaults are merged from lowest to highest priority:
+
+1.  built-in defaults
+2.  system `[defaults]`
+3.  user `[defaults]`
+4.  user `[clusters.<c>.defaults]`
+5.  project `[defaults]`
+6.  project `[clusters.<c>.defaults]`
+7.  script `#SBATCH` directives / workflow job fields
+8.  CLI flags
+
+Any table may contain `unset = ["key", ...]` to clear an inherited value.
+
+Example user config:
+
+``` toml
+default_cluster = "gpu"
+
+[defaults]
+log_dir = "logs"
+
+[defaults.resources]
+time_limit = "01:00:00"
+
+[clusters.local]
+transport = "local"
+
+[clusters.gpu]
+transport = "ssh"
+host = "gpu-login"          # alias from ~/.ssh/config
+
+[clusters.gpu.defaults.resources]
+partition = "gpu"
+```
+
+### Managing config from the CLI
+
+``` bash
+srunx config init                    # create the user config with a commented example
+srunx config init-project            # create .srunx/config.toml in the current directory
+srunx config paths                   # files read, lowest precedence first, plus the state dir
+srunx config show [--cluster gpu]    # effective values and the file each came from
+
+srunx config set resources.partition gpu                 # user [defaults]
+srunx config set resources.partition gpu --cluster gpu   # user [clusters.gpu.defaults]
+srunx config set resources.time_limit 04:00:00 --project # project [defaults]
+srunx config delete resources.partition                  # inherit again
+srunx config unset resources.partition --project         # explicitly clear (adds to unset)
+```
+
+`resources.*`, `environment.*`, `log_dir`, and `work_dir` are stored under
+`defaults` (or `clusters.<c>.defaults` with `--cluster`); other keys are
+top-level (or `clusters.<c>.<key>` with `--cluster`). Values are parsed as TOML;
+bare words are strings.
+
+The old `SRUNX_DEFAULT_*` and `SRUNX_SYNC_*` environment variables no longer
+exist; `SRUNX_CLUSTER` is the only environment variable that selects anything.
 
 ### Container Defaults
 
-Set default container settings via environment variables:
+Set a default container in a config file:
 
-``` bash
-# Default container image
-export SRUNX_DEFAULT_CONTAINER=/path/to/default.sif
-
-# Default container runtime (pyxis, apptainer, singularity)
-export SRUNX_DEFAULT_CONTAINER_RUNTIME=apptainer
-```
-
-Or in a config file (`~/.config/srunx/config.json`):
-
-``` json
-{
-  "environment": {
-    "container": {
-      "runtime": "apptainer",
-      "image": "/shared/containers/pytorch.sif"
-    }
-  }
-}
+``` toml
+[defaults.environment.container]
+runtime = "apptainer"
+image = "/shared/containers/pytorch.sif"
 ```
 
 The runtime resolution order (highest priority first):
 
 1.  Explicit `--container-runtime` CLI flag
 2.  `runtime=` key in `--container` value
-3.  `SRUNX_DEFAULT_CONTAINER_RUNTIME` environment variable
-4.  Config file setting
-5.  `pyxis` (default fallback)
+3.  Config file setting
+4.  `pyxis` (default fallback)
 
 ## Troubleshooting
 

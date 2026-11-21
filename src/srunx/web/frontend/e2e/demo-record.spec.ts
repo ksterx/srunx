@@ -92,7 +92,7 @@ async function setupDemoRoutes(page: Page) {
 
   await page.route("**/api/config*", (route) =>
     route.fulfill({
-      json: { notifications: { slack_webhook_url: null } },
+      json: { values: { notifications: {} }, sources: {} },
     }),
   );
 

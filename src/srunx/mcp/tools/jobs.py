@@ -1,10 +1,8 @@
 """MCP tools for SLURM job lifecycle: submit / list / status / cancel / logs.
 
-Every tool selects its cluster through the single ``transport`` argument
-(see :mod:`srunx.mcp.transport`): ``None`` / ``"local"`` -> local SLURM,
-``"<profile>"`` -> that SSH profile. Cluster choice is never a boolean
-toggle and never an implicit current-profile fallback — an MCP caller
-reaches a remote only by naming it. All transports run through the shared
+Every tool takes an explicit ``cluster`` name (see
+:mod:`srunx.mcp.transport`); there is no implicit default. All clusters run
+through the shared
 ``resolve_transport`` handle, so local and SSH share one code path
 (``rt.job_ops``) instead of forking into hand-rolled ``squeue`` / ``scancel``
 shell calls.
@@ -50,10 +48,10 @@ def _job_id_as_int(job_id: str) -> int:
 def submit_job(
     command: str,
     name: str = "job",
-    nodes: int = 1,
-    gpus_per_node: int = 0,
-    ntasks_per_node: int = 1,
-    cpus_per_task: int = 1,
+    nodes: int | None = None,
+    gpus_per_node: int | None = None,
+    ntasks_per_node: int | None = None,
+    cpus_per_task: int | None = None,
     memory_per_node: str | None = None,
     time_limit: str | None = None,
     partition: str | None = None,
@@ -61,11 +59,16 @@ def submit_job(
     conda: str | None = None,
     venv: str | None = None,
     env_vars: dict[str, str] | None = None,
-    log_dir: str = "logs",
+    log_dir: str | None = None,
     work_dir: str | None = None,
-    transport: str | None = None,
+    cluster: str | None = None,
+    project: str | None = None,
 ) -> dict[str, Any]:
     """Submit a SLURM job.
+
+    Omitted resource / environment arguments come from the cluster's
+    configured defaults (user config, and the project's when ``project`` is
+    given), not from fixed values.
 
     Args:
         command: Shell command to execute (e.g. "python train.py --epochs 100")
@@ -83,42 +86,46 @@ def submit_job(
         env_vars: Additional environment variables as key-value pairs
         log_dir: Directory for stdout/stderr log files
         work_dir: Working directory for the job (defaults to cwd)
-        transport: Cluster selector — omit / "local" for local SLURM, or an
-            SSH profile name to submit to that remote cluster.
+        cluster: Cluster name (required; see ``list_clusters``).
+        project: Project root whose ``.srunx/config.toml`` defaults apply.
     """
     try:
         from srunx.domain import Job, JobEnvironment, JobResource
 
-        resource = JobResource(
-            nodes=nodes,
-            gpus_per_node=gpus_per_node,
-            ntasks_per_node=ntasks_per_node,
-            cpus_per_task=cpus_per_task,
-            memory_per_node=memory_per_node,
-            time_limit=time_limit,
-            partition=partition,
-            nodelist=nodelist,
-        )
-        environment = JobEnvironment(
-            conda=conda,
-            venv=venv,
-            env_vars=env_vars or {},
-        )
+        def given(**values: Any) -> dict[str, Any]:
+            return {k: v for k, v in values.items() if v is not None}
 
-        with mcp_transport(transport) as rt:
+        with mcp_transport(cluster, project=project) as rt:
+            resource = JobResource.model_validate(
+                given(
+                    nodes=nodes,
+                    gpus_per_node=gpus_per_node,
+                    ntasks_per_node=ntasks_per_node,
+                    cpus_per_task=cpus_per_task,
+                    memory_per_node=memory_per_node,
+                    time_limit=time_limit,
+                    partition=partition,
+                    nodelist=nodelist,
+                )
+            )
+            environment = JobEnvironment.model_validate(
+                given(conda=conda, venv=venv, env_vars=env_vars)
+            )
             if rt.transport_type == "ssh" and not work_dir:
                 return err(
                     "work_dir is required for SSH job submission "
                     "(local cwd does not exist on the remote cluster)"
                 )
 
-            job = Job(
-                name=name,
-                command=command,
-                resources=resource,
-                environment=environment,
-                log_dir=log_dir,
-                work_dir=work_dir or str(Path.cwd()),
+            job = Job.model_validate(
+                {
+                    "name": name,
+                    "command": command,
+                    "resources": resource,
+                    "environment": environment,
+                    **given(log_dir=log_dir),
+                    "work_dir": work_dir or str(Path.cwd()),
+                }
             )
 
             # One submit path for both transports. The SSH adapter renders
@@ -136,15 +143,14 @@ def submit_job(
 
 
 @mcp.tool()
-def list_jobs(transport: str | None = None) -> dict[str, Any]:
+def list_jobs(cluster: str | None = None) -> dict[str, Any]:
     """List SLURM jobs in the queue (all users, like ``squeue``).
 
     Args:
-        transport: Cluster selector — omit / "local" for local SLURM, or an
-            SSH profile name to query that remote cluster.
+        cluster: Cluster name (required; see ``list_clusters``).
     """
     try:
-        with mcp_transport(transport) as rt:
+        with mcp_transport(cluster) as rt:
             queued = rt.job_ops.queue()
             return ok(
                 jobs=[job_to_dict(j) for j in queued],
@@ -155,17 +161,16 @@ def list_jobs(transport: str | None = None) -> dict[str, Any]:
 
 
 @mcp.tool()
-def get_job_status(job_id: str, transport: str | None = None) -> dict[str, Any]:
+def get_job_status(job_id: str, cluster: str | None = None) -> dict[str, Any]:
     """Get the status of a specific SLURM job.
 
     Args:
         job_id: SLURM job ID to check
-        transport: Cluster selector — omit / "local" for local SLURM, or an
-            SSH profile name to query that remote cluster.
+        cluster: Cluster name (required; see ``list_clusters``).
     """
     try:
         validate_job_id(job_id)
-        with mcp_transport(transport) as rt:
+        with mcp_transport(cluster) as rt:
             job = rt.job_ops.status(_job_id_as_int(job_id))
             # job_to_dict already carries job_id; don't double-pass it.
             return ok(**job_to_dict(job))
@@ -174,17 +179,16 @@ def get_job_status(job_id: str, transport: str | None = None) -> dict[str, Any]:
 
 
 @mcp.tool()
-def cancel_job(job_id: str, transport: str | None = None) -> dict[str, Any]:
+def cancel_job(job_id: str, cluster: str | None = None) -> dict[str, Any]:
     """Cancel a running or pending SLURM job.
 
     Args:
         job_id: SLURM job ID to cancel
-        transport: Cluster selector — omit / "local" for local SLURM, or an
-            SSH profile name to cancel on that remote cluster.
+        cluster: Cluster name (required; see ``list_clusters``).
     """
     try:
         validate_job_id(job_id)
-        with mcp_transport(transport) as rt:
+        with mcp_transport(cluster) as rt:
             rt.job_ops.cancel(_job_id_as_int(job_id))
             return ok(job_id=job_id, message="Job cancelled")
     except Exception as e:
@@ -195,19 +199,18 @@ def cancel_job(job_id: str, transport: str | None = None) -> dict[str, Any]:
 def get_job_logs(
     job_id: str,
     job_name: str | None = None,
-    transport: str | None = None,
+    cluster: str | None = None,
 ) -> dict[str, Any]:
     """Get stdout/stderr logs for a SLURM job.
 
     Args:
         job_id: SLURM job ID
         job_name: Optional job name to help locate log files
-        transport: Cluster selector — omit / "local" for local SLURM, or an
-            SSH profile name to fetch logs from that remote cluster.
+        cluster: Cluster name (required; see ``list_clusters``).
     """
     try:
         validate_job_id(job_id)
-        with mcp_transport(transport) as rt:
+        with mcp_transport(cluster) as rt:
             # Full-text log retrieval is the WorkflowJobExecutor face, which
             # both the local client and the SSH adapter implement. It's not
             # on the JobOperations Protocol that ``job_ops`` is typed as, so

@@ -1,8 +1,15 @@
 import type {
   BrowseResult,
+  ClusterInfo,
+  ClusterList,
+  ClusterTestResult,
   CommandJob,
+  ConfigFile,
+  ConfigFilePatch,
   ConfigPathInfo,
+  ConfigScope,
   Delivery,
+  EffectiveConfig,
   Endpoint,
   EnvVarInfo,
   HistoryStats,
@@ -10,18 +17,11 @@ import type {
   Mount,
   MountConfig,
   NotificationPreset,
-  ProjectConfigResponse,
+  ProjectDetail,
   ProjectInfo,
   ResourceSnapshot,
   ScriptPreviewRequest,
   ScriptPreviewResponse,
-  SSHConnectResponse,
-  SSHConnectionStatus,
-  SSHMountConfig,
-  SSHProfile,
-  SSHProfilesResponse,
-  SSHTestResult,
-  SrunxConfig,
   Subscription,
   SweepCellRow,
   SweepRun,
@@ -309,29 +309,6 @@ export const files = {
     return res.json();
   },
 
-  addMount: async (mount: MountConfig): Promise<MountConfig> => {
-    const res = await fetch("/api/files/mounts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(mount),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(extractDetail(err, "Failed to add mount"));
-    }
-    return res.json();
-  },
-
-  removeMount: async (name: string): Promise<void> => {
-    const res = await fetch(`/api/files/mounts/${encodeURIComponent(name)}`, {
-      method: "DELETE",
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(extractDetail(err, "Failed to remove mount"));
-    }
-  },
-
   read: async (
     mount: string,
     path: string,
@@ -348,22 +325,16 @@ export const files = {
 
 /* ── Config ──────────────────────────────────── */
 
-export const config = {
-  get: async (): Promise<SrunxConfig> => {
-    const res = await fetch("/api/config");
-    if (!res.ok) throw new Error("Failed to fetch config");
-    return res.json();
-  },
+/** Thrown on 409 when a config file changed since it was read. */
+export class ConfigConflictError extends Error {}
 
-  update: async (body: SrunxConfig): Promise<SrunxConfig> => {
-    const res = await fetch("/api/config", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+export const config = {
+  /** Effective defaults for the selected cluster/project, with sources. */
+  get: async (): Promise<EffectiveConfig> => {
+    const res = await fetch("/api/config");
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(extractDetail(err, "Failed to update config"));
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to fetch config"));
     }
     return res.json();
   },
@@ -374,202 +345,116 @@ export const config = {
     return res.json();
   },
 
-  reset: async (): Promise<SrunxConfig> => {
-    const res = await fetch("/api/config/reset", { method: "POST" });
+  getFile: async (scope: ConfigScope): Promise<ConfigFile> => {
+    const res = await fetch(`/api/config/file?scope=${scope}`);
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(extractDetail(err, "Failed to reset config"));
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, `Failed to read ${scope} config`));
     }
     return res.json();
   },
 
-  /* SSH Profiles */
-
-  sshProfiles: async (): Promise<SSHProfilesResponse> => {
-    const res = await fetch("/api/config/ssh/profiles");
-    if (!res.ok) throw new Error("Failed to fetch SSH profiles");
-    return res.json();
-  },
-
-  addSSHProfile: async (body: {
-    name: string;
-    hostname: string;
-    username: string;
-    key_filename: string;
-    port?: number;
-    description?: string;
-    ssh_host?: string;
-    proxy_jump?: string;
-  }): Promise<SSHProfile> => {
-    const res = await fetch("/api/config/ssh/profiles", {
-      method: "POST",
+  patchFile: async (body: ConfigFilePatch): Promise<ConfigFile> => {
+    const res = await fetch("/api/config/file", {
+      method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(extractDetail(err, "Failed to add SSH profile"));
+      const err = await res.json().catch(() => ({}));
+      const msg = extractDetail(err, "Failed to update config");
+      if (res.status === 409) throw new ConfigConflictError(msg);
+      throw new Error(msg);
     }
     return res.json();
   },
-
-  updateSSHProfile: async (
-    name: string,
-    body: Partial<SSHProfile>,
-  ): Promise<SSHProfile> => {
-    const res = await fetch(
-      `/api/config/ssh/profiles/${encodeURIComponent(name)}`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
-    );
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(extractDetail(err, "Failed to update SSH profile"));
-    }
-    return res.json();
-  },
-
-  deleteSSHProfile: async (name: string): Promise<void> => {
-    const res = await fetch(
-      `/api/config/ssh/profiles/${encodeURIComponent(name)}`,
-      { method: "DELETE" },
-    );
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(extractDetail(err, "Failed to delete SSH profile"));
-    }
-  },
-
-  activateSSHProfile: async (name: string): Promise<void> => {
-    const res = await fetch(
-      `/api/config/ssh/profiles/${encodeURIComponent(name)}/activate`,
-      { method: "POST" },
-    );
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(extractDetail(err, "Failed to activate SSH profile"));
-    }
-  },
-
-  connectSSHProfile: async (name: string): Promise<SSHConnectResponse> => {
-    const res = await fetch(
-      `/api/config/ssh/profiles/${encodeURIComponent(name)}/connect`,
-      { method: "POST" },
-    );
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(extractDetail(err, "Failed to connect SSH profile"));
-    }
-    return res.json();
-  },
-
-  testSSHProfile: async (name: string): Promise<SSHTestResult> => {
-    const res = await fetch(
-      `/api/config/ssh/profiles/${encodeURIComponent(name)}/test`,
-      { method: "POST" },
-    );
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(extractDetail(err, "Failed to test SSH profile"));
-    }
-    return res.json();
-  },
-
-  sshStatus: async (): Promise<SSHConnectionStatus> => {
-    const res = await fetch("/api/config/ssh/status");
-    if (!res.ok) throw new Error("Failed to fetch SSH status");
-    return res.json();
-  },
-
-  addSSHMount: async (
-    profileName: string,
-    mount: SSHMountConfig,
-  ): Promise<SSHMountConfig> => {
-    const res = await fetch(
-      `/api/config/ssh/profiles/${encodeURIComponent(profileName)}/mounts`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(mount),
-      },
-    );
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(extractDetail(err, "Failed to add mount"));
-    }
-    return res.json();
-  },
-
-  removeSSHMount: async (
-    profileName: string,
-    mountName: string,
-  ): Promise<void> => {
-    const res = await fetch(
-      `/api/config/ssh/profiles/${encodeURIComponent(profileName)}/mounts/${encodeURIComponent(mountName)}`,
-      { method: "DELETE" },
-    );
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(extractDetail(err, "Failed to remove mount"));
-    }
-  },
-
-  /* Environment Variables */
 
   envVars: async (): Promise<EnvVarInfo[]> => {
     const res = await fetch("/api/config/env");
     if (!res.ok) throw new Error("Failed to fetch environment variables");
     return res.json();
   },
+};
 
-  /* Projects (mount-based) */
+/* ── Clusters ────────────────────────────────── */
 
-  listProjects: async (): Promise<ProjectInfo[]> => {
-    const res = await fetch("/api/config/projects");
-    if (!res.ok) throw new Error("Failed to fetch projects");
-    return res.json();
-  },
-
-  getProject: async (mountName: string): Promise<ProjectConfigResponse> => {
-    const res = await fetch(
-      `/api/config/projects/${encodeURIComponent(mountName)}`,
-    );
-    if (!res.ok) throw new Error("Failed to fetch project config");
-    return res.json();
-  },
-
-  updateProject: async (
-    mountName: string,
-    body: SrunxConfig,
-  ): Promise<ProjectConfigResponse> => {
-    const res = await fetch(
-      `/api/config/projects/${encodeURIComponent(mountName)}`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
-    );
+export const clusters = {
+  list: async (): Promise<ClusterList> => {
+    const res = await fetch("/api/clusters");
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(extractDetail(err, "Failed to update project config"));
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to fetch clusters"));
     }
     return res.json();
   },
 
-  initProject: async (mountName: string): Promise<ProjectConfigResponse> => {
-    const res = await fetch(
-      `/api/config/projects/${encodeURIComponent(mountName)}/init`,
-      { method: "POST" },
-    );
+  create: async (
+    body: ClusterInfo & { make_default?: boolean },
+  ): Promise<ClusterInfo> => {
+    const res = await fetch("/api/clusters", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(
-        extractDetail(err, "Failed to initialize project config"),
-      );
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to add cluster"));
+    }
+    return res.json();
+  },
+
+  update: async (
+    name: string,
+    body: Partial<Omit<ClusterInfo, "name">>,
+  ): Promise<ClusterInfo> => {
+    const res = await fetch(`/api/clusters/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to update cluster"));
+    }
+    return res.json();
+  },
+
+  delete: async (name: string): Promise<void> => {
+    const res = await fetch(`/api/clusters/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to delete cluster"));
+    }
+  },
+
+  test: async (name: string): Promise<ClusterTestResult> => {
+    const res = await fetch(`/api/clusters/${encodeURIComponent(name)}/test`, {
+      method: "POST",
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to test cluster"));
+    }
+    return res.json();
+  },
+};
+
+/* ── Projects ────────────────────────────────── */
+
+export const projects = {
+  list: async (): Promise<ProjectInfo[]> => {
+    const res = await fetch("/api/projects");
+    if (!res.ok) throw new Error("Failed to fetch projects");
+    return res.json();
+  },
+
+  get: async (name: string): Promise<ProjectDetail> => {
+    const res = await fetch(`/api/projects/${encodeURIComponent(name)}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(extractDetail(err, "Failed to fetch project"));
     }
     return res.json();
   },

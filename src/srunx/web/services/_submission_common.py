@@ -76,19 +76,19 @@ def workflow_dir(mount_name: str, profile_resolver: Any) -> Path:
     """
     profile = profile_resolver()
     if profile is None:
-        raise HTTPException(status_code=503, detail="No SSH profile configured")
+        raise HTTPException(status_code=503, detail="No SSH cluster selected")
     mount = find_mount(profile, mount_name)
     return Path(mount.local) / ".srunx" / "workflows"
 
 
 def ensure_workflow_dir(mount_name: str, profile_resolver: Any) -> Path:
-    """Like :func:`workflow_dir` but creates the directory (and
-    ``.srunx/.gitignore``) if needed."""
+    """Like :func:`workflow_dir` but creates the directory if needed.
+
+    ``.srunx/`` holds files meant to be committed (``config.toml``,
+    ``workflows/``), so no ``.gitignore`` is generated.
+    """
     d = workflow_dir(mount_name, profile_resolver)
     d.mkdir(parents=True, exist_ok=True)
-    gitignore = d.parent / ".gitignore"
-    if not gitignore.exists():
-        gitignore.write_text("*\n!workflows/\n!workflows/**\n!.gitignore\n")
     return d
 
 
@@ -251,19 +251,16 @@ async def hold_workflow_mounts_web(
     from srunx.sync.lock import SyncLockTimeoutError
     from srunx.sync.service import SyncAbortedError, mount_sync_session
 
-    from ..config import get_web_config
+    from ..context import selected_cluster
     from ..sync_utils import get_current_profile
 
     def _resolve_profile_with_name() -> tuple[Any, str | None]:
-        # Mirrors ``sync_utils.get_current_profile`` but returns the
-        # name too — :func:`acquire_sync_lock` keys the lock file on
-        # ``(profile_name, mount_name)`` so we need both halves.
-        web_cfg = get_web_config()
-        cm = ConfigManager()
-        name = web_cfg.ssh_profile or cm.get_current_profile_name()
+        # :func:`acquire_sync_lock` keys the lock file on
+        # ``(cluster, mount_name)`` so we need both halves.
+        name = selected_cluster()
         if not name:
             return None, None
-        return cm.get_profile(name), name
+        return ConfigManager().get_profile(name), name
 
     profile, profile_name = await anyio.to_thread.run_sync(_resolve_profile_with_name)
     if profile is None:
@@ -299,6 +296,7 @@ async def hold_workflow_mounts_web(
             for mount in mounts:
                 outcome = stack.enter_context(
                     mount_sync_session(
+                        assume_yes=True,
                         profile_name=effective_profile_name,
                         profile=profile,
                         mount=mount,

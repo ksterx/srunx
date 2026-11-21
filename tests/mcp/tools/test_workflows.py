@@ -24,10 +24,10 @@ from srunx.mcp.tools.workflows import (
 
 @pytest.fixture
 def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     from srunx.observability.storage.connection import init_db
 
-    db_path = init_db(delete_legacy=False)
+    db_path = init_db()
     yield db_path
 
 
@@ -266,7 +266,7 @@ class TestRunWorkflowArgsOverride:
             mock_runner.workflow.name = "mcp_wf"
             from_yaml.return_value = mock_runner
 
-            result = run_workflow(str(yaml_path), args={"lr": 0.5})
+            result = run_workflow(str(yaml_path), args={"lr": 0.5}, cluster="local")
 
         assert result["success"] is True
         call = from_yaml.call_args
@@ -291,7 +291,7 @@ class TestRunWorkflowArgsOverride:
             mock_runner.workflow.name = "mcp_wf"
             from_yaml.return_value = mock_runner
 
-            result = run_workflow(str(yaml_path))
+            result = run_workflow(str(yaml_path), cluster="local")
 
         assert result["success"] is True
         call = from_yaml.call_args
@@ -302,7 +302,9 @@ class TestRunWorkflowArgsOverride:
         self, tmp_path: Path, isolated_db: Path
     ) -> None:
         yaml_path = _write_workflow(tmp_path)
-        result = run_workflow(str(yaml_path), args={"cmd": "python: os.system('x')"})
+        result = run_workflow(
+            str(yaml_path), args={"cmd": "python: os.system('x')"}, cluster="local"
+        )
         assert result["success"] is False
         assert "python:" in result["error"]
 
@@ -326,6 +328,7 @@ class TestRunWorkflowSweep:
                     "matrix": {"lr": [0.1, 0.01, 0.001]},
                     "max_parallel": 4,
                 },
+                cluster="local",
             )
 
         assert result["success"] is True, result
@@ -347,6 +350,7 @@ class TestRunWorkflowSweep:
                 "matrix": {"cmd": ["python: os.system('x')"]},
                 "max_parallel": 2,
             },
+            cluster="local",
         )
         assert result["success"] is False
         assert "python:" in result["error"]
@@ -365,75 +369,124 @@ class TestRunWorkflowBackwardCompat:
             mock_runner.workflow.name = "mcp_wf"
             from_yaml.return_value = mock_runner
 
-            result = run_workflow(str(yaml_path))
+            result = run_workflow(str(yaml_path), cluster="local")
         assert result["success"] is True
 
 
-class TestRunWorkflowTransportRouting:
-    """``transport='<profile>'`` threads MCP runs through the SSH adapter.
-
-    ``mount`` is orthogonal: it picks the path-translation root within the
-    chosen cluster. ``mount`` without an SSH ``transport`` is rejected. The
-    profile is resolved from the explicit ``transport`` via
-    ``ConfigManager.get_profile`` — MCP never reads the current profile.
-    """
-
-    def test_mount_without_transport_returns_error(
+class TestRunWorkflowExplicitCluster:
+    def test_missing_cluster_returns_error(
         self, tmp_path: Path, isolated_db: Path
     ) -> None:
-        """``mount`` alone (no SSH transport) → readable error, no execution."""
+        """MCP never falls back to ``default_cluster``."""
         yaml_path = _write_workflow(tmp_path)
-        result = run_workflow(str(yaml_path), mount="cookbook2")
+        with patch(
+            "srunx.runtime.workflow.runner.WorkflowRunner.from_yaml"
+        ) as from_yaml:
+            result = run_workflow(str(yaml_path))
         assert result["success"] is False
-        assert "mount requires an SSH transport" in result["error"]
+        assert "cluster" in result["error"].lower()
+        from_yaml.assert_not_called()
 
-    def test_unknown_profile_returns_error(
-        self, tmp_path: Path, isolated_db: Path, monkeypatch: pytest.MonkeyPatch
+    def test_cluster_defaults_activated(
+        self, tmp_path: Path, isolated_db: Path
     ) -> None:
-        """transport names a profile that doesn't resolve → error."""
-        yaml_path = _write_workflow(tmp_path)
-        monkeypatch.setattr(
-            "srunx.ssh.core.config.ConfigManager.get_profile",
-            lambda self, name: None,
+        """The chosen cluster's defaults are active while the workflow loads."""
+        from srunx.common.config import get_config
+
+        _write_user_config(
+            extra='[clusters.local.defaults.resources]\npartition = "gpu"\n'
         )
-        result = run_workflow(str(yaml_path), transport="pyxis", mount="cookbook2")
+        yaml_path = _write_workflow(tmp_path)
+        seen: list[str | None] = []
+
+        def fake_from_yaml(*args, **kwargs):
+            seen.append(get_config().resources.partition)
+            runner = MagicMock()
+            runner.run.return_value = {}
+            runner.workflow.name = "mcp_wf"
+            return runner
+
+        with patch(
+            "srunx.runtime.workflow.runner.WorkflowRunner.from_yaml",
+            side_effect=fake_from_yaml,
+        ):
+            result = run_workflow(str(yaml_path), cluster="local")
+        assert result["success"] is True, result
+        assert seen == ["gpu"]
+
+
+def _write_user_config(extra: str = "") -> None:
+    import os
+
+    from srunx.common.config import clear_settings_cache
+
+    path = Path(os.environ["XDG_CONFIG_HOME"]) / "srunx" / "config.toml"
+    path.write_text(
+        'default_cluster = "local"\n\n'
+        "[clusters.local]\n"
+        'transport = "local"\n\n'
+        "[clusters.pyxis]\n"
+        'transport = "ssh"\n'
+        'hostname = "pyxis.example.com"\n'
+        'username = "u"\n\n' + extra
+    )
+    clear_settings_cache()
+
+
+def _write_project(tmp_path: Path, name: str = "cookbook2") -> Path:
+    from srunx.common.config import clear_settings_cache
+
+    root = tmp_path / name
+    (root / ".srunx").mkdir(parents=True, exist_ok=True)
+    (root / ".srunx" / "config.toml").write_text(
+        f'name = "{name}"\n\n[clusters.pyxis]\nremote_dir = "/home/remote/{name}"\n'
+    )
+    clear_settings_cache()
+    return root
+
+
+class TestRunWorkflowClusterRouting:
+    """``cluster='<ssh cluster>'`` threads MCP runs through the SSH adapter.
+
+    ``mount`` picks the path-translation root among the *project's* mounts
+    on that cluster; it requires an SSH cluster.
+    """
+
+    def test_mount_with_local_cluster_returns_error(
+        self, tmp_path: Path, isolated_db: Path
+    ) -> None:
+        yaml_path = _write_workflow(tmp_path)
+        result = run_workflow(str(yaml_path), cluster="local", mount="cookbook2")
         assert result["success"] is False
-        assert "SSH profile" in result["error"]
+        assert "mount requires an SSH cluster" in result["error"]
 
-    def test_mount_name_not_in_profile_returns_error(
-        self, tmp_path: Path, isolated_db: Path, monkeypatch: pytest.MonkeyPatch
+    def test_unknown_cluster_returns_error(
+        self, tmp_path: Path, isolated_db: Path
     ) -> None:
-        """Unknown mount name → error, no adapter instantiation."""
         yaml_path = _write_workflow(tmp_path)
-        fake_profile = MagicMock(
-            mounts=[MagicMock(name="other", local="/l", remote="/r")]
-        )
-        fake_profile.mounts[0].name = "other"
-        monkeypatch.setattr(
-            "srunx.ssh.core.config.ConfigManager.get_profile",
-            lambda self, name: fake_profile,
-        )
-        result = run_workflow(str(yaml_path), transport="pyxis", mount="cookbook2")
+        result = run_workflow(str(yaml_path), cluster="pyxis", mount="cookbook2")
+        assert result["success"] is False
+        assert "pyxis" in result["error"]
+
+    def test_mount_name_not_in_project_returns_error(
+        self, tmp_path: Path, isolated_db: Path
+    ) -> None:
+        _write_user_config()
+        root = _write_project(tmp_path, name="other")
+        yaml_path = _write_workflow(tmp_path)
+        with patch("srunx.slurm.clients.ssh.SlurmSSHClient.__init__") as init:
+            result = run_workflow(
+                str(yaml_path), cluster="pyxis", project=str(root), mount="cookbook2"
+            )
         assert result["success"] is False
         assert "cookbook2" in result["error"]
+        init.assert_not_called()
 
-    def test_transport_routes_sweep_through_pool(
-        self, tmp_path: Path, isolated_db: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """``transport`` + ``mount`` + sweep constructs a pool + executor_factory."""
+    def test_routes_sweep_through_pool(self, tmp_path: Path, isolated_db: Path) -> None:
+        _write_user_config()
+        root = _write_project(tmp_path)
         yaml_path = _write_workflow(tmp_path)
 
-        fake_mount = MagicMock()
-        fake_mount.name = "cookbook2"
-        fake_mount.local = str(tmp_path)
-        fake_mount.remote = "/home/remote/cookbook2"
-        fake_profile = MagicMock()
-        fake_profile.mounts = [fake_mount]
-
-        monkeypatch.setattr(
-            "srunx.ssh.core.config.ConfigManager.get_profile",
-            lambda self, name: fake_profile,
-        )
         with (
             patch(
                 "srunx.slurm.clients.ssh.SlurmSSHClient.__init__", return_value=None
@@ -454,13 +507,15 @@ class TestRunWorkflowTransportRouting:
             result = run_workflow(
                 str(yaml_path),
                 sweep={"matrix": {"lr": [0.1, 0.01]}, "max_parallel": 2},
-                transport="pyxis",
+                cluster="pyxis",
+                project=str(root),
                 mount="cookbook2",
             )
 
         assert result["success"] is True, result
         assert result["sweep_run_id"] == 77
         adapter_init.assert_called_once()
+        assert adapter_init.call_args.kwargs["profile_name"] == "pyxis"
         pool_cls.assert_called_once()
         orch_kwargs = orch_cls.call_args.kwargs
         assert orch_kwargs["executor_factory"] is mock_pool.lease
@@ -470,23 +525,13 @@ class TestRunWorkflowTransportRouting:
         assert ctx.default_work_dir == "/home/remote/cookbook2"
         mock_pool.close.assert_called_once()
 
-    def test_transport_routes_non_sweep_through_pool(
-        self, tmp_path: Path, isolated_db: Path, monkeypatch: pytest.MonkeyPatch
+    def test_routes_non_sweep_through_pool(
+        self, tmp_path: Path, isolated_db: Path
     ) -> None:
-        """``transport`` + ``mount`` without sweep routes the runner through the pool."""
+        _write_user_config()
+        root = _write_project(tmp_path)
         yaml_path = _write_workflow(tmp_path)
 
-        fake_mount = MagicMock()
-        fake_mount.name = "cookbook2"
-        fake_mount.local = str(tmp_path)
-        fake_mount.remote = "/home/remote/cookbook2"
-        fake_profile = MagicMock()
-        fake_profile.mounts = [fake_mount]
-
-        monkeypatch.setattr(
-            "srunx.ssh.core.config.ConfigManager.get_profile",
-            lambda self, name: fake_profile,
-        )
         with (
             patch("srunx.slurm.clients.ssh.SlurmSSHClient.__init__", return_value=None),
             patch(
@@ -505,7 +550,9 @@ class TestRunWorkflowTransportRouting:
             mock_runner.run.return_value = {}
             from_yaml.return_value = mock_runner
 
-            result = run_workflow(str(yaml_path), transport="pyxis", mount="cookbook2")
+            result = run_workflow(
+                str(yaml_path), cluster="pyxis", project=str(root), mount="cookbook2"
+            )
 
         assert result["success"] is True, result
         pool_cls.assert_called_once()
@@ -514,12 +561,12 @@ class TestRunWorkflowTransportRouting:
         assert run_call_kwargs["submission_context"].mount_name == "cookbook2"
         mock_pool.close.assert_called_once()
 
-    def test_transport_rejects_shell_job_escaping_mount_root(
-        self, tmp_path: Path, isolated_db: Path, monkeypatch: pytest.MonkeyPatch
+    def test_rejects_shell_job_escaping_mount_root(
+        self, tmp_path: Path, isolated_db: Path
     ) -> None:
         """ShellJob ``script_path`` outside mount local root → error."""
-        mount_root = tmp_path / "proj"
-        mount_root.mkdir()
+        _write_user_config()
+        root = _write_project(tmp_path)
         escape = tmp_path / "escape.sh"
         escape.write_text("#!/bin/bash\necho hi\n")
         wf = {
@@ -535,21 +582,12 @@ class TestRunWorkflowTransportRouting:
         yaml_path = tmp_path / "shell_wf.yaml"
         yaml_path.write_text(yaml.dump(wf))
 
-        fake_mount = MagicMock()
-        fake_mount.name = "cookbook2"
-        fake_mount.local = str(mount_root)
-        fake_mount.remote = "/home/remote/cookbook2"
-        fake_profile = MagicMock()
-        fake_profile.mounts = [fake_mount]
-
-        monkeypatch.setattr(
-            "srunx.ssh.core.config.ConfigManager.get_profile",
-            lambda self, name: fake_profile,
-        )
         with patch(
             "srunx.slurm.clients.ssh.SlurmSSHClient.__init__", return_value=None
         ):
-            result = run_workflow(str(yaml_path), transport="pyxis", mount="cookbook2")
+            result = run_workflow(
+                str(yaml_path), cluster="pyxis", project=str(root), mount="cookbook2"
+            )
 
         assert result["success"] is False
         assert "outside allowed directories" in result["error"]

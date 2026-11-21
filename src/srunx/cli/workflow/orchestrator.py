@@ -18,7 +18,7 @@ import typer
 from rich.console import Console
 
 from srunx.cli._helpers.transport import peek_scheduler_key, resolve_transport
-from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
+from srunx.cli._helpers.transport_options import ClusterOpt, QuietOpt
 from srunx.cli.workflow.guards import (
     _enforce_shell_script_roots_cli,
     _warn_missing_mounts,
@@ -122,10 +122,10 @@ def _execute_workflow(
     fail_fast: bool = False,
     max_parallel: int | None = None,
     debug: bool = False,
-    profile: str | None = None,
-    local: bool = False,
+    cluster: str | None = None,
     quiet: bool = False,
     sync: bool | None = None,
+    yes: bool = False,
 ) -> None:
     """Common workflow execution logic."""
     configure_workflow_logging(level=log_level)
@@ -169,7 +169,7 @@ def _execute_workflow(
         # the CLI flags + env, so we can pre-compute it via
         # :func:`peek_scheduler_key` and bind it to
         # ``NotificationWatchCallback`` up front.
-        pre_scheduler_key = peek_scheduler_key(profile=profile, local=local)
+        pre_scheduler_key = peek_scheduler_key(cluster=cluster)
         effective_preset = preset or get_config().notifications.default_preset
         is_sweep = sweep_spec is not None
         callbacks = _build_workflow_callbacks(
@@ -186,8 +186,7 @@ def _execute_workflow(
         # sweep / single-run all branch inside this scope so every path
         # sees the same executor_factory + submission_context.
         with resolve_transport(
-            profile=profile,
-            local=local,
+            cluster=cluster,
             quiet=quiet,
             callbacks=callbacks,
             submission_source="cli",
@@ -260,6 +259,7 @@ def _execute_workflow(
                     if rt.transport_type == "ssh"
                     else None,
                     sync_required=_resolve_sync_flag(sync),
+                    assume_yes=yes,
                     explicit_mounts=sweep_locked_mounts
                     if rt.transport_type == "ssh"
                     else None,
@@ -367,6 +367,7 @@ def _execute_workflow(
                 rt=rt,
                 workflow_for_mounts=runner.workflow,
                 sync_required=_resolve_sync_flag(sync),
+                assume_yes=yes,
             ):
                 # Lock is held → flip ``allow_in_place`` so the SSH
                 # adapter's ShellJob branch is permitted to take the
@@ -531,9 +532,12 @@ def run_command(
             ),
         ),
     ] = None,
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
+    cluster: ClusterOpt = None,
     quiet: QuietOpt = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Approve a first sync to a new remote path"),
+    ] = False,
 ) -> None:
     """Execute workflow from YAML file."""
     _execute_workflow(
@@ -551,10 +555,10 @@ def run_command(
         sweep=sweep,
         fail_fast=fail_fast,
         max_parallel=max_parallel,
-        profile=profile,
-        local=local,
+        cluster=cluster,
         quiet=quiet,
         sync=sync,
+        yes=yes,
     )
 
 

@@ -12,7 +12,7 @@ from srunx.cli._helpers.transport import (
     resolve_transport,
     resolve_transport_source,
 )
-from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
+from srunx.cli._helpers.transport_options import ClusterOpt, QuietOpt
 from srunx.observability.monitoring.job_monitor import JobMonitor
 from srunx.observability.monitoring.resource_monitor import ResourceMonitor
 from srunx.observability.monitoring.scheduler import ScheduledReporter
@@ -90,8 +90,7 @@ def watch_jobs(
             "--continuous", "-c", help="Enable continuous watching (until Ctrl+C)"
         ),
     ] = False,
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
+    cluster: ClusterOpt = None,
     quiet: QuietOpt = False,
 ) -> None:
     """Watch specific jobs until completion or send periodic reports.
@@ -126,9 +125,9 @@ def watch_jobs(
         console.print("  srunx watch cluster --schedule 1h --notify $WEBHOOK")
         sys.exit(1)
 
-    with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+    with resolve_transport(cluster=cluster, quiet=quiet) as rt:
         # State change watching mode (existing functionality). Use the
-        # resolved transport's CLI-facing job ops so --profile picks up
+        # resolved transport's CLI-facing job ops so --cluster picks up
         # SSH via resolve_transport rather than silently falling back to
         # a local Slurm singleton.
         if all_jobs:
@@ -187,7 +186,7 @@ def watch_jobs(
 
         # Create and run monitor. Pass the resolved transport's job ops
         # explicitly so JobMonitor doesn't fall back to ``Slurm()`` when
-        # --profile selects an SSH transport. ``JobMonitor.client`` is
+        # --cluster selects an SSH cluster. ``JobMonitor.client`` is
         # typed ``Slurm | None`` for historical reasons, but both
         # ``Slurm`` and ``SlurmSSHClient`` satisfy the subset of methods
         # (``retrieve``) the monitor actually uses; the cast keeps mypy
@@ -257,8 +256,7 @@ def watch_resources(
         bool,
         typer.Option("--continuous", "-c", help="Watch continuously until Ctrl+C"),
     ] = False,
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
+    cluster: ClusterOpt = None,
     quiet: QuietOpt = False,
 ) -> None:
     """Watch GPU resources until available or continuously.
@@ -272,10 +270,10 @@ def watch_resources(
         srunx watch resources --min-gpus 2 --continuous --notify $WEBHOOK
 
     Note:
-        --profile / --local / --quiet are accepted for CLI-wide parity
+        --cluster / --quiet are accepted for CLI-wide parity
         but ResourceMonitor currently queries local ``sinfo`` / ``squeue``
         only; SSH-backed resource polling is a follow-up phase. Passing
-        ``--profile`` will emit the transport banner but not reroute the
+        an SSH ``--cluster`` will emit the banner but not reroute the
         underlying queries.
     """
     console = Console()
@@ -288,16 +286,24 @@ def watch_resources(
     # SF7: ResourceMonitor is local-only, so skip the full
     # resolve_transport() path (which would build an SSH handle + open
     # a pool) and call the pure helpers instead. ``peek_scheduler_key``
-    # still raises on the ``--profile`` + ``--local`` conflict, and
+    # still raises on a bad --cluster, and
     # ``emit_transport_banner`` reproduces the same stderr line
     # ``resolve_transport`` would emit so diffing scripts see no change.
-    scheduler_key = peek_scheduler_key(profile=profile, local=local)
-    source = resolve_transport_source(profile=profile, local=local)
-    emit_transport_banner(label=scheduler_key, source=source, quiet=quiet)
+    scheduler_key = peek_scheduler_key(cluster=cluster)
+    source = resolve_transport_source(cluster=cluster)
+    transport = "local" if scheduler_key == "local" else "ssh"
+    emit_transport_banner(
+        label=scheduler_key.removeprefix("ssh:")
+        if transport == "ssh"
+        else (cluster or "local"),
+        source=source,
+        quiet=quiet,
+        transport=transport,
+    )
 
-    if profile:
+    if transport == "ssh":
         console.print(
-            "[yellow]⚠️  ResourceMonitor ignores --profile in this release; "
+            "[yellow]⚠️  ResourceMonitor ignores SSH clusters in this release; "
             "resource queries still run against the local cluster.[/yellow]"
         )
 
@@ -388,8 +394,7 @@ def watch_cluster(
         bool,
         typer.Option("--daemon/--no-daemon", help="Run as background daemon"),
     ] = True,
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
+    cluster: ClusterOpt = None,
     quiet: QuietOpt = False,
 ) -> None:
     """Send periodic cluster status reports to Slack.
@@ -424,7 +429,7 @@ def watch_cluster(
             daemon=daemon,
         )
 
-        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+        with resolve_transport(cluster=cluster, quiet=quiet) as rt:
             # ScheduledReporter only exercises ``client.queue(...)``
             # (see _get_job_stats / _get_user_stats), which is part of
             # JobOperations. ``rt.job_ops`` is the CLI-facing

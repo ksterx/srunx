@@ -2,9 +2,8 @@
 
 Covers the Phase-4 AC:
 
-* AC-1.2: ``--profile`` and ``--local`` together raise ``BadParameter``.
-* AC-1.4: ``--local`` overrides ``$SRUNX_SSH_PROFILE``.
-* AC-8.5: unknown SSH profile returns ``None`` (no crash).
+* cluster selection order (design §5) and errors for missing / unknown clusters
+* AC-8.5: unknown SSH cluster returns ``None`` from the registry (no crash).
 * Plus banner emission semantics (REQ-7 / AC-10.2).
 """
 
@@ -27,175 +26,169 @@ from srunx.transport import (
 from srunx.transport import registry as _registry
 
 
+def _write_user(text: str) -> None:
+    from srunx.common import paths
+    from srunx.common.config import clear_settings_cache
+
+    paths.user_config_path().write_text(text)
+    clear_settings_cache()
+
+
+CLUSTERS = """
+default_cluster = "local"
+
+[clusters.local]
+transport = "local"
+
+[clusters.foo]
+transport = "ssh"
+host = "foo"
+
+[clusters.envc]
+transport = "ssh"
+host = "envc"
+"""
+
+
+def _fake_ssh_handle(name: str) -> TransportHandle:
+    return TransportHandle(
+        scheduler_key=f"ssh:{name}",
+        profile_name=name,
+        transport_type="ssh",
+        job_ops=MagicMock(),
+        queue_client=MagicMock(),
+        executor_factory=MagicMock(),
+        submission_context=None,
+        cluster_name=name,
+    )
+
+
 class TestResolveTransport:
-    def test_default_is_local_and_silent(self, capsys, monkeypatch):
-        """AC-10.2: fallback path is silent on stderr."""
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-        with resolve_transport(profile=None, local=False) as rt:
+    def test_default_cluster_is_used_and_announced(self, capsys):
+        with resolve_transport() as rt:
             assert rt.scheduler_key == "local"
-            assert rt.source == "default"
+            assert rt.source == "config"
             assert rt.transport_type == "local"
+            assert rt.cluster_name == "local"
             assert rt.profile_name is None
             assert rt.executor_factory is not None
             assert rt.submission_context is None
-        captured = capsys.readouterr()
-        assert captured.err == ""
+        assert "Local SLURM" in capsys.readouterr().err
 
-    def test_local_flag_emits_banner(self, capsys, monkeypatch):
-        """AC-7 / REQ-7: explicit --local produces a stderr banner."""
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-        with resolve_transport(profile=None, local=True) as rt:
-            assert rt.scheduler_key == "local"
-            assert rt.source == "--local"
-        captured = capsys.readouterr()
-        assert "local" in captured.err
-        assert "via --local" in captured.err
-
-    def test_profile_and_local_conflict(self, monkeypatch):
-        """AC-1.2: --profile + --local is rejected at startup.
-
-        The pure resolver raises the framework-neutral
-        :class:`TransportSelectionError`; the CLI wrapper
-        (:mod:`srunx.cli._helpers.transport`) is what maps it to
-        ``typer.BadParameter``.
-        """
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-        with pytest.raises(TransportSelectionError):
-            with resolve_transport(profile="foo", local=True):
+    def test_no_cluster_is_an_error(self):
+        _write_user('[clusters.local]\ntransport = "local"\n')
+        with pytest.raises(TransportSelectionError, match="No cluster selected"):
+            with resolve_transport():
                 pass
 
-    def test_env_source_when_only_env_set(self, monkeypatch, capsys):
-        """REQ-1: $SRUNX_SSH_PROFILE picks SSH transport when no flag set."""
-        monkeypatch.setenv("SRUNX_SSH_PROFILE", "envprof")
-        fake_handle = TransportHandle(
-            scheduler_key="ssh:envprof",
-            profile_name="envprof",
-            transport_type="ssh",
-            job_ops=MagicMock(),
-            queue_client=MagicMock(),
-            executor_factory=MagicMock(),
-            submission_context=None,
-        )
+    def test_unknown_cluster_is_an_error(self):
+        with pytest.raises(TransportSelectionError, match="Unknown cluster"):
+            with resolve_transport(cluster="nope"):
+                pass
+
+    def test_empty_cluster_is_an_error(self):
+        with pytest.raises(TransportSelectionError):
+            with resolve_transport(cluster="  "):
+                pass
+
+    def test_env_selects_cluster(self, monkeypatch, capsys):
+        _write_user(CLUSTERS)
+        monkeypatch.setenv("SRUNX_CLUSTER", "envc")
         with patch(
             "srunx.transport.registry._build_ssh_handle",
-            return_value=(fake_handle, None),
+            return_value=(_fake_ssh_handle("envc"), None),
         ):
             with resolve_transport() as rt:
                 assert rt.source == "env"
-                assert rt.scheduler_key == "ssh:envprof"
-        captured = capsys.readouterr()
-        assert "via $SRUNX_SSH_PROFILE" in captured.err
+                assert rt.scheduler_key == "ssh:envc"
+        assert "via $SRUNX_CLUSTER" in capsys.readouterr().err
 
-    def test_local_flag_overrides_env(self, monkeypatch, capsys):
-        """AC-1.4: --local beats $SRUNX_SSH_PROFILE."""
-        monkeypatch.setenv("SRUNX_SSH_PROFILE", "envprof")
-        with resolve_transport(local=True) as rt:
-            assert rt.scheduler_key == "local"
-            assert rt.source == "--local"
-        captured = capsys.readouterr()
-        assert "via --local" in captured.err
-
-    def test_profile_flag_beats_env(self, monkeypatch, capsys):
-        """REQ-1: --profile beats $SRUNX_SSH_PROFILE."""
-        monkeypatch.setenv("SRUNX_SSH_PROFILE", "envprof")
-        fake_handle = TransportHandle(
-            scheduler_key="ssh:cli",
-            profile_name="cli",
-            transport_type="ssh",
-            job_ops=MagicMock(),
-            queue_client=MagicMock(),
-            executor_factory=MagicMock(),
-            submission_context=None,
-        )
+    def test_explicit_cluster_beats_env(self, monkeypatch):
+        _write_user(CLUSTERS)
+        monkeypatch.setenv("SRUNX_CLUSTER", "envc")
         with patch(
             "srunx.transport.registry._build_ssh_handle",
-            return_value=(fake_handle, None),
+            return_value=(_fake_ssh_handle("foo"), None),
         ) as build:
-            with resolve_transport(profile="cli") as rt:
-                assert rt.source == "--profile"
-                assert rt.scheduler_key == "ssh:cli"
-            # Fix #5: callbacks + submission_source are now forwarded
-            # from resolve_transport into _build_ssh_handle so pooled
-            # clones inherit the caller's callback list. F9/F2: the
-            # forwarded kwarg list also carries ``mount_name`` and
-            # ``pool_size`` so we assert on argument presence rather
-            # than an exhaustive signature.
-            build.assert_called_once()
+            with resolve_transport(cluster="foo") as rt:
+                assert rt.source == "--cluster"
+                assert rt.scheduler_key == "ssh:foo"
             args, kwargs = build.call_args
-            assert args == ("cli",)
+            assert args == ("foo",)
             assert kwargs.get("callbacks") is None
             assert kwargs.get("submission_source") == "cli"
             assert kwargs.get("mount_name") is None
             assert kwargs.get("pool_size") == 2
 
-    def test_quiet_suppresses_banner(self, capsys, monkeypatch):
-        """--quiet silences the banner even when source is explicit."""
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-        with resolve_transport(local=True, quiet=True) as rt:
+    def test_explicit_local_cluster_beats_env(self, monkeypatch):
+        _write_user(CLUSTERS)
+        monkeypatch.setenv("SRUNX_CLUSTER", "envc")
+        with resolve_transport(cluster="local", banner=False) as rt:
             assert rt.scheduler_key == "local"
-        captured = capsys.readouterr()
-        assert captured.err == ""
 
-    def test_banner_kwarg_false_suppresses_even_without_quiet(
-        self, capsys, monkeypatch
-    ):
-        """Library callers can opt out of banners entirely via banner=False."""
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-        with resolve_transport(local=True, banner=False) as rt:
-            assert rt.scheduler_key == "local"
-        captured = capsys.readouterr()
-        assert captured.err == ""
+    def test_project_cluster(self, tmp_path):
+        from srunx.common.config import use_project
 
-    def test_ssh_pool_closed_on_exit(self, monkeypatch):
-        """SSH pools must be closed when the context manager exits."""
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-        fake_handle = TransportHandle(
-            scheduler_key="ssh:foo",
-            profile_name="foo",
-            transport_type="ssh",
-            job_ops=MagicMock(),
-            queue_client=MagicMock(),
-            executor_factory=MagicMock(),
-            submission_context=None,
+        _write_user(CLUSTERS)
+        root = tmp_path / "p"
+        (root / ".srunx").mkdir(parents=True)
+        (root / ".srunx" / "config.toml").write_text('name = "p"\ncluster = "foo"\n')
+        with use_project(root):
+            assert resolve_transport_source() == "project"
+            assert peek_scheduler_key() == "ssh:foo"
+
+    def test_active_config_follows_cluster(self):
+        from srunx.common.config import active_config
+
+        _write_user(
+            CLUSTERS + '\n[clusters.local.defaults.resources]\npartition = "cpu"\n'
         )
+        with resolve_transport(cluster="local", banner=False):
+            cfg = active_config()
+            assert cfg is not None
+            assert cfg.cluster == "local"
+            assert cfg.resources.partition == "cpu"
+        assert active_config() is None
+
+    def test_quiet_suppresses_banner(self, capsys):
+        with resolve_transport(cluster="local", quiet=True) as rt:
+            assert rt.scheduler_key == "local"
+        assert capsys.readouterr().err == ""
+
+    def test_banner_kwarg_false_suppresses(self, capsys):
+        with resolve_transport(cluster="local", banner=False):
+            pass
+        assert capsys.readouterr().err == ""
+
+    def test_ssh_pool_closed_on_exit(self):
+        _write_user(CLUSTERS)
         fake_pool = MagicMock()
         with patch(
             "srunx.transport.registry._build_ssh_handle",
-            return_value=(fake_handle, fake_pool),
+            return_value=(_fake_ssh_handle("foo"), fake_pool),
         ):
-            with resolve_transport(profile="foo", banner=False):
+            with resolve_transport(cluster="foo", banner=False):
                 pass
         fake_pool.close.assert_called_once()
 
-    def test_ssh_pool_close_failure_is_swallowed(self, monkeypatch):
-        """A noisy pool.close() must not propagate out of the CM."""
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-        fake_handle = TransportHandle(
-            scheduler_key="ssh:foo",
-            profile_name="foo",
-            transport_type="ssh",
-            job_ops=MagicMock(),
-            queue_client=MagicMock(),
-            executor_factory=MagicMock(),
-            submission_context=None,
-        )
+    def test_ssh_pool_close_failure_is_swallowed(self):
+        _write_user(CLUSTERS)
         fake_pool = MagicMock()
         fake_pool.close.side_effect = RuntimeError("boom")
         with patch(
             "srunx.transport.registry._build_ssh_handle",
-            return_value=(fake_handle, fake_pool),
+            return_value=(_fake_ssh_handle("foo"), fake_pool),
         ):
-            with resolve_transport(profile="foo", banner=False):
+            with resolve_transport(cluster="foo", banner=False):
                 pass
         fake_pool.close.assert_called_once()
 
-    def test_resolved_transport_shortcut_properties(self, monkeypatch):
-        """ResolvedTransport shortcut properties must mirror the handle."""
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-        with resolve_transport(local=True, banner=False) as rt:
+    def test_resolved_transport_shortcut_properties(self):
+        with resolve_transport(cluster="local", banner=False) as rt:
             assert isinstance(rt, ResolvedTransport)
             assert rt.scheduler_key == rt.handle.scheduler_key
             assert rt.profile_name is rt.handle.profile_name
+            assert rt.cluster_name == rt.handle.cluster_name
             assert rt.transport_type == rt.handle.transport_type
             assert rt.job_ops is rt.handle.job_ops
             assert rt.queue_client is rt.handle.queue_client
@@ -288,46 +281,21 @@ class TestTransportRegistry:
 
 
 class TestTransportPolicy:
-    """The implicit ladder rungs (env, current-profile) are policy-gated.
-
-    Explicit ``--profile`` / ``--local`` are never gated — only the ambient
-    sources are. MCP passes a policy with both off so an API surface never
-    resolves a remote from ambient machine state.
-    """
+    """Implicit selection (env / project / default_cluster) is policy-gated."""
 
     def test_default_policy_honours_env(self, monkeypatch):
-        monkeypatch.setenv("SRUNX_SSH_PROFILE", "dgx")
+        _write_user(CLUSTERS)
+        monkeypatch.setenv("SRUNX_CLUSTER", "foo")
         assert resolve_transport_source() == "env"
-        assert peek_scheduler_key() == "ssh:dgx"
+        assert peek_scheduler_key() == "ssh:foo"
 
-    def test_allow_env_false_skips_env(self, monkeypatch):
-        monkeypatch.setenv("SRUNX_SSH_PROFILE", "dgx")
-        policy = TransportPolicy(allow_env=False)
-        assert resolve_transport_source(policy=policy) == "default"
-        assert peek_scheduler_key(policy=policy) == "local"
-
-    def test_default_policy_honours_current_profile(self, monkeypatch):
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-        monkeypatch.setattr(_registry, "_current_profile_name", lambda: "cur")
-        assert resolve_transport_source() == "current-profile"
-        assert peek_scheduler_key() == "ssh:cur"
-
-    def test_allow_current_profile_false_skips_current(self, monkeypatch):
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-        monkeypatch.setattr(_registry, "_current_profile_name", lambda: "cur")
-        policy = TransportPolicy(allow_current_profile=False)
-        assert resolve_transport_source(policy=policy) == "default"
-        assert peek_scheduler_key(policy=policy) == "local"
-
-    def test_both_off_is_explicit_only(self, monkeypatch):
-        """MCP-style policy: env + current ignored, but explicit profile wins."""
-        monkeypatch.setenv("SRUNX_SSH_PROFILE", "dgx")
-        monkeypatch.setattr(_registry, "_current_profile_name", lambda: "cur")
-        policy = TransportPolicy(allow_env=False, allow_current_profile=False)
-        # No explicit selection -> local despite env + current set.
-        assert peek_scheduler_key(policy=policy) == "local"
-        # Explicit profile is never gated.
-        assert peek_scheduler_key(profile="prod", policy=policy) == "ssh:prod"
+    def test_explicit_only_policy_rejects_implicit(self, monkeypatch):
+        _write_user(CLUSTERS)
+        monkeypatch.setenv("SRUNX_CLUSTER", "foo")
+        policy = TransportPolicy(allow_implicit=False)
+        with pytest.raises(TransportSelectionError, match="explicitly"):
+            peek_scheduler_key(policy=policy)
+        assert peek_scheduler_key(cluster="foo", policy=policy) == "ssh:foo"
 
 
 class TestSSHBannerBody:
@@ -363,11 +331,11 @@ class TestSSHBannerBody:
         return profile
 
     def test_ssh_host_alias_only_resolves_via_ssh_config(self, monkeypatch):
-        profile = self._stub_profile(ssh_host="gmo")
+        profile = self._stub_profile(ssh_host="gpu")
         monkeypatch.setattr(_registry, "_lookup_profile_silently", lambda name: profile)
         resolved = MagicMock(
-            user="user_00028_557dc2",
-            hostname="connect.gpucloud.gmo",
+            user="alice",
+            hostname="login.example.org",
             port=8822,
         )
         with patch(
@@ -375,12 +343,12 @@ class TestSSHBannerBody:
             return_value=resolved,
         ) as lookup:
             body = _registry._format_ssh_banner_body(
-                profile_name="gmo",
+                profile_name="gpu",
                 source_display="via current profile",
             )
-        lookup.assert_called_once_with("gmo")
-        assert "user_00028_557dc2@connect.gpucloud.gmo:8822" in body
-        assert "(profile: gmo · via current profile)" in body
+        lookup.assert_called_once_with("gpu")
+        assert "alice@login.example.org:8822" in body
+        assert "(cluster: gpu · via current profile)" in body
         assert "@[/cyan]" not in body  # no empty-target leak
 
     def test_explicit_hostname_username_skips_ssh_config(self, monkeypatch):
@@ -421,18 +389,18 @@ class TestSSHBannerBody:
 
     def test_ssh_config_lookup_exception_does_not_raise(self, monkeypatch):
         """The banner must never crash from a degraded ssh_config state."""
-        profile = self._stub_profile(ssh_host="gmo")
+        profile = self._stub_profile(ssh_host="gpu")
         monkeypatch.setattr(_registry, "_lookup_profile_silently", lambda name: profile)
         with patch(
             "srunx.ssh.core.ssh_config.get_ssh_config_host",
             side_effect=RuntimeError("ssh_config exploded"),
         ):
             body = _registry._format_ssh_banner_body(
-                profile_name="gmo",
+                profile_name="gpu",
                 source_display="via --profile",
             )
         # Falls back to the alias-name path.
-        assert "gmo" in body
+        assert "gpu" in body
 
     def test_default_port_omitted_for_user_at_host(self, monkeypatch):
         profile = self._stub_profile(username="bob", hostname="example.com", port=22)
@@ -450,7 +418,7 @@ class TestSSHBannerBody:
             profile_name="ghost",
             source_display="via --profile",
         )
-        assert "SSH profile: ghost" in body
+        assert "Cluster: ghost" in body
 
 
 class TestSubmissionContextMountSelection:
@@ -464,7 +432,7 @@ class TestSubmissionContextMountSelection:
 
     def _resolve(self, mounts, mount_name=None, allow_cwd_mount=True):
         return _registry._resolve_submission_context(
-            profile_name="gmo",
+            profile_name="gpu",
             profile_mounts=mounts,
             mount_name=mount_name,
             allow_cwd_mount=allow_cwd_mount,
@@ -550,7 +518,7 @@ class TestSubmissionContextMountSelection:
         b.mkdir()
         monkeypatch.chdir(a)
         ctx = _registry._resolve_submission_context(
-            profile_name="gmo",
+            profile_name="gpu",
             profile_mounts=[self._FakeMount("a", str(a)), self._FakeMount("b", str(b))],
             mount_name=None,
         )

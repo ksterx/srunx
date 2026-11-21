@@ -14,7 +14,7 @@ from rich.table import Table
 import srunx.slurm.local as _slurm_local  # noqa: E402,I001 — kept so ``patch("srunx.slurm.local.Slurm")`` intercepts all call sites
 from srunx.cli._helpers.state_colors import colorize_state
 from srunx.cli._helpers.transport import resolve_transport
-from srunx.cli._helpers.transport_options import LocalOpt, ProfileOpt, QuietOpt
+from srunx.cli._helpers.transport_options import ClusterOpt, QuietOpt
 from srunx.common.exceptions import TransportError
 
 
@@ -92,8 +92,7 @@ def squeue(
         str,
         typer.Option("--format", "-f", help="Output format: table or json"),
     ] = "table",
-    profile: ProfileOpt = None,
-    local: LocalOpt = False,
+    cluster: ClusterOpt = None,
     quiet: QuietOpt = False,
 ) -> None:
     """List active jobs on the cluster.
@@ -161,7 +160,7 @@ def squeue(
     )
 
     try:
-        with resolve_transport(profile=profile, local=local, quiet=quiet) as rt:
+        with resolve_transport(cluster=cluster, quiet=quiet) as rt:
 
             def fetch() -> list[Any]:
                 if rt.transport_type == "local":
@@ -194,7 +193,7 @@ def squeue(
             Console().print(_render_squeue_table(jobs, visibility))
 
     except (typer.Exit, typer.BadParameter):
-        # Let Typer render bad --profile/--local flags (exit 2) and explicit
+        # Let Typer render a bad --cluster selection (exit 2) and explicit
         # exits cleanly instead of masking them as a generic queue error.
         raise
     except TransportError as exc:

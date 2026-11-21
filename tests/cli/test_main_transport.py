@@ -40,22 +40,21 @@ class TestSbatchScriptVsWrap:
 
 
 class TestTransportConflict:
-    def test_profile_and_local_conflict(self) -> None:
+    def test_unknown_cluster_rejected(self) -> None:
         runner = CliRunner()
         result = runner.invoke(
-            app,
-            ["sbatch", "--profile", "foo", "--local", "--wrap", "echo hi"],
+            app, ["sbatch", "--cluster", "nope", "--wrap", "echo hi"]
         )
-        assert result.exit_code != 0
+        assert result.exit_code == 2
 
-    def test_squeue_conflict_is_bad_parameter_exit_2(self) -> None:
-        """The conflict must surface as a Typer BadParameter (exit 2), not be
+    def test_squeue_unknown_cluster_is_bad_parameter_exit_2(self) -> None:
+        """A bad selection must surface as a Typer BadParameter (exit 2), not be
         swallowed by squeue's broad except into a generic exit-1 error."""
         runner = CliRunner()
-        result = runner.invoke(app, ["squeue", "--profile", "foo", "--local"])
+        result = runner.invoke(app, ["squeue", "--cluster", "nope"])
         assert result.exit_code == 2
         combined = (result.stderr or "") + (result.output or "")
-        assert "cannot be used together" in combined.lower()
+        assert "unknown cluster" in combined.lower()
 
 
 class TestSqueueJsonBannerIsolation:

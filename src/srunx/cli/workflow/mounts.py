@@ -74,6 +74,7 @@ def _hold_workflow_mounts(
     workflow_for_mounts: Workflow | None,
     sync_required: bool,
     explicit_mounts: list[MountConfig] | None = None,
+    assume_yes: bool = False,
 ) -> Iterator[None]:
     """Acquire per-mount sync locks for every mount the workflow touches.
 
@@ -157,6 +158,7 @@ def _hold_workflow_mounts(
                         mount=mount,
                         config=config.sync,
                         sync_required=sync_required,
+                        assume_yes=assume_yes,
                     )
                 )
                 if outcome.performed:

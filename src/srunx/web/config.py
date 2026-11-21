@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
 class WebConfig(BaseModel):
@@ -30,33 +29,17 @@ class WebConfig(BaseModel):
         ]
     )
 
-    # SSH connection — either profile_name or (hostname + username)
-    ssh_profile: str | None = Field(
-        default_factory=lambda: os.getenv("SRUNX_SSH_PROFILE")
-    )
-    ssh_hostname: str | None = Field(
-        default_factory=lambda: os.getenv("SRUNX_SSH_HOSTNAME")
-    )
-    ssh_username: str | None = Field(
-        default_factory=lambda: os.getenv("SRUNX_SSH_USERNAME")
-    )
-    ssh_key_filename: str | None = Field(
-        default_factory=lambda: os.getenv("SRUNX_SSH_KEY")
-    )
-    ssh_port: int = Field(
-        default_factory=lambda: int(os.getenv("SRUNX_SSH_PORT", "22"))
+    # Project roots the UI may act on (``srunx ui --project``, or
+    # ``SRUNX_WEB_PROJECTS`` separated by ``os.pathsep``). The project
+    # discovered from the server's cwd is added at startup.
+    projects: list[str] = Field(
+        default_factory=lambda: [
+            p for p in os.getenv("SRUNX_WEB_PROJECTS", "").split(os.pathsep) if p
+        ]
     )
 
     # UI verbosity — when False, lifespan suppresses info logs in favour of a banner.
     verbose: bool = Field(default=False)
-
-    @model_validator(mode="after")
-    def expand_ssh_key_filename(self) -> WebConfig:
-        """Expand ~ so paramiko receives a concrete path (covers both
-        explicit args and the SRUNX_SSH_KEY default_factory value)."""
-        if self.ssh_key_filename:
-            self.ssh_key_filename = str(Path(self.ssh_key_filename).expanduser())
-        return self
 
 
 _config: WebConfig | None = None

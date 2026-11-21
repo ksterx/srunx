@@ -11,38 +11,33 @@ from srunx.domain import Job, JobEnvironment, JobResource
 
 
 @pytest.fixture(autouse=True)
-def _disable_current_profile_fallback(monkeypatch):
-    """Neutralise the Phase 2 current-profile fallback for every test.
+def _isolate_srunx_dirs(tmp_path_factory, monkeypatch):
+    """Point every srunx file location at a per-test tmp tree.
 
-    The real ``~/.config/srunx/config.json`` on a developer machine may
-    have ``current_profile`` set via ``srunx ssh profile set``. Without
-    this fixture, tests that expect the "default → local" transport
-    path (AC-10.2 backward compat suite) would fail on that developer's
-    machine because ``resolve_transport`` now falls through to the
-    active SSH profile. Individual tests that *want* to exercise the
-    current-profile fallback should monkeypatch it back in explicitly.
+    * ``XDG_CONFIG_HOME`` / ``XDG_STATE_HOME`` → fresh dirs, so the
+      developer's real config, DB, locks and caches never leak in or get
+      written to.
+    * The user config gets a single ``local`` cluster as
+      ``default_cluster`` so commands that need a cluster behave like a
+      plain head-node setup unless a test configures otherwise.
+    * ``$SRUNX_CLUSTER`` is cleared and settings caches are reset.
     """
-    import srunx.transport.registry as _reg
+    import srunx.common.config as _cfg
 
-    monkeypatch.setattr(_reg, "_current_profile_name", lambda: None)
-
-
-@pytest.fixture(autouse=True)
-def _isolate_xdg_config_home(tmp_path_factory, monkeypatch):
-    """Block the developer's ``~/.config/srunx/config.json`` from leaking
-    into tests.
-
-    ``srunx.common.config`` resolves the user-wide config file under
-    ``$XDG_CONFIG_HOME/srunx/config.json``, falling back to
-    ``~/.config/srunx/config.json``. A developer who has set custom
-    defaults there (e.g. ``nodes=2`` / ``log_dir='custom_logs'`` /
-    ``partition='gpu'``) would see those values bleed into tests that
-    exercise :class:`SrunxConfig` or :func:`get_config`. Redirecting
-    ``XDG_CONFIG_HOME`` to a session-tmp dir guarantees a pristine
-    config tree for every test, regardless of host machine.
-    """
     fake_xdg = tmp_path_factory.mktemp("xdg")
+    fake_state = tmp_path_factory.mktemp("xdg_state")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_xdg))
+    monkeypatch.setenv("XDG_STATE_HOME", str(fake_state))
+    monkeypatch.delenv("SRUNX_CLUSTER", raising=False)
+    (fake_xdg / "srunx").mkdir()
+    (fake_xdg / "srunx" / "config.toml").write_text(
+        'default_cluster = "local"\n\n[clusters.local]\ntransport = "local"\n'
+    )
+    _cfg.clear_settings_cache()
+    _cfg.set_active_config(None)
+    yield
+    _cfg.clear_settings_cache()
+    _cfg.set_active_config(None)
 
 
 @pytest.fixture(autouse=True)
@@ -68,23 +63,6 @@ def _stable_terminal_output(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
 
 
-@pytest.fixture(autouse=True)
-def _isolate_legacy_history_db(tmp_path_factory, monkeypatch):
-    """Make sure no test can delete the user's real ``~/.srunx/history.db``.
-
-    After the Phase-2 history cutover, production code may call
-    ``init_db(delete_legacy=True)`` (the new default) which runs
-    :func:`srunx.observability.storage.connection._delete_legacy_history_db`. That
-    helper targets ``Path.home() / '.srunx' / 'history.db'`` — outside
-    any ``XDG_CONFIG_HOME`` isolation a test sets. Redirect the path
-    to a session-scoped tmp dir so the delete is always safe.
-    """
-    import srunx.observability.storage.connection as _conn
-
-    safe_legacy = tmp_path_factory.mktemp("legacy_history_safe") / "history.db"
-    monkeypatch.setattr(_conn, "LEGACY_HISTORY_DB_PATH", safe_legacy)
-
-
 @pytest.fixture
 def temp_dir():
     """Create a temporary directory for tests."""
@@ -96,7 +74,7 @@ def temp_dir():
 def tmp_srunx_db(tmp_path, monkeypatch):
     """Yield an isolated, file-backed srunx SQLite DB.
 
-    Monkeypatches ``XDG_CONFIG_HOME`` so ``get_db_path()`` resolves under
+    Monkeypatches ``XDG_STATE_HOME`` so ``get_db_path()`` resolves under
     the per-test tmp dir, bootstraps the schema via ``init_db``, and
     yields an opened connection. **File-backed (NOT ``:memory:``)** so
     that multi-connection + WAL semantics work correctly for the outbox
@@ -104,8 +82,8 @@ def tmp_srunx_db(tmp_path, monkeypatch):
     """
     from srunx.observability.storage.connection import init_db, open_connection
 
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    db_path = init_db(delete_legacy=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    db_path = init_db()
     conn = open_connection(db_path)
     try:
         yield conn, db_path
@@ -173,35 +151,13 @@ def mock_subprocess_run(monkeypatch):
 @pytest.fixture(autouse=True)
 def reset_config():
     """Reset global configuration and ensure clean test environment."""
-    # Clear any cached config
-    import srunx.common.config
-
-    srunx.common.config._config = None
-
-    # Also clear any module-level defaults cache
     import srunx.domain
 
     if hasattr(srunx.domain, "_cached_config"):
         srunx.domain._cached_config = None
 
-    # Clear environment variables that might affect config
-    env_vars = [
-        "SLURM_LOG_DIR",
-        "SRUNX_DEFAULT_NODES",
-        "SRUNX_DEFAULT_GPUS_PER_NODE",
-        "SRUNX_DEFAULT_MEMORY_PER_NODE",
-        "SRUNX_DEFAULT_PARTITION",
-        "SRUNX_DEFAULT_CONDA",
-        "SRUNX_DEFAULT_VENV",
-        "SRUNX_DEFAULT_CONTAINER",
-        "SRUNX_DEFAULT_CONTAINER_RUNTIME",
-        "SRUNX_DEFAULT_NTASKS_PER_NODE",
-        "SRUNX_DEFAULT_CPUS_PER_TASK",
-        "SRUNX_DEFAULT_TIME_LIMIT",
-        "SRUNX_DEFAULT_NODELIST",
-        "SRUNX_DEFAULT_LOG_DIR",
-        "SRUNX_DEFAULT_WORK_DIR",
-    ]
+    # Clear environment variables that might affect jobs
+    env_vars = ["SLURM_LOG_DIR"]
 
     original_values = {}
     for var in env_vars:
@@ -245,7 +201,41 @@ def reset_config():
         elif var in os.environ:
             del os.environ[var]
 
-    # Clear config cache again
-    srunx.common.config._config = None
     if hasattr(srunx.domain, "_cached_config"):
         srunx.domain._cached_config = None
+
+
+@pytest.fixture
+def add_clusters():
+    """Return ``add(*names, **kw)`` that registers SSH clusters in the user config.
+
+    Each name becomes ``[clusters.<name>] transport = "ssh"`` with ``host``
+    set to the name (an ``~/.ssh/config`` alias). Pass ``default="name"`` to
+    change ``default_cluster``.
+    """
+    import srunx.common.config as _cfg
+    from srunx.common import paths
+
+    def add(*names: str, default: str | None = None) -> None:
+        path = paths.user_config_path()
+        text = path.read_text()
+        if default is not None:
+            text = text.replace(
+                'default_cluster = "local"', f'default_cluster = "{default}"'
+            )
+        for name in names:
+            text += f'\n[clusters.{name}]\ntransport = "ssh"\nhost = "{name}"\n'
+        path.write_text(text)
+        _cfg.clear_settings_cache()
+
+    return add
+
+
+def append_user_config(text: str) -> None:
+    """Append TOML *text* to the test's user config and drop cached settings."""
+    import srunx.common.config as _cfg
+    from srunx.common import paths
+
+    path = paths.user_config_path()
+    path.write_text(path.read_text() + "\n" + text + "\n")
+    _cfg.clear_settings_cache()

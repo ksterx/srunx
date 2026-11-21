@@ -19,7 +19,7 @@ import {
 import type {
   Endpoint,
   NotificationPreset,
-  SrunxConfig,
+  NotificationConfig,
 } from "../../lib/types.ts";
 
 // Keep in sync with ``ACCEPTED_PRESETS`` in
@@ -478,7 +478,9 @@ export function NotificationsTab() {
   const [success, setSuccess] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
-  const [srunxConfig, setSrunxConfig] = useState<SrunxConfig | null>(null);
+  const [srunxConfig, setSrunxConfig] = useState<{
+    notifications: NotificationConfig;
+  } | null>(null);
   const [savingConfig, setSavingConfig] = useState(false);
   const presetSelectId = useId();
 
@@ -490,7 +492,7 @@ export function NotificationsTab() {
         configApi.get(),
       ]);
       setEndpointList(list);
-      setSrunxConfig(cfg);
+      setSrunxConfig(cfg.values);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load endpoints");
     } finally {
@@ -539,19 +541,30 @@ export function NotificationsTab() {
   };
 
   const updateNotificationConfig = async (
-    patch: Partial<SrunxConfig["notifications"]>,
+    patch: Partial<NotificationConfig>,
     successMsg: string,
   ) => {
     if (!srunxConfig) return;
     try {
       setSavingConfig(true);
       setError(null);
-      const next: SrunxConfig = {
-        ...srunxConfig,
-        notifications: { ...srunxConfig.notifications, ...patch },
-      };
-      const updated = await configApi.update(next);
-      setSrunxConfig(updated);
+      // Notification defaults live in the user config's [notifications].
+      const file = await configApi.getFile("user");
+      const set: Record<string, unknown> = {};
+      const del: string[] = [];
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === null || value === undefined)
+          del.push(`notifications.${key}`);
+        else set[`notifications.${key}`] = value;
+      }
+      await configApi.patchFile({
+        scope: "user",
+        version: file.version,
+        set,
+        delete: del,
+      });
+      const updated = await configApi.get();
+      setSrunxConfig(updated.values);
       setSuccess(successMsg);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to update config");

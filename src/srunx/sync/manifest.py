@@ -62,7 +62,7 @@ Known gap: pulled job output
 The record is built from what a push *manages* — the local tree after filtering,
 scanned on both sides of the transfer and narrowed to what both scans saw — not
 from bytes rsync moved, because an unchanged file transfers nothing yet is still
-srunx's to track. That makes one case wrong: ``srunx ssh sync --pull``
+srunx's to track. That makes one case wrong: ``srunx cluster sync --pull``
 fetches checkpoints or logs into the local tree, and a later push then records
 them as uploads. Deleting the local copy afterwards reports the remote artifact
 as stale, which is exactly the confusion this module exists to remove.

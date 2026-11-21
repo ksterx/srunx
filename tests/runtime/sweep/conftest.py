@@ -17,9 +17,9 @@ def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pat
     ``XDG_CONFIG_HOME``). Pointing the env var at a tmp dir keeps every
     test file-backed and fully isolated from the real user DB.
     """
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
 
     from srunx.observability.storage.connection import init_db
 
-    db_path = init_db(delete_legacy=False)
+    db_path = init_db()
     yield db_path

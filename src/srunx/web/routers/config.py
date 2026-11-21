@@ -1,27 +1,48 @@
-"""Configuration management endpoints: /api/config"""
+"""Configuration endpoints: effective config, file editing, projects.
+
+``GET /api/config`` reports the effective defaults for the request's
+cluster/project (``?cluster=`` / ``?project=``) with the file every value
+came from. Edits never write the effective config back: ``PATCH
+/api/config/file`` changes individual keys of one file (user or project)
+through the single TOML writer, guarded by an optimistic version token.
+"""
 
 from __future__ import annotations
 
-import json
 import os
-from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+import anyio
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field
 
+from srunx.common import paths
 from srunx.common.config import (
-    SrunxConfig,
-    create_example_config,
-    get_config,
-    get_config_paths,
-    load_config_from_file,
-    save_user_config,
+    ConfigError,
+    load_settings,
+    project_store,
+    user_store,
+    validate_project_file,
+    validate_user_file,
 )
+from srunx.common.config_store import (
+    ConfigConflictError,
+    ConfigFileError,
+    inherit_in,
+    set_in,
+)
+
+from ..context import known_projects, request_project, selected_cluster
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
-# ── Shared models ────────────────────────────────────────────────────────────
+
+class EffectiveConfig(BaseModel):
+    cluster: str | None
+    project: str | None
+    project_root: str | None
+    values: dict[str, Any]
+    sources: dict[str, str]
 
 
 class ConfigPathInfo(BaseModel):
@@ -30,356 +51,166 @@ class ConfigPathInfo(BaseModel):
     source: str
 
 
-# ── General config endpoints (existing) ─────────────────────────────────────
+class ConfigFile(BaseModel):
+    scope: Literal["user", "project"]
+    path: str
+    exists: bool
+    version: str
+    data: dict[str, Any]
+
+
+class ConfigFilePatch(BaseModel):
+    scope: Literal["user", "project"]
+    version: str | None = Field(
+        default=None, description="Token from GET /api/config/file; 409 if stale"
+    )
+    set: dict[str, Any] = Field(default_factory=dict)
+    delete: list[str] = Field(default_factory=list)
+    unset: list[str] = Field(default_factory=list)
+
+
+def _settings() -> Any:
+    try:
+        return load_settings(reload=True)
+    except ConfigError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("")
-async def get_current_config() -> dict[str, Any]:
-    """Return the current merged configuration."""
-    config = get_config(reload=True)
-    return config.model_dump()
-
-
-@router.put("")
-async def update_config(body: dict[str, Any]) -> dict[str, Any]:
-    """Validate and save configuration to the user config file."""
+async def get_effective_config() -> EffectiveConfig:
+    """Effective defaults for the request's cluster and project, with sources."""
+    settings = _settings()
+    cluster = selected_cluster()
+    if cluster is not None and cluster not in settings.clusters:
+        raise HTTPException(status_code=404, detail=f"Unknown cluster '{cluster}'")
     try:
-        config = SrunxConfig.model_validate(body)
-    except ValidationError as e:
-        raise HTTPException(status_code=422, detail=e.errors()) from e
-
-    try:
-        save_user_config(config)
-    except OSError as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to write config file: {e}"
-        ) from e
-
-    updated = get_config(reload=True)
-    return updated.model_dump()
+        config = settings.effective(cluster)
+    except ConfigError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return EffectiveConfig(
+        cluster=cluster,
+        project=settings.project.name if settings.project else None,
+        project_root=str(settings.project_root) if settings.project_root else None,
+        values=config.model_dump(),
+        sources=config.sources,
+    )
 
 
 @router.get("/paths")
 async def get_paths() -> list[ConfigPathInfo]:
-    """Return all config file paths with their existence status."""
-    sources = ["system", "user", "project"]
-    paths = get_config_paths()
+    """Config files in precedence order (lowest first) plus the state dir."""
+    root = request_project()
+    entries = [
+        ("system", paths.system_config_path()),
+        ("user", paths.user_config_path()),
+    ]
+    if root is not None:
+        entries.append(("project", paths.project_config_path(root)))
+    entries.append(("state", paths.state_dir()))
     return [
-        ConfigPathInfo(
-            path=str(p),
-            exists=p.exists(),
-            source=sources[i] if i < len(sources) else f"config-{i}",
-        )
-        for i, p in enumerate(paths)
+        ConfigPathInfo(path=str(p), exists=p.exists(), source=label)
+        for label, p in entries
     ]
 
 
-@router.post("/reset")
-async def reset_config() -> dict[str, Any]:
-    """Reset user config to defaults by saving a fresh SrunxConfig."""
-    default_config = SrunxConfig()
-    save_user_config(default_config)
-    updated = get_config(reload=True)
-    return updated.model_dump()
-
-
-# ── SSH Profile endpoints ────────────────────────────────────────────────────
-
-
-def _get_config_manager():
-    """Instantiate ConfigManager per-request to read fresh state from disk."""
-    from srunx.ssh.core.config import ConfigManager
-
-    return ConfigManager()
-
-
-class SSHProfileCreateRequest(BaseModel):
-    name: str
-    hostname: str
-    username: str
-    key_filename: str
-    port: int = 22
-    description: str | None = None
-    ssh_host: str | None = None
-    proxy_jump: str | None = None
-
-
-class MountCreateRequest(BaseModel):
-    name: str
-    local: str
-    remote: str
-    exclude_patterns: list[str] = []
-
-
-@router.get("/ssh/profiles")
-async def list_ssh_profiles() -> dict[str, Any]:
-    """List all SSH profiles and the current active profile."""
-    cm = _get_config_manager()
-    profiles = cm.list_profiles()
-    return {
-        "current": cm.get_current_profile_name(),
-        "profiles": {name: p.model_dump() for name, p in profiles.items()},
-    }
-
-
-@router.post("/ssh/profiles")
-async def add_ssh_profile(body: SSHProfileCreateRequest) -> dict[str, Any]:
-    """Add a new SSH profile."""
-    from srunx.ssh.core.config import ServerProfile
-
-    cm = _get_config_manager()
-    if cm.get_profile(body.name):
+def _store(scope: str) -> tuple[Any, Any]:
+    if scope == "user":
+        return user_store(), validate_user_file
+    root = request_project()
+    if root is None:
         raise HTTPException(
-            status_code=409, detail=f"Profile '{body.name}' already exists"
+            status_code=400, detail="scope=project needs ?project=<name>"
         )
-
-    profile = ServerProfile(
-        hostname=body.hostname,
-        username=body.username,
-        key_filename=body.key_filename,
-        port=body.port,
-        description=body.description,
-        ssh_host=body.ssh_host,
-        proxy_jump=body.proxy_jump,
-    )
-    cm.add_profile(body.name, profile)
-    return profile.model_dump()
+    return project_store(root), validate_project_file
 
 
-@router.put("/ssh/profiles/{name}")
-async def update_ssh_profile(name: str, body: dict[str, Any]) -> dict[str, Any]:
-    """Update an existing SSH profile."""
-    cm = _get_config_manager()
-    if not cm.get_profile(name):
-        raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
-
-    # Filter to only valid ServerProfile fields
-    valid_fields = {
-        "hostname",
-        "username",
-        "key_filename",
-        "port",
-        "description",
-        "ssh_host",
-        "proxy_jump",
-    }
-    update_data = {k: v for k, v in body.items() if k in valid_fields}
-    cm.update_profile(name, **update_data)
-
-    updated = cm.get_profile(name)
-    return updated.model_dump() if updated else {}
-
-
-@router.delete("/ssh/profiles/{name}")
-async def delete_ssh_profile(name: str) -> dict[str, bool]:
-    """Delete an SSH profile."""
-    cm = _get_config_manager()
-    if not cm.remove_profile(name):
-        raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
-    return {"ok": True}
-
-
-@router.post("/ssh/profiles/{name}/activate")
-async def activate_ssh_profile(name: str) -> dict[str, bool]:
-    """Set an SSH profile as the current active profile."""
-    cm = _get_config_manager()
-    if not cm.set_current_profile(name):
-        raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
-    return {"ok": True}
-
-
-class SSHConnectResponse(BaseModel):
-    connected: bool
-    profile_name: str
-    hostname: str
-    error: str | None = None
-
-
-@router.post("/ssh/profiles/{name}/connect")
-async def connect_ssh_profile(name: str) -> SSHConnectResponse:
-    """Switch the live SSH connection to a different profile."""
-    import anyio
-
-    from srunx.slurm.clients.ssh import SlurmSSHClient
-
-    from ..deps import swap_adapter
-
-    cm = _get_config_manager()
-    profile = cm.get_profile(name)
-    if not profile:
-        raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
-
+def _read_file(scope: str) -> ConfigFile:
+    store, _ = _store(scope)
     try:
-        new_adapter = SlurmSSHClient(profile_name=name)
-        connected = await anyio.to_thread.run_sync(new_adapter.connect)
-    except Exception as e:
-        return SSHConnectResponse(
-            connected=False,
-            profile_name=name,
-            hostname=profile.hostname,
-            error=str(e),
-        )
-
-    if not connected:
-        try:
-            await anyio.to_thread.run_sync(new_adapter.disconnect)
-        except Exception:
-            pass
-        return SSHConnectResponse(
-            connected=False,
-            profile_name=name,
-            hostname=profile.hostname,
-            error="SSH connection failed",
-        )
-
-    old_adapter = swap_adapter(new_adapter, profile_name=name)
-    cm.set_current_profile(name)
-
-    # Disconnect old adapter in background
-    if old_adapter:
-
-        async def _disconnect_old() -> None:
-            await anyio.to_thread.run_sync(old_adapter.disconnect)
-
-        try:
-            await _disconnect_old()
-        except Exception:
-            pass
-
-    return SSHConnectResponse(
-        connected=True,
-        profile_name=name,
-        hostname=profile.hostname,
+        data, version = store.read_with_version()
+    except ConfigFileError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ConfigFile(
+        scope=scope,  # type: ignore[arg-type]
+        path=str(store.path),
+        exists=bool(version) and store.path.exists(),
+        version=version,
+        data=data,
     )
 
 
-class SSHTestResult(BaseModel):
-    ssh_connected: bool
-    slurm_available: bool
-    hostname: str
-    user: str
-    slurm_version: str
-    error: str | None = None
+@router.get("/file")
+async def get_config_file(scope: Literal["user", "project"] = "user") -> ConfigFile:
+    """Raw contents of one config file plus its version token."""
+    return await anyio.to_thread.run_sync(_read_file, scope)
 
 
-@router.post("/ssh/profiles/{name}/test")
-async def test_ssh_profile(name: str) -> SSHTestResult:
-    """Test SSH connectivity and SLURM availability for a profile without switching."""
-    import anyio
+@router.patch("/file")
+async def patch_config_file(body: ConfigFilePatch) -> ConfigFile:
+    """Edit individual keys of one config file.
 
-    from srunx.slurm.clients.ssh import SlurmSSHClient
+    Keys are dotted paths from the file root, e.g.
+    ``defaults.resources.partition`` or
+    ``clusters.gpu.defaults.resources.time_limit``. ``delete`` removes a key
+    and any ``unset`` entry for it (the value is inherited again); ``unset`` adds it to the table's
+    ``unset`` list (explicitly cleared).
+    """
+    store, validate = _store(body.scope)
 
-    cm = _get_config_manager()
-    profile = cm.get_profile(name)
-    if not profile:
-        raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
+    def mutate(doc: Any) -> None:
+        for key, value in body.set.items():
+            set_in(doc, key.split("."), value)
+        for key in body.delete:
+            inherit_in(doc, key.split("."))
+        for key in body.unset:
+            parts = key.split(".")
+            node = doc
+            for part in parts[:-1]:
+                if part not in node:
+                    import tomlkit
 
-    temp_adapter: SlurmSSHClient | None = None
-    try:
-        temp_adapter = SlurmSSHClient(profile_name=name)
-        result = await anyio.to_thread.run_sync(temp_adapter._client.test_connection)
-    except Exception as e:
-        return SSHTestResult(
-            ssh_connected=False,
-            slurm_available=False,
-            hostname=profile.hostname,
-            user=profile.username,
-            slurm_version="",
-            error=str(e),
-        )
-    finally:
-        if temp_adapter is not None:
-            try:
-                await anyio.to_thread.run_sync(temp_adapter.disconnect)
-            except Exception:
-                pass
+                    node.add(part, tomlkit.table())
+                node = node[part]
+            if parts[-1] in node:
+                del node[parts[-1]]
+            current = list(node.get("unset", []))
+            if parts[-1] not in current:
+                current.append(parts[-1])
+            node["unset"] = current
 
-    return SSHTestResult(
-        ssh_connected=bool(result.get("ssh_connected", False)),
-        slurm_available=bool(result.get("slurm_available", False)),
-        hostname=str(result.get("hostname", "")),
-        user=str(result.get("user", "")),
-        slurm_version=str(result.get("slurm_version", "")),
-        error=str(result["error"]) if result.get("error") else None,
-    )
+    def apply() -> ConfigFile:
+        from srunx.common.remote_env import connection_changed
 
+        before = store.read() if body.scope == "user" else {}
+        store.edit(mutate, validate=validate, expected_version=body.version)
+        result = _read_file(body.scope)
+        if body.scope == "user":
+            # Connection edits must not keep using the old host.
+            from .clusters import _forget_connection
 
-class SSHConnectionStatus(BaseModel):
-    connected: bool
-    profile_name: str | None
-
-
-@router.get("/ssh/status")
-async def get_ssh_status() -> SSHConnectionStatus:
-    """Return the current SSH connection status."""
-    from ..deps import get_active_profile_name, get_adapter_or_none
-
-    return SSHConnectionStatus(
-        connected=get_adapter_or_none() is not None,
-        profile_name=get_active_profile_name(),
-    )
-
-
-@router.post("/ssh/profiles/{name}/mounts")
-async def add_profile_mount(name: str, body: MountCreateRequest) -> dict[str, Any]:
-    """Add a mount to an SSH profile."""
-    from srunx.ssh.core.config import MountConfig
-
-    cm = _get_config_manager()
-    if not cm.get_profile(name):
-        raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
+            for name in connection_changed(before, result.data):
+                _forget_connection(name)
+        return result
 
     try:
-        mount = MountConfig(
-            name=body.name,
-            local=body.local,
-            remote=body.remote,
-            exclude_patterns=body.exclude_patterns,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-
-    try:
-        cm.add_profile_mount(name, mount)
-    except ValueError as e:
-        # Duplicate mount name or local path on this profile.
-        raise HTTPException(status_code=409, detail=str(e)) from e
-    return mount.model_dump()
+        return await anyio.to_thread.run_sync(apply)
+    except ConfigConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (ConfigError, ConfigFileError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@router.delete("/ssh/profiles/{name}/mounts/{mount_name}")
-async def remove_profile_mount(name: str, mount_name: str) -> dict[str, bool]:
-    """Remove a mount from an SSH profile."""
-    cm = _get_config_manager()
-    if not cm.remove_profile_mount(name, mount_name):
-        raise HTTPException(status_code=404, detail="Mount not found")
-    return {"ok": True}
-
-
-# ── Environment variables endpoint ──────────────────────────────────────────
+# ── Environment variables ───────────────────────────────────────────────────
 
 _ENV_VAR_DESCRIPTIONS: dict[str, str] = {
-    "SRUNX_DEFAULT_NODES": "Default number of compute nodes",
-    "SRUNX_DEFAULT_GPUS_PER_NODE": "Default GPUs per node",
-    "SRUNX_DEFAULT_NTASKS_PER_NODE": "Default tasks per node",
-    "SRUNX_DEFAULT_CPUS_PER_TASK": "Default CPUs per task",
-    "SRUNX_DEFAULT_MEMORY_PER_NODE": "Default memory per node (e.g. 32GB)",
-    "SRUNX_DEFAULT_TIME_LIMIT": "Default time limit (e.g. 2:00:00)",
-    "SRUNX_DEFAULT_NODELIST": "Default nodelist",
-    "SRUNX_DEFAULT_PARTITION": "Default SLURM partition",
-    "SRUNX_DEFAULT_CONDA": "Default conda environment",
-    "SRUNX_DEFAULT_VENV": "Default virtual environment path",
-    "SRUNX_DEFAULT_CONTAINER": "Default container image",
-    "SRUNX_DEFAULT_CONTAINER_RUNTIME": "Default container runtime",
-    "SRUNX_DEFAULT_LOG_DIR": "Default log directory",
-    "SRUNX_DEFAULT_WORK_DIR": "Default working directory",
-    "SRUNX_SSH_PROFILE": "SSH profile for web server",
-    "SRUNX_SSH_HOSTNAME": "SSH hostname for web server",
-    "SRUNX_SSH_USERNAME": "SSH username for web server",
-    "SRUNX_SSH_KEY": "SSH key path for web server",
-    "SRUNX_SSH_PORT": "SSH port for web server",
+    "SRUNX_CLUSTER": "Cluster selected for CLI commands (ignored by the Web UI)",
     "SRUNX_TEMP_DIR": "Temporary directory for SSH operations",
-    "SLACK_WEBHOOK_URL": "Slack webhook URL for notifications",
+    "SRUNX_WEB_PROJECTS": "Project roots served by the Web UI",
+    "SRUNX_WEB_TOKEN": "Bearer token required on /api/*",
+    "SRUNX_WEB_ALLOWED_HOSTS": "Extra Host header values accepted",
+    "SLACK_WEBHOOK_URL": "Slack webhook URL for the legacy --slack option",
+    "XDG_CONFIG_HOME": "Base directory of the user config",
+    "XDG_STATE_HOME": "Base directory of the state DB (unless state_dir is set)",
 }
 
 
@@ -391,167 +222,97 @@ class EnvVarInfo(BaseModel):
 
 @router.get("/env")
 async def get_env_vars() -> list[EnvVarInfo]:
-    """Return all SRUNX_* and SLACK_WEBHOOK_URL environment variables currently set."""
+    """Environment variables relevant to srunx that are currently set."""
     result: list[EnvVarInfo] = []
     for name, description in sorted(_ENV_VAR_DESCRIPTIONS.items()):
         value = os.environ.get(name)
         if value is not None:
+            if name == "SRUNX_WEB_TOKEN":
+                value = "********"
             result.append(EnvVarInfo(name=name, value=value, description=description))
     return result
 
 
-# ── Project config endpoints (mount-based) ──────────────────────────────────
+# ── Projects ────────────────────────────────────────────────────────────────
+
+projects_router = APIRouter(prefix="/api/projects", tags=["projects"])
+
+
+class MountInfo(BaseModel):
+    name: str
+    local: str
+    remote: str
+    sync: bool
+    exclude: list[str]
 
 
 class ProjectInfo(BaseModel):
-    mount_name: str
-    local_path: str
-    remote_path: str
-    config_exists: bool
+    name: str
+    root: str
     config_path: str
+    cluster: str | None
 
 
-class ProjectConfigResponse(BaseModel):
-    mount_name: str
-    local_path: str
-    config_path: str
-    exists: bool
-    config: dict[str, Any] | None
+class ProjectDetail(ProjectInfo):
+    mounts: dict[str, list[MountInfo]]
 
 
-def _resolve_project_path(local_dir: str) -> Path:
-    """Find srunx.json in a local directory."""
-    local = Path(local_dir).expanduser().resolve()
-    return local / "srunx.json"
-
-
-def _get_mount_from_profile(mount_name: str) -> tuple[str, str]:
-    """Get (local, remote) paths for a mount from the current SSH profile."""
-    cm = _get_config_manager()
-    current_name = cm.get_current_profile_name()
-    if not current_name:
-        raise HTTPException(
-            status_code=400, detail="No active SSH profile. Activate a profile first."
-        )
-    profile = cm.get_profile(current_name)
-    if not profile:
-        raise HTTPException(status_code=404, detail="Active profile not found")
-
-    for m in profile.mounts:
-        if m.name == mount_name:
-            return m.local, m.remote
-
-    raise HTTPException(
-        status_code=404,
-        detail=f"Mount '{mount_name}' not found in profile '{current_name}'",
-    )
-
-
-@router.get("/projects")
+@projects_router.get("")
 async def list_projects() -> list[ProjectInfo]:
-    """List projects from the current SSH profile's mounts."""
-    cm = _get_config_manager()
-    current_name = cm.get_current_profile_name()
-    if not current_name:
-        return []
+    """Projects this server serves (``srunx ui --project`` / cwd)."""
 
-    profile = cm.get_profile(current_name)
-    if not profile:
-        return []
-
-    result: list[ProjectInfo] = []
-    for m in profile.mounts:
-        config_path = _resolve_project_path(m.local)
-        result.append(
-            ProjectInfo(
-                mount_name=m.name,
-                local_path=m.local,
-                remote_path=m.remote,
-                config_exists=config_path.exists(),
-                config_path=str(config_path),
+    def collect() -> list[ProjectInfo]:
+        out: list[ProjectInfo] = []
+        for name, root in sorted(known_projects().items()):
+            try:
+                settings = load_settings(root, reload=True)
+            except ConfigError:
+                continue
+            out.append(
+                ProjectInfo(
+                    name=name,
+                    root=str(root),
+                    config_path=str(paths.project_config_path(root)),
+                    cluster=settings.project.cluster if settings.project else None,
+                )
             )
+        return out
+
+    return await anyio.to_thread.run_sync(collect)
+
+
+@projects_router.get("/{name}")
+async def get_project(name: str) -> ProjectDetail:
+    """A project with its resolved mounts on every SSH cluster."""
+    root = known_projects().get(name)
+    if root is None:
+        raise HTTPException(status_code=404, detail=f"Unknown project '{name}'")
+
+    def collect() -> ProjectDetail:
+        try:
+            settings = load_settings(root, reload=True)
+        except ConfigError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        mounts: dict[str, list[MountInfo]] = {}
+        for cluster, cfg in settings.clusters.items():
+            if cfg.transport != "ssh":
+                continue
+            mounts[cluster] = [
+                MountInfo(
+                    name=m.name,
+                    local=m.local,
+                    remote=m.remote,
+                    sync=m.sync,
+                    exclude=list(m.exclude),
+                )
+                for m in settings.mounts(cluster, fetch_remote=False)
+            ]
+        return ProjectDetail(
+            name=name,
+            root=str(root),
+            config_path=str(paths.project_config_path(root)),
+            cluster=settings.project.cluster if settings.project else None,
+            mounts=mounts,
         )
-    return result
 
-
-@router.get("/projects/{mount_name}")
-async def get_project_config(mount_name: str) -> ProjectConfigResponse:
-    """Read srunx.json from a mount's local directory."""
-    local, _ = _get_mount_from_profile(mount_name)
-    config_path = _resolve_project_path(local)
-
-    if config_path.exists():
-        data = load_config_from_file(config_path)
-        return ProjectConfigResponse(
-            mount_name=mount_name,
-            local_path=local,
-            config_path=str(config_path),
-            exists=True,
-            config=data,
-        )
-
-    return ProjectConfigResponse(
-        mount_name=mount_name,
-        local_path=local,
-        config_path=str(config_path),
-        exists=False,
-        config=None,
-    )
-
-
-@router.put("/projects/{mount_name}")
-async def update_project_config(
-    mount_name: str, body: dict[str, Any]
-) -> ProjectConfigResponse:
-    """Save srunx.json to a mount's local directory."""
-    local, _ = _get_mount_from_profile(mount_name)
-
-    try:
-        config = SrunxConfig.model_validate(body)
-    except ValidationError as e:
-        raise HTTPException(status_code=422, detail=e.errors()) from e
-
-    config_path = Path(local).expanduser().resolve() / "srunx.json"
-    try:
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config.model_dump(exclude_unset=True), f, indent=2)
-    except OSError as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to write project config: {e}"
-        ) from e
-
-    return ProjectConfigResponse(
-        mount_name=mount_name,
-        local_path=local,
-        config_path=str(config_path),
-        exists=True,
-        config=config.model_dump(),
-    )
-
-
-@router.post("/projects/{mount_name}/init")
-async def init_project_config(mount_name: str) -> ProjectConfigResponse:
-    """Initialize srunx.json in a mount's local directory."""
-    local, _ = _get_mount_from_profile(mount_name)
-    config_path = Path(local).expanduser().resolve() / "srunx.json"
-
-    if config_path.exists():
-        raise HTTPException(status_code=409, detail=f"{config_path} already exists")
-
-    example = create_example_config()
-    try:
-        with open(config_path, "w", encoding="utf-8") as f:
-            f.write(example)
-    except OSError as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to create project config: {e}"
-        ) from e
-
-    data = json.loads(example)
-    return ProjectConfigResponse(
-        mount_name=mount_name,
-        local_path=local,
-        config_path=str(config_path),
-        exists=True,
-        config=data,
-    )
+    return await anyio.to_thread.run_sync(collect)

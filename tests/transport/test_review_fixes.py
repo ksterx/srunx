@@ -40,6 +40,12 @@ from srunx.transport import (
     resolve_transport,
 )
 
+
+@pytest.fixture(autouse=True)
+def _ssh_clusters(add_clusters):
+    add_clusters("foo", "dgx", "envprof")
+
+
 # ---------------------------------------------------------------------------
 # Fix #1: Poller threads scheduler_key into every repo call
 # ---------------------------------------------------------------------------
@@ -183,7 +189,7 @@ class TestMonitorJobsThreadsSchedulerKey:
 
         # Patch _build_ssh_handle so resolve_transport returns our stub
         # without touching paramiko / config manager.
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
+        monkeypatch.delenv("SRUNX_CLUSTER", raising=False)
         with patch(
             "srunx.transport.registry._build_ssh_handle",
             return_value=(fake_handle, None),
@@ -214,8 +220,7 @@ class TestMonitorJobsThreadsSchedulerKey:
                 endpoint="ep",
                 preset="terminal",
                 continuous=False,
-                profile="dgx",
-                local=False,
+                cluster="dgx",
                 quiet=True,
             )
 
@@ -387,7 +392,7 @@ class TestStatusSnapshotDoesNotRefresh:
         adapter._key_filename = None
         adapter._port = 22
         adapter._proxy_jump = None
-        adapter._mounts = ()
+        adapter._explicit_mounts = ()
         adapter.submission_source = "cli"
 
         # Stub queue_by_ids so status() gets a deterministic reply.
@@ -420,7 +425,7 @@ class TestResolveTransportForwardsCallbacks:
 
     def test_callbacks_passed_to_build_ssh_handle(self, monkeypatch) -> None:
         """The forwarded callbacks list reaches ``_build_ssh_handle``."""
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
+        monkeypatch.delenv("SRUNX_CLUSTER", raising=False)
 
         cb = NotificationWatchCallback(
             endpoint_name="ep",
@@ -442,7 +447,7 @@ class TestResolveTransportForwardsCallbacks:
             "srunx.transport.registry._build_ssh_handle",
             return_value=(fake_handle, None),
         ) as build:
-            with resolve_transport(profile="foo", callbacks=[cb], banner=False):
+            with resolve_transport(cluster="foo", callbacks=[cb], banner=False):
                 pass
 
             build.assert_called_once()
@@ -490,29 +495,28 @@ class TestPeekSchedulerKey:
     """Helper used by CLI callers to bind callbacks before resolve_transport."""
 
     def test_profile_wins(self, monkeypatch) -> None:
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-        assert peek_scheduler_key(profile="foo") == "ssh:foo"
+        monkeypatch.delenv("SRUNX_CLUSTER", raising=False)
+        assert peek_scheduler_key(cluster="foo") == "ssh:foo"
 
-    def test_local_wins_over_env(self, monkeypatch) -> None:
-        monkeypatch.setenv("SRUNX_SSH_PROFILE", "envprof")
-        assert peek_scheduler_key(local=True) == "local"
+    def test_explicit_local_wins_over_env(self, monkeypatch) -> None:
+        monkeypatch.setenv("SRUNX_CLUSTER", "envprof")
+        assert peek_scheduler_key(cluster="local") == "local"
 
     def test_env_when_no_flags(self, monkeypatch) -> None:
-        monkeypatch.setenv("SRUNX_SSH_PROFILE", "envprof")
+        monkeypatch.setenv("SRUNX_CLUSTER", "envprof")
         assert peek_scheduler_key() == "ssh:envprof"
 
     def test_default_is_local(self, monkeypatch) -> None:
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
+        monkeypatch.delenv("SRUNX_CLUSTER", raising=False)
         assert peek_scheduler_key() == "local"
 
-    def test_profile_local_conflict_raises(self, monkeypatch) -> None:
+    def test_unknown_cluster_raises(self, monkeypatch) -> None:
         from srunx.common.exceptions import TransportSelectionError
 
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
         # The pure resolver raises the neutral selection error; the CLI
         # wrapper maps it to typer.BadParameter (see test_cli_transport).
         with pytest.raises(TransportSelectionError):
-            peek_scheduler_key(profile="foo", local=True)
+            peek_scheduler_key(cluster="nope")
 
 
 class TestSubmissionSourcePerHandle:
@@ -521,7 +525,7 @@ class TestSubmissionSourcePerHandle:
     def test_cli_submission_source_lands_on_adapter(self, monkeypatch) -> None:
         """``resolve_transport`` passes ``submission_source`` into
         ``_build_ssh_handle`` kwargs; the adapter records the origin tag."""
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
+        monkeypatch.delenv("SRUNX_CLUSTER", raising=False)
 
         fake_handle = TransportHandle(
             scheduler_key="ssh:foo",
@@ -538,7 +542,7 @@ class TestSubmissionSourcePerHandle:
             return_value=(fake_handle, None),
         ) as build:
             with resolve_transport(
-                profile="foo",
+                cluster="foo",
                 submission_source="mcp",
                 banner=False,
             ):
@@ -679,7 +683,7 @@ class TestValidateProfileName:
         from srunx.ssh.core.config import validate_profile_name
 
         # None of these should raise.
-        for name in ("foo", "my-cluster_01", "dgx.prod", "a", "a" * 64):
+        for name in ("foo", "my-cluster_01", "a", "a" * 64):
             validate_profile_name(name)
 
     def test_rejects_colon(self) -> None:
@@ -835,15 +839,15 @@ class TestBannerLabelMatchesSchedulerKey:
     def test_local_label_matches_scheduler_key(self, monkeypatch) -> None:
         from srunx.transport import resolve_transport
 
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
-        with resolve_transport(local=True, banner=False) as rt:
+        monkeypatch.delenv("SRUNX_CLUSTER", raising=False)
+        with resolve_transport(cluster="local", banner=False) as rt:
             assert rt.label == "local"
             assert rt.scheduler_key == "local"
 
     def test_ssh_label_matches_scheduler_key(self, monkeypatch) -> None:
         from srunx.transport import resolve_transport
 
-        monkeypatch.delenv("SRUNX_SSH_PROFILE", raising=False)
+        monkeypatch.delenv("SRUNX_CLUSTER", raising=False)
         fake_handle = TransportHandle(
             scheduler_key="ssh:dgx",
             profile_name="dgx",
@@ -857,8 +861,8 @@ class TestBannerLabelMatchesSchedulerKey:
             "srunx.transport.registry._build_ssh_handle",
             return_value=(fake_handle, None),
         ):
-            with resolve_transport(profile="dgx", banner=False) as rt:
-                assert rt.label == "ssh:dgx"
+            with resolve_transport(cluster="dgx", banner=False) as rt:
+                assert rt.label == "dgx"
                 assert rt.scheduler_key == "ssh:dgx"
 
 

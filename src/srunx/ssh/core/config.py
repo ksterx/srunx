@@ -1,4 +1,3 @@
-import json
 import os
 import re
 from pathlib import Path
@@ -11,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # target_refs (``job:ssh:<profile>:<id>``), so profile names must not
 # contain ``:``. Length is capped at 64 so oversized names cannot
 # wedge UI tables or log lines.
-_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 
 
 def validate_profile_name(name: str) -> None:
@@ -31,31 +30,9 @@ def validate_profile_name(name: str) -> None:
         )
 
 
-# Charset also enforced by ``srunx.snapshot.remote`` (it calls this validator): the root ends
-# up unquoted-safe in remote scripts and push destinations, so anything outside
-# it (spaces, quotes, ``$``, ``;``) is rejected up front. ``~`` only leads.
-SNAPSHOT_ROOT_RE = re.compile(r"(~|~/[A-Za-z0-9._/+-]*|/[A-Za-z0-9._/+-]*)")
-
-
-def validate_snapshot_root(value: str | None) -> str | None:
-    """Validate a snapshot root; ``None`` / empty string means "unset".
-
-    Raises:
-        ValueError: When the path is relative, uses characters outside
-            ``[A-Za-z0-9._/~+-]``, puts ``~`` anywhere but first, or has a
-            ``..`` segment.
-    """
-    if value is None or value == "":
-        return None
-    if not SNAPSHOT_ROOT_RE.fullmatch(value):
-        raise ValueError(
-            f"Invalid snapshot_root {value!r}: must be absolute or start with "
-            "'~', and contain only [A-Za-z0-9._/~+-] ('~' only as the first "
-            "character)"
-        )
-    if ".." in value.split("/"):
-        raise ValueError(f"Invalid snapshot_root {value!r}: '..' is not allowed")
-    return value
+from srunx.common.validation import (  # noqa: E402  (re-exported)
+    validate_snapshot_root,
+)
 
 
 class MountConfig(BaseModel):
@@ -75,6 +52,10 @@ class MountConfig(BaseModel):
     exclude_patterns: tuple[str, ...] = Field(
         default_factory=tuple,
         description="Additional rsync exclude patterns for this mount",
+    )
+    sync: bool = Field(
+        default=True,
+        description="Rsync this mount before submission (false on shared storage)",
     )
 
     @field_validator("local", mode="before")
@@ -104,7 +85,7 @@ class MountConfig(BaseModel):
 
 class ServerProfile(BaseModel):
     # ``extra="ignore"`` (the Pydantic v2 default, made explicit here) drops
-    # any stray keys in a legacy ``config.json`` — notably the removed
+    # any stray keys — notably the removed
     # ``env_vars`` block — so old configs still load without error (REQ-11).
     model_config = ConfigDict(extra="ignore")
 
@@ -142,202 +123,177 @@ class ServerProfile(BaseModel):
         return self
 
 
+def connection_params(profile: ServerProfile) -> dict[str, Any]:
+    """Resolve concrete SSH connection parameters for *profile*.
+
+    ``ssh_host`` aliases are looked up in ``~/.ssh/config``; direct
+    profiles still pick up IdentityFile / Port / ProxyJump from a matching
+    ``Host`` block.
+    """
+    from .ssh_config import get_ssh_config_host
+
+    if profile.ssh_host:
+        resolved = get_ssh_config_host(profile.ssh_host, None)
+        if resolved is None:
+            raise ValueError(
+                f"SSH host '{profile.ssh_host}' not found in ~/.ssh/config"
+            )
+        return {
+            "hostname": resolved.hostname or profile.ssh_host,
+            "username": resolved.user or "",
+            "key_filename": resolved.identity_file,
+            "port": resolved.port or 22,
+            "proxy_jump": resolved.proxy_jump,
+        }
+    hostname = profile.hostname
+    key_filename = profile.key_filename or None
+    port = profile.port
+    proxy_jump = profile.proxy_jump
+    resolved = get_ssh_config_host(profile.hostname, None)
+    if resolved is not None and resolved.hostname:
+        hostname = resolved.hostname
+        key_filename = key_filename or resolved.identity_file
+        if resolved.port and port == 22:
+            port = resolved.port
+        proxy_jump = proxy_jump or resolved.proxy_jump
+    return {
+        "hostname": hostname,
+        "username": profile.username,
+        "key_filename": key_filename,
+        "port": port,
+        "proxy_jump": proxy_jump,
+    }
+
+
+def _profile_from_cluster(
+    name: str, cluster: Any, mounts: list[MountConfig]
+) -> ServerProfile:
+    return ServerProfile(
+        hostname=cluster.hostname or cluster.host or "",
+        username=cluster.username or "",
+        key_filename=cluster.key_filename or "",
+        port=cluster.port,
+        description=cluster.description,
+        ssh_host=cluster.host,
+        proxy_jump=cluster.proxy_jump,
+        mounts=mounts,
+        snapshot_root=cluster.snapshot_root,
+    )
+
+
 class ConfigManager:
-    def __init__(self, config_path: str | None = None):
-        self.config_path = (
-            Path(config_path) if config_path else self._get_default_config_path()
-        )
-        self.config_data: dict[str, Any] = {}
-        self._loaded_mtime: float | None = None
-        self.load_config()
+    """SSH view of the configured clusters.
 
-    def _get_default_config_path(self) -> Path:
-        config_dir = Path.home() / ".config" / "srunx"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        # SSH profiles (hostnames, usernames, key paths) must not be
-        # world-readable on shared login nodes.
-        try:
-            config_dir.chmod(0o700)
-        except OSError:
-            pass
-        return config_dir / "config.json"
+    Every ``transport = "ssh"`` cluster in the user/system config is exposed
+    as a :class:`ServerProfile` whose ``mounts`` are the current project's
+    mounts for that cluster. Writes go through the single TOML writer in
+    :mod:`srunx.common.config_store`.
+    """
 
-    def load_config(self) -> None:
-        if self.config_path.exists():
-            try:
-                with open(self.config_path) as f:
-                    content = f.read().strip()
-                    if not content:
-                        # Empty file, use defaults
-                        self.config_data = {"current_profile": None, "profiles": {}}
-                        self.save_config()
-                    else:
-                        self.config_data = json.loads(content)
-                self._loaded_mtime = self.config_path.stat().st_mtime
-            except (OSError, json.JSONDecodeError) as e:
-                raise RuntimeError(
-                    f"Failed to load config from {self.config_path}: {e}"
-                ) from e
-        else:
-            self.config_data = {"current_profile": None, "profiles": {}}
-            self.save_config()
+    def __init__(self, project_root: Path | None = None):
+        self.project_root = project_root
 
-    def _reload_if_stale(self) -> None:
-        """Re-read the config file when its mtime has advanced.
+    def _settings(self) -> Any:
+        from srunx.common.config import load_settings
 
-        Long-lived :class:`ConfigManager` instances (e.g. held by the
-        web app ``TransportRegistry``) must observe external edits
-        (``srunx ssh add`` / ``remove``) so cached adapters do
-        not keep routing to stale profiles. The stat call is ~µs and
-        runs before each read-path lookup.
-        """
-        if self._loaded_mtime is None or not self.config_path.exists():
-            return
-        try:
-            current_mtime = self.config_path.stat().st_mtime
-        except OSError:
-            return
-        if current_mtime != self._loaded_mtime:
-            self.load_config()
+        return load_settings(self.project_root, reload=True)
 
-    def save_config(self) -> None:
-        """Save SSH profile data, preserving non-SSH keys (e.g. SrunxConfig)."""
-        try:
-            # Load existing data to preserve SrunxConfig keys
-            existing: dict[str, Any] = {}
-            if self.config_path.exists():
-                try:
-                    with open(self.config_path) as f:
-                        content = f.read().strip()
-                        if content:
-                            existing = json.loads(content)
-                except (OSError, json.JSONDecodeError):
-                    pass
+    @property
+    def config_path(self) -> Path:
+        from srunx.common import paths
 
-            # Merge: SSH keys overwrite, other keys preserved
-            existing.update(self.config_data)
+        return paths.user_config_path()
 
-            with open(self.config_path, "w") as f:
-                json.dump(existing, f, indent=2)
-            try:
-                Path(self.config_path).chmod(0o600)
-            except OSError:
-                pass
-        except OSError as e:
-            raise RuntimeError(
-                f"Failed to save config to {self.config_path}: {e}"
-            ) from e
+    def _mounts(self, settings: Any, name: str) -> list[MountConfig]:
+        return [
+            MountConfig(
+                name=m.name,
+                local=m.local,
+                remote=m.remote,
+                exclude_patterns=m.exclude,
+                sync=m.sync,
+            )
+            for m in settings.mounts(name)
+        ]
+
+    def get_profile(
+        self, name: str, *, with_mounts: bool = True
+    ) -> ServerProfile | None:
+        settings = self._settings()
+        cluster = settings.clusters.get(name)
+        if cluster is None or cluster.transport != "ssh":
+            return None
+        mounts = self._mounts(settings, name) if with_mounts else []
+        return _profile_from_cluster(name, cluster, mounts)
+
+    def list_profiles(self, *, with_mounts: bool = False) -> dict[str, ServerProfile]:
+        settings = self._settings()
+        return {
+            name: _profile_from_cluster(
+                name, c, self._mounts(settings, name) if with_mounts else []
+            )
+            for name, c in settings.clusters.items()
+            if c.transport == "ssh"
+        }
 
     def add_profile(self, name: str, profile: ServerProfile) -> None:
-        validate_profile_name(name)
-        if "profiles" not in self.config_data:
-            self.config_data["profiles"] = {}
+        from srunx.common.config import user_store, validate_user_file
 
-        self.config_data["profiles"][name] = profile.model_dump()
-        self.save_config()
+        validate_profile_name(name)
+        table: dict[str, Any] = {"transport": "ssh"}
+        if profile.ssh_host:
+            table["host"] = profile.ssh_host
+        else:
+            table["hostname"] = profile.hostname
+            if profile.username:
+                table["username"] = profile.username
+            if profile.key_filename:
+                table["key_filename"] = profile.key_filename
+            if profile.port != 22:
+                table["port"] = profile.port
+        if profile.proxy_jump:
+            table["proxy_jump"] = profile.proxy_jump
+        if profile.description:
+            table["description"] = profile.description
+        if profile.snapshot_root:
+            table["snapshot_root"] = profile.snapshot_root
+        user_store().set(("clusters", name), table, validate=validate_user_file)
 
     def remove_profile(self, name: str) -> bool:
-        if name in self.config_data.get("profiles", {}):
-            del self.config_data["profiles"][name]
+        from srunx.common.config import user_store
 
-            if self.config_data.get("current_profile") == name:
-                self.config_data["current_profile"] = None
+        store = user_store()
+        if name not in store.read().get("clusters", {}):
+            return False
 
-            self.save_config()
-            return True
-        return False
+        def mutate(doc: Any) -> None:
+            del doc["clusters"][name]
+            if doc.get("default_cluster") == name:
+                del doc["default_cluster"]
 
-    def get_profile(self, name: str) -> ServerProfile | None:
-        self._reload_if_stale()
-        profiles = self.config_data.get("profiles", {})
-        if name in profiles:
-            return ServerProfile.model_validate(profiles[name])
-        return None
+        store.edit(mutate)
+        return True
 
-    def list_profiles(self) -> dict[str, ServerProfile]:
-        self._reload_if_stale()
-        profiles = {}
-        for name, data in self.config_data.get("profiles", {}).items():
-            profiles[name] = ServerProfile.model_validate(data)
-        return profiles
+    def update_profile(self, name: str, **kwargs: Any) -> bool:
+        from srunx.common.config import user_store, validate_user_file
 
-    def set_current_profile(self, name: str) -> bool:
-        if name in self.config_data.get("profiles", {}):
-            self.config_data["current_profile"] = name
-            self.save_config()
-            return True
-        return False
+        store = user_store()
+        if name not in store.read().get("clusters", {}):
+            return False
+        rename = {"ssh_host": "host"}
 
-    def get_current_profile(self) -> ServerProfile | None:
-        current_name = self.config_data.get("current_profile")
-        if current_name:
-            return self.get_profile(current_name)
-        return None
-
-    def get_current_profile_name(self) -> str | None:
-        return self.config_data.get("current_profile")
-
-    def update_profile(self, name: str, **kwargs) -> bool:
-        if name in self.config_data.get("profiles", {}):
-            profile_data = self.config_data["profiles"][name]
-
+        def mutate(doc: Any) -> None:
+            table = doc["clusters"][name]
             for key, value in kwargs.items():
-                # Only update non-None values; ``snapshot_root`` may be
-                # cleared back to None (unset).
-                if value is not None or key == "snapshot_root":
-                    profile_data[key] = value
+                key = rename.get(key, key)
+                if value is None:
+                    if key == "snapshot_root" and key in table:
+                        del table[key]
+                    continue
+                table[key] = value
 
-            self.save_config()
-            return True
-        return False
+        store.edit(mutate, validate=validate_user_file)
+        return True
 
     def expand_path(self, path: str) -> str:
         return os.path.expanduser(path)
-
-    def add_profile_mount(self, profile_name: str, mount: MountConfig) -> bool:
-        """Add a mount to a profile.
-
-        Enforces two per-profile uniqueness invariants here (the shared
-        add path) rather than in the CLI, so every entry point — CLI,
-        Web API, future callers — gets the same guarantee:
-
-        * mount names are unique;
-        * ``local`` roots are unique. ``MountConfig`` resolves ``local``
-          to an absolute path, so the check catches ``~/x`` vs
-          ``/Users/me/x``. Two mounts sharing a local root would make
-          ``ssh sync``'s cwd auto-detection ambiguous (first match
-          silently wins).
-
-        Raises:
-            ValueError: When the mount name or local path collides with
-                an existing mount on the profile.
-        """
-        if profile_name not in self.config_data.get("profiles", {}):
-            return False
-        profile_data = self.config_data["profiles"][profile_name]
-        existing = profile_data.get("mounts", [])
-        for m in existing:
-            if m.get("name") == mount.name:
-                raise ValueError(
-                    f"Mount '{mount.name}' already exists for profile '{profile_name}'"
-                )
-            if m.get("local") == mount.local:
-                raise ValueError(
-                    f"Local path '{mount.local}' is already mounted as "
-                    f"'{m.get('name')}' in profile '{profile_name}'"
-                )
-        profile_data.setdefault("mounts", []).append(mount.model_dump())
-        self.save_config()
-        return True
-
-    def remove_profile_mount(self, profile_name: str, mount_name: str) -> bool:
-        """Remove a mount from a profile by name."""
-        if profile_name in self.config_data.get("profiles", {}):
-            profile_data = self.config_data["profiles"][profile_name]
-            mounts = profile_data.get("mounts", [])
-            for i, m in enumerate(mounts):
-                if m.get("name") == mount_name:
-                    mounts.pop(i)
-                    self.save_config()
-                    return True
-        return False

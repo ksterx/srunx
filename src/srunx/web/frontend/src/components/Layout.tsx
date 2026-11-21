@@ -1,10 +1,12 @@
 import { useLocation } from "react-router-dom";
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar.tsx";
+import { useSelection } from "../lib/selection.ts";
 
 export function Layout() {
   const { pathname } = useLocation();
   const isExplorer = pathname === "/explorer";
+  const { cluster, project, ready } = useSelection();
 
   return (
     <div style={{ display: "flex", width: "100%", height: "100%" }}>
@@ -18,7 +20,8 @@ export function Layout() {
           position: "relative",
         }}
       >
-        <Outlet />
+        {/* Remount pages when the selection changes so they refetch. */}
+        {ready && <Outlet key={`${cluster ?? ""}|${project ?? ""}`} />}
       </main>
     </div>
   );

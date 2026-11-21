@@ -1,20 +1,79 @@
-"""Configuration management for srunx."""
+"""srunx configuration: TOML layers, clusters, projects and resolution.
 
-import json
+See ``docs/design/clusters.md``. Layers, lowest precedence first:
+
+1. built-in defaults (the pydantic field defaults below)
+2. system ``defaults``          (``/etc/srunx/config.toml``)
+3. user ``defaults``            (``$XDG_CONFIG_HOME/srunx/config.toml``)
+4. user ``clusters.<c>.defaults``
+5. project ``defaults``         (``<root>/.srunx/config.toml``)
+6. project ``clusters.<c>.defaults``
+
+Job-specific values (script ``#SBATCH``, workflow job fields, CLI flags)
+are layered on top by the callers. Any table may carry ``unset = [...]``
+to drop keys inherited from lower layers.
+
+The domain models never read these files. Entry points build a
+:class:`SrunxConfig` with :meth:`Settings.effective` and activate it
+with :func:`activate_config`; :func:`active_config` is what the domain
+models consult for defaults.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import contextvars
+import hashlib
 import os
+import re
+import threading
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
+from srunx.common import paths
+from srunx.common.config_store import ConfigFileError, ConfigStore
 from srunx.common.logging import get_logger
 from srunx.domain.jobs import ContainerResource
 
 logger = get_logger(__name__)
 
+CLUSTER_ENV_VAR = "SRUNX_CLUSTER"
+
+# Cluster names end up in scheduler keys (``ssh:<name>``) and target refs
+# (``job:ssh:<name>:<id>``) so ``:`` is excluded.
+NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+class ConfigError(ValueError):
+    """Invalid or inconsistent srunx configuration."""
+
+
+def validate_name(kind: str, name: str) -> str:
+    if not isinstance(name, str) or not NAME_RE.match(name):
+        raise ValueError(
+            f"Invalid {kind} name {name!r}: must match {NAME_RE.pattern} "
+            "(letters, digits, '_' and '-', at most 64 characters)"
+        )
+    return name
+
+
+# ── job defaults (the content of every ``defaults`` table) ──────────
+
 
 class ResourceDefaults(BaseModel):
     """Default resource configuration."""
+
+    model_config = ConfigDict(extra="forbid")
 
     nodes: int = Field(default=1, ge=1, description="Default number of compute nodes")
     gpus_per_node: int = Field(
@@ -37,6 +96,8 @@ class ResourceDefaults(BaseModel):
 class EnvironmentDefaults(BaseModel):
     """Default environment configuration."""
 
+    model_config = ConfigDict(extra="forbid")
+
     conda: str | None = Field(default=None, description="Default conda environment")
     venv: str | None = Field(
         default=None, description="Default virtual environment path"
@@ -50,28 +111,15 @@ class EnvironmentDefaults(BaseModel):
 
 
 class NotificationConfig(BaseModel):
-    """Notification configuration.
+    """Notification preferences (user/system level only)."""
 
-    ``slack_webhook_url`` is DEPRECATED starting with the notification-and-state
-    -persistence rewrite. On first startup after upgrade, its value is
-    bootstrapped into the ``endpoints`` table (kind='slack_webhook',
-    name='default') and thereafter ignored. New integrations should
-    manage endpoints via the ``/api/endpoints`` API or the Settings UI.
-    """
+    model_config = ConfigDict(extra="forbid")
 
-    slack_webhook_url: str | None = Field(
-        default=None,
-        description=(
-            "DEPRECATED: Slack webhook URL. Kept only for one-time migration "
-            "into the endpoints table; prefer Settings → Notifications."
-        ),
-    )
     default_endpoint_name: str | None = Field(
         default=None,
         description=(
-            "Default endpoint name pre-selected in the submit dialog. Must "
-            "match an existing endpoint row's ``name`` column. Null = no "
-            "preselection."
+            "Default endpoint name pre-selected in the Web submit dialog. "
+            "Must match an existing endpoint's name."
         ),
     )
     default_preset: str = Field(
@@ -83,370 +131,786 @@ class NotificationConfig(BaseModel):
     )
 
 
-class CliTransportConfig(BaseModel):
-    """CLI transport resolution behaviour (REQ-1, Phase 2)."""
-
-    use_current_profile: bool = Field(
-        default=True,
-        description=(
-            "When True (default), top-level CLI commands (submit / cancel / "
-            "status / list / logs / flow run / monitor jobs) fall back to the "
-            "active SSH profile set via 'srunx ssh use <name>' when "
-            "no explicit --profile / --local / $SRUNX_SSH_PROFILE is given. "
-            "Set to False to force pre-Phase-2 behaviour where the CLI only "
-            "routes through SSH on an explicit flag or env var."
-        ),
-    )
-
-
 class SyncDefaults(BaseModel):
-    """Workspace sync behaviour for job submission.
+    """Workspace sync behaviour for job submission (user/system level)."""
 
-    srunx can rsync the user's local mount to the remote cluster before
-    invoking sbatch, so that submitted jobs see the freshest source
-    files. This section controls the defaults. Per-invocation overrides
-    (``srunx sbatch --sync`` / ``--no-sync``) always win.
-    """
+    model_config = ConfigDict(extra="forbid")
 
     auto: bool = Field(
         default=True,
-        description=(
-            "Run rsync on the script's enclosing mount before sbatch. "
-            "Disable (false) when you manage sync yourself, or when the "
-            "mount sits on shared storage already."
-        ),
+        description="Rsync the script's enclosing mount before sbatch.",
     )
     lock_timeout_seconds: int = Field(
         default=120,
         ge=1,
-        description=(
-            "Maximum time (seconds) to wait for the per-(profile,mount) "
-            "sync lock before aborting. Protects against two concurrent "
-            "rsyncs fighting over the same tree. Increase for huge trees "
-            "or slow networks."
-        ),
+        description="Seconds to wait for the per-(cluster, mount) sync lock.",
     )
     warn_dirty: bool = Field(
         default=True,
-        description=(
-            "Log a concise warning before sync if the mount has "
-            "uncommitted git changes. Informational only — does not "
-            "block submission."
-        ),
+        description="Warn before sync when the mount has uncommitted git changes.",
     )
     require_clean: bool = Field(
         default=False,
-        description=(
-            "Refuse to sync when the mount has uncommitted git changes. "
-            "Recommended for CI / shared-workstation scenarios."
-        ),
+        description="Refuse to sync when the mount has uncommitted git changes.",
     )
     owner_check: bool = Field(
         default=True,
         description=(
-            "Refuse to sync when the remote ``.srunx-owner.json`` marker "
-            "shows a different machine last touched the mount. Catches "
-            "the cross-workstation overwrite footgun (#137 part 4). "
-            "Override per-invocation with ``--force-sync`` or disable "
-            "globally for solo-machine setups."
+            "Refuse to sync when the remote ``.srunx-owner.json`` marker shows "
+            "a different machine last touched the mount."
         ),
     )
     verify_remote_hash: bool = Field(
         default=False,
-        description=(
-            "After auto-sync, SHA-256 the script we're about to "
-            "``sbatch`` on both ends and abort on mismatch (#137 part 5). "
-            "Catches silent rsync failures — a stray exclude rule, a "
-            "path-translation bug, an incremental-algorithm hiccup — "
-            "where rsync exits 0 but the file we cared about never "
-            "actually reached the cluster. Off by default because it "
-            "adds an ssh round-trip per submit; enable for CI / "
-            "shared-cluster setups where silently submitting stale "
-            "bytes is unacceptable."
-        ),
+        description="SHA-256 the submitted script on both ends after sync.",
     )
 
 
 class SrunxConfig(BaseModel):
-    """Main srunx configuration."""
+    """Effective configuration for one (cluster, project) context."""
 
     resources: ResourceDefaults = Field(default_factory=ResourceDefaults)
     environment: EnvironmentDefaults = Field(default_factory=EnvironmentDefaults)
     notifications: NotificationConfig = Field(default_factory=NotificationConfig)
-    cli: CliTransportConfig = Field(default_factory=CliTransportConfig)
     sync: SyncDefaults = Field(default_factory=SyncDefaults)
     log_dir: str = Field(default="logs", description="Default log directory")
     work_dir: str | None = Field(default=None, description="Default working directory")
 
-
-def _user_config_dir() -> Path:
-    """Return the XDG-compliant per-user srunx config directory.
-
-    Resolution order:
-
-    1. ``$XDG_CONFIG_HOME/srunx`` when the env var is set (POSIX spec).
-    2. ``~/.config/srunx`` on POSIX fallback.
-    3. ``~/AppData/Roaming/srunx`` on Windows.
-
-    Matches :func:`srunx.observability.storage.connection.get_config_dir` so that the
-    state DB and the JSON config land under the same root — flipping
-    ``XDG_CONFIG_HOME`` isolates both in one go (tests rely on this).
-    """
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    if xdg:
-        return Path(xdg).expanduser() / "srunx"
-    if os.name == "posix":
-        return Path.home() / ".config" / "srunx"
-    return Path.home() / "AppData" / "Roaming" / "srunx"
+    # Resolution context — not configuration values.
+    cluster: str | None = Field(default=None, exclude=True)
+    project_root: str | None = Field(default=None, exclude=True)
+    sources: dict[str, str] = Field(default_factory=dict, exclude=True)
 
 
-def get_config_paths() -> list[Path]:
-    """Get configuration file paths in order of precedence (lowest to highest)."""
-    paths = []
-
-    # System-wide config (for pip installations)
-    # On Unix: /etc/srunx/config.json
-    # On Windows: C:\ProgramData\srunx\config.json
-    if os.name == "posix":
-        paths.append(Path("/etc/srunx/config.json"))
-    else:
-        paths.append(Path("C:/ProgramData/srunx/config.json"))
-
-    # User-wide config (honours XDG_CONFIG_HOME on POSIX)
-    paths.append(_user_config_dir() / "config.json")
-
-    # Project-wide config (current working directory)
-    paths.append(Path.cwd() / "srunx.json")
-
-    return paths
+DEFAULTS_KEYS = ("resources", "environment", "log_dir", "work_dir")
 
 
-def load_config_from_file(config_path: Path) -> dict[str, Any]:
-    """Load configuration from a JSON file."""
+# ── file schemas ────────────────────────────────────────────────────
+
+
+def _check_defaults(value: dict[str, Any]) -> dict[str, Any]:
+    """Validate a partial ``defaults`` table (``unset`` allowed anywhere)."""
+    if not isinstance(value, dict):
+        raise ValueError("defaults must be a table")
+    unknown = set(value) - set(DEFAULTS_KEYS) - {"unset"}
+    if unknown:
+        raise ValueError(f"unknown keys in defaults: {sorted(unknown)}")
+    stripped = {k: v for k, v in _strip_unset(value).items() if k in DEFAULTS_KEYS}
+    # A layer may set only part of a container (e.g. ``nv = true`` on top of
+    # a lower layer's apptainer image), so container fields are checked one
+    # by one here; cross-field rules run on the merged config.
+    environment = stripped.get("environment")
+    if isinstance(environment, dict) and isinstance(environment.get("container"), dict):
+        _check_container_fields(environment["container"])
+        stripped = {
+            **stripped,
+            "environment": {k: v for k, v in environment.items() if k != "container"},
+        }
     try:
-        if config_path.exists():
-            logger.debug(f"Loading config from {config_path}")
-            with open(config_path, encoding="utf-8") as f:
-                return json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        logger.warning(f"Failed to load config from {config_path}: {e}")
-    return {}
+        SrunxConfig.model_validate(stripped)
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
+    return value
 
 
-def merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Recursively merge configuration dictionaries."""
-    result = base.copy()
+def _check_container_fields(container: dict[str, Any]) -> None:
+    from pydantic import TypeAdapter
 
+    fields = ContainerResource.model_fields
+    unknown = set(container) - set(fields)
+    if unknown:
+        raise ValueError(f"unknown container keys: {sorted(unknown)}")
+    for key, item in container.items():
+        try:
+            TypeAdapter(fields[key].annotation).validate_python(item)
+        except ValidationError as exc:
+            raise ValueError(f"container.{key}: {exc}") from exc
+
+
+def _strip_unset(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _strip_unset(v) for k, v in value.items() if k != "unset"}
+    return value
+
+
+class ClusterConfig(BaseModel):
+    """A job target: connection settings plus cluster-specific defaults."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    transport: Literal["local", "ssh"]
+    host: str | None = Field(default=None, description="Host alias from ~/.ssh/config")
+    hostname: str | None = None
+    username: str | None = None
+    key_filename: str | None = None
+    port: int = 22
+    proxy_jump: str | None = None
+    description: str | None = None
+    snapshot_root: str | None = None
+    defaults: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("defaults")
+    @classmethod
+    def _v_defaults(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return _check_defaults(v)
+
+    @field_validator("snapshot_root")
+    @classmethod
+    def _v_snapshot_root(cls, v: str | None) -> str | None:
+        from srunx.common.validation import validate_snapshot_root
+
+        return validate_snapshot_root(v)
+
+    @model_validator(mode="after")
+    def _v_connection(self) -> ClusterConfig:
+        connection = (self.host, self.hostname, self.username, self.key_filename)
+        if self.transport == "ssh" and not (self.host or self.hostname):
+            raise ValueError(
+                "ssh cluster needs 'host' (ssh config alias) or 'hostname'"
+            )
+        if self.transport == "local" and any(connection):
+            raise ValueError("local cluster cannot set host/hostname/username/key")
+        return self
+
+
+class MountSpec(BaseModel):
+    """An extra mount declared in a project config."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    local: str
+    remote: str
+    sync: bool = True
+    exclude: list[str] = Field(default_factory=list)
+
+    @field_validator("remote")
+    @classmethod
+    def _v_remote(cls, v: str) -> str:
+        if not v.startswith("/"):
+            raise ValueError(f"mount remote path must be absolute: {v}")
+        return v
+
+
+class ProjectClusterOverride(BaseModel):
+    """Project × cluster settings (sync target, mounts)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    remote_dir: str | None = None
+    sync: bool | None = None
+    exclude: list[str] | None = None
+    mounts: list[MountSpec] | None = None
+
+    @field_validator("remote_dir")
+    @classmethod
+    def _v_remote_dir(cls, v: str | None) -> str | None:
+        if v is not None and not v.startswith("/"):
+            raise ValueError(f"remote_dir must be absolute: {v}")
+        return v
+
+
+class ProjectClusterConfig(ProjectClusterOverride):
+    defaults: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("defaults")
+    @classmethod
+    def _v_defaults(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return _check_defaults(v)
+
+
+class UserProjectConfig(BaseModel):
+    """``[projects.<name>]`` in the user config — personal overrides."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    clusters: dict[str, ProjectClusterOverride] = Field(default_factory=dict)
+
+
+class UserConfigFile(BaseModel):
+    """Schema of the user and system ``config.toml``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    default_cluster: str | None = None
+    state_dir: str | None = None
+    defaults: dict[str, Any] = Field(default_factory=dict)
+    clusters: dict[str, ClusterConfig] = Field(default_factory=dict)
+    projects: dict[str, UserProjectConfig] = Field(default_factory=dict)
+    notifications: dict[str, Any] = Field(default_factory=dict)
+    sync: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("defaults")
+    @classmethod
+    def _v_defaults(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return _check_defaults(v)
+
+    @field_validator("clusters")
+    @classmethod
+    def _v_clusters(cls, v: dict[str, ClusterConfig]) -> dict[str, ClusterConfig]:
+        for name in v:
+            validate_name("cluster", name)
+        return v
+
+    @field_validator("notifications")
+    @classmethod
+    def _v_notifications(cls, v: dict[str, Any]) -> dict[str, Any]:
+        NotificationConfig.model_validate(_strip_unset(v))
+        return v
+
+    @field_validator("sync")
+    @classmethod
+    def _v_sync(cls, v: dict[str, Any]) -> dict[str, Any]:
+        SyncDefaults.model_validate(_strip_unset(v))
+        return v
+
+
+class ProjectConfigFile(BaseModel):
+    """Schema of ``<root>/.srunx/config.toml``.
+
+    Connection settings (``transport``, ``host``, ...) are deliberately
+    not accepted: cloning a repository must never make srunx connect to
+    a host the user has not configured.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    cluster: str | None = None
+    defaults: dict[str, Any] = Field(default_factory=dict)
+    clusters: dict[str, ProjectClusterConfig] = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def _v_name(cls, v: str) -> str:
+        return validate_name("project", v)
+
+    @field_validator("defaults")
+    @classmethod
+    def _v_defaults(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return _check_defaults(v)
+
+
+# ── merging with provenance ─────────────────────────────────────────
+
+
+def merge_layer(
+    base: dict[str, Any],
+    override: dict[str, Any],
+    sources: dict[str, str],
+    label: str,
+    prefix: str = "",
+) -> dict[str, Any]:
+    """Merge *override* into *base* (returns a new dict), recording sources.
+
+    ``unset = ["key", ...]`` inside a table removes those keys (and their
+    recorded sources) from the result before the table's own values apply.
+    """
+    result = dict(base)
+    for key in override.get("unset", []) or []:
+        result.pop(key, None)
+        dotted = f"{prefix}{key}"
+        for src_key in [
+            k for k in sources if k == dotted or k.startswith(dotted + ".")
+        ]:
+            del sources[src_key]
     for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = merge_config(result[key], value)
+        if key == "unset":
+            continue
+        dotted = f"{prefix}{key}"
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = merge_layer(result[key], value, sources, label, dotted + ".")
+        elif isinstance(value, dict):
+            result[key] = merge_layer({}, value, sources, label, dotted + ".")
         else:
             result[key] = value
-
+            sources[dotted] = label
     return result
 
 
-def load_config_from_env() -> dict[str, Any]:
-    """Load configuration from environment variables."""
-    config: dict[str, Any] = {}
-
-    # Resource defaults from environment
-    resources: dict[str, Any] = {}
-    if nodes := os.getenv("SRUNX_DEFAULT_NODES"):
-        try:
-            resources["nodes"] = int(nodes)
-        except ValueError:
-            logger.warning(f"Invalid SRUNX_DEFAULT_NODES value: {nodes}")
-
-    if gpus := os.getenv("SRUNX_DEFAULT_GPUS_PER_NODE"):
-        try:
-            resources["gpus_per_node"] = int(gpus)
-        except ValueError:
-            logger.warning(f"Invalid SRUNX_DEFAULT_GPUS_PER_NODE value: {gpus}")
-
-    if ntasks := os.getenv("SRUNX_DEFAULT_NTASKS_PER_NODE"):
-        try:
-            resources["ntasks_per_node"] = int(ntasks)
-        except ValueError:
-            logger.warning(f"Invalid SRUNX_DEFAULT_NTASKS_PER_NODE value: {ntasks}")
-
-    if cpus := os.getenv("SRUNX_DEFAULT_CPUS_PER_TASK"):
-        try:
-            resources["cpus_per_task"] = int(cpus)
-        except ValueError:
-            logger.warning(f"Invalid SRUNX_DEFAULT_CPUS_PER_TASK value: {cpus}")
-
-    if memory := os.getenv("SRUNX_DEFAULT_MEMORY_PER_NODE"):
-        resources["memory_per_node"] = memory
-
-    if time_limit := os.getenv("SRUNX_DEFAULT_TIME_LIMIT"):
-        resources["time_limit"] = time_limit
-
-    if nodelist := os.getenv("SRUNX_DEFAULT_NODELIST"):
-        resources["nodelist"] = nodelist
-
-    if partition := os.getenv("SRUNX_DEFAULT_PARTITION"):
-        resources["partition"] = partition
-
-    if resources:
-        config["resources"] = resources
-
-    # Environment defaults from environment
-    environment: dict[str, Any] = {}
-    if conda := os.getenv("SRUNX_DEFAULT_CONDA"):
-        environment["conda"] = conda
-
-    if venv := os.getenv("SRUNX_DEFAULT_VENV"):
-        environment["venv"] = venv
-
-    if container := os.getenv("SRUNX_DEFAULT_CONTAINER"):
-        environment["container"] = {"image": container}
-
-    if container_runtime := os.getenv("SRUNX_DEFAULT_CONTAINER_RUNTIME"):
-        # Only override runtime on an existing container config —
-        # runtime alone (without image) is not a valid container.
-        if "container" in environment:
-            environment["container"]["runtime"] = container_runtime
-
-    if environment:
-        config["environment"] = environment
-
-    # General defaults from environment
-    if log_dir := os.getenv("SRUNX_DEFAULT_LOG_DIR"):
-        config["log_dir"] = log_dir
-
-    if work_dir := os.getenv("SRUNX_DEFAULT_WORK_DIR"):
-        config["work_dir"] = work_dir
-
-    # Sync defaults from environment
-    sync: dict[str, Any] = {}
-    if (auto := os.getenv("SRUNX_SYNC_AUTO")) is not None:
-        sync["auto"] = auto.lower() in ("1", "true", "yes", "on")
-    if (timeout := os.getenv("SRUNX_SYNC_LOCK_TIMEOUT")) is not None:
-        try:
-            sync["lock_timeout_seconds"] = int(timeout)
-        except ValueError:
-            logger.warning(f"Invalid SRUNX_SYNC_LOCK_TIMEOUT value: {timeout}")
-    if (warn := os.getenv("SRUNX_SYNC_WARN_DIRTY")) is not None:
-        sync["warn_dirty"] = warn.lower() in ("1", "true", "yes", "on")
-    if (clean := os.getenv("SRUNX_SYNC_REQUIRE_CLEAN")) is not None:
-        sync["require_clean"] = clean.lower() in ("1", "true", "yes", "on")
-    if (owner := os.getenv("SRUNX_SYNC_OWNER_CHECK")) is not None:
-        sync["owner_check"] = owner.lower() in ("1", "true", "yes", "on")
-    if (verify := os.getenv("SRUNX_SYNC_VERIFY_REMOTE_HASH")) is not None:
-        sync["verify_remote_hash"] = verify.lower() in ("1", "true", "yes", "on")
-    if sync:
-        config["sync"] = sync
-
-    return config
+# ── settings ────────────────────────────────────────────────────────
 
 
-def load_config() -> SrunxConfig:
-    """Load configuration from all sources in order of precedence."""
-    # Start with empty config
-    config_data: dict[str, Any] = {}
+class Mount(BaseModel):
+    """A resolved local ↔ remote mapping for one cluster."""
 
-    # Load from config files (lowest to highest precedence)
-    for config_path in get_config_paths():
-        file_config = load_config_from_file(config_path)
-        if file_config:
-            config_data = merge_config(config_data, file_config)
+    name: str
+    local: str
+    remote: str
+    sync: bool = True
+    exclude: tuple[str, ...] = ()
 
-    # Override with environment variables (highest precedence)
-    env_config = load_config_from_env()
-    if env_config:
-        config_data = merge_config(config_data, env_config)
 
-    # Create and validate config
+def _load_file(path: Path, model: type[BaseModel]) -> tuple[dict[str, Any], Any]:
     try:
-        return SrunxConfig.model_validate(config_data)
-    except Exception as e:
-        logger.warning(f"Failed to validate config: {e}. Using defaults.")
-        return SrunxConfig()
-
-
-def save_user_config(config: SrunxConfig) -> None:
-    """Save configuration to user config file.
-
-    Merges SrunxConfig fields into the existing file so that
-    SSH profile data (managed by ConfigManager) is preserved.
-    """
-    config_paths = get_config_paths()
-    # Use the user-wide config path (second in the list)
-    user_config_path = config_paths[1]
-
-    # Create directory if it doesn't exist
-    user_config_path.parent.mkdir(parents=True, exist_ok=True)
-    # The config may hold SSH profile details; keep the dir private.
+        raw = ConfigStore(path).read()
+    except ConfigFileError as exc:
+        raise ConfigError(str(exc)) from exc
+    if not raw:
+        return {}, None
     try:
-        user_config_path.parent.chmod(0o700)
-    except OSError:
-        pass
+        return raw, model.model_validate(raw)
+    except ValidationError as exc:
+        raise ConfigError(f"Invalid config in {path}:\n{exc}") from exc
 
-    # Load existing data to preserve non-SrunxConfig keys (e.g. SSH profiles)
-    existing: dict[str, Any] = {}
-    if user_config_path.exists():
+
+class Settings:
+    """All config files relevant to one project context, parsed and validated."""
+
+    def __init__(self, project_root: Path | None = None, *, discover: bool = True):
+        if project_root is None and discover:
+            project_root = paths.find_project_root()
+        self.project_root = project_root.resolve() if project_root else None
+
+        self.system_path = paths.system_config_path()
+        self.user_path = paths.user_config_path()
+        self.project_path = (
+            paths.project_config_path(self.project_root) if self.project_root else None
+        )
+
+        self.system_raw, system = _load_file(self.system_path, UserConfigFile)
+        self.user_raw, user = _load_file(self.user_path, UserConfigFile)
+        self.system: UserConfigFile = system or UserConfigFile()
+        self.user: UserConfigFile = user or UserConfigFile()
+
+        self.project: ProjectConfigFile | None = None
+        self.project_raw: dict[str, Any] = {}
+        if self.project_path is not None:
+            self.project_raw, self.project = _load_file(
+                self.project_path, ProjectConfigFile
+            )
+            if self.project is None:
+                raise ConfigError(f"{self.project_path} is empty; 'name' is required")
+
+        locals_ = [n for n, c in self.clusters.items() if c.transport == "local"]
+        if len(locals_) > 1:
+            raise ConfigError(
+                f"At most one cluster may use transport = 'local' (found {locals_})"
+            )
+        # A shared project may mention clusters this user has not
+        # configured; those sections are simply unused. Selecting such a
+        # cluster fails in :meth:`cluster` with a clear message.
+
+    # ── clusters ────────────────────────────────────────────────────
+
+    @property
+    def clusters(self) -> dict[str, ClusterConfig]:
+        merged = dict(self.system.clusters)
+        merged.update(self.user.clusters)
+        return merged
+
+    def cluster(self, name: str) -> ClusterConfig:
         try:
-            with open(user_config_path, encoding="utf-8") as f:
-                content = f.read().strip()
-                if content:
-                    existing = json.loads(content)
-        except (OSError, json.JSONDecodeError):
-            pass
+            return self.clusters[name]
+        except KeyError:
+            known = ", ".join(sorted(self.clusters)) or "none"
+            raise ConfigError(
+                f"Unknown cluster '{name}' (configured: {known}). "
+                "Add it with 'srunx cluster add'."
+            ) from None
 
-    # Merge: SrunxConfig fields overwrite, other keys preserved
-    existing.update(config.model_dump(exclude_unset=True))
+    def cluster_source(self, explicit: str | None = None) -> tuple[str | None, str]:
+        """Return ``(cluster name, where it came from)`` (design §5)."""
+        if explicit:
+            return explicit, "--cluster"
+        env = os.environ.get(CLUSTER_ENV_VAR)
+        if env:
+            return env, f"${CLUSTER_ENV_VAR}"
+        if self.project is not None and self.project.cluster:
+            return self.project.cluster, str(self.project_path)
+        if self.user.default_cluster:
+            return self.user.default_cluster, str(self.user_path)
+        if self.system.default_cluster:
+            return self.system.default_cluster, str(self.system_path)
+        return None, ""
 
-    # Save config
+    def resolve_cluster(self, explicit: str | None = None) -> str:
+        name, _ = self.cluster_source(explicit)
+        if name is None:
+            raise ConfigError(
+                "No cluster selected. Pass --cluster, set $SRUNX_CLUSTER, set "
+                "'cluster' in .srunx/config.toml or 'default_cluster' in "
+                f"{self.user_path}."
+            )
+        self.cluster(name)
+        return name
+
+    # ── effective defaults ──────────────────────────────────────────
+
+    def layers(self, cluster: str | None) -> list[tuple[str, dict[str, Any]]]:
+        """``(label, partial SrunxConfig dict)`` for layers 2–6."""
+        sys_label, user_label = str(self.system_path), str(self.user_path)
+        out: list[tuple[str, dict[str, Any]]] = []
+
+        def top(raw: dict[str, Any]) -> dict[str, Any]:
+            data = dict(raw.get("defaults", {}))
+            for key in ("notifications", "sync"):
+                if key in raw:
+                    data[key] = raw[key]
+            return data
+
+        out.append((sys_label, top(self.system_raw)))
+        out.append((user_label, top(self.user_raw)))
+        if cluster is not None:
+            for label, raw in (
+                (sys_label, self.system_raw),
+                (user_label, self.user_raw),
+            ):
+                c = raw.get("clusters", {}).get(cluster, {})
+                if c.get("defaults"):
+                    out.append((f"{label} [clusters.{cluster}]", c["defaults"]))
+        if self.project is not None:
+            proj_label = str(self.project_path)
+            out.append((proj_label, self.project_raw.get("defaults", {})))
+            if cluster is not None:
+                c = self.project_raw.get("clusters", {}).get(cluster, {})
+                if c.get("defaults"):
+                    out.append((f"{proj_label} [clusters.{cluster}]", c["defaults"]))
+        return [(label, data) for label, data in out if data]
+
+    def effective(self, cluster: str | None = None) -> SrunxConfig:
+        sources: dict[str, str] = {}
+        merged: dict[str, Any] = {}
+        for label, data in self.layers(cluster):
+            merged = merge_layer(merged, data, sources, label)
+        try:
+            config = SrunxConfig.model_validate(merged)
+        except ValidationError as exc:
+            raise ConfigError(f"Invalid merged configuration:\n{exc}") from exc
+        config.cluster = cluster
+        config.project_root = str(self.project_root) if self.project_root else None
+        config.sources = sources
+        return config
+
+    # ── project × cluster ───────────────────────────────────────────
+
+    def project_cluster(self, cluster: str) -> ProjectClusterOverride:
+        """Merged sync settings: project file, then the user's personal override."""
+        merged: dict[str, Any] = {}
+        if self.project is not None:
+            pc = self.project.clusters.get(cluster)
+            if pc is not None:
+                merged.update(pc.model_dump(exclude={"defaults"}, exclude_none=True))
+            user_proj = self.user.projects.get(self.project.name)
+            if user_proj is not None and cluster in user_proj.clusters:
+                merged.update(user_proj.clusters[cluster].model_dump(exclude_none=True))
+        return ProjectClusterOverride.model_validate(merged)
+
+    def mounts(self, cluster: str, *, fetch_remote: bool = True) -> list[Mount]:
+        """Resolved mounts of the current project on *cluster*.
+
+        The project root maps to ``remote_dir``; without ``remote_dir`` the
+        root maps to the remote default workspace
+        (``$XDG_DATA_HOME/srunx/workspaces/<name>-<hash>``), which needs
+        the remote environment and is resolved by :func:`default_workspace`.
+        """
+        if self.project is None or self.project_root is None:
+            return []
+        if self.cluster(cluster).transport != "ssh":
+            return []
+        pc = self.project_cluster(cluster)
+        remote_dir = pc.remote_dir or default_workspace(
+            cluster, self.project.name, self.project_root, fetch=fetch_remote
+        )
+        out: list[Mount] = []
+        if remote_dir:
+            out.append(
+                Mount(
+                    name=self.project.name,
+                    local=str(self.project_root),
+                    remote=remote_dir,
+                    sync=pc.sync if pc.sync is not None else True,
+                    exclude=tuple(pc.exclude or ()),
+                )
+            )
+        for m in pc.mounts or []:
+            local = Path(m.local).expanduser()
+            if not local.is_absolute():
+                local = self.project_root / local
+            out.append(
+                Mount(
+                    name=m.name,
+                    local=str(local.resolve()),
+                    remote=m.remote,
+                    sync=m.sync,
+                    exclude=tuple(m.exclude),
+                )
+            )
+        names = [m.name for m in out]
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        locals_ = [m.local for m in out]
+        same_root = sorted({p for p in locals_ if locals_.count(p) > 1})
+        if same_root:
+            raise ConfigError(
+                f"{self.project_path}: two mounts on cluster '{cluster}' share "
+                f"the local directory {same_root} (the project root is "
+                "already mounted via remote_dir)"
+            )
+        if duplicates:
+            raise ConfigError(
+                f"{self.project_path}: mount names must be unique on cluster "
+                f"'{cluster}' (the project root mount is named "
+                f"'{self.project.name}'); duplicated: {duplicates}"
+            )
+        return out
+
+
+def workspace_dirname(project_name: str, project_root: Path) -> str:
+    digest = hashlib.sha256(str(project_root.resolve()).encode()).hexdigest()[:8]
+    return f"{project_name}-{digest}"
+
+
+def default_workspace(
+    cluster: str, project_name: str, project_root: Path, *, fetch: bool = True
+) -> str | None:
+    """Remote default sync target, or ``None`` if the remote env is unknown."""
+    from srunx.common.remote_env import get_remote_env
+
+    env = get_remote_env(cluster, fetch=fetch)
+    if env is None:
+        return None
+    name = workspace_dirname(project_name, project_root)
+    return f"{env.data_home}/srunx/workspaces/{name}"
+
+
+# ── writing ─────────────────────────────────────────────────────────
+
+
+def user_store() -> ConfigStore:
+    return ConfigStore(paths.user_config_path(), private=True)
+
+
+def project_store(root: Path) -> ConfigStore:
+    return ConfigStore(paths.project_config_path(root))
+
+
+def validate_user_file(data: dict[str, Any]) -> None:
     try:
-        with open(user_config_path, "w", encoding="utf-8") as f:
-            json.dump(existing, f, indent=2)
-        try:
-            user_config_path.chmod(0o600)
-        except OSError:
-            pass
-        logger.info(f"Configuration saved to {user_config_path}")
-    except OSError as e:
-        logger.error(f"Failed to save config to {user_config_path}: {e}")
-        raise
-
-
-def create_example_config() -> str:
-    """Create an example configuration file content."""
-    example_config = {
-        "resources": {
-            "nodes": 1,
-            "gpus_per_node": 1,
-            "ntasks_per_node": 1,
-            "cpus_per_task": 8,
-            "memory_per_node": "32GB",
-            "time_limit": "2:00:00",
-            "partition": "gpu",
-        },
-        "environment": {
-            "conda": "ml_env",
-            "container": {
-                "image": "nvcr.io/nvidia/pytorch:24.01-py3",
-                "runtime": "pyxis",
-            },
-            "env_vars": {"CUDA_VISIBLE_DEVICES": "0", "OMP_NUM_THREADS": "8"},
-        },
-        "log_dir": "slurm_logs",
-        "work_dir": "/scratch/username",
+        user = UserConfigFile.model_validate(data)
+    except ValidationError as exc:
+        raise ConfigError(str(exc)) from exc
+    # Cross-file invariant checked before saving, so a write can never
+    # leave a configuration every later command rejects.
+    try:
+        system_clusters = (
+            ConfigStore(paths.system_config_path()).read().get("clusters", {})
+        )
+    except ConfigFileError:
+        system_clusters = {}
+    transports = {name: c.get("transport") for name, c in system_clusters.items()} | {
+        name: c.transport for name, c in user.clusters.items()
     }
-    return json.dumps(example_config, indent=2)
+    locals_ = sorted(n for n, t in transports.items() if t == "local")
+    if len(locals_) > 1:
+        raise ConfigError(
+            f"At most one cluster may use transport = 'local' (found {locals_})"
+        )
 
 
-# Global config instance
-_config: SrunxConfig | None = None
-_config_lock = __import__("threading").Lock()
+def validate_project_file(data: dict[str, Any]) -> None:
+    try:
+        ProjectConfigFile.model_validate(data)
+    except ValidationError as exc:
+        raise ConfigError(str(exc)) from exc
+
+
+# ── process / request context ───────────────────────────────────────
+
+_active: contextvars.ContextVar[SrunxConfig | None] = contextvars.ContextVar(
+    "srunx_active_config", default=None
+)
+
+
+def active_config() -> SrunxConfig | None:
+    """The config activated for the current CLI command / request, if any."""
+    return _active.get()
+
+
+@contextlib.contextmanager
+def activate_config(config: SrunxConfig) -> Iterator[SrunxConfig]:
+    token = _active.set(config)
+    try:
+        yield config
+    finally:
+        _active.reset(token)
+
+
+def set_active_config(config: SrunxConfig | None) -> None:
+    """Activate *config* for the rest of this context (CLI process scope)."""
+    _active.set(config)
+
+
+_project_override: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "srunx_project_override", default=None
+)
+
+
+@contextlib.contextmanager
+def use_project(root: Path | None) -> Iterator[None]:
+    """Use *root* instead of cwd discovery for :func:`load_settings` (``--project``)."""
+    if root is None:
+        yield
+        return
+    root = root.expanduser().resolve()
+    if not paths.project_config_path(root).is_file():
+        raise ConfigError(f"{paths.project_config_path(root)} does not exist")
+    token = _project_override.set(root)
+    try:
+        yield
+    finally:
+        _project_override.reset(token)
+
+
+_NO_PROJECT = Path("/\0no-project")
+
+
+@contextlib.contextmanager
+def no_project() -> Iterator[None]:
+    """Disable project discovery (API surfaces must not guess from cwd)."""
+    token = _project_override.set(_NO_PROJECT)
+    try:
+        yield
+    finally:
+        _project_override.reset(token)
+
+
+def project_scope(project: str | Path | None) -> Any:
+    """``use_project(project)`` when given, else :func:`no_project`."""
+    if project:
+        return use_project(Path(project))
+    return no_project()
+
+
+# Short names accepted by ``--unset`` → dotted config keys.
+UNSET_ALIASES = {
+    "nodes": "resources.nodes",
+    "gpus_per_node": "resources.gpus_per_node",
+    "ntasks_per_node": "resources.ntasks_per_node",
+    "cpus_per_task": "resources.cpus_per_task",
+    "memory_per_node": "resources.memory_per_node",
+    "mem": "resources.memory_per_node",
+    "time_limit": "resources.time_limit",
+    "time": "resources.time_limit",
+    "nodelist": "resources.nodelist",
+    "partition": "resources.partition",
+    "conda": "environment.conda",
+    "venv": "environment.venv",
+    "container": "environment.container",
+    "env_vars": "environment.env_vars",
+}
+
+
+def apply_unset(config: SrunxConfig, keys: list[str]) -> SrunxConfig:
+    """Return a copy of *config* with *keys* reset to their built-in defaults."""
+    if not keys:
+        return config
+    data = config.model_dump()
+    sources = dict(config.sources)
+    defaults = SrunxConfig().model_dump()
+    for raw in keys:
+        dotted = UNSET_ALIASES.get(raw.replace("-", "_"), raw.replace("-", "_"))
+        parts = dotted.split(".")
+        if parts[0] not in DEFAULTS_KEYS:
+            raise ConfigError(f"Cannot unset {raw!r}: not a job default")
+        node, default = data, defaults
+        try:
+            for part in parts[:-1]:
+                node, default = node[part], default[part]
+            if parts[-1] not in default:
+                raise KeyError(parts[-1])
+        except (KeyError, TypeError):
+            raise ConfigError(f"Cannot unset {raw!r}: unknown key") from None
+        node[parts[-1]] = default[parts[-1]]
+        for src_key in [
+            k for k in sources if k == dotted or k.startswith(dotted + ".")
+        ]:
+            del sources[src_key]
+    result = SrunxConfig.model_validate(data)
+    result.cluster = config.cluster
+    result.project_root = config.project_root
+    result.sources = sources
+    return result
+
+
+_settings_cache: dict[str | None, Settings] = {}
+_settings_lock = threading.Lock()
+
+
+def load_settings(
+    project_root: Path | None = None, *, reload: bool = False
+) -> Settings:
+    """Parse all config files for *project_root* (auto-discovered when ``None``)."""
+    if project_root is None:
+        project_root = _project_override.get()
+    if project_root == _NO_PROJECT:
+        root: Path | None = None
+    else:
+        root = project_root if project_root is not None else paths.find_project_root()
+    key = str(root.resolve()) if root else None
+    with _settings_lock:
+        if reload or key not in _settings_cache:
+            _settings_cache[key] = Settings(root, discover=False)
+        return _settings_cache[key]
+
+
+def clear_settings_cache() -> None:
+    with _settings_lock:
+        _settings_cache.clear()
 
 
 def get_config(reload: bool = False) -> SrunxConfig:
-    """Get the global configuration instance."""
-    global _config
-    if _config is None or reload:
-        with _config_lock:
-            if _config is None or reload:
-                _config = load_config()
-    return _config
+    """Effective config for the current context.
+
+    Returns the activated config when an entry point set one; otherwise
+    resolves the cwd project and the default cluster (no error when no
+    cluster is selected — cluster layers are then simply skipped).
+    """
+    active = _active.get()
+    if active is not None and not reload:
+        return active
+    settings = load_settings(reload=reload)
+    name, _ = settings.cluster_source()
+    if name is not None and name not in settings.clusters:
+        name = None
+    return settings.effective(name)
+
+
+def example_user_config() -> str:
+    return """\
+# srunx user configuration — see docs/design/clusters.md
+default_cluster = "local"
+
+[defaults]
+log_dir = "logs"
+
+[defaults.resources]
+time_limit = "01:00:00"
+
+[clusters.local]
+transport = "local"
+
+# [clusters.gpu]
+# transport = "ssh"
+# host = "gpu-login"          # alias from ~/.ssh/config
+#
+# [clusters.gpu.defaults.resources]
+# partition = "gpu"
+"""
+
+
+def example_project_config(name: str) -> str:
+    return f"""\
+# srunx project configuration — commit this file
+name = "{name}"
+# cluster = "gpu"             # default target for this project
+
+# [defaults.resources]
+# time_limit = "04:00:00"
+
+# [clusters.gpu]
+# remote_dir = "/home/me/work/{name}"
+# exclude = ["data/"]
+#
+# [clusters.gpu.defaults.resources]
+# partition = "gpu"
+"""

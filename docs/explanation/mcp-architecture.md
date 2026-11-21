@@ -109,44 +109,45 @@ All SLURM interaction happens through existing modules:
 - **Workflows** (`create_workflow`, `run_workflow`, etc.) uses `srunx.runtime.workflow.runner.WorkflowRunner`
   and `srunx.domain.Workflow`.
 - **Resources** (`get_resources`) uses `srunx.observability.monitoring.resource_monitor.ResourceMonitor`.
-- **File sync** (`sync_files`) uses `srunx.sync.RsyncClient` via the SSH profile.
-- **Configuration** (`get_config`, `list_ssh_profiles`) uses `srunx.common.config`
-  and `srunx.ssh.core.config.ConfigManager`.
+- **File sync** (`sync_files`, `inspect_mount`) uses `srunx.sync.RsyncClient` with the mounts of the given project on the given SSH cluster.
+- **Configuration** (`get_config`, `list_clusters`) uses `srunx.common.config`
+  (the layered TOML settings).
 
 ## Local vs SSH Execution
 
-Most tools accept a `transport` string parameter naming the SSH profile to
-route through. The execution path diverges early in each tool. MCP never
-reads environment variables or the current SSH profile — the cluster is
-selected only by an explicit `transport`.
+Every tool that talks to SLURM takes a `cluster` string naming one of the
+configured clusters (`list_clusters`). It is required: MCP never resolves a
+cluster implicitly — it reads neither `$SRUNX_CLUSTER`, the project's
+`cluster`, nor `default_cluster` (`srunx.mcp.transport.mcp_transport` pins this
+policy). The execution path then depends on the cluster's `transport`.
 
-**Local path** (`transport` omitted or `"local"`):  
-Imports `srunx.slurm.local.Slurm` and calls SLURM commands via `subprocess`.
+**Local cluster** (`transport = "local"`):  
+Uses `srunx.slurm.local.Slurm` and calls SLURM commands via `subprocess`.
 Requires the MCP server to run on a machine with SLURM access (login node
 or compute node).
 
-**SSH path** (`transport="<profile>"`):  
-Loads the named SSH profile from `ConfigManager`, creates an
-`SSHSlurmClient`, and routes commands through Paramiko SSH. The MCP
-server runs on the developer's local machine while SLURM runs on a
-remote cluster.
+**SSH cluster** (`transport = "ssh"`):  
+Builds an SSH client for that cluster and routes commands through Paramiko
+SSH. The MCP server runs on the developer's local machine while SLURM runs on
+a remote cluster.
 
 ```mermaid
 flowchart TD
-  Tool["MCP Tool Call"]
-  Check{"transport set?"}
+  Tool["MCP Tool Call (cluster=...)"]
+  Check{"cluster transport?"}
   Local["Slurm Client\n(subprocess)"]
   Remote["SSHSlurmClient\n(Paramiko)"]
   SLURM["SLURM Cluster"]
 
   Tool --> Check
-  Check -- "no (local)" --> Local --> SLURM
-  Check -- "yes (profile)" --> Remote --> SLURM
+  Check -- "local" --> Local --> SLURM
+  Check -- "ssh" --> Remote --> SLURM
 ```
 
-When `transport` selects a profile, the `work_dir` parameter is required on
-`submit_job` because the local working directory has no meaning on the
-remote cluster.
+On an SSH cluster the `work_dir` parameter is required on `submit_job`
+because the local working directory has no meaning on the remote cluster.
+Tools that need project mounts or project defaults take a `project`
+argument — the project root holding `.srunx/config.toml`.
 
 ## Parameter Sweeps Through MCP
 
@@ -160,7 +161,7 @@ moment the background task is scheduled.
 
 ```mermaid
 flowchart LR
-  subgraph mcp["MCP tool: run_workflow(sweep=..., transport=...)"]
+  subgraph mcp["MCP tool: run_workflow(sweep=..., cluster=..., mount=...)"]
     Expand["expand_matrix\n(load-time)"]
     Orchestrator["SweepOrchestrator\nanyio.Semaphore"]
     Factory["executor_factory\n= pool.lease"]
@@ -195,13 +196,11 @@ cells without guessing. Before V4, MCP cells were recorded as
 `triggered_by='web'` because the V1 CHECK allowlist did not admit
 `'mcp'`; the V4 rebuild removed that workaround.
 
-**CLI-style sweeps without `transport=`.** When `run_workflow` is called
-with a `sweep` argument but **without** `transport=<profile>`, execution
-stays on the local `Slurm` singleton path -- exactly as if the user
-had run `srunx flow run --sweep ...` on a login node. Passing
-`transport=<profile>` switches the tool to the SSH + pool path above. This
-mirrors the CLI / Web split: the same tool call, the same blocking
-semantics, but a different transport determined by one argument.
+**Local clusters.** When `run_workflow` is called with a `sweep` and a
+local `cluster`, execution stays on the local `Slurm` path -- exactly as if
+the user had run `srunx flow run --sweep ...` on a login node. An SSH
+`cluster` switches the tool to the SSH + pool path above: the same tool call and the same blocking semantics, with the
+transport determined by the named cluster.
 
 ## Security
 
@@ -219,8 +218,9 @@ not invoke a login shell.
 **Scope limitation.**  
 The MCP server exposes only read and submit operations. It cannot modify
 SLURM configuration, access other users' jobs, or execute arbitrary
-commands on the cluster. File sync is constrained to configured mount
-points or explicit paths.
+commands on the cluster. File sync is constrained to mounts declared in the
+given project's config; the first sync into a new remote path additionally
+needs `approve_new_target=True`.
 
 **Shared security guards.**  
 The argument inspection that rejects dangerous Python invocations

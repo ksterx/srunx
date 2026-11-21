@@ -250,6 +250,7 @@ export type MountConfig = {
   local: string;
   remote: string;
   exclude_patterns?: string[];
+  sync: boolean;
 };
 
 /* ── Config types ────────────────────────────── */
@@ -279,16 +280,25 @@ export type EnvironmentDefaultsConfig = {
   env_vars: Record<string, string>;
 };
 
+export type SyncDefaultsConfig = {
+  auto: boolean;
+  lock_timeout_seconds: number;
+  warn_dirty: boolean;
+  require_clean: boolean;
+  owner_check: boolean;
+  verify_remote_hash: boolean;
+};
+
 export type SrunxConfig = {
   resources: ResourceDefaultsConfig;
   environment: EnvironmentDefaultsConfig;
   notifications: NotificationConfig;
+  sync: SyncDefaultsConfig;
   log_dir: string;
   work_dir: string | null;
 };
 
 export type NotificationConfig = {
-  slack_webhook_url: string | null;
   default_endpoint_name?: string | null;
   default_preset?: string;
 };
@@ -351,53 +361,36 @@ export type Delivery = {
 export type ConfigPathInfo = {
   path: string;
   exists: boolean;
-  source: string;
+  source: "system" | "user" | "project" | "state";
 };
 
-/* ── SSH Profile types ──────────────────────── */
+/* ── Clusters / projects ─────────────────────── */
 
-export type SSHMountConfig = {
+export type ClusterTransport = "local" | "ssh";
+
+export type ClusterInfo = {
   name: string;
-  local: string;
-  remote: string;
-  exclude_patterns?: string[];
-};
-
-export type SSHProfile = {
-  hostname: string;
-  username: string;
-  key_filename: string;
+  transport: ClusterTransport;
+  host?: string | null;
+  hostname?: string | null;
+  username?: string | null;
+  key_filename?: string | null;
   port: number;
-  description: string | null;
-  ssh_host: string | null;
-  proxy_jump: string | null;
-  mounts: SSHMountConfig[];
+  proxy_jump?: string | null;
+  description?: string | null;
+  snapshot_root?: string | null;
 };
 
-export type SSHProfilesResponse = {
-  current: string | null;
-  profiles: Record<string, SSHProfile>;
+export type ClusterList = {
+  default: string | null;
+  clusters: ClusterInfo[];
 };
 
-export type SSHConnectResponse = {
-  connected: boolean;
-  profile_name: string;
-  hostname: string;
-  error: string | null;
-};
-
-export type SSHTestResult = {
-  ssh_connected: boolean;
-  slurm_available: boolean;
-  hostname: string;
-  user: string;
-  slurm_version: string;
-  error: string | null;
-};
-
-export type SSHConnectionStatus = {
-  connected: boolean;
-  profile_name: string | null;
+export type ClusterTestResult = {
+  ok: boolean;
+  transport: ClusterTransport;
+  detail: string;
+  home?: string | null;
 };
 
 /* ── Environment variable info ──────────────── */
@@ -408,22 +401,54 @@ export type EnvVarInfo = {
   description: string;
 };
 
-/* ── Project config (mount-based) ────────────── */
+/* ── Projects ─────────────────────────────────── */
 
 export type ProjectInfo = {
-  mount_name: string;
-  local_path: string;
-  remote_path: string;
-  config_exists: boolean;
+  name: string;
+  root: string;
   config_path: string;
+  cluster: string | null;
 };
 
-export type ProjectConfigResponse = {
-  mount_name: string;
-  local_path: string;
-  config_path: string;
+export type ProjectMount = {
+  name: string;
+  local: string;
+  remote: string;
+  sync: boolean;
+  exclude: string[];
+};
+
+export type ProjectDetail = ProjectInfo & {
+  mounts: Record<string, ProjectMount[]>;
+};
+
+/* ── Layered config ──────────────────────────── */
+
+export type EffectiveConfig = {
+  cluster: string | null;
+  project: string | null;
+  project_root: string | null;
+  values: SrunxConfig;
+  /** Dotted key → "<file> [clusters.x]"; absent keys are built-in defaults. */
+  sources: Record<string, string>;
+};
+
+export type ConfigScope = "user" | "project";
+
+export type ConfigFile = {
+  scope: ConfigScope;
+  path: string;
   exists: boolean;
-  config: SrunxConfig | null;
+  version: string;
+  data: Record<string, unknown>;
+};
+
+export type ConfigFilePatch = {
+  scope: ConfigScope;
+  version?: string;
+  set?: Record<string, unknown>;
+  delete?: string[];
+  unset?: string[];
 };
 
 /* ── Workflow run options ────────────────────── */

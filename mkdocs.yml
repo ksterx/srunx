@@ -131,3 +131,4 @@ nav:
   - Explanation:
       - Architecture: explanation/architecture.md
       - MCP Architecture: explanation/mcp-architecture.md
+      - Clusters & Config Design (Japanese): design/clusters.md

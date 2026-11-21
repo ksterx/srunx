@@ -1,10 +1,19 @@
 ---
-description: REST API reference for the srunx Web UI server — jobs, resources, workflows and runs, sweep runs, files and mounts, config and SSH profiles, history, notification endpoints, subscriptions, watches, deliveries, and templates.
+description: REST API reference for the srunx Web UI server — jobs, resources, workflows and runs, sweep runs, files and mounts, clusters, projects and config, history, notification endpoints, subscriptions, watches, deliveries, and templates.
 ---
 
 # Web UI REST API Reference
 
 The srunx Web UI exposes a REST API at `http://127.0.0.1:8000/api/`. All responses are JSON.
+
+## Cluster and Project Selection
+
+Every `/api/*` request may carry two query parameters:
+
+- `?cluster=<name>` — the cluster (from `GET /api/clusters`) the request targets. Without it, the selected project's `cluster`, then `default_cluster`, is used. SLURM endpoints return `503` when no cluster can be determined; they need an SSH cluster (a local cluster is rejected with `400`).
+- `?project=<name>` — one of the projects the server serves (`GET /api/projects`). It decides mounts, project defaults, and project-scoped config edits. An unknown name returns `400`. Without it, no project applies (the server never falls back to its own working directory).
+
+The selection is per request; there is no server-side "current" cluster or project.
 
 ## Jobs
 
@@ -666,17 +675,15 @@ POST /api/sweep_runs/42/cancel
 
 | Method | Endpoint | Description |
 |----|----|----|
-| GET | `/api/files/mounts` | List configured mount points (name and remote only) |
-| GET | `/api/files/mounts/config` | List mounts with full details (name, local, remote) |
-| POST | `/api/files/mounts` | Add a mount to the current SSH profile |
-| DELETE | `/api/files/mounts/{mount_name}` | Remove a mount from the current SSH profile |
+| GET | `/api/files/mounts` | List the project's mounts on the cluster (name and remote only) |
+| GET | `/api/files/mounts/config` | List mounts with full details (name, local, remote, excludes, sync) |
 | GET | `/api/files/browse` | Browse local filesystem under a mount's local root |
 | GET | `/api/files/read` | Read text file contents from a mount |
 | POST | `/api/files/sync` | Sync a mount's local directory to the remote via rsync |
 
 ### GET /api/files/mounts
 
-Returns the list of mount points from the current SSH profile. Only mount names and remote prefixes are returned; local paths are never exposed.
+Returns the selected project's mounts on the selected cluster (`?project=` / `?cluster=`). Only mount names and remote prefixes are returned; local paths are never exposed.
 
 **Response:**
 
@@ -689,11 +696,11 @@ Returns the list of mount points from the current SSH profile. Only mount names 
 ]
 ```
 
-Returns an empty list if no SSH profile is configured or the profile has no mounts.
+Returns an empty list if no project or SSH cluster is selected, or the project has no mounts there.
 
 ### GET /api/files/mounts/config
 
-Returns all mounts with full details including local paths. Used by the mount management UI.
+Returns the same mounts with full details including local paths. Mounts are read-only here; they are declared in the project's `.srunx/config.toml` (edit `remote_dir` etc. via `PATCH /api/config/file`).
 
 **Response:**
 
@@ -702,61 +709,14 @@ Returns all mounts with full details including local paths. Used by the mount ma
   {
     "name": "ml-project",
     "local": "/home/user/projects/ml-project",
-    "remote": "/home/researcher/ml-project"
+    "remote": "/home/researcher/ml-project",
+    "exclude_patterns": ["data/"],
+    "sync": true
   }
 ]
 ```
 
-Returns an empty list if no SSH profile is configured or the profile has no mounts.
-
-### POST /api/files/mounts
-
-Add a new mount to the current SSH profile. The mount is persisted to the profile configuration file.
-
-**Request body:**
-
-``` json
-{
-  "name": "ml-project",
-  "local": "/home/user/projects/ml-project",
-  "remote": "/home/researcher/ml-project"
-}
-```
-
-**Response (200):**
-
-``` json
-{
-  "name": "ml-project",
-  "local": "/home/user/projects/ml-project",
-  "remote": "/home/researcher/ml-project"
-}
-```
-
-**Error responses:**
-
-- `409` — A mount with the same name already exists
-- `422` — Validation error (missing required fields or invalid values)
-- `503` — No SSH profile configured
-
-### DELETE /api/files/mounts/{mount_name}
-
-Remove a mount from the current SSH profile.
-
-**Path parameters:**
-
-- `mount_name` — Mount name to remove
-
-**Response (200):**
-
-``` json
-{"status": "deleted", "name": "ml-project"}
-```
-
-**Error responses:**
-
-- `404` — Mount not found
-- `503` — No SSH profile configured
+Returns an empty list if no project or SSH cluster is selected, or the project has no mounts there.
 
 ### GET /api/files/browse
 
@@ -790,7 +750,7 @@ Browse directory contents under a mount's local root, returning entries with the
 
 - `400` — Path is not a directory
 - `403` — Path outside mount boundary or permission denied
-- `404` — Mount not found, directory not found, or no SSH profile configured
+- `404` — Mount not found, directory not found, or no SSH cluster selected
 
 ### GET /api/files/read
 
@@ -815,12 +775,12 @@ Read text file contents from a mount's local root. Used by the file explorer to 
 
 - `400` — `path` parameter missing or path is not a file
 - `403` — Path outside mount boundary
-- `404` — File not found or no SSH profile configured
+- `404` — File not found or no SSH cluster selected
 - `413` — File exceeds 1 MB size limit
 
 ### POST /api/files/sync
 
-Sync a mount's local directory to the remote server via rsync.
+Sync a mount's local directory to the remote server via rsync. Triggering the sync from the UI counts as approval of a new remote target (the CLI asks for `--yes` instead).
 
 **Request body:**
 
@@ -838,362 +798,227 @@ Sync a mount's local directory to the remote server via rsync.
 
 - `404` — Mount not found
 - `502` — rsync command failed (includes missing rsync binary)
-- `503` — No SSH profile configured
+- `503` — No SSH cluster selected
+
+## Clusters
+
+Clusters are `[clusters.<name>]` tables in the user config. There is no server-side "current cluster": the UI keeps its selection client-side and sends it as `?cluster=<name>`.
+
+| Method | Endpoint | Description |
+|----|----|----|
+| GET | `/api/clusters` | List clusters and the default |
+| POST | `/api/clusters` | Add a cluster |
+| PUT | `/api/clusters/{name}` | Update connection fields |
+| DELETE | `/api/clusters/{name}` | Remove a cluster |
+| POST | `/api/clusters/{name}/test` | Check reachability |
+
+### GET /api/clusters
+
+**Response:**
+
+``` json
+{
+  "default": "dgx",
+  "clusters": [
+    {
+      "name": "dgx",
+      "transport": "ssh",
+      "host": "dgx-login",
+      "hostname": null,
+      "username": null,
+      "key_filename": null,
+      "port": 22,
+      "proxy_jump": null,
+      "description": "Main DGX cluster",
+      "snapshot_root": null
+    }
+  ]
+}
+```
+
+`default` is the request project's `cluster`, else `default_cluster` (`null` if neither names a configured cluster).
+
+### POST /api/clusters
+
+**Request body:** the fields of a cluster entry (`name`, `transport` = `"local"` or `"ssh"`, and for SSH `host` or `hostname`, plus optional `username`, `key_filename`, `port`, `proxy_jump`, `description`, `snapshot_root`), and optionally `"make_default": true` to also set `default_cluster`.
+
+**Response:** The created cluster object.
+
+**Error responses:**
+
+- `409` — A cluster with that name exists
+- `422` — Invalid name or invalid cluster (e.g. SSH without `host`/`hostname`, local with connection fields)
+
+### PUT /api/clusters/{name}
+
+Update connection fields (`host`, `hostname`, `username`, `key_filename`, `port`, `proxy_jump`, `description`, `snapshot_root`). A value of `null` or `""` removes the field.
+
+**Response:** The updated cluster object.
+
+**Error responses:** `404` — cluster not found; `422` — the result is invalid.
+
+### DELETE /api/clusters/{name}
+
+Remove the cluster from the user config (and clear `default_cluster` if it pointed at it). Closes the server's cached SSH connection to it.
+
+**Response:** `{"ok": true}`
+
+### POST /api/clusters/{name}/test
+
+Check reachability. For a local cluster, checks that `sbatch` is on `PATH`; for an SSH cluster, connects and caches the remote `$HOME` / XDG directories (used for default workspaces).
+
+**Response:**
+
+``` json
+{"ok": true, "transport": "ssh", "detail": "connected", "home": "/home/researcher"}
+```
+
+## Projects
+
+| Method | Endpoint | Description |
+|----|----|----|
+| GET | `/api/projects` | Projects this server serves |
+| GET | `/api/projects/{name}` | A project with its resolved mounts on every SSH cluster |
+
+The server serves the project containing the directory `srunx ui` was started from, plus every `srunx ui --project PATH` / `SRUNX_WEB_PROJECTS` root.
+
+### GET /api/projects
+
+**Response:**
+
+``` json
+[
+  {
+    "name": "ml-project",
+    "root": "/home/user/projects/ml-project",
+    "config_path": "/home/user/projects/ml-project/.srunx/config.toml",
+    "cluster": "dgx"
+  }
+]
+```
+
+### GET /api/projects/{name}
+
+Same fields as above plus `mounts`: `{cluster name: [{name, local, remote, sync, exclude}]}` for every SSH cluster. Mounts whose remote path needs the remote environment (no `remote_dir`, environment not yet cached by a test) are omitted.
+
+**Error responses:** `404` — unknown project; `422` — invalid project config.
 
 ## Config
 
 | Method | Endpoint | Description |
 |----|----|----|
-| GET | `/api/config` | Get current merged configuration |
-| PUT | `/api/config` | Update user configuration |
-| GET | `/api/config/paths` | List config file paths with existence status |
-| POST | `/api/config/reset` | Reset user config to defaults |
-| GET | `/api/config/ssh/profiles` | List SSH profiles and current active profile |
-| POST | `/api/config/ssh/profiles` | Add a new SSH profile |
-| PUT | `/api/config/ssh/profiles/{name}` | Update an existing SSH profile |
-| DELETE | `/api/config/ssh/profiles/{name}` | Delete an SSH profile |
-| POST | `/api/config/ssh/profiles/{name}/activate` | Set profile as current active |
-| POST | `/api/config/ssh/profiles/{name}/connect` | Switch the live SSH connection to a profile |
-| POST | `/api/config/ssh/profiles/{name}/test` | Test SSH and SLURM availability without switching |
-| GET | `/api/config/ssh/status` | Current SSH connection status |
-| POST | `/api/config/ssh/profiles/{name}/mounts` | Add a mount to a profile |
-| DELETE | `/api/config/ssh/profiles/{name}/mounts/{mount_name}` | Remove a mount from a profile |
-| GET | `/api/config/env` | List active [SRUNX]()\* environment variables |
-| GET | `/api/config/projects` | List projects from current profile's mounts |
-| GET | `/api/config/projects/{mount_name}` | Read project config (srunx.json) |
-| PUT | `/api/config/projects/{mount_name}` | Update project config |
-| POST | `/api/config/projects/{mount_name}/init` | Initialize project config with example values |
+| GET | `/api/config` | Effective defaults for the request's cluster/project, with sources |
+| GET | `/api/config/paths` | Config files in precedence order, plus the state dir |
+| GET | `/api/config/file` | Raw contents of one config file plus a version token |
+| PATCH | `/api/config/file` | Edit individual keys of one config file |
+| GET | `/api/config/env` | srunx-related environment variables that are set |
+
+There is no endpoint that writes the merged configuration back; edits always target one file.
 
 ### GET /api/config
 
-Returns the current merged configuration (system + user + project).
+Returns the effective configuration for the request's `?cluster=` (or the default cluster) and `?project=`, and the file each value came from.
 
 **Response:**
 
 ``` json
 {
-  "resources": {
-    "nodes": 1,
-    "gpus_per_node": 0,
-    "ntasks_per_node": 1,
-    "cpus_per_task": 1,
-    "memory_per_node": null,
-    "time_limit": null,
-    "partition": null,
-    "nodelist": null
+  "cluster": "dgx",
+  "project": "ml-project",
+  "project_root": "/home/user/projects/ml-project",
+  "values": {
+    "resources": {"nodes": 1, "gpus_per_node": 0, "partition": "gpu", "...": "..."},
+    "environment": {"conda": null, "venv": null, "container": null, "env_vars": {}},
+    "notifications": {"default_endpoint_name": null, "default_preset": "terminal"},
+    "sync": {"auto": true, "lock_timeout_seconds": 120, "...": "..."},
+    "log_dir": "logs",
+    "work_dir": null
   },
-  "environment": {
-    "conda": null,
-    "venv": null,
-    "container": null,
-    "env_vars": {}
-  },
-  "notifications": {
-    "slack_webhook_url": null
-  },
-  "log_dir": "logs",
-  "work_dir": null
+  "sources": {
+    "resources.partition": "/home/user/.config/srunx/config.toml [clusters.dgx]",
+    "resources.nodes": "built-in"
+  }
 }
 ```
 
-### PUT /api/config
-
-Validate and save configuration to the user config file (`~/.config/srunx/config.json`).
-
-**Request body:** A full or partial `SrunxConfig` object (same shape as GET response).
-
-**Response:** The updated merged configuration.
-
-**Error responses:**
-
-- `422` — Validation error
-- `500` — Failed to write config file
+**Error responses:** `404` — unknown cluster; `422` — a config file is invalid.
 
 ### GET /api/config/paths
 
-Returns all config file paths with their existence status and source label.
-
 **Response:**
 
 ``` json
 [
-  {"path": "/etc/srunx/config.json", "exists": false, "source": "system"},
-  {"path": "/home/user/.config/srunx/config.json", "exists": true, "source": "user"},
-  {"path": "srunx.json", "exists": false, "source": "project"}
+  {"path": "/etc/srunx/config.toml", "exists": false, "source": "system"},
+  {"path": "/home/user/.config/srunx/config.toml", "exists": true, "source": "user"},
+  {"path": "/home/user/projects/ml-project/.srunx/config.toml", "exists": true, "source": "project"},
+  {"path": "/home/user/.local/state/srunx", "exists": true, "source": "state"}
 ]
 ```
 
-### POST /api/config/reset
+The `project` entry is present only when `?project=` is given.
 
-Reset user config to defaults. Overwrites `~/.config/srunx/config.json` with a fresh `SrunxConfig`.
+### GET /api/config/file
 
-**Response:** The default configuration.
+**Query parameters:**
 
-### GET /api/config/ssh/profiles
-
-Returns all SSH profiles and identifies the current active profile.
+- `scope` — `user` (default) or `project` (requires `?project=`)
 
 **Response:**
 
 ``` json
 {
-  "current": "dgx-server",
-  "profiles": {
-    "dgx-server": {
-      "hostname": "dgx.example.com",
-      "username": "researcher",
-      "key_filename": "~/.ssh/id_ed25519",
-      "port": 22,
-      "description": "Main DGX cluster",
-      "ssh_host": null,
-      "proxy_jump": null,
-      "mounts": [],
-      "env_vars": {}
-    }
-  }
+  "scope": "user",
+  "path": "/home/user/.config/srunx/config.toml",
+  "exists": true,
+  "version": "<opaque token>",
+  "data": {"default_cluster": "dgx", "clusters": {"dgx": {"transport": "ssh", "host": "dgx-login"}}}
 }
 ```
 
-### POST /api/config/ssh/profiles
+### PATCH /api/config/file
 
-Add a new SSH profile.
+Edit individual keys of one file. Keys are dotted paths from the file root, e.g. `defaults.resources.partition` or `clusters.dgx.defaults.resources.time_limit`.
 
 **Request body:**
 
 ``` json
 {
-  "name": "dgx-server",
-  "hostname": "dgx.example.com",
-  "username": "researcher",
-  "key_filename": "~/.ssh/id_ed25519",
-  "port": 22,
-  "description": "Main DGX cluster",
-  "ssh_host": null,
-  "proxy_jump": null
+  "scope": "project",
+  "version": "<token from GET /api/config/file>",
+  "set": {"clusters.dgx.remote_dir": "/home/researcher/ml-project"},
+  "delete": ["defaults.resources.partition"],
+  "unset": ["defaults.resources.time_limit"]
 }
 ```
 
-**Response:** The created profile object.
+- `set` — set values
+- `delete` — remove keys (the value is inherited again)
+- `unset` — add the key to its table's `unset` list (explicitly cleared)
+
+**Response:** The updated file (same shape as `GET /api/config/file`).
 
 **Error responses:**
 
-- `409` — Profile with the same name already exists
-
-### PUT /api/config/ssh/profiles/{name}
-
-Update an existing SSH profile. Only valid `ServerProfile` fields are applied: `hostname`, `username`, `key_filename`, `port`, `description`, `ssh_host`, `proxy_jump`, `env_vars`.
-
-**Request body:** Object with fields to update (partial update).
-
-**Response:** The updated profile object.
-
-**Error responses:**
-
-- `404` — Profile not found
-
-### DELETE /api/config/ssh/profiles/{name}
-
-Delete an SSH profile and all its mounts.
-
-**Response:**
-
-``` json
-{"ok": true}
-```
-
-**Error responses:**
-
-- `404` — Profile not found
-
-### POST /api/config/ssh/profiles/{name}/activate
-
-Set a profile as the current active profile.
-
-**Response:**
-
-``` json
-{"ok": true}
-```
-
-**Error responses:**
-
-- `404` — Profile not found
-
-### POST /api/config/ssh/profiles/{name}/connect
-
-Open an SSH connection with the profile and make it the server's live connection and current profile. Connection failures are reported in the body with status `200`.
-
-**Response:**
-
-``` json
-{"connected": true, "profile_name": "dgx", "hostname": "dgx.example.com"}
-```
-
-On failure: `{"connected": false, "profile_name": "dgx", "hostname": "dgx.example.com", "error": "SSH connection failed"}`.
-
-**Error responses:**
-
-- `404` — Profile not found
-
-### POST /api/config/ssh/profiles/{name}/test
-
-Connect with a temporary connection, check SLURM, and disconnect. The live connection is not changed.
-
-**Response:**
-
-``` json
-{
-  "ssh_connected": true,
-  "slurm_available": true,
-  "hostname": "dgx.example.com",
-  "user": "researcher",
-  "slurm_version": "slurm 24.05.1",
-  "error": null
-}
-```
-
-**Error responses:**
-
-- `404` — Profile not found
-
-### GET /api/config/ssh/status
-
-**Response:**
-
-``` json
-{"connected": true, "profile_name": "dgx"}
-```
-
-`profile_name` is `null` when no profile is active.
-
-### POST /api/config/ssh/profiles/{name}/mounts
-
-Add a mount point to a profile.
-
-**Request body:**
-
-``` json
-{
-  "name": "ml-project",
-  "local": "/home/user/projects/ml-project",
-  "remote": "/home/researcher/ml-project"
-}
-```
-
-**Response:** The created mount object.
-
-**Error responses:**
-
-- `404` — Profile not found
-- `422` — Validation error
-
-### DELETE /api/config/ssh/profiles/{name}/mounts/{mount_name}
-
-Remove a mount from a profile.
-
-**Response:**
-
-``` json
-{"ok": true}
-```
-
-**Error responses:**
-
-- `404` — Profile or mount not found
+- `400` — `scope=project` without `?project=`
+- `409` — `version` is stale (the file changed since it was read)
+- `422` — The edited file would be invalid
 
 ### GET /api/config/env
 
-Returns all `SRUNX_*` and `SLACK_WEBHOOK_URL` environment variables currently set in the server process.
+Lists srunx-related environment variables that are currently set (`SRUNX_CLUSTER`, `SRUNX_TEMP_DIR`, `SRUNX_WEB_PROJECTS`, `SRUNX_WEB_TOKEN` (masked), `SRUNX_WEB_ALLOWED_HOSTS`, `SLACK_WEBHOOK_URL`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`).
 
 **Response:**
 
 ``` json
 [
   {
-    "name": "SRUNX_DEFAULT_PARTITION",
-    "value": "gpu",
-    "description": "Default SLURM partition"
-  },
-  {
-    "name": "SRUNX_SSH_PROFILE",
-    "value": "dgx-server",
-    "description": "SSH profile for web server"
+    "name": "SRUNX_CLUSTER",
+    "value": "dgx",
+    "description": "Cluster selected for CLI commands (ignored by the Web UI)"
   }
 ]
 ```
-
-Returns an empty list if no `SRUNX_*` variables are set.
-
-### GET /api/config/projects
-
-List projects derived from the current SSH profile's mounts.
-
-**Response:**
-
-``` json
-[
-  {
-    "mount_name": "ml-project",
-    "local_path": "/home/user/projects/ml-project",
-    "remote_path": "/home/researcher/ml-project",
-    "config_exists": true,
-    "config_path": "/home/user/projects/ml-project/srunx.json"
-  }
-]
-```
-
-Returns an empty list if no SSH profile is active.
-
-### GET /api/config/projects/{mount_name}
-
-Read `srunx.json` from a mount's local directory.
-
-**Response:**
-
-``` json
-{
-  "mount_name": "ml-project",
-  "local_path": "/home/user/projects/ml-project",
-  "config_path": "/home/user/projects/ml-project/srunx.json",
-  "exists": true,
-  "config": {
-    "resources": {"gpus_per_node": 4, "time_limit": "8:00:00"},
-    "environment": {"conda": "ml_env"}
-  }
-}
-```
-
-**Error responses:**
-
-- `400` — No active SSH profile
-- `404` — Mount not found in active profile
-
-### PUT /api/config/projects/{mount_name}
-
-Save `srunx.json` to a mount's local directory.
-
-**Request body:** A `SrunxConfig` object.
-
-**Response:** The saved project config response.
-
-**Error responses:**
-
-- `400` — No active SSH profile
-- `404` — Mount not found
-- `422` — Validation error
-- `500` — Failed to write file
-
-### POST /api/config/projects/{mount_name}/init
-
-Initialize `srunx.json` with example values in a mount's local directory.
-
-**Response:** The created project config response with example values.
-
-**Error responses:**
-
-- `400` — No active SSH profile
-- `404` — Mount not found
-- `409` — `srunx.json` already exists
 
 ## History
 
@@ -1575,22 +1400,21 @@ All errors follow this format:
 - `400` — Invalid input (e.g., negative job ID, path is not a directory)
 - `403` — Path outside mount boundary or permission denied
 - `404` — Resource not found (job, workflow, mount, directory, run)
-- `409` — Resource already exists (e.g., workflow or mount with duplicate name)
+- `409` — Resource already exists (e.g., workflow or cluster with duplicate name), or a config edit with a stale version token
 - `413` — YAML content too large
 - `422` — Validation error or invalid state transition (e.g., cancelling an already-terminal run)
 - `500` — Internal error (e.g., script rendering failure)
 - `502` — SLURM command, rsync command, or sbatch submission failed
-- `503` — SSH connection not configured or rsync not installed
+- `503` — No cluster selected (no `?cluster=` and no default) or rsync not installed
 
 ## Configuration
 
-The Web UI is configured via environment variables:
+The Web UI server is configured with `srunx ui` options and environment variables:
 
-| Variable             | Default           | Description             |
-|----------------------|-------------------|-------------------------|
-| `SRUNX_SSH_PROFILE`  | (current profile) | srunx SSH profile name  |
-| `SRUNX_SSH_HOSTNAME` | —                 | Direct SSH hostname     |
-| `SRUNX_SSH_USERNAME` | —                 | Direct SSH username     |
-| `SRUNX_SSH_KEY`      | —                 | Path to SSH private key |
-| `SRUNX_SSH_PORT`     | 22                | SSH port                |
-|                      |                   |                         |
+| Variable | Description |
+|----|----|
+| `SRUNX_WEB_PROJECTS` | Extra project roots to serve, separated by `:` (same as repeated `srunx ui --project PATH`) |
+| `SRUNX_WEB_TOKEN` | Bearer token required on `/api/*` (unset by default) |
+| `SRUNX_WEB_ALLOWED_HOSTS` | Extra `Host` header values accepted (comma-separated) |
+
+Clusters come from the srunx config files (see [Clusters](#clusters)); `SRUNX_CLUSTER` is ignored by the Web UI.
